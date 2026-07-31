@@ -115,11 +115,81 @@ namespace WebVella.Erp
 
 			ApiUrlTemplateFieldInlineEdit = string.IsNullOrWhiteSpace(configuration[$"ApiUrlTemplates:FieldInlineEdit"]) ? "/api/v3/en_US/record/{entityName}/{recordId}" : configuration[$"ApiUrlTemplates:FieldInlineEdit"];
 
-			JwtKey = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Key"]) ? "ThisIsMySecretKey" : configuration["Settings:Jwt:Key"];
+			// SECURITY - findings C-04 (Critical) and H-04 (High), CWE-798 use of hard-coded credentials,
+			// CWE-321 use of a hard-coded cryptographic key, OWASP A02 Cryptographic Failures.
+			// THREAT: this assignment previously substituted a compiled-in placeholder signing key whenever none was
+			// configured. That value shipped in the public source tree, so any deployment which did not supply its own
+			// key issued bearer tokens an attacker could forge at will - a complete authentication bypass.
+			// The fallback is removed deliberately: a missing signing key must become an error, never a silent default.
+			// ValidateRequiredSecurityConfiguration below turns that absence into an actionable startup failure.
+			JwtKey = configuration["Settings:Jwt:Key"];
 			JwtIssuer = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Issuer"]) ? "webvella-erp" : configuration["Settings:Jwt:Issuer"];
 			JwtAudience = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Audience"]) ? "webvella-erp" : configuration["Settings:Jwt:Audience"];
 
+			// SECURITY - findings C-04 (Critical), H-04 (High) and H-05 (High), CWE-798, CWE-321, OWASP A02 and A05.
+			// THREAT: the shipped Config.json files no longer carry live secrets and CryptoUtility no longer falls back
+			// to a compiled-in encryption key, so a settings layer that quietly defaulted would merely relocate the
+			// defect - the platform would start with a known-bad key and nobody would notice. Initialize is the single
+			// funnel every host and the console application passes through, so the absence of a required secret is
+			// asserted here. Invoked before IsInitialized is set, so a failed validation leaves the settings
+			// explicitly un-initialized rather than half-applied.
+			ValidateRequiredSecurityConfiguration(configuration);
+
 			IsInitialized = true;
+		}
+
+		/// <summary>
+		/// Fails fast when a security setting the platform cannot safely default was not supplied by any
+		/// configuration provider (Config.json, environment variables or user secrets).
+		/// Part of the OWASP Top 10 remediation for findings C-04, H-04 and H-05 (CWE-798, CWE-321): every
+		/// compiled-in default secret was removed, so a missing value has to surface as an actionable startup
+		/// error instead of silently degrading into a known-bad key.
+		/// Only configuration key NAMES are reported - never values, prefixes, lengths or digests - so that a
+		/// startup failure cannot leak key material into a console, log file or crash report (CWE-532).
+		/// </summary>
+		private static void ValidateRequiredSecurityConfiguration(IConfiguration configuration)
+		{
+			// Every missing value is collected before throwing, so a mis-provisioned deployment learns about all of
+			// them from a single startup failure instead of one restart per variable.
+			var missingSecrets = string.Empty;
+
+			// The connection string is unconditionally required: DbContext, ERPService and every repository consume
+			// it immediately after initialization, so no host can function without it (finding H-05, CWE-798).
+			if (string.IsNullOrWhiteSpace(ConnectionString))
+			{
+				missingSecrets += $"{Environment.NewLine}  - 'Settings:ConnectionString' (environment variable 'Settings__ConnectionString')";
+			}
+
+			// The encryption key is unconditionally required: CryptoUtility.CryptKey no longer falls back to a
+			// compiled-in constant, so an absent key is caught here at startup rather than at the first
+			// encrypt/decrypt of stored data (finding C-04, CWE-798, CWE-321). The legacy mispelled 'EncriptionKey'
+			// spelling still satisfies this check, because Initialize resolves that backwards-compatibility path
+			// into EncryptionKey before this validation runs.
+			if (string.IsNullOrWhiteSpace(EncryptionKey))
+			{
+				missingSecrets += $"{Environment.NewLine}  - 'Settings:EncryptionKey' (environment variable 'Settings__EncryptionKey')";
+			}
+
+			// The token signing key is required only when a 'Settings:Jwt' section is actually configured, which is
+			// the case exclusively for the hosts that issue bearer tokens. The remaining hosts and the console
+			// application legitimately ship no such section, and demanding a key from them would stop them starting -
+			// which the preservation requirement "all existing functionality remains operational" forbids. Where the
+			// section IS present the key is mandatory, because the hard-coded fallback that used to cover it was
+			// removed above (finding H-04, CWE-798, CWE-321).
+			if (configuration.GetSection("Settings:Jwt").Exists() && string.IsNullOrWhiteSpace(JwtKey))
+			{
+				missingSecrets += $"{Environment.NewLine}  - 'Settings:Jwt:Key' (environment variable 'Settings__Jwt__Key')";
+			}
+
+			if (string.IsNullOrEmpty(missingSecrets))
+			{
+				return;
+			}
+
+			throw new Exception("WebVella ERP startup aborted - required security configuration is missing:" + missingSecrets +
+				$"{Environment.NewLine}Supply every value listed above through an environment variable, user secrets in development, or Config.json, then restart." +
+				$"{Environment.NewLine}The compiled-in default encryption key and the default token signing key were removed on purpose by the OWASP Top 10 remediation (findings C-04, H-04, H-05 - CWE-798, CWE-321); no insecure fallback remains by design." +
+				$"{Environment.NewLine}See docs/security/secure-configuration.md for the complete list of required settings and how to supply them.");
 		}
 	}
 }

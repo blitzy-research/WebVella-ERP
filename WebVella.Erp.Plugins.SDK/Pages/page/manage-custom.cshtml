@@ -15,7 +15,14 @@
 				icon-class="@pageIconClass" return-url="@Model.ReturnUrl">
 	<wv-page-header-actions>
 		<wv-button type='Submit' form="ManageRecord" class='btn btn-blue btn-sm'><span class='fa fa-save go-white'></span> Save Custom Body</wv-button>
-		<a href='@Html.Raw(Model.ReturnUrl)' class='btn btn-white btn-sm'>Cancel</a>
+		@* SECURITY (CWE-79 reflected XSS / OWASP A03:2021 Injection): Model.ReturnUrl is raw,
+		   URL-decoded query-string input (BaseErpPageModel.cs:L73-L74 [BindProperty SupportsGet],
+		   assigned L178 via HttpUtility.UrlDecode) and was emitted through the raw-output helper
+		   as an entire single-quoted href value, letting a crafted returnUrl break out of the
+		   attribute. The raw wrapper is removed so Razor HTML-encodes it. HTML encoding is the
+		   context-appropriate choice here: this is a WHOLE href, so URL-encoding would
+		   percent-encode the path separators and break the Cancel link. *@
+		<a href='@Model.ReturnUrl' class='btn btn-white btn-sm'>Cancel</a>
 	</wv-page-header-actions>
 
 	<wv-page-header-toolbar>

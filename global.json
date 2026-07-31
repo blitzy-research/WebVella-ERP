@@ -1,5 +1,9 @@
 {
+  // Security: pinned SDK - NuGetAudit defaults and the analyzer rule set are
+  // SDK-version dependent; an unpinned toolchain makes the dependency and SAST
+  // gates non-reproducible (finding L-07). See docs/security/secure-configuration.md
   "sdk": {
-    //"version": "7.0.103"
+    "version": "10.0.302",
+    "rollForward": "latestPatch"
   }
 }
