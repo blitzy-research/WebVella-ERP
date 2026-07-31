@@ -17,6 +17,7 @@
 		<ProjectReference Include="..\WebVella.Erp.Plugins.Next\WebVella.Erp.Plugins.Next.csproj" />
 		<ProjectReference Include="..\WebVella.Erp.Plugins.SDK\WebVella.Erp.Plugins.SDK.csproj" />
 		<ProjectReference Include="..\WebVella.Erp.Web\WebVella.Erp.Web.csproj" />
+		<!-- Security fix H-19 (OWASP A06/A08, CWE-1104-adjacent): folder segment must match the on-disk WebVella.Erp directory; the earlier upper-case spelling broke solution-wide restore on case-sensitive filesystems, silently excluding the core project from dependency auditing so vulnerability scans falsely reported clean.-->
 		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 

@@ -19,6 +19,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- SECURITY H-19 (OWASP A06/A08): folder casing corrected to match the on-disk path; the previous "WebVella.ERP" broke solution-wide restore on case-sensitive filesystems, silently dropping the core project from dependency auditing. -->
 		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 

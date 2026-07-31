@@ -44,7 +44,12 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="AutoMapper" Version="[14.0.0]" />
+		<!-- Security H-01 (CWE-674, OWASP A06): AutoMapper below 15.1.1 allows denial of service
+		     through uncontrolled recursion (GHSA-rvv3-g6hj-g44x / CVE-2026-32933). Pinned to the
+		     newest release on the lowest patched major to minimise behavioural drift.
+		     LICENCE NOTE: 15.1.3 ships under the Reciprocal Public License 1.5, not MIT. See
+		     docs/security/risk-register.md - this is an open repository-owner decision. -->
+		<PackageReference Include="AutoMapper" Version="[15.1.3]" />
 		<PackageReference Include="CsvHelper" Version="33.1.0" />
 		<PackageReference Include="Ical.Net" Version="5.1.4" />
 		<PackageReference Include="Irony.NetCore" Version="1.1.11" />

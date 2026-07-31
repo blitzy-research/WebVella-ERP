@@ -16,6 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\WebVella.Erp.Plugins.Next\WebVella.Erp.Plugins.Next.csproj" />
     <ProjectReference Include="..\WebVella.Erp.Web\WebVella.Erp.Web.csproj" />
+    <!-- SECURITY H-19 (CWE-1104-adjacent; OWASP A06/A08): keep this directory segment at the exact on-disk casing 'WebVella.Erp' - an upper-cased variant broke solution-wide restore on case-sensitive filesystems, silently dropping the core project from the dependency-audit graph so the vulnerability scan reported falsely clean. -->
     <ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
   </ItemGroup>
 
