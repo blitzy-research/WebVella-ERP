@@ -1,0 +1,161 @@
+﻿<Project>
+
+	<!-- =========================================================================
+	     REPOSITORY-WIDE SECURITY GATE - vulnerability Class 2, Scan Gate
+	     Enforcement. Introduced by the OWASP Top 10 (2021) security audit and
+	     remediation of this platform. Findings, evidence and disposition:
+	         docs/security/security-audit-report.md
+	         docs/security/remediation-log.md
+	         docs/security/risk-register.md
+
+	     WHAT IT DOES: turns an ordinary "dotnet restore" and "dotnet build" into
+	     the two automated validation gates the audit is measured against -
+	     Gate 1 (static analysis) and Gate 2 (dependency / composition analysis).
+	     Without it the platform has no reproducible way to prove, or to keep
+	     proving, that a vulnerability has not been reintroduced.
+
+	     WHY MSBUILD AND NOT A REPOSITORY-ROOT .editorconfig: all four
+	     .editorconfig files in this repository declare "root = true" -
+	     WebVella.Erp, WebVella.Erp.Web, WebVella.Erp.Plugins.SDK and
+	     WebVella.Erp.Plugins.Next (see WebVella.Erp/.editorconfig line 5). A
+	     root .editorconfig would therefore be ignored inside all four subtrees,
+	     which is precisely where the core and web libraries live.
+	     Directory.Build.props is imported implicitly by MSBuild for every
+	     project beneath this directory regardless of .editorconfig scoping, so
+	     it reaches all 19 projects - including WebVella.Erp.WebAssembly/Server
+	     and /Shared, which are not members of WebVella.ERP3.sln.
+
+	     REPRODUCIBILITY: the SDK is pinned in global.json. Several properties
+	     below already match the current SDK defaults; they are stated
+	     explicitly anyway so the gate is defined by this file rather than by an
+	     SDK default that changes between toolchain versions.
+
+	     DELIBERATELY NOT SET HERE, and not to be added: no target framework,
+	     language version, nullable or implicit-usings setting; no package
+	     metadata; no package references of any kind; no central package version
+	     management; no lock file; and no import of a companion .targets file.
+	     Each project owns its own compilation and packaging settings, and
+	     centralising them would change how all 19 projects build or publish -
+	     out of scope for a security remediation, and recorded instead in
+	     docs/security/risk-register.md (finding L-07).
+	     ========================================================================= -->
+
+	<!-- Threat addressed: use of components with known vulnerabilities
+	     (OWASP A06:2021 - Vulnerable and Outdated Components; CWE-1104,
+	     CWE-1035). Serves Validation Gate 2 - "dependency scan: 0 Critical/High
+	     CVEs" - by making NuGet audit the advisory database on every restore.
+
+	     Mode "all" rather than "direct" is load-bearing, not belt-and-braces:
+	     this graph has carried a transitive-only advisory (MimeKit, reached
+	     through MailKit in WebVella.Erp.Plugins.Mail). Under "direct" such an
+	     advisory is never reported at all, so the gate would pass while the
+	     platform shipped a vulnerable component.
+
+	     Level "low" is the lowest reporting threshold, so a Moderate advisory
+	     cannot hide beneath a High-only bar and go unrecorded. -->
+	<PropertyGroup>
+		<NuGetAudit>true</NuGetAudit>
+		<NuGetAuditMode>all</NuGetAuditMode>
+		<NuGetAuditLevel>low</NuGetAuditLevel>
+	</PropertyGroup>
+
+	<!-- Threat addressed: a dependency advisory that is reported but ignored -
+	     an audit that only warns is not a gate, and warnings are routinely
+	     scrolled past. NU1901/NU1902/NU1903/NU1904 are the NuGet audit
+	     diagnostics for low/moderate/high/critical severity respectively;
+	     promoting them makes any advisory in the graph FAIL the build.
+
+	     EXPECTED CONSEQUENCE, BY DESIGN: while any referenced package carries an
+	     advisory, restore and build fail. That is the gate working, not a
+	     defect. The advisory must be cleared by upgrading the package, or
+	     consciously accepted via the narrowly scoped suppression seam at the end
+	     of this file together with a recorded risk acceptance - never by
+	     deleting this property group.
+
+	     APPENDED, never overwritten: the .NET SDK itself contributes NU1605
+	     (package downgrade) and SYSLIB0011 (BinaryFormatter obsoletion, itself a
+	     CWE-502 signal) to this property. Assigning a bare literal here would
+	     silently drop both. -->
+	<PropertyGroup>
+		<WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsAsErrors>
+	</PropertyGroup>
+
+	<!-- Threat addressed: insecure coding patterns reaching production
+	     unreviewed - OWASP A02:2021 (Cryptographic Failures), A03:2021
+	     (Injection) and A08:2021 (Software and Data Integrity Failures).
+	     Serves Validation Gate 1 - "SAST scan: 0 Critical, 0 High".
+
+	     DISCLOSED SUBSTITUTION: the external SAST tooling named in the audit
+	     brief could not be installed in this environment, so the .NET SDK's
+	     built-in Roslyn analyzers are the disclosed substitute. This keeps the
+	     gate dependency-free - no analyzer package is added, which the audit's
+	     "no new package dependency" constraint requires. The substitution is
+	     recorded in docs/security/security-audit-report.md.
+
+	     "latest-recommended" widens the rule set beyond the SDK default mode.
+	     The security families it ACTUALLY enforces, each verified by building a
+	     probe containing a deliberate violation, are:
+	         - weak and broken hashing algorithms   CA5350 / CA5351
+	         - disabled certificate validation      CA5359
+
+	     KNOWN COVERAGE GAP - stated plainly rather than assumed away. The other
+	     security families bearing on this audit's findings did NOT fire against
+	     deliberate violations, because the analyzer package ships them disabled
+	     by default and an analysis-level change alone does not turn them on:
+	         - hard-coded encryption key            CA5390
+	         - non-random initialisation vector     CA5401 / CA5402
+	         - disabled token-validation checks     CA5404
+	         - unrestricted type-name handling      CA2326 / CA2327
+	         - query construction                   CA2100
+	         - ASP.NET Core cookie security         CA5382 / CA5383
+	         - cross-site scripting, file path and regular-expression injection
+	           CA3002 / CA3003 / CA3012 (dataflow rules, off by default)
+	     Activating them needs a per-rule severity entry of the form
+	     dotnet_diagnostic.[rule-id].severity in .editorconfig - which for the
+	     "root = true" reason above cannot be delivered from the repository root,
+	     and would have to be added inside each of the four subtrees. That is a
+	     larger change than this remediation's scope allows, so it is recorded as
+	     a residual limitation of the substitute gate in
+	     docs/security/risk-register.md rather than silently implied to be
+	     covered here. Findings in those families were established by manual
+	     review, and each remains traceable in the audit report.
+
+	     PASS CRITERION: zero diagnostics in the two enforced families across the
+	     files touched by this remediation - deliberately NOT zero
+	     repository-wide, because roughly 700 pre-existing files are in scope of
+	     the analyzers but not of this remediation. Two accepted residuals are
+	     expected to persist and must not be "fixed" by weakening this file:
+	     CA5351 on the legacy password-verification path, which exists precisely
+	     so already-stored credentials keep working, and CA5351 on the
+	     general-purpose digest helpers, which are outside the remediated key
+	     handling.
+
+	     DIAGNOSTICS REMAIN WARNINGS, NEVER ERRORS. Enabling analyzers across
+	     roughly 700 pre-existing source files surfaces a large legacy backlog;
+	     promoting it to errors would force exactly the repository-wide refactor
+	     the remediation scope forbids, and would leave the build permanently
+	     red. Only the NuGet audit diagnostics above are errors. Consequently no
+	     blanket warnings-as-errors switch is set, no CA identifier is added to
+	     the promotion list above, and build-time code-style enforcement is left
+	     off. The analysis mode is not set separately either: it is already
+	     carried by the suffix of AnalysisLevel below, and setting both invites a
+	     silent conflict. -->
+	<PropertyGroup>
+		<EnableNETAnalyzers>true</EnableNETAnalyzers>
+		<AnalysisLevel>latest-recommended</AnalysisLevel>
+	</PropertyGroup>
+
+	<!-- SUPPRESSION SEAM - INTENTIONALLY INERT. Nothing is suppressed today,
+	     and no advisory may be suppressed without a recorded, justified risk
+	     acceptance in docs/security/risk-register.md naming the advisory, its
+	     severity, why the upgrade is declined and who accepted the residual
+	     risk. The example below is the only sanctioned shape: one narrowly
+	     scoped diagnostic code - never a blanket NU19* wildcard, and never a
+	     wholesale disabling of the promotion above. Uncommenting it without the
+	     corresponding risk-register entry defeats Validation Gate 2.
+	<PropertyGroup>
+		<NoWarn>$(NoWarn);NU1903</NoWarn>
+	</PropertyGroup>
+	-->
+
+</Project>
