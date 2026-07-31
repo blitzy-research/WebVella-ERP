@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System;
+using System.Threading.Tasks;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Hooks;
 using WebVella.Erp.Web.Hooks;
@@ -59,7 +60,11 @@ namespace WebVella.Erp.Web.Pages
 			return Page();
 		}
 
-		public IActionResult OnPost([FromServices] AuthService authService)
+		// M-03 (OWASP A07): AuthService.Authenticate now awaits SignInAsync instead of discarding its Task - a discarded
+		// sign-in raced the response, so the authentication cookie could be missing from it and any sign-in exception went
+		// unobserved. Awaiting propagates here, to the platform's only login entry point; the handler name is unchanged, so
+		// Razor Pages still binds this method to POST and the request/response contract is untouched.
+		public async Task<IActionResult> OnPost([FromServices] AuthService authService)
 		{
 			if (!ModelState.IsValid) throw new Exception("Antiforgery check failed.");
 
@@ -89,7 +94,7 @@ namespace WebVella.Erp.Web.Pages
 				return Page();
 			}
 
-			ErpUser user = authService.Authenticate(Username, Password);
+			ErpUser user = await authService.Authenticate(Username, Password);
 
 			foreach (ILoginPageHook inst in hookInstances)
 			{

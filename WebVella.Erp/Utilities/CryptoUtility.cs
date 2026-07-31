@@ -13,7 +13,18 @@ namespace WebVella.Erp.Utilities
     {
         #region <--- Fields --->
 
-        private const string defaultCryptKey = "BC93B776A42877CFEE808823BA8B37C83B6B0AD23198AC3AF2B5A54DCB647658";
+        // SECURITY (C-04, CWE-798/CWE-321, OWASP A02:2021) - Cryptographic Failures.
+        // A 64-hex-character default encryption key used to be compiled in at this position. It has been DELETED.
+        // THREAT: the value was public knowledge twice over. This assembly is published to nuget.org as package
+        // WebVella.Erp, so anyone could read the constant out of the shipped library, and the identical literal was
+        // additionally shipped in all eight Config.json files. Every installation that never supplied its own key
+        // therefore encrypted with a key an attacker already held, and that key could be neither rotated nor
+        // revoked because it was the same for every deployment.
+        // No replacement default is provided, by design: the CryptKey property below now fails fast. Deleting only
+        // the constant while leaving a fallback in place would have relocated the defect instead of fixing it.
+
+        // Caches the encryption key after the first SUCCESSFUL resolution. Pre-existing behaviour, deliberately
+        // retained: it is unrelated to C-04 and the only value ever stored here is the configured key.
         private static string cryptKey;
 
         #endregion
@@ -26,13 +37,31 @@ namespace WebVella.Erp.Utilities
             {
                 if (string.IsNullOrEmpty(cryptKey))
                 {
-                    if (string.IsNullOrWhiteSpace(ErpSettings.EncryptionKey)) {
-                        cryptKey = defaultCryptKey;
+                    // SECURITY (C-04, CWE-798/CWE-321, OWASP A02:2021) - fail fast replaces a silent fallback to a
+                    // compiled-in key. Removing only the constant would have relocated the defect, not fixed it: a
+                    // caller that reaches this property with no key configured must be stopped loudly rather than
+                    // handed a predictable key it would then mistake for protection. There is deliberately NO
+                    // development-mode or environment escape hatch, because that would recreate the very defect
+                    // being removed, and deliberately NO generated random key, because that would silently make
+                    // already-encrypted data undecryptable - a worse outcome than failing loudly.
+                    if (string.IsNullOrWhiteSpace(ErpSettings.EncryptionKey))
+                    {
+                        // Only configuration key NAMES appear below. The value, any prefix of it, its length and any
+                        // digest of it are all withheld, so this failure cannot leak key material into a console, a
+                        // log file or a crash report (CWE-532).
+                        throw new InvalidOperationException(
+                            "WebVella ERP cannot encrypt or decrypt data: required security configuration " +
+                            "'Settings:EncryptionKey' is missing. Supply it through the 'Settings__EncryptionKey' " +
+                            "environment variable, through user secrets in development, or in Config.json - the " +
+                            "legacy mispelled 'Settings:EncriptionKey' spelling is still honoured. The compiled-in " +
+                            "default encryption key was removed on purpose by the OWASP Top 10 remediation " +
+                            "(finding C-04 - CWE-798, CWE-321) and no insecure fallback remains by design. " +
+                            "See docs/security/secure-configuration.md, which also covers how a deployment that " +
+                            "previously relied on the removed default keeps its existing encrypted data readable.");
                     }
-                    else {
 
-                        cryptKey = ErpSettings.EncryptionKey;
-                    }
+                    // The configured key is the ONLY value this property will ever cache or return.
+                    cryptKey = ErpSettings.EncryptionKey;
                 }
                 return cryptKey;
             }
@@ -212,6 +241,15 @@ namespace WebVella.Erp.Utilities
 
         #region <--- Private Methods --->
 
+        // SECURITY NOTE (M-08, CWE-329, OWASP A02:2021) - DOCUMENTED ONLY, DELIBERATELY NOT CHANGED HERE.
+        // The key and initialisation-vector derivation helpers in this region are deterministic: the vector is
+        // derived from the key itself, so the same plaintext always produces the same ciphertext. That is a Medium
+        // finding under the audit's severity matrix, it is latent (the symmetric encrypt/decrypt API has no
+        // in-repository callers), and the remediation scope fixes Critical and High findings only. Changing the
+        // derivation or moving to an authenticated cipher mode would also make every already-persisted ciphertext
+        // undecryptable, which the "all existing functionality remains operational" preservation requirement
+        // forbids. Tracked as an accepted risk in docs/security/risk-register.md; any CA5389/CA5390/CA5401
+        // analyzer diagnostic on the code below is expected and intentionally left as a warning.
 
         /// <summary>
         /// 	Gets the valid encode key.
