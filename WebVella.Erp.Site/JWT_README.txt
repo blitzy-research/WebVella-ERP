@@ -9,10 +9,27 @@
 add in settings section
 
 "Jwt": {
-	"Key": "ThisIsMySecretKey",
+	"Key": "",
 	"Issuer": "webvella-erp",
 	"Audience": "webvella-erp"
 }
+
+SECURITY - findings H-04 (High, weak bearer-token signing key) and H-05; CWE-798 use of
+hard-coded credentials, CWE-321 use of a hard-coded cryptographic key; OWASP A02:2021
+Cryptographic Failures.
+THREAT: earlier revisions of this note published a literal signing key, and the very same
+literal shipped inside Config.json. Anyone who could read this public repository could mint a
+valid bearer token for any user of any deployment that had not replaced it, and the key could
+be neither rotated nor revoked because it was identical everywhere.
+INVARIANT: the Key entry stays EMPTY in every tracked file. Supply at least 32 bytes of
+cryptographically random material per deployment, out of band, and never through this file:
+
+	Settings__Jwt__Key=$(openssl rand -base64 48)
+
+or through user secrets in development. Startup rejects the key this repository once published,
+so copying the value out of the git history will not work. While the value is absent the token
+issue and refresh routes disable themselves rather than sign forgeable tokens; cookie login is
+unaffected. See docs/security/secure-configuration.md for the full list of required settings.
 
 
 =========================================================================

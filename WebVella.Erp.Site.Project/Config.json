@@ -1,11 +1,27 @@
 ﻿{
 	"Settings": {
-		"ConnectionString": "Server=192.168.10.25;Port=5436;User Id=dev;Password=dev;Database=erp3_project_with_sdk;Pooling=true;MinPoolSize=1;MaxPoolSize=100;CommandTimeout=120;",
-		"EncryptionKey": "BC93B776A42877CFEE808823BA8B37C83B6B0AD23198AC3AF2B5A54DCB647658",
+		// SECURITY - findings H-05 (High, plaintext database credentials), H-04 (High, weak
+		// bearer-token signing key) and C-04 (Critical, hard-coded encryption key); CWE-798 use of
+		// hard-coded credentials, CWE-321 use of a hard-coded cryptographic key; OWASP A02:2021
+		// Cryptographic Failures and A05:2021 Security Misconfiguration.
+		// THREAT: this file is tracked in a public repository, so every secret it carried - a live
+		// database user and password, the platform's data-at-rest encryption key and the token
+		// signing key - was readable by anyone, identical across every deployment that did not
+		// replace it, and impossible to rotate or revoke.
+		// INVARIANT: every secret-bearing value in this file stays EMPTY in source. Supply real
+		// values per deployment through environment variables (Settings__ConnectionString,
+		// Settings__EncryptionKey, Settings__Jwt__Key), or through user secrets in development.
+		// The keys are RETAINED with empty values rather than deleted because the JSON
+		// configuration source is non-optional - an absent file must still fail loudly - and
+		// because a later provider can only override a key that exists. Startup aborts with an
+		// actionable message when a required value is absent; see
+		// docs/security/secure-configuration.md for the complete list and the supply channels.
+		"ConnectionString": "",
+		"EncryptionKey": "",
 		"Lang": "en",
 		"Locale": "en-US",
 		"TimeZoneName": "FLE Standard Time",
-		"DevelopmentMode": "true",
+		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "true",
 		"EnableFileSystemStorage": "false",
 		"FileSystemStorageFolder": "\\\\192.168.10.25\\Share\\erp3-files",
@@ -17,7 +33,7 @@
 		"EmailFrom": "",
 		"EmailTo": "",
 		"Jwt": {
-			"Key": "ThisIsMySecretKeyThisIsMySecretKeyThisIsMySecretKey",
+			"Key": "",
 			"Issuer": "webvella-erp",
 			"Audience": "webvella-erp"
 		}

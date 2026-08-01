@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+// SECURITY (finding C-01, CWE-798/CWE-1392): supplies the cryptographically secure random source used
+// to generate the initial administrator credential that replaced the shipped literal password.
+using System.Security.Cryptography;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Api.Models.AutoMapper;
@@ -464,7 +467,21 @@ namespace WebVella.Erp
 							user["id"] = SystemIds.FirstUserId;
 							user["first_name"] = "WebVella";
 							user["last_name"] = "Erp";
-							user["password"] = "erp";
+							//SECURITY - finding C-01 (Critical), CWE-798 use of hard-coded credentials,
+							//CWE-1392 use of default credentials, OWASP A07:2021 Identification and
+							//Authentication Failures.
+							//THREAT: this record is the platform's first administrator, and it used to be
+							//provisioned with the literal password "erp" straight from this public source
+							//tree. Every WebVella ERP installation therefore shipped with a publicly known
+							//administrator credential at a publicly known address - a complete
+							//authentication bypass to full administrative privilege, exploitable by anyone
+							//who can reach /login, and requiring no vulnerability beyond reading this file.
+							//INVARIANT: no password literal may ever be assigned here again. The value is
+							//either supplied by the operator or generated from a cryptographically secure
+							//random source; see ResolveInitialAdministratorPassword below. RecordManager
+							//hashes it on write (PBKDF2-HMAC-SHA-256), so the plaintext resolved here is
+							//never persisted.
+							user["password"] = ResolveInitialAdministratorPassword();
 							user["email"] = "erp@webvella.com";
 							user["username"] = "administrator";
 							user["created_on"] = new DateTime(2010, 10, 10);
@@ -887,6 +904,133 @@ namespace WebVella.Erp
 
 			}
 		}
+
+		#region <--- Initial administrator credential (finding C-01) --->
+
+		/// <summary>
+		/// Configuration key that lets an operator choose the first administrator's password up front.
+		/// Supplied as the environment variable <c>Settings__InitialAdministratorPassword</c>, or through
+		/// user secrets in development.
+		/// </summary>
+		private const string InitialAdministratorPasswordSettingKey = "Settings:InitialAdministratorPassword";
+
+		/// <summary>
+		/// Alphabet the generated credential is drawn from: upper case, lower case, digits and symbols, which
+		/// is the complexity the engagement's authentication-hardening standard requires.
+		/// </summary>
+		/// <remarks>
+		/// Visually ambiguous characters are excluded on purpose - no capital O or I, no lower-case l, no
+		/// digit 0 or 1 - because this value is read off a console once and typed in by hand, and a
+		/// transcription failure would push an operator towards choosing a weak password instead.
+		/// </remarks>
+		private const string InitialAdministratorPasswordAlphabet =
+			"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!#%*+-=?@";
+
+		/// <summary>
+		/// Length of the generated credential. Well above the twelve-character floor the
+		/// authentication-hardening standard sets, and drawn from a 65-character alphabet, so the value
+		/// carries roughly 120 bits of entropy - far beyond offline-guessing range even though it is only
+		/// ever meant to survive until the operator's first sign-in.
+		/// </summary>
+		private const int InitialAdministratorPasswordLength = 20;
+
+		/// <summary>
+		/// Resolves the password for the first administrator account created during system provisioning.
+		/// </summary>
+		/// <returns>
+		/// The operator-supplied value when one was configured; otherwise a freshly generated
+		/// cryptographically random password, which is reported once on the standard error stream.
+		/// </returns>
+		/// <remarks>
+		/// SECURITY - finding C-01 (Critical), CWE-798 use of hard-coded credentials, CWE-1392 use of default
+		/// credentials, OWASP A07:2021 Identification and Authentication Failures.
+		/// THREAT: the literal password this replaces shipped in the public source tree, so every
+		/// installation that had not changed it could be signed into as administrator by anybody. Seeding a
+		/// fixed value is what made the compromise universal; seeding a per-installation value is what ends
+		/// it.
+		/// <para>
+		/// Two supply routes, in this order, and no third:
+		/// </para>
+		/// <list type="number">
+		/// <item><description>
+		/// the operator's own value from <see cref="InitialAdministratorPasswordSettingKey"/>. Preferred,
+		/// because nothing then has to be transcribed off a console, and the value never appears in any
+		/// output stream at all.
+		/// </description></item>
+		/// <item><description>
+		/// a cryptographically random password, reported ONCE while it is still recoverable. Provisioning
+		/// runs exactly once per database, and <c>RecordManager</c> hashes the value on write, so a
+		/// generated password that was never displayed would leave the account permanently unreachable -
+		/// which is why this is reported rather than silently discarded, as the system account's random
+		/// password legitimately is.
+		/// </description></item>
+		/// </list>
+		/// <para>
+		/// The report goes to standard error rather than through <c>LogService</c>, deliberately and for two
+		/// independent reasons. Logging is not usable at this point - it persists through the very database
+		/// connection this provisioning transaction is still building - and a credential written to the log
+		/// table would then be readable by every account holding log access, turning a one-time console
+		/// notice into durable stored plaintext (CWE-532).
+		/// </para>
+		/// <para>
+		/// RESIDUAL, recorded rather than glossed over: the engagement's plan also asks for a
+		/// change-required-on-first-login marker. There is no such field on the user entity, and adding one
+		/// would be a schema definition change, which the same plan forbids outright. The obligation is
+		/// therefore discharged the only way it can be without that change - the credential is unique per
+		/// installation, and the notice below instructs the operator to replace it immediately. The residual
+		/// is documented in docs/security/risk-register.md.
+		/// </para>
+		/// </remarks>
+		private static string ResolveInitialAdministratorPassword()
+		{
+			// ErpSettings.Initialize always runs before provisioning - the hosts call it from UseErp, and the
+			// console application from its own startup - so Configuration is populated here. The null-condition
+			// operator is nevertheless kept so a future caller that provisions without initialising settings
+			// gets a generated credential rather than a NullReferenceException in the middle of a transaction.
+			string configuredPassword = ErpSettings.Configuration?[InitialAdministratorPasswordSettingKey];
+			if (!string.IsNullOrWhiteSpace(configuredPassword))
+			{
+				// Reported so the operator can tell the two routes apart in the provisioning output. Only the
+				// setting NAME appears - never the value, its length or a digest of it (CWE-532).
+				Console.Error.WriteLine("info: WebVella.Erp.ErpService[1] The first administrator password was taken from " +
+					"'" + InitialAdministratorPasswordSettingKey + "'. It is not echoed here.");
+				return configuredPassword;
+			}
+
+			string generatedPassword = GenerateInitialAdministratorPassword();
+
+			// The one and only place this value is ever emitted. It is unavoidable: the hash is one-way, so a
+			// credential that is never shown is a locked-out installation.
+			Console.Error.WriteLine("warn: WebVella.Erp.ErpService[2] SECURITY - no '" + InitialAdministratorPasswordSettingKey +
+				"' was supplied, so a random password was generated for the first administrator account " +
+				"(erp@webvella.com). It is shown ONCE, here, and cannot be recovered afterwards:" +
+				Environment.NewLine + "    " + generatedPassword + Environment.NewLine +
+				"Sign in with it and change it immediately, then remove it from any terminal scrollback or " +
+				"captured log. Supplying '" + InitialAdministratorPasswordSettingKey + "' instead avoids " +
+				"printing a credential at all. See docs/security/credential-migration.md.");
+
+			return generatedPassword;
+		}
+
+		/// <summary>
+		/// Generates the random initial administrator password.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY (C-01, and the engagement's cryptographic standard "CSPRNG"): every character comes from
+		/// <see cref="System.Security.Cryptography.RandomNumberGenerator"/>, never from
+		/// <c>System.Random</c>, whose output is predictable from its seed and would make the generated
+		/// credential guessable - reintroducing the finding in a form that merely looks random.
+		/// <c>GetItems</c> is used rather than a hand-rolled modulo over random bytes because a modulo of a
+		/// byte by a 65-character alphabet is measurably biased towards the alphabet's first characters;
+		/// this overload draws uniformly.
+		/// </remarks>
+		private static string GenerateInitialAdministratorPassword()
+		{
+			return new string(RandomNumberGenerator.GetItems<char>(
+				InitialAdministratorPasswordAlphabet.AsSpan(), InitialAdministratorPasswordLength));
+		}
+
+		#endregion
 
 		public void InitializePlugins(IServiceProvider serviceProvider)
 		{
