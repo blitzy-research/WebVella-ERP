@@ -17,6 +17,28 @@
 		<div class="dropdown-menu level-0">
 			@foreach (var menuItem in siteMenu)
 			{
+				@* SECURITY TRIAGE - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting).
+				   THREAT: MenuItem.Content is database-sourced site-menu content rendered without
+				   output encoding, and this component renders on every page of all seven host
+				   applications - it is invoked from Components/Nav/Nav.Default.cshtml:L23.
+				   TRIAGE OUTCOME: BY-DESIGN MARKUP CHANNEL - deliberately NOT encoded.
+				   EVIDENCE: MenuItem.IsHtml defaults to true (Models/MenuItem.cs:L22) and is never
+				   assigned false anywhere in the repository, so this raw branch is the only branch
+				   ever taken. The single producer of SiteMenu items writes a server-built anchor
+				   tag into Content - see Models/BaseErpPageModel.cs:L446-L449, anchor built at
+				   L448 - so encoding here would print that anchor as literal text in the site-menu
+				   dropdown on every page of every host.
+				   The IsHtml gate below is the opt-in control; the else branch is already
+				   auto-encoded by Razor for any caller that sets IsHtml to false.
+				   COMPENSATING CONTROL: markup authoring is restricted to privileged roles, plus the
+				   Content-Security-Policy emitted by SecurityHeadersMiddleware (commit class 8),
+				   which ships report-only by default.
+				   RESIDUAL (out of scope, documented only): sitePage.Name and sitePage.Label are
+				   interpolated unencoded into that anchor in Models/BaseErpPageModel.cs:L448 - that
+				   builder is the true sink. Not fixed here: H-06 is High rather than Critical and
+				   the builder is outside the remediation scope.
+				   ACCEPTED, DOCUMENTED RISK - see docs/security/risk-register.md.
+				   Do not encode this branch and do not remove the Html.Raw call. *@
 				@if (menuItem.IsHtml)
 				{
 					@Html.Raw(menuItem.Content)

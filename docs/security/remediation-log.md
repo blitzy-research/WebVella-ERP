@@ -3540,3 +3540,112 @@ Two defects **in this pass's own drafts** were caught by these controls and fixe
 root-anchored `appsettings*.json` pathspec in correction 8, and a props comment that claimed the code
 promotion closed both fail-open configurations when it closes only one. Both are recorded because a
 review pass that reports only other people's mistakes is not a review pass.
+
+## Seed corrections and the schema version 4 data migration
+
+This pass changed exactly one file — `WebVella.Erp/ERPService.cs` — and closes two vulnerability
+classes together, because the version 4 migration block spans both. It is recorded as a single atomic
+change for that reason.
+
+The governing insight is that **seed-data corrections protect only new installations**. Correcting the
+provisioning code leaves every already-deployed instance carrying its guest-role grants, its readable
+credential hash and its published default administrator password, while the source *looks* remediated.
+The version-gated data migration is therefore not a convenience — it is the half of the fix that
+reaches production.
+
+### Class: Authorization
+
+**Findings closed:** C-05 (guest role granted create on the user and role entities — CWE-269,
+CWE-732), C-02 (credential hash readable by guest; password field permissions never assigned —
+CWE-200, CWE-522).
+
+| Change | Detail |
+| --- | --- |
+| Guest create on the user entity | Removed from the seed |
+| Guest read on the user entity | Removed from the seed. The **regular** role's read grant is deliberately retained — removing it would break every screen that resolves a signed-in user's own name and avatar |
+| Guest create on the role entity | Removed from the seed. The role entity's guest **read** grant is deliberately retained; it is outside this finding's scope and removing it risks breaking anonymous login-page role resolution |
+| Password field permissions | `EnableSecurity = true` plus **administrator-only** `CanRead`/`CanUpdate`, following the `role.name` precedent already in the same file |
+
+`EnableSecurity` is the load-bearing half of that last row and the easiest thing to get wrong.
+`PcFieldBase` gates the **entire** field-permission evaluation on it, and it defaults to false, so
+permissions assigned without it are completely inert. Every other seeded field in the file remains at
+that inert default, which is deliberate: blanket field-permission enforcement across the data layer is
+explicitly out of scope.
+
+Deny-by-default is satisfied server-side by the entity-level record permissions, not only in the user
+interface — a non-administrator receives a clean `401 ACCESS DENIED` on the administration routes, and
+the hash itself is additionally stripped by the read-projection redaction.
+
+### Class: Credential integrity
+
+**Findings closed:** C-01 (hardcoded default administrator password in provisioning — CWE-798,
+CWE-1392), M-13 (password bounds of 6 to 24 characters — CWE-521).
+
+| Change | Detail |
+| --- | --- |
+| Shipped default administrator password | Eliminated. The initial password is resolved from `Settings:InitialAdministratorPassword`, or generated with a CSPRNG when none is supplied |
+| Generated password shape | 20 characters drawn from an unambiguous alphabet, seeded one character per required class and then shuffled with `RandomNumberGenerator.Shuffle`, so mixed case, digits and symbols are **guaranteed** rather than probable |
+| Disclosure | Written once to standard error, clearly labelled as unrecoverable. An operator-supplied value is **never** logged |
+| Password length bounds | 6 → **12** and 24 → **128**, declared as named constants consumed by **both** the provisioning seed and the migration, so a new installation and an upgraded one cannot diverge |
+
+The plaintext is deliberately handed to `RecordManager`, which hashes it with the current primitive.
+Pre-hashing here would bypass that primitive and is not done.
+
+### The version 4 block
+
+Placed between the `if (currentVersion < 3)` block and the settings `Save`, inside the **existing**
+transaction, so any failure rolls the entire upgrade back and the version is persisted only on success.
+Every failure path throws; the block adds no `try`/`catch` of its own, because swallowing an error
+would defeat that rollback. It emits **no SQL and opens no connection**, working through
+`EntityManager` and `RecordManager`, which already join the ambient transaction.
+
+The credential invalidation is guarded on **two** conditions — the stored value must be legacy-shaped
+*and* must verify against the previously published default. The shape test alone would be actively
+destructive, because an operator who chose their own password on an un-migrated installation also has a
+legacy-shaped hash. Verification is delegated to `PasswordUtil` rather than reimplemented.
+
+#### Verification
+
+Ad-hoc harness **49/49**. Every scenario below was executed against live PostgreSQL.
+
+| Property | Result |
+| --- | --- |
+| **No schema definition statements** | Column, index and constraint dumps before and after are **md5-identical** (275 lines, `75fbbc89008a6293c0c99ff03382898d`), and still identical after a second `UpdateField` pass. No `ALTER`/`CREATE`/`DROP` and no raw SQL appears on any added line |
+| Fresh provisioning | Reaches version 4; the published default does **not** authenticate; the one-time credential is surfaced once and works |
+| Upgrade | Version 3 → 4; hash changed from 32 hex characters to the 84-character versioned form; guest grants revoked; password field at 12/128 with `EnableSecurity` true and administrator-only permissions |
+| **Operator's own password preserved** | On a database whose administrator password had already been changed, the hash was **unchanged byte-for-byte** and still authenticated, while the authorization fixes still applied in full |
+| Idempotency | Re-running changed nothing. The stronger test also passed: forcing the version back to 3 so the block **re-executed** against already-correct state produced no error and no second revocation |
+| Ordinary users | A non-administrator with a legacy hash authenticated and was transparently rehashed. No forced reset, no lockout |
+| Field-change scope | Of the user entity's twelve fields, **exactly one** — `password` — carries `EnableSecurity` and non-empty permissions |
+| Hash never disclosed | No record projection returns a hash of either shape; the browser receives only a masked input, never the redaction sentinel |
+| Interface preserved | The password field is visible **and editable** to an administrator, emitting `min="12" max="128"`; a non-administrator is denied cleanly with no error and no stack trace |
+| Public surface | Unchanged — 5 public methods and 2 public properties, byte-identical to before; all five new helpers are `private` |
+| Build | Assigned project and the **entire solution** both build with **0 errors**. Warning count rose by exactly 9, all of them reproducing the file's own existing idioms (`throw new Exception`, and instance methods that could be static — which the two existing sitemap helpers also trigger) |
+| Analyzer security families | **Zero** `CA2100`, `CA3xxx` and `CA53xx` diagnostics on the changed file |
+
+#### One out-of-scope defect found, reported and deliberately not fixed
+
+On **freshly provisioned** installations only, `WebVella.Erp.Plugins.SDK/SdkPlugin.20201221.cs` and
+`WebVella.Erp.Plugins.Project/ProjectPlugin.20211012.cs` run *after* `InitializeSystemEntities` and
+unconditionally rebuild the `user` and `role` entities' record permissions, **re-adding the guest
+role** to `CanCreate` and `CanRead`. They are gated on the plugin's own version counter, which defaults
+to an early value when no `plugin_data` row exists — exactly the case on a new database.
+
+**Upgraded installations are unaffected**, confirmed empirically: their `plugin_data` row already
+records a later version, the patches do not run, and the revocation stands across repeated startups.
+
+Both files lie outside this change's scope, so they are reported rather than modified, and the operator
+action for new installations is recorded in the
+[credential migration guide](credential-migration.md#out-of-scope-interference-on-fresh-installations-only).
+
+#### Two anomalies investigated and dismissed
+
+Both were artefacts of the verification harness, not product defects, and neither implicates a tracked
+file:
+
+* Static assets returned `405` because the host was run with a production environment on a
+  non-published build, so the static-web-assets manifest was never loaded and a catch-all route
+  matched. Re-running in development served them normally.
+* A development-mode banner appeared because the copy of the configuration file in the build output
+  was a stale pre-scrub artefact. The tracked configuration file correctly has the flag disabled.
+

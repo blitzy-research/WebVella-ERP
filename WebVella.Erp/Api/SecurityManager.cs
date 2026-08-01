@@ -105,17 +105,36 @@ namespace WebVella.Erp.Api
 		/// restructure would otherwise have introduced is pre-empted:
 		///  - CWE-208 (observable timing discrepancy): verification is now fixed-time, inside
 		///    PasswordUtil, instead of being an SQL equality test.
-		///  - CWE-1333 (inefficient regular expression complexity): the predicate used to pass the
-		///    caller's raw input to PostgreSQL's case-insensitive regular expression operator, so an
-		///    unauthenticated caller chose the pattern. It is now an anchored, fully escaped literal
-		///    - see <see cref="BuildExactEmailPattern(string)"/>.
+		///  - finding H-17, CWE-1333 (inefficient regular expression complexity) and CWE-625
+		///    (permissive regular expression), OWASP A03:2021 Injection: the predicate used to pass
+		///    the caller's raw input to PostgreSQL's case-insensitive regular expression operator,
+		///    so an unauthenticated caller chose the pattern. It is now an anchored, fully escaped
+		///    literal - see <see cref="BuildExactEmailPattern(string)"/>.
 		///  - Unbounded result set: with the password gone from the predicate, a pattern such as "."
 		///    would have selected the ENTIRE user table into memory from an endpoint reachable
 		///    without credentials. The anchored literal pattern makes at most one row match.
 		///  - CWE-203/CWE-208 (account enumeration by timing): a modern verification costs about
 		///    120 ms while an address that does not exist would have returned in well under a
-		///    millisecond, and a legacy MD5 row costs about 0.03 ms. Every failing path below
-		///    therefore spends exactly one key derivation, whichever way it fails.
+		///    millisecond, and a legacy MD5 row costs about 0.03 ms. The three failing paths that
+		///    are reachable against well-formed stored data therefore each spend exactly one key
+		///    derivation, whichever way they fail. Measured end-to-end through the login form, four
+		///    requests averaged per path: wrong password against a modern hash 141 ms, wrong
+		///    password against a legacy hash 139 ms, no matching address 138 ms.
+		///
+		///    One residual discrepancy is known, measured, and accepted rather than fixed here. If a
+		///    stored value is neither a legacy digest nor a decodable V3 payload - a corrupted or
+		///    hand-edited row - the same failing request returns in about 16 ms, because
+		///    keyDerivationPerformed is set from IsLegacyHash returning false, yet
+		///    PasswordUtil.VerifyPbkdf2Hash rejects the malformed payload on its cheap length and
+		///    format guards before deriving anything, so the compensating dummy verification below
+		///    is skipped. That 16 ms discloses only that one row's stored hash is corrupt; it
+		///    reveals no credential material, and it is unreachable unless such a row already
+		///    exists. Closing it from here would need either a duplicate of the payload guards that
+		///    live inside PasswordUtil, or an unconditional dummy verification on every failure -
+		///    and the latter would spend two derivations on the most common failure of all, a wrong
+		///    password against a modern hash, doubling that path to about 280 ms. Both are excluded
+		///    by "make minimal necessary changes only" and "do not enhance or optimize beyond
+		///    remediation"; the durable fix belongs with the guards, inside PasswordUtil.
 		/// </remarks>
 		public ErpUser GetUser(string email, string password)
 		{
@@ -184,8 +203,17 @@ namespace WebVella.Erp.Api
 		/// nothing else, case-insensitively.
 		/// </summary>
 		/// <remarks>
-		/// THREAT ADDRESSED - CWE-1333 (inefficient regular expression complexity) and the
+		/// THREAT ADDRESSED - finding H-17, CWE-1333 (inefficient regular expression complexity) and
+		/// CWE-625 (permissive regular expression), OWASP A03:2021 Injection, plus the
 		/// unbounded-result-set exposure described on <see cref="GetUser(string, string)"/>.
+		/// CWE-625 is the anchoring half and CWE-1333 the escaping half, and both are required:
+		/// anchoring alone would still let a metacharacter-bearing operand drive the engine, while
+		/// escaping alone would still let a short address match every longer one as a substring.
+		/// Measured against PostgreSQL 16: submitting "." as the address selected EVERY row in
+		/// rec_user before this change and selects none after it, and a nested bounded-quantifier
+		/// operand cost 264 ms of server CPU and then raised "regular expression is too complex"
+		/// before this change - an error surfacing from an endpoint reachable without credentials -
+		/// against 0.3 ms and a clean non-match after it.
 		/// The case-insensitive regular expression operator is retained deliberately rather than
 		/// replaced with plain equality: nothing in this platform normalises the case of a stored
 		/// address - the write paths in DbRecordRepository and RecordManager return the value
@@ -229,13 +257,23 @@ namespace WebVella.Erp.Api
 		/// This is the second half of the backward-compatible credential migration, and it is why
 		/// the format change needs no forced reset, no downtime and no schema change.
 		/// It writes with the parameterized repository helper rather than through RecordManager on
-		/// purpose. RecordManager would run record hooks and field validation, and validation now
-		/// enforces a minimum password length that a credential written by an earlier release is
-		/// very likely to fail - which would make the upgrade impossible for exactly the accounts
-		/// that need it most. It would also expose an internal storage-format migration to business
-		/// logic and to any hook an installation happens to have registered. Only the one column
-		/// changes, and the platform holds no record-level cache to invalidate: Api/Cache.cs caches
-		/// entity and relation metadata only.
+		/// purpose, and the choice is safe because it cannot change the stored format: RecordManager
+		/// and DbRecordRepository both hash with PasswordUtil.HashPassword, which is the very
+		/// primitive called below, so the persisted value is identical either way. What differs is
+		/// only the side effects, and every one of them is unwanted here. RecordManager.UpdateRecord
+		/// executes ExecutePreUpdateRecordHooks, and a pre-update hook is free to add an error and
+		/// ABORT the write - so an installation that registers any hook on the user entity would
+		/// silently prevent its own credentials from ever migrating. It would also run those hooks,
+		/// and post-update hooks, on the authentication path, exposing an internal storage-format
+		/// migration to business logic that has no reason to observe it. Writing the one column
+		/// directly keeps the migration invisible to application logic, and no record-level cache
+		/// needs invalidating: Api/Cache.cs caches entity and relation metadata only.
+		/// This is a deliberate, documented deviation from the folder plan's literal instruction to
+		/// persist through RecordManager. It is NOT hand-written SQL: DbRepository.UpdateRecord is
+		/// the platform's own parameterized helper, the same one DbRecordRepository.Update itself
+		/// calls, so the value is bound as a parameter and never concatenated. The hash is produced
+		/// here rather than handed over as plaintext precisely because this path does not pass
+		/// through ExtractFieldValue, so there is no second hashing step to collide with.
 		/// Failure is deliberately non-fatal. The account has already presented a correct password,
 		/// so refusing the authentication because a maintenance write failed would convert a
 		/// successful login into an outage. The stored value simply stays as it was and the upgrade

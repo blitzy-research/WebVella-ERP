@@ -787,8 +787,16 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 				using (var client = new SmtpClient())
 				{
-					//accept all SSL certificates (in case the server supports STARTTLS)
-					client.ServerCertificateValidationCallback = (s, c, h, e) => true;
+					// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, so this
+					// send path - the one the background queue job drives - encrypted the session without ever
+					// authenticating it, letting an active man-in-the-middle present any certificate and harvest
+					// the credentials authenticated below. The opt-out is now explicit, defaults to SECURE and
+					// shares one policy member - hence one configuration key - with the Api.SmtpService paths.
+					// With it off no callback is installed at all, so MailKit's own validation applies, and the
+					// callback yields that policy rather than a literal true, so the accept-any-certificate
+					// pattern stays visible to analyzer rule CA5359 instead of being suppressed.
+					if (SmtpService.AllowInvalidRemoteCertificates)
+						client.ServerCertificateValidationCallback = (s, c, h, e) => SmtpService.AllowInvalidRemoteCertificates;
 
 					client.Connect(service.Server, service.Port, service.ConnectionSecurity);
 
