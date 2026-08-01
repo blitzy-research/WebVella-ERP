@@ -50,6 +50,10 @@
 			default:
 				break;
 		}
+		@* Security: stored XSS - grid values are server-composed markup interpolating database text
+		   (H-06, CWE-79, OWASP A03). Kept raw by design: encoding would escape the priority icon,
+		   task link and avatar markup and break the widget. Compensating control: markup authoring
+		   restricted to privileged roles + Content-Security-Policy. See docs/security/risk-register.md *@
 		<wv-grid-row>
 			<wv-grid-column>@Html.Raw((string)record["task"])</wv-grid-column>
 			<wv-grid-column width="200px">@Html.Raw((string)record["user"])</wv-grid-column>

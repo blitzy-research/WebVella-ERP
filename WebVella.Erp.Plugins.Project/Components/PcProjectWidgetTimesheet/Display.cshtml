@@ -14,6 +14,10 @@
 <wv-grid small="true" columns="@gridColumns" has-tfoot="false">
 	@foreach (var record in records)
 	{
+		@* Security: stored XSS - label is server-composed markup interpolating database text
+		   (H-06, CWE-79, OWASP A03). Kept raw by design: encoding would escape the per-user avatar
+		   markup and break the widget. Compensating control: markup authoring restricted to
+		   privileged roles + Content-Security-Policy. See docs/security/risk-register.md *@
 		<wv-grid-row>
 			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">@Html.Raw(record["label"])</wv-grid-column>
 			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold" : "") text-right">

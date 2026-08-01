@@ -8,6 +8,30 @@
 {
 	<div class="menu-nav-wrapper @menu.Class">
 		<div class="menu-nav @(menu.Nodes.Count > 0 ? "dropdown" : "")">
+			@* SECURITY TRIAGE - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting).
+			   THREAT: MenuItem.Content is database-sourced navigation content rendered without
+			   output encoding. Four components render this view - ApplicationMenu, UserMenu,
+			   ToobarMenu and SidebarMenu - and the first two are invoked from Nav.Default.cshtml,
+			   so this branch renders on every page of all seven host applications.
+			   TRIAGE OUTCOME: BY-DESIGN MARKUP CHANNEL - deliberately NOT encoded.
+			   EVIDENCE: MenuItem.IsHtml defaults to true (Models/MenuItem.cs:L22) and is never
+			   assigned false anywhere in the repository, so this raw branch is the only branch
+			   ever taken. Every producer writes server-built anchor and icon markup: the
+			   ApplicationMenu items reaching this line are built at
+			   Models/BaseErpPageModel.cs:L366-L369 and assigned at L373, with child and
+			   single-node variants at L381, L385 and L398-L400, and
+			   Services/RenderService.cs:L465 copies Content through unencoded. Encoding here
+			   would print literal anchor HTML in the navigation of every host.
+			   The IsHtml gate below is the opt-in control; the else branch is already
+			   auto-encoded by Razor for any caller that sets IsHtml to false.
+			   COMPENSATING CONTROL: markup authoring is restricted to privileged roles, plus the
+			   Content-Security-Policy emitted by SecurityHeadersMiddleware (commit class 8),
+			   which ships report-only by default.
+			   RESIDUAL (out of scope, documented only): area.Label, node.Label, node.Url,
+			   node.IconClass, sitePage.Name and sitePage.Label are interpolated unencoded in
+			   Models/BaseErpPageModel.cs - that builder is the true sink.
+			   ACCEPTED, DOCUMENTED RISK - see docs/security/risk-register.md.
+			   Do not encode this branch and do not remove the Html.Raw call. *@
 			@if (menu.IsHtml)
 			{
 				@Html.Raw(menu.Content)
@@ -30,6 +54,26 @@
 }
 else
 {
+	@* SECURITY TRIAGE - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting).
+	   THREAT: the same database-sourced MenuItem.Content, rendered here for callers that opt
+	   out of the wrapper by setting RenderWrapper to false. This view renders on every page of
+	   all seven host applications.
+	   TRIAGE OUTCOME: BY-DESIGN MARKUP CHANNEL - deliberately NOT encoded.
+	   EVIDENCE: this branch has a proven live caller. The "Create Task" user-menu item built at
+	   Plugins.Project/Services/RenderService.cs:L17-L24 sets RenderWrapper = false (L22) with
+	   IsHtml = true (L19), and its Content (L20) is nested div/div/a markup whose innermost
+	   element is a Font Awesome icon of class 'fa fa-plus'. It reaches this exact branch through
+	   AddUserMenu (Models/BaseErpPageModel.cs:L548) and UserMenu.cshtml:L11, so encoding here
+	   would print that whole structure as literal text in the Projects user menu. MenuItem.IsHtml
+	   also defaults to true (Models/MenuItem.cs:L22) and is never assigned false anywhere in the
+	   repository, so this raw branch is the only branch ever taken; the else branch below is
+	   already auto-encoded by Razor for any caller that sets IsHtml to false.
+	   COMPENSATING CONTROL: markup authoring is restricted to privileged roles, plus the
+	   report-only Content-Security-Policy emitted by SecurityHeadersMiddleware (commit class 8).
+	   RESIDUAL (out of scope, documented only): area.Label, node.Label, node.Url and
+	   node.IconClass are interpolated unencoded in Models/BaseErpPageModel.cs - the true sink.
+	   ACCEPTED, DOCUMENTED RISK - see docs/security/risk-register.md.
+	   Do not encode this branch and do not remove the Html.Raw call. *@
 	@if (menu.IsHtml)
 	{
 		@Html.Raw(menu.Content)

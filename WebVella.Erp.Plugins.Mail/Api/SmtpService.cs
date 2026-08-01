@@ -62,6 +62,33 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 		#endregion
 
+		/// <summary>
+		/// Whether this installation accepts an SMTP server certificate that fails validation.
+		/// Defaults to <c>false</c>, so certificates ARE validated unless an operator opts out.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - H-11 (High), CWE-295 Improper Certificate Validation, OWASP A02:2021,
+		/// remediation class 8 (Transport Security). THREAT: every send path installed a callback
+		/// returning true for any certificate, so the TLS session was encrypted but never
+		/// authenticated - an active man-in-the-middle could present any certificate, then harvest
+		/// the SMTP credentials submitted two lines later and read or rewrite every outbound message.
+		/// Controlled by the <c>EmailSMTPAllowInvalidCertificates</c> key of the <c>Settings</c> section,
+		/// which operators supply as the environment variable
+		/// <c>Settings__EmailSMTPAllowInvalidCertificates</c>; see docs/security/secure-configuration.md.
+		/// It is application configuration read from the existing <c>ErpSettings.Configuration</c>, and
+		/// <c>static</c> rather than a typed setting or an <c>smtp_service</c> field, so neither the
+		/// settings contract nor the database schema changes.
+		/// FAIL-SAFE, a deliberate departure from the throwing <c>Boolean.Parse</c> idiom used
+		/// throughout <c>ErpSettings</c>: the non-throwing overload resolves a malformed value such as
+		/// "yes", "1" or "on" to false - secure - rather than raising <c>FormatException</c> on every
+		/// outbound e-mail, which would turn a configuration typo into a mail outage. Absent, blank and
+		/// unparseable values, and a settings layer not yet initialised (<c>Configuration</c> is null
+		/// until <c>ErpSettings.Initialize</c> runs), all resolve to false. Please do not "correct" this
+		/// back to the throwing form for consistency with its neighbours.
+		/// </remarks>
+		internal static bool AllowInvalidRemoteCertificates =>
+			bool.TryParse(ErpSettings.Configuration?["Settings:EmailSMTPAllowInvalidCertificates"], out var allowInvalid) && allowInvalid;
+
 		internal SmtpService() { }
 
 		public void SendEmail(EmailAddress recipient, string subject, string textBody, string htmlBody, List<string> attachments)
@@ -141,8 +168,14 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				//accept all SSL certificates (in case the server supports STARTTLS)
-				client.ServerCertificateValidationCallback = (s, c, h, e) => true;
+				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here,
+				// letting an active man-in-the-middle present any certificate and harvest the credentials
+				// authenticated below. The opt-out is now explicit and defaults to SECURE - with the policy
+				// off no callback is installed at all, so MailKit's own validation applies. The callback
+				// yields that policy rather than a literal true, so the accept-any-certificate pattern
+				// cannot creep back in unnoticed and stays visible to analyzer rule CA5359.
+				if (AllowInvalidRemoteCertificates)
+					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
 				client.Connect(Server, Port, ConnectionSecurity);
 
@@ -284,8 +317,14 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				//accept all SSL certificates (in case the server supports STARTTLS)
-				client.ServerCertificateValidationCallback = (s, c, h, e) => true;
+				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here,
+				// letting an active man-in-the-middle present any certificate and harvest the credentials
+				// authenticated below. The opt-out is now explicit and defaults to SECURE - with the policy
+				// off no callback is installed at all, so MailKit's own validation applies. The callback
+				// yields that policy rather than a literal true, so the accept-any-certificate pattern
+				// cannot creep back in unnoticed and stays visible to analyzer rule CA5359.
+				if (AllowInvalidRemoteCertificates)
+					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
 				client.Connect(Server, Port, ConnectionSecurity);
 
@@ -413,8 +452,14 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				//accept all SSL certificates (in case the server supports STARTTLS)
-				client.ServerCertificateValidationCallback = (s, c, h, e) => true;
+				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here,
+				// letting an active man-in-the-middle present any certificate and harvest the credentials
+				// authenticated below. The opt-out is now explicit and defaults to SECURE - with the policy
+				// off no callback is installed at all, so MailKit's own validation applies. The callback
+				// yields that policy rather than a literal true, so the accept-any-certificate pattern
+				// cannot creep back in unnoticed and stays visible to analyzer rule CA5359.
+				if (AllowInvalidRemoteCertificates)
+					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
 				client.Connect(Server, Port, ConnectionSecurity);
 
@@ -555,8 +600,14 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				//accept all SSL certificates (in case the server supports STARTTLS)
-				client.ServerCertificateValidationCallback = (s, c, h, e) => true;
+				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here,
+				// letting an active man-in-the-middle present any certificate and harvest the credentials
+				// authenticated below. The opt-out is now explicit and defaults to SECURE - with the policy
+				// off no callback is installed at all, so MailKit's own validation applies. The callback
+				// yields that policy rather than a literal true, so the accept-any-certificate pattern
+				// cannot creep back in unnoticed and stays visible to analyzer rule CA5359.
+				if (AllowInvalidRemoteCertificates)
+					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
 				client.Connect(Server, Port, ConnectionSecurity);
 

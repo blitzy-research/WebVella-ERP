@@ -40,25 +40,36 @@ namespace WebVella.Erp.Site
             AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
             string configPath = "config.json";
-            // SECURITY - finding M-2 (CWE-20, CWE-798), OWASP A05 Security Misconfiguration.
-            // THREAT: this host's own configuration was read from the JSON file alone, and it is this
-            // Configuration instance that supplies the JWT signing key to AddJwtBearer below. With no
-            // environment-variable provider the signing key could only ever come from a tracked file, so the
-            // key shipped in this repository was the effective key for every deployment that did not edit it -
-            // and anyone reading the public source could forge tokens. Environment variables are added LAST so
-            // an operator-supplied value overrides the committed one, matching the framework's own precedence.
+            // THREAT ADDRESSED - findings H-05 and H-04 (CWE-798 use of hard-coded credentials, CWE-321 use of
+            // a hard-coded cryptographic key), OWASP A05 Security Misconfiguration; also the enabler for C-04.
+            // Configuration was read from this JSON file and nothing else, so the connection string, the
+            // encryption key and the JWT signing key that AddJwtBearer consumes below could only ever come from
+            // a file tracked in source control - anyone reading the public repository held the effective secrets
+            // of every deployment that did not edit it.
+            // Extending the provider chain is the ENABLER that has to land before those values are blanked. The
+            // JSON source deliberately stays FIRST, so an operator-supplied environment variable overrides the
+            // blanked value rather than being clobbered by it, and it deliberately stays NON-OPTIONAL, so
+            // Config.json must be scrubbed rather than deleted. Operators supply Settings__ConnectionString,
+            // Settings__EncryptionKey, Settings__Jwt__Key and Settings__EmailSMTPPassword - "__" is the
+            // framework's section separator, so these land on exactly the paths Config.json already defines.
+            // No value is defaulted, substituted, echoed or logged here: ErpSettings owns the fail-fast check.
             var configurationBuilder = new ConfigurationBuilder().SetBasePath(Directory.GetCurrentDirectory()).AddJsonFile(configPath);
 
-            // Development only: user secrets are unencrypted on disk and are a developer convenience, never a
-            // production channel. This project already declares a UserSecretsId, so the store resolves without
-            // any further setup; optional: true keeps startup working if that entry is ever removed.
-            // ASPNETCORE_ENVIRONMENT is read directly rather than through IWebHostEnvironment.IsDevelopment()
-            // for consistency with the cookie and HSTS guards further down this file, and it fails secure: an
-            // unset variable is not "Development", so the developer-only provider stays out.
-            if (string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase))
-                configurationBuilder.AddUserSecrets(typeof(Startup).Assembly, optional: true);
-
             configurationBuilder.AddEnvironmentVariables();
+
+            // Development only, and added last so a developer's own local store wins on their own machine. User
+            // secrets live unencrypted outside the repository: a developer convenience, never a production
+            // channel - outside Development this provider is never registered at all, leaving environment
+            // variables as the last word wherever it matters. The guard reuses this file's own comparison idiom
+            // (see Configure below) rather than IWebHostEnvironment.IsDevelopment() so no further import is
+            // needed, and it fails secure - anything that is not "Development" leaves the provider out.
+            // optional: true keeps startup working if this project's UserSecretsId is ever removed, and the
+            // entry assembly is null-guarded for hosts that expose none.
+            if (string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
+            {
+                var hostAssembly = System.Reflection.Assembly.GetEntryAssembly() ?? typeof(Startup).Assembly;
+                configurationBuilder.AddUserSecrets(hostAssembly, optional: true);
+            }
 
             Configuration = configurationBuilder.Build();
 
@@ -75,10 +86,22 @@ namespace WebVella.Erp.Site
             //    options.AddPolicy("AllowNodeJsLocalhost",
             //        builder => builder.WithOrigins("http://localhost:3333", "http://localhost:3000", "http://localhost").AllowAnyMethod().AllowCredentials());
             //});
+            // THREAT ADDRESSED - finding H-14 (CWE-942 permissive cross-domain policy with untrusted domains),
+            // OWASP A05 Security Misconfiguration: the default policy called AllowAnyOrigin(), so ANY website a
+            // signed-in user visited could issue cross-origin requests to this host and read the responses. The
+            // allow-list below reuses the origins from the restrictive policy kept in comment form immediately
+            // above, which is this repository's own documented intent for this host.
+            // AllowCredentials() is deliberately NOT added: the framework rejects it alongside AllowAnyOrigin(),
+            // so credentialed cross-origin requests were never actually permitted here and adding it now would
+            // WIDEN behaviour rather than preserve it. AllowAnyMethod()/AllowAnyHeader() are retained because
+            // the finding is an over-broad ORIGIN set - narrowing methods or headers as well would be
+            // unrequested hardening that could break working clients.
+            // AddDefaultPolicy is kept rather than converted to a named policy so the app.UseCors() call in
+            // Configure needs no change at all.
             services.AddCors(options =>
             {
                 options.AddDefaultPolicy(policy =>
-                    policy.AllowAnyOrigin()
+                    policy.WithOrigins("http://localhost:3333", "http://localhost:3000", "http://localhost")
                         .AllowAnyMethod()
                         .AllowAnyHeader());
             });
@@ -119,32 +142,38 @@ namespace WebVella.Erp.Site
                 options.AccessDeniedPath = new PathString("/error?access_denied");
                 options.ReturnUrlParameter = "returnUrl";
 
-                // THREAT ADDRESSED - finding H-08 / H-15, CWE-614 (sensitive cookie without the 'Secure'
-                // attribute) and CWE-1275 (sensitive cookie with an improper SameSite attribute), OWASP A05:
-                // the authentication cookie was HttpOnly but carried neither Secure nor SameSite and had no
-                // bounded lifetime, so it could travel in cleartext, be attached to cross-site requests, and
-                // be renewed indefinitely.
+                // THREAT ADDRESSED - finding H-15 (CWE-614 sensitive cookie without the 'Secure' attribute,
+                // CWE-319 cleartext transmission of sensitive information), OWASP A02 Cryptographic Failures /
+                // A05 Security Misconfiguration: the authentication cookie set HttpOnly and nothing else, so it
+                // carried neither Secure nor SameSite and had no bounded lifetime - it could travel in
+                // cleartext, be attached to cross-site requests, and be renewed indefinitely.
                 //
-                // SecurePolicy is Always outside Development. It relaxes to SameAsRequest in Development only,
-                // because HTTPS redirection is likewise disabled there and an unconditionally Secure cookie
-                // would make local HTTP sign-in impossible - breaking the functionality-preservation
-                // requirement. Reading ASPNETCORE_ENVIRONMENT directly is exactly equivalent to
-                // IWebHostEnvironment.EnvironmentName here, because no host calls UseEnvironment, and it fails
-                // secure: an unset variable is not "Development", so the policy becomes Always.
-                options.Cookie.SecurePolicy = string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase)
+                // SecurePolicy is Always in every deployed environment. It relaxes to SameAsRequest in
+                // Development ONLY, for exactly the reason HTTPS redirection is also guarded to non-Development
+                // further down: local development is served over plain HTTP, and an unconditionally Secure
+                // cookie would make local sign-in impossible, breaking functionality preservation. The guard
+                // fails secure - anything that is not "Development" yields Always.
+                options.Cookie.SecurePolicy = string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase)
                     ? CookieSecurePolicy.SameAsRequest
                     : CookieSecurePolicy.Always;
 
-                // Lax, deliberately not Strict: Strict drops the cookie on the return-URL round trip back from
-                // the login page, which would break a working flow. Lax is the framework's own default posture
+                // Lax, DELIBERATELY NOT Strict - do not "upgrade" this. Strict withholds the cookie on the
+                // return-URL round trip back from the login page (see LoginPath and ReturnUrlParameter set just
+                // above), which would break a working sign-in flow. Lax is the framework's own default posture
                 // and still withholds the cookie from cross-site POST requests.
                 // The type is named in full because Microsoft.Net.Http.Headers and Microsoft.AspNetCore.Http
-                // both declare a SameSiteMode and this file imports both; CookieBuilder.SameSite is the latter.
+                // both declare a SameSiteMode and this file imports both; unqualified it is CS0104-ambiguous.
                 options.Cookie.SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Lax;
 
-                // An explicit, absolute session window. SlidingExpiration is false so the window cannot be
-                // extended: with sliding enabled a stolen cookie is renewed on every request and never expires
-                // while it is being used, so the credential is never re-presented.
+                // An explicit, bounded session window replacing the previously unbounded cookie. 8h is not an
+                // arbitrary choice: AuthService sets AuthenticationProperties.ExpiresUtc explicitly, and an
+                // explicit ExpiresUtc takes PRECEDENCE over ExpireTimeSpan, so this value must equal
+                // AuthService.AUTH_TICKET_EXPIRY_DURATION_MINUTES (480) or the window declared here would be
+                // inert configuration while the real lifetime differed. Keep the two in step if either changes.
+                // SlidingExpiration stays false to match: AuthService sets AllowRefresh = false for every host,
+                // and CookieAuthenticationHandler renews only when SlidingExpiration AND AllowRefresh are both
+                // set - so enabling it here would have no effect while implying a sliding window that does not
+                // exist, and a bounded absolute window is the stronger posture for a session-lifetime finding.
                 options.ExpireTimeSpan = TimeSpan.FromHours(8);
                 options.SlidingExpiration = false;
             })
@@ -231,12 +260,17 @@ namespace WebVella.Erp.Site
             }
 
             //Should be before Static files
-            // THREAT ADDRESSED - finding H-08 / M-01 (OWASP A05: Security Misconfiguration):
-            // SecurityHeadersMiddleware existed but was never inserted into any pipeline, so not one of the
-            // seven mandated security response headers was emitted. It is placed first - ahead of
-            // UseResponseCompression and ahead of BOTH UseStaticFiles calls - because ordering decides which
-            // responses the headers reach: registered after compression or after static files, compressed
-            // responses and static assets would be served bare.
+            // THREAT ADDRESSED - finding M-01, missing security response headers (OWASP A05 Security
+            // Misconfiguration): not one of the seven mandated security response headers was emitted by this
+            // host, leaving clickjacking, MIME-sniffing and referrer-leak defences entirely absent.
+            //
+            // ORDERING IS THE ENTIRE REMEDIATION HERE - do not move this call further down the pipeline. It is
+            // placed ahead of UseResponseCompression and ahead of BOTH UseStaticFiles calls, because position
+            // decides which responses the headers reach: registered after either, compressed responses and
+            // static assets would be served bare. The middleware is registered ONCE centrally (AddErp owns
+            // SecurityHeadersOptions) but ordered per host precisely because UseErp() runs much later in this
+            // method - after compression and after both static-file registrations - so registration alone could
+            // never protect those response classes.
             app.UseSecurityHeaders();
 
             app.UseResponseCompression();
@@ -244,17 +278,19 @@ namespace WebVella.Erp.Site
             //app.UseCors("AllowNodeJsLocalhost"); //Enable CORS -> should be before static files to enable for it too
             app.UseCors(); //Enable CORS -> should be before static files to enable for it too
 
-            // THREAT ADDRESSED - finding H-08 / H-15, CWE-319 (cleartext transmission of sensitive
-            // information) and CWE-614: no host enforced HTTPS or published an HSTS policy, so a session
-            // could be downgraded to plaintext and its cookie intercepted. Guarded to non-Development
-            // because local development runs over plain HTTP. HSTS precedes redirection so the policy is
-            // published on the very response that performs the redirect.
+            // THREAT ADDRESSED - finding H-15 (CWE-319 cleartext transmission of sensitive information),
+            // OWASP A02 Cryptographic Failures: this host neither enforced HTTPS nor published an HSTS policy,
+            // so a session could be downgraded to plaintext and the authentication cookie intercepted in
+            // transit. Guarded to non-Development because local development is served over plain HTTP, matching
+            // the SecurePolicy guard above. HSTS precedes redirection so the policy is published on the very
+            // response that performs the redirect.
             //
-            // Ordering is deliberate and load-bearing: this sits AFTER UseCors. The CORS middleware
-            // short-circuits cross-origin preflight, so an OPTIONS request is answered before it can reach
-            // the redirect. That is what avoids the documented failure where HTTPS redirection answers a
-            // preflight with a redirect the browser rejects as invalid. Moving this above UseCors would
-            // reintroduce it.
+            // Redirection ships in the SAME change as the CORS allow-list above, and that pairing is required:
+            // HTTPS redirection answers a cross-origin preflight with a redirect, which the browser rejects as
+            // invalid. Ordering here is therefore deliberate and load-bearing - this sits AFTER UseCors so the
+            // CORS middleware short-circuits the OPTIONS preflight before it can ever reach the redirect.
+            // Moving this above UseCors would reintroduce exactly that failure. It still precedes both
+            // UseStaticFiles calls, so no content is served over plaintext.
             if (!string.Equals(env.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
             {
                 app.UseHsts();
@@ -274,10 +310,16 @@ namespace WebVella.Erp.Site
             app.UseStaticFiles(); //Workaround for blazor to work - https://github.com/dotnet/aspnetcore/issues/9588
             app.UseRouting();
 
-            // THREAT ADDRESSED - finding H-08 / H-16, CWE-307 (improper restriction of excessive
-            // authentication attempts): activates the per-remote-address fixed window registered in AddErp.
+            // THREAT ADDRESSED - finding H-16 (CWE-307 improper restriction of excessive authentication
+            // attempts), OWASP A07 Identification and Authentication Failures: nothing limited request volume,
+            // so credential stuffing and brute-force password guessing were unthrottled. This activates the
+            // global per-remote-address fixed window; following the register-once/order-per-host pattern it is
+            // registered a single time in AddErp so all seven hosts share one definition, and each host only
+            // positions it. This is the transport-level layer ONLY - the five-attempt account lockout is a
+            // separate, narrower control provided by LoginThrottleService at the login entry point.
             // Positioned after both UseStaticFiles calls so static assets are never throttled, and after
-            // UseRouting so endpoint metadata is available to the limiter.
+            // UseRouting so endpoint metadata is available to the limiter, but before UseAuthentication so an
+            // attacker cannot spend authentication work to exhaust it.
             app.UseRateLimiter();
 
 			app.UseAuthentication();

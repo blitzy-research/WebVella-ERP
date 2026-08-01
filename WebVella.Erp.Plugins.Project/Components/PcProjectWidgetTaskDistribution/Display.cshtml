@@ -37,6 +37,7 @@
 <wv-grid bordered="true" small="true" columns="@gridColumn" has-tfoot="false">
 	@foreach (var record in records)
 	{
+		@* Security H-06 (CWE-79, OWASP A03) stored XSS: record["user"] is server-composed markup - an img avatar built at PcProjectWidgetTaskDistribution.cs:L131 and :L146 - so it stays raw by design; encoding would escape the avatar into literal text and break the widget. Compensating control: markup authoring restricted to privileged roles + Content-Security-Policy. See docs/security/risk-register.md *@
 		<wv-grid-row>
 			<wv-grid-column>@Html.Raw((string)record["user"])</wv-grid-column>
 			<wv-grid-column class="@((int)record["overdue"] > 0 ? "go-bkg-red-light" : "")">@record["overdue"]</wv-grid-column>

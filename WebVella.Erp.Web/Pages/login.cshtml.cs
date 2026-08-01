@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using System;
 using System.Threading.Tasks;
 using WebVella.Erp.Api.Models;
+using WebVella.Erp.Diagnostics;
 using WebVella.Erp.Hooks;
 using WebVella.Erp.Web.Hooks;
 using WebVella.Erp.Web.Models;
@@ -116,6 +117,12 @@ namespace WebVella.Erp.Web.Pages
 			var remoteAddress = HttpContext?.Connection?.RemoteIpAddress?.ToString();
 			if (!loginThrottle.TryBeginAttempt(Username, remoteAddress))
 			{
+				// Audited even though no credential was checked: a refusal is the signal that a lockout
+				// threshold has actually been reached, which is the strongest brute-force indicator this
+				// endpoint can emit. Recording it server-side leaks nothing to the caller - see the
+				// deliberately generic response below.
+				WriteAuthenticationAuditRecord(LogType.Error, "Authentication refused - account temporarily locked", remoteAddress);
+
 				Error = "Invalid username or password";
 				BeforeRender();
 				return Page();
@@ -139,10 +146,19 @@ namespace WebVella.Erp.Web.Pages
 			// The outcome is judged from the credential check alone, before the post-login hooks below run,
 			// so that a hook returning a short-circuit result can neither swallow a failed attempt nor
 			// fabricate a successful one.
+			// The audit record is written from this same block, and for the same reason: it is the only
+			// point on the request path that has seen the true outcome of the credential check and that
+			// no hook can bypass. Exactly one record is written per evaluated attempt.
 			if (user == null)
+			{
 				loginThrottle.RegisterFailedAttempt(Username, remoteAddress);
+				WriteAuthenticationAuditRecord(LogType.Error, "Authentication failed", remoteAddress);
+			}
 			else
+			{
 				loginThrottle.RegisterSuccess(Username, remoteAddress);
+				WriteAuthenticationAuditRecord(LogType.Info, "Authentication succeeded", remoteAddress);
+			}
 
 			foreach (ILoginPageHook inst in hookInstances)
 			{
@@ -162,6 +178,56 @@ namespace WebVella.Erp.Web.Pages
 			else
 				return new LocalRedirectResult("/");
 
+		}
+
+		// THREAT ADDRESSED - finding M-12, CWE-778 (Insufficient Logging), and the Authorization
+		// Enforcement standard's "log authorization failures" clause: the platform recorded nothing
+		// whatsoever about authentication outcomes. The only code that ever did is commented out at
+		// Security/WebSecurityUtil.cs lines 40-85 and therefore unreachable (finding L-01, left in
+		// place deliberately), so a credential-stuffing run against this form left no trace at all -
+		// an operator could not distinguish an attack from ordinary traffic, and a later forensic
+		// reader could not establish which account had been compromised or from where.
+		//
+		// THE SINK CHOICE IS LOAD-BEARING. This writes through the core WebVella.Erp.Diagnostics.Log
+		// writer, which performs a parameterized INSERT into system_log and does nothing else. It must
+		// NOT use WebVella.Erp.Web.Services.LogService: that wrapper calls MailService.SendLogMessage
+		// BEFORE persisting whenever the notification status is NotNotified, so routing a per-attempt
+		// audit record through it would turn this anonymous endpoint into an attacker-triggered mail
+		// bomb and amplify finding M-17. LogNotificationStatus.DoNotNotify is consequently passed
+		// EXPLICITLY rather than left to the parameter default of NotNotified, which would leave every
+		// row eligible for that same notification path.
+		private void WriteAuthenticationAuditRecord(LogType type, string message, string remoteAddress)
+		{
+			// An audit write must never be able to fail a login. This runs on the authentication happy
+			// path, so without the guard a transient datastore fault during the INSERT would surface as
+			// a total authentication outage - a functional regression introduced BY the remediation,
+			// which the preservation requirements forbid.
+			try
+			{
+				// The username is unvalidated input on an anonymous endpoint, so it is bounded here to
+				// stop the audit trail itself becoming a storage-amplification vector. Only the
+				// submitted identity and its source address are recorded: never the password, the
+				// request body, headers, cookies or the antiforgery token. That keeps the trail useful
+				// for attributing an attack without creating a fresh disclosure of its own.
+				var auditedUsername = Username ?? string.Empty;
+				if (auditedUsername.Length > 100)
+				{
+					auditedUsername = auditedUsername.Substring(0, 100);
+				}
+
+				// The source is a fixed literal, not a derived string, because Log.GetLogs filters on
+				// source with ILIKE - a stable value is what makes this audit trail queryable in the
+				// log viewer that already ships with the platform.
+				new Log().Create(type, "LoginModel.OnPost", message,
+					$"username: {auditedUsername}; ip: {remoteAddress ?? string.Empty}",
+					LogNotificationStatus.DoNotNotify);
+			}
+			catch (Exception)
+			{
+				// Swallowed deliberately, following the exception handling already present in this file.
+				// Rethrowing would hand an attacker a way to deny authentication to every user by
+				// provoking the audit write rather than by attacking the credential check itself.
+			}
 		}
 
 

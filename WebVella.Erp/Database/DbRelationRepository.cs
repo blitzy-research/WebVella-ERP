@@ -45,8 +45,16 @@ namespace WebVella.Erp.Database
 				List<DbParameter> parameters = new List<DbParameter>();
 
 				// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-				// Software and Data Integrity Failures). Relation documents are read back with polymorphic type handling; the binder constrains
-				// which types a stored $type token may name.
+				// Software and Data Integrity Failures). Create path - the relation document is
+				// SERIALIZED here and read back by Read() below, which is where a stored $type
+				// discriminator would be resolved into a CLR type. TypeNameHandling is deliberately
+				// RETAINED rather than removed: relation documents already persisted in existing
+				// installations carry discriminators, so dropping type handling would stop those
+				// rows loading at all. The weakness is closed by constraining type RESOLUTION
+				// instead, to the enumerated first-party allow-list in the binder attached below.
+				// Attaching it on this serialize path changes nothing that is stored, because it
+				// overrides BindToType only and leaves BindToName to the base implementation, so
+				// the $type strings written here stay byte-identical to those written before.
 				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 				DbParameter parameterId = new DbParameter();
@@ -128,6 +136,14 @@ namespace WebVella.Erp.Database
 
 					NpgsqlCommand command = con.CreateCommand("UPDATE entity_relations SET json=@json WHERE id=@id;");
 
+					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+					// Software and Data Integrity Failures). Update path - the same constraint as
+					// the Create path above, applied to the document this method rewrites.
+					// TypeNameHandling is retained so already-persisted relation documents keep
+					// round-tripping, and the binder confines which types a stored $type token may
+					// resolve to. Because the binder overrides BindToType only, the discriminators
+					// written back here are unchanged, so a relation updated by this build still
+					// loads on one running the previous build.
 					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 					var parameter = command.CreateParameter() as NpgsqlParameter;
@@ -173,6 +189,15 @@ namespace WebVella.Erp.Database
 
 				using (NpgsqlDataReader reader = command.ExecuteReader())
 				{
+					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+					// Software and Data Integrity Failures). Read path - this is the DESERIALIZE
+					// site, where polymorphic type handling turns a $type discriminator found in
+					// the stored entity_relations row into a CLR type. Unconstrained, that is a
+					// well-known remote-code-execution primitive: anything able to write that
+					// column chooses which type gets instantiated. TypeNameHandling is retained
+					// because the stored documents cannot be read without it, and resolution is
+					// constrained instead to the enumerated first-party allow-list in the binder
+					// attached below - a token naming anything outside it is refused, not resolved.
 					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 					List<DbEntityRelation> relations = new List<DbEntityRelation>();
 					while (reader.Read())
