@@ -4269,22 +4269,96 @@ namespace WebVella.Erp.Web.Controllers
 
 		#region <=== JWT Token Auth ===>
 
+		/// <summary>
+		/// Returned by both bearer-token routes when no usable signing key is configured.
+		/// </summary>
+		/// <remarks>
+		/// M-2 (CWE-209 information exposure through an error message): states only that the feature is off.
+		/// It never names the setting, reports the key's length, or says WHY the value was rejected, because
+		/// this is an anonymous route and any of those details would help an attacker profile the deployment.
+		/// The actionable detail an operator needs was emitted once, at startup, by
+		/// ErpSettings.ValidateRequiredSecurityConfiguration.
+		/// </remarks>
+		private const string JwtNotConfiguredMessage = "Bearer token authentication is not enabled on this server.";
 
 		[AllowAnonymous]
 		[Route("api/v3/en_US/auth/jwt/token")]
 		[HttpPost]
-		public async Task<IActionResult> GetJwtToken([FromBody] JwtTokenLoginModel model)
+		public async Task<IActionResult> GetJwtToken([FromBody] JwtTokenLoginModel model, [FromServices] LoginThrottleService loginThrottle)
 		{
 			ResponseModel response = new ResponseModel { Timestamp = DateTime.UtcNow, Success = true, Errors = new List<ErrorModel>() };
+
+			// SECURITY - finding M-2 (CWE-20 improper input validation, CWE-798 hard-coded credentials),
+			// OWASP A05 Security Misconfiguration / A07 Authentication Failures.
+			// THREAT: this route is [AllowAnonymous] and is declared in WebVella.Erp.Web, so it exists on ALL
+			// SEVEN hosts - yet only two of them configure a 'Settings:Jwt' section. On the other five the
+			// signing key was null, AuthService reached Encoding.UTF8.GetBytes(null), and the request became a
+			// 500 whose body carried a stack trace back to an unauthenticated caller. On a host that kept this
+			// repository's published example key the failure was worse than a fault: the route happily issued
+			// tokens that anyone reading the public source could forge.
+			// ErpSettings.IsJwtConfigured is resolved once at startup by the SAME acceptability rule the host
+			// applies when it registers its bearer handler, so the two can never disagree - the route refuses
+			// exactly when the handler would refuse to validate.
+			//
+			// Ordering is deliberate: this is checked BEFORE the throttle reserves an attempt. No credential is
+			// verified on this path, so counting it as a failed attempt would let an anonymous caller on a
+			// misconfigured host exhaust a real account's lockout budget and deny service to its owner - turning
+			// a misconfiguration into a remote denial of service.
+			// Nothing is logged per request, also deliberately: the condition is static and was already reported
+			// once at startup, so logging every anonymous call would add no diagnostic value while creating a
+			// log-flooding and database-write amplification vector (CWE-779).
+			if (!ErpSettings.IsJwtConfigured)
+			{
+				response.Success = false;
+				response.Message = JwtNotConfiguredMessage;
+				return DoResponse(response);
+			}
+
+			// THREAT ADDRESSED - finding H-16, CWE-307 (Improper Restriction of Excessive Authentication
+			// Attempts), OWASP A07. This anonymous endpoint verifies a username and password through the very
+			// same SecurityManager credential check the login form uses, so it is a second credential-guessing
+			// surface, not an ordinary API route. Throttling only the login page would therefore have left the
+			// lockout trivially bypassable: an attacker would simply brute-force here instead, unmetered and
+			// without needing an antiforgery token. The counters are shared with the login page because the
+			// throttle is keyed on the account and the source address, not on the entry point, so attempts
+			// spread across both surfaces still add up against one budget.
+			var remoteAddress = HttpContext?.Connection?.RemoteIpAddress?.ToString();
+			if (!loginThrottle.TryBeginAttempt(model?.Email, remoteAddress))
+			{
+				// Byte-identical to the rejection this endpoint already returns for a bad credential, so the
+				// throttle cannot be used to distinguish a real account from a fabricated one.
+				response.Success = false;
+				response.Message = AuthService.InvalidCredentialMessage;
+				return DoResponse(response);
+			}
+
+			// The reserved attempt is finalised on every path out of the credential check. A rejected
+			// credential is counted; a server-side fault - an absent signing key, for instance, which is the
+			// outcome on hosts that ship no JWT configuration - is NOT, because an attacker cannot provoke it
+			// and counting it would let a misconfigured host lock out its own users. The two are told apart by
+			// the sentinel message AuthService throws, not by guessing at the exception type.
+			var credentialWasRejected = false;
+			var authenticated = false;
 			try
 			{
 				response.Object = await AuthService.GetTokenAsync(model.Email, model.Password);
+				authenticated = true;
 			}
 			catch (Exception e)
 			{
+				credentialWasRejected = string.Equals(e.Message, AuthService.InvalidCredentialMessage, StringComparison.Ordinal);
 				new LogService().Create(Diagnostics.LogType.Error, "GetJwtToken", e);
 				response.Success = false;
 				response.Message = e.Message + e.StackTrace;
+			}
+			finally
+			{
+				if (authenticated)
+					loginThrottle.RegisterSuccess(model?.Email, remoteAddress);
+				else if (credentialWasRejected)
+					loginThrottle.RegisterFailedAttempt(model?.Email, remoteAddress);
+				else
+					loginThrottle.AbandonAttempt(model?.Email, remoteAddress);
 			}
 			return DoResponse(response);
 		}
@@ -4295,6 +4369,19 @@ namespace WebVella.Erp.Web.Controllers
 		public async Task<IActionResult> GetNewJwtToken([FromBody] JwtTokenModel model)
 		{
 			ResponseModel response = new ResponseModel { Timestamp = DateTime.UtcNow, Success = true, Errors = new List<ErrorModel>() };
+
+			// SECURITY - finding M-2 (CWE-20, CWE-798), OWASP A05 / A07. Same reasoning as the issue route
+			// above: [AllowAnonymous], present on all seven hosts, and previously faulted on a null signing key
+			// with a stack trace in the response body. Refusing here also closes the subtler half of the
+			// problem - validating a SUPPLIED token requires the same key, so without this guard the refresh
+			// route would attempt to validate an attacker-supplied token against a null or publicly known key.
+			if (!ErpSettings.IsJwtConfigured)
+			{
+				response.Success = false;
+				response.Message = JwtNotConfiguredMessage;
+				return DoResponse(response);
+			}
+
 			try
 			{
 				response.Object = await AuthService.GetNewTokenAsync(model.Token);

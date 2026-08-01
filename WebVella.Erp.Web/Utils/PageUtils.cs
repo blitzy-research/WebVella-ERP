@@ -94,6 +94,69 @@ namespace WebVella.Erp.Web.Utils
 			}
 		}
 
+		/// <summary>
+		/// SECURITY (CWE-79 reflected XSS / CWE-601 open redirect / OWASP A03:2021 Injection):
+		/// validates an attacker-influenceable return URL against a local-URL allow-list and returns
+		/// it only when it is safe both to render into a link and to hand to a redirect.
+		/// <para>
+		/// The threat this addresses is NOT delimiter breakout - HTML encoding already handles that.
+		/// It is the URL context itself: an entire value such as "javascript:alert(1)" survives HTML
+		/// encoding completely intact, so it renders as a working href and executes in the
+		/// application's own authenticated origin the moment the link is clicked. The same value
+		/// handed to a redirect, and any absolute or protocol-relative value such as
+		/// "https://evil.example" or "//evil.example", additionally makes the platform a redirector
+		/// to an attacker-controlled site. Neither is reachable through encoding; only validation
+		/// closes them, which is why this check exists and why it lives in one place.
+		/// </para>
+		/// <para>
+		/// The allow-list is deliberately identical to the framework's own
+		/// <c>Microsoft.AspNetCore.Mvc.Routing.UrlHelperBase.IsLocalUrl</c> so that its behaviour is
+		/// auditable against a recognised reference implementation rather than being bespoke:
+		/// "/" and "/path" are accepted, "~/path" is accepted, and "//host", "/\host", any value
+		/// carrying a scheme and any value not rooted at "/" are rejected. Query strings and
+		/// fragments are untouched, so "/a/b?x=1&amp;y=2#frag" is preserved exactly.
+		/// </para>
+		/// </summary>
+		/// <param name="returnUrl">The candidate return URL, already URL-decoded.</param>
+		/// <param name="fallbackUrl">
+		/// The value to return when the candidate is rejected. Defaults to an empty string, which is
+		/// what every caller in this platform already treats as "no return URL supplied" and answers
+		/// with its own server-authored local default - so a rejected value degrades into existing
+		/// behaviour instead of into a broken link.
+		/// </param>
+		/// <returns>The candidate when it is a local URL; otherwise <paramref name="fallbackUrl"/>.</returns>
+		public static string GetSafeReturnUrl(string returnUrl, string fallbackUrl = "")
+		{
+			if (String.IsNullOrWhiteSpace(returnUrl))
+			{
+				return fallbackUrl;
+			}
+
+			//Surrounding whitespace is discarded because browsers ignore it when resolving a URL,
+			//so " /valid/path" is legitimate and must keep working.
+			var candidate = returnUrl.Trim();
+
+			//Embedded control characters are rejected outright rather than stripped. Browsers ignore
+			//TAB, CR, LF and NUL inside a URL, which makes them a way to smuggle an active scheme
+			//past a naive prefix test (for example "java\nscript:alert(1)"); and a legitimate return
+			//URL produced anywhere in this platform never contains one.
+			foreach (var character in candidate)
+			{
+				if (Char.IsControl(character))
+				{
+					return fallbackUrl;
+				}
+			}
+
+			//Accept "/" and "/path", but not "//host" (protocol-relative) or "/\host" (which several
+			//browsers normalise to a protocol-relative URL). Also accept the framework's "~/path"
+			//application-root form.
+			var isLocalUrl = (candidate[0] == '/' && (candidate.Length == 1 || (candidate[1] != '/' && candidate[1] != '\\')))
+				|| (candidate.Length > 1 && candidate[0] == '~' && candidate[1] == '/');
+
+			return isLocalUrl ? candidate : fallbackUrl;
+		}
+
 		public static List<Filter> GetPageFiltersFromQuery(HttpContext httpContext)
 		{
 			var result = new List<Filter>();

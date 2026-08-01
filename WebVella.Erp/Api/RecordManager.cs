@@ -2014,7 +2014,15 @@ namespace WebVella.Erp.Api
 							if (string.IsNullOrWhiteSpace(pair.Value as string))
 								return null;
 
-							return PasswordUtil.GetMd5Hash(pair.Value as string);
+							//THREAT ADDRESSED - finding C-03, CWE-916 (password hash with insufficient
+							//computational effort) and CWE-759 (one-way hash without a salt), OWASP
+							//A02:2021. This wrote an unsalted, single-pass MD5 digest, so a leaked
+							//password column was recoverable wholesale from precomputed tables and
+							//identical passwords produced identical stored values. HashPassword derives
+							//a salted, work-factored PBKDF2-HMAC-SHA-256 value instead. The stored
+							//shape changes but the column does not: it is varchar(500) and the encoded
+							//value is 84 characters, so no schema change is required.
+							return PasswordUtil.HashPassword(pair.Value as string);
 						}
 					}
 					return pair.Value;

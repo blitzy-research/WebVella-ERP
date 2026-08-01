@@ -80,9 +80,24 @@ namespace WebVella.Erp.Plugins.SDK.Pages.Page
 				Type = ErpPage.Type;
 				Layout = ErpPage.Layout;
 			}
-			if (String.IsNullOrWhiteSpace(ReturnUrl))
+			// SECURITY (CWE-601 unvalidated redirect / CWE-79 cross-site scripting, OWASP
+			// A01:2021 and A03:2021) - ReturnUrl is URL-decoded query-string input, and this page
+			// consumes it twice: the view renders it as the Cancel link target and as the page
+			// header's back-link, and OnPost passes it straight to Redirect() after a successful
+			// save. Neither sink is protected by HTML encoding, because a browser decodes HTML
+			// entities before it parses a URL scheme and Redirect() never encodes at all - so an
+			// absolute or "javascript:" value would either execute on click or bounce an
+			// authenticated operator to an attacker-controlled origin. Accept the value only when
+			// it is a same-site relative URL. A rejected value is treated exactly as an absent
+			// one, which is the behaviour this branch already implemented, so no legitimate
+			// navigation changes: every returnUrl the platform generates comes from
+			// PageUtils.GetCurrentUrl, which returns a path and query only and is therefore
+			// always local. The null check on ErpPage is required because InitPage runs before
+			// the caller's NotFound() guard; without it a rejected value on a non-existent record
+			// would raise a null reference instead of the 404 the caller already returns.
+			if (String.IsNullOrWhiteSpace(ReturnUrl) || !Url.IsLocalUrl(ReturnUrl))
 			{
-				ReturnUrl = $"/sdk/objects/page/r/{ErpPage.Id}/";
+				ReturnUrl = ErpPage != null ? $"/sdk/objects/page/r/{ErpPage.Id}/" : String.Empty;
 			}
 
 			#endregion
@@ -131,7 +146,15 @@ namespace WebVella.Erp.Plugins.SDK.Pages.Page
 
 				if (!String.IsNullOrWhiteSpace(ReturnUrl))
 				{
-					return Redirect(ReturnUrl);
+					// SECURITY - finding H-1, CWE-601 open redirect, OWASP A01.
+					// THREAT: Redirect() honours any absolute or protocol-relative URL, so a crafted
+					// returnUrl carried the user to an attacker's site immediately after a successful save
+					// - a convincing phishing hand-off, because the journey began on this application.
+					// LocalRedirect refuses a non-local URL outright. BaseErpPageModel.ReturnUrl already
+					// guarantees locality at the point of assignment, so this is the second, independent
+					// layer: were that guarantee ever weakened, this call fails closed instead of
+					// redirecting off-site.
+					return LocalRedirect(ReturnUrl);
 				}
 				else
 				{

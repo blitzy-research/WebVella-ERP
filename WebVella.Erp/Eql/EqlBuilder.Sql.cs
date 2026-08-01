@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
+using WebVella.Erp.Database;
 using WebVella.Erp.Fts;
 
 namespace WebVella.Erp.Eql
@@ -18,6 +19,41 @@ namespace WebVella.Erp.Eql
 
 		#region <--- constants --->
 		const string RECORD_COLLECTION_PREFIX = "rec_";
+
+		#region SECURITY H-09 identifier chokepoints
+
+		// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The EQL compiler emits
+		// parameterised SQL for every VALUE, but a table name is an identifier and PostgreSQL cannot
+		// bind an identifier as a parameter, so entity and relation table names are necessarily
+		// concatenated into the generated statement - in FROM, JOIN, ORDER BY, SELECT and operand
+		// positions, at roughly thirty-seven sites in this file.
+		//
+		// Rather than validate at each of those sites, all of them are routed through these two
+		// helpers, so the allow-list is applied exactly once per name and cannot be forgotten when a
+		// new emit site is added. The names originate in entity metadata and in parsed EQL text, so
+		// they are attacker-influenceable wherever a caller can create an entity or relation, or
+		// where stored metadata has been tampered with.
+		//
+		// DbIdentifier.Validate is used rather than DbIdentifier.Quote because Validate returns the
+		// identifier unchanged once it matches the allow-list. That keeps the generated SQL
+		// byte-identical to what this builder produced before, which matters here because these
+		// values are not only emitted as identifiers but are also used as JOIN ALIASES and are
+		// concatenated into textual column prefixes such as rec_x."field". Quoting would change all
+		// of those strings for no security gain: the allow-list already rejects the double quote,
+		// whitespace, semicolons, comment markers and upper case, which makes injection impossible
+		// by construction. A non-conforming name throws DbException instead of being sanitised.
+
+		private static string RecordTable(string entityName)
+		{
+			return DbIdentifier.Validate("rec_" + entityName);
+		}
+
+		private static string RelationTable(string relationName)
+		{
+			return DbIdentifier.Validate("rel_" + relationName);
+		}
+
+		#endregion
 		const string BEGIN_OUTER_SELECT = @"SELECT row_to_json( X ) FROM (";
 		const string BEGIN_SELECT = @"SELECT ";
 		const string REGULAR_FIELD_SELECT = @" {1}.""{0}"" AS ""{0}"",";
@@ -85,7 +121,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 			var fieldsSql = BuildFieldsSql(rootInfo, 1, fieldsMeta);
 			sql.Append(fieldsSql);
 			sql.AppendLine(END_SELECT);
-			sql.AppendLine(string.Format(FROM, $"{RECORD_COLLECTION_PREFIX}{rootInfo.Entity.Name}"));
+			sql.AppendLine(string.Format(FROM, RecordTable(rootInfo.Entity.Name)));
 
 			//WHERE
 			List<EqlRelationFieldNode> relationsUsedInWhere = new List<EqlRelationFieldNode>();
@@ -116,7 +152,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						return string.Empty;
 					}
 
-					sql.Append(RECORD_COLLECTION_PREFIX + fromEntity.Name + ".\"" + field.FieldName + "\"" + " " + field.Direction);
+					sql.Append(RecordTable(fromEntity.Name) + ".\"" + field.FieldName + "\"" + " " + field.Direction);
 					if (selectNode.OrderBy.Fields.Last() != field )
 						sql.Append(" , ");
 
@@ -304,10 +340,10 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					// intended to generate ST_AsGeoJson(...) or ST_AsText(...)
 					string format = (field as GeographyField).Format.ToString();
 
-					AppendToStringBuilder(sb, depth, true, string.Format(GEOGRAPHY_FIELD_SELECT, field.Name, $"{RECORD_COLLECTION_PREFIX}{rootInfo.Entity.Name}", format));
+					AppendToStringBuilder(sb, depth, true, string.Format(GEOGRAPHY_FIELD_SELECT, field.Name, RecordTable(rootInfo.Entity.Name), format));
 				}
 				else
-					AppendToStringBuilder(sb, depth, true, string.Format(REGULAR_FIELD_SELECT, field.Name, $"{RECORD_COLLECTION_PREFIX}{rootInfo.Entity.Name}"));
+					AppendToStringBuilder(sb, depth, true, string.Format(REGULAR_FIELD_SELECT, field.Name, RecordTable(rootInfo.Entity.Name)));
 			}
 
 			//append total count column
@@ -345,7 +381,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 				{
 					if (info.Relation.OriginEntityId == info.Entity.Id)
 					{
-						string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}";
+						string alias = RecordTable(info.Relation.OriginEntityName);
 						if (info.Parent != null && info.Parent.Relation != null)
 							alias = info.Parent.Relation.Name;
 
@@ -353,7 +389,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 							$"${info.Relation.Name}",
 							fieldsSql.ToString(),
-							$"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}",
+							RecordTable(info.Relation.TargetEntityName),
 							info.Relation.Name,
 							info.Relation.TargetFieldName,
 							alias,
@@ -361,14 +397,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					}
 					else //when the relation is target -> origin, we have to query origin entity
 					{
-						string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}";
+						string alias = RecordTable(info.Relation.TargetEntityName);
 						if (info.Parent != null && info.Parent.Relation != null)
 							alias = info.Parent.Relation.Name;
 
 						AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 								$"${info.Relation.Name}",
 								fieldsSql.ToString(),
-								$"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}",
+								RecordTable(info.Relation.OriginEntityName),
 								info.Relation.Name,
 								info.Relation.OriginFieldName,
 								alias,
@@ -381,14 +417,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					{
 						if (info.Relation.OriginEntityId != info.Entity.Id)
 						{
-							string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}";
+							string alias = RecordTable(info.Relation.OriginEntityName);
 							if (info.Parent != null && info.Parent.Relation != null)
 								alias = info.Parent.Relation.Name;
 
 							AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 								$"${info.Relation.Name}",
 								fieldsSql.ToString(),
-								$"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}",
+								RecordTable(info.Relation.TargetEntityName),
 								info.Relation.Name,
 								info.Relation.TargetFieldName,
 								alias,
@@ -396,14 +432,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						}
 						else //when the relation is target -> origin, we have to query origin entity
 						{
-							string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}";
+							string alias = RecordTable(info.Relation.TargetEntityName);
 							if (info.Parent != null && info.Parent.Relation != null)
 								alias = info.Parent.Relation.Name;
 
 							AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 									$"${info.Relation.Name}",
 									fieldsSql.ToString(),
-									$"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}",
+									RecordTable(info.Relation.OriginEntityName),
 									info.Relation.Name,
 									info.Relation.OriginFieldName,
 									alias,
@@ -414,14 +450,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					{
 						if (info.RelationInfo.Direction == EqlRelationDirectionType.OriginTarget)
 						{
-							string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}";
+							string alias = RecordTable(info.Relation.OriginEntityName);
 							if (info.Parent != null && info.Parent.Relation != null)
 								alias = info.Parent.Relation.Name;
 
 							AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 									$"${info.Relation.Name}",
 									fieldsSql.ToString(),
-									$"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}",
+									RecordTable(info.Relation.TargetEntityName),
 									info.Relation.Name,
 									info.Relation.TargetFieldName,
 									alias,
@@ -429,14 +465,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						}
 						else
 						{
-							string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}";
+							string alias = RecordTable(info.Relation.TargetEntityName);
 							if (info.Parent != null && info.Parent.Relation != null)
 								alias = info.Parent.Relation.Name;
 
 							AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 										$"${info.Relation.Name}",
 										fieldsSql.ToString(),
-										$"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}",
+										RecordTable(info.Relation.OriginEntityName),
 										info.Relation.Name,
 										info.Relation.OriginFieldName,
 										alias,
@@ -446,7 +482,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 				}
 				else if (info.Relation.RelationType == EntityRelationType.ManyToMany)
 				{
-					string relationTable = "rel_" + info.Relation.Name;
+					string relationTable = RelationTable(info.Relation.Name);
 					string targetJoinAlias = info.Relation.Name + "_target";
 					string originJoinAlias = info.Relation.Name + "_origin";
 
@@ -461,14 +497,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 
 					if (direction == EqlRelationDirectionType.TargetOrigin)
 					{
-						string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}";
+						string alias = RecordTable(info.Relation.TargetEntityName);
 						if (info.Parent != null && info.Parent.Relation != null)
 							alias = info.Parent.Relation.Name;
 
 						AppendToStringBuilder(sb, depth, true, string.Format(MTM_RELATION_TEMPLATE,
 									$"${info.Relation.Name}",
 									fieldsSql.ToString(),
-									$"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}",
+									RecordTable(info.Relation.OriginEntityName),
 									info.Relation.Name,
 									relationTable,
 									targetJoinAlias,
@@ -483,14 +519,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					}
 					else
 					{
-						string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}";
+						string alias = RecordTable(info.Relation.OriginEntityName);
 						if (info.Parent != null && info.Parent.Relation != null)
 							alias = info.Parent.Relation.Name;
 
 						AppendToStringBuilder(sb, depth, true, string.Format(MTM_RELATION_TEMPLATE,
 									$"${info.Relation.Name}",
 									fieldsSql.ToString(),
-									$"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}",
+									RecordTable(info.Relation.TargetEntityName),
 									info.Relation.Name,
 									relationTable,
 									originJoinAlias,
@@ -563,7 +599,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						if (field == null)
 							throw new EqlException($"WHERE CLAUSE: Field '{fieldName}' not found in entity {entityName}");
 
-						operandString = RECORD_COLLECTION_PREFIX + entityName + ".\"" + fieldName + "\"";
+						operandString = RecordTable(entityName) + ".\"" + fieldName + "\"";
 					}
 					break;
 				case EqlNodeType.BinaryExpression:
@@ -844,21 +880,21 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					if (relation.OriginEntityId == fromEntity.Id)
 					{
 						relationJoinSql += string.Format(FILTER_JOIN,
-							$"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+							RecordTable(relation.TargetEntityName),
 							relationAlias,
 							relationAlias,
 							relation.TargetFieldName,
-							$"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+							RecordTable(relation.OriginEntityName),
 							relation.OriginFieldName);
 					}
 					else //when the relation is target -> origin, we have to query origin entity
 					{
 						relationJoinSql += string.Format(FILTER_JOIN,
-							   $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+							   RecordTable(relation.OriginEntityName),
 							   relationAlias,
 							   relationAlias,
 							   relation.OriginFieldName,
-							   $"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+							   RecordTable(relation.TargetEntityName),
 							   relation.TargetFieldName);
 					}
 				}
@@ -871,21 +907,21 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						if (relation.OriginEntityId == fromEntity.Id)
 						{
 							relationJoinSql += string.Format(FILTER_JOIN,
-								$"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+								RecordTable(relation.TargetEntityName),
 								relationAlias,
 								relationAlias,
 								relation.TargetFieldName,
-								 $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+								 RecordTable(relation.OriginEntityName),
 								relation.OriginFieldName);
 						}
 						else //when the relation is target -> origin, we have to query origin entity
 						{
 							relationJoinSql += string.Format(FILTER_JOIN,
-								 $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+								 RecordTable(relation.OriginEntityName),
 								relationAlias,
 								relationAlias,
 								relation.OriginFieldName,
-								$"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+								RecordTable(relation.TargetEntityName),
 								relation.TargetFieldName);
 						}
 					}
@@ -894,31 +930,31 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						if (relationInfo.Direction == EqlRelationDirectionType.TargetOrigin)
 						{
 							relationJoinSql = string.Format(FILTER_JOIN,
-								$"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+								RecordTable(relation.OriginEntityName),
 							   relationAlias,
 							   relationAlias,
 							   relation.OriginFieldName,
-							   $"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+							   RecordTable(relation.TargetEntityName),
 							   relation.TargetFieldName);
 						}
 						else
 						{
 							relationJoinSql += string.Format(FILTER_JOIN,
-								$"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+								RecordTable(relation.TargetEntityName),
 								relationAlias,
 								relationAlias,
 								relation.TargetFieldName,
-								 $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+								 RecordTable(relation.OriginEntityName),
 								relation.OriginFieldName);
 						}
 					}
 				}
 				else if (relation.RelationType == EntityRelationType.ManyToMany)
 				{
-					string relationTable = "rel_" + relation.Name;
+					string relationTable = RelationTable(relation.Name);
 
-					string targetJoinTable = $"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}";
-					string originJoinTable = $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}";
+					string targetJoinTable = RecordTable(relation.TargetEntityName);
+					string originJoinTable = RecordTable(relation.OriginEntityName);
 
 					//if target is entity we query
 					if (fromEntity.Id == relation.TargetEntityId)

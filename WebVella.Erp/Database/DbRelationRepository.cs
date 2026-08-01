@@ -44,7 +44,10 @@ namespace WebVella.Erp.Database
 
 				List<DbParameter> parameters = new List<DbParameter>();
 
-				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+				// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+				// Software and Data Integrity Failures). Relation documents are read back with polymorphic type handling; the binder constrains
+				// which types a stored $type token may name.
+				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 				DbParameter parameterId = new DbParameter();
 				parameterId.Name = "id";
@@ -66,8 +69,8 @@ namespace WebVella.Erp.Database
                 DbBaseField originField = originEntity.Fields.FirstOrDefault(f => f.Id == relation.OriginFieldId);
                 DbBaseField targetField = targetEntity.Fields.FirstOrDefault(f => f.Id == relation.TargetFieldId);
 
-				string originTableName = $"rec_{originEntity.Name}";
-				string targetTableName = $"rec_{targetEntity.Name}";
+				string originTableName = DbIdentifier.Validate($"rec_{originEntity.Name}");
+				string targetTableName = DbIdentifier.Validate($"rec_{targetEntity.Name}");
 
 				using (DbConnection con = DbContext.Current.CreateConnection())
 				{
@@ -125,7 +128,7 @@ namespace WebVella.Erp.Database
 
 					NpgsqlCommand command = con.CreateCommand("UPDATE entity_relations SET json=@json WHERE id=@id;");
 
-					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 					var parameter = command.CreateParameter() as NpgsqlParameter;
 					parameter.ParameterName = "json";
@@ -170,7 +173,7 @@ namespace WebVella.Erp.Database
 
 				using (NpgsqlDataReader reader = command.ExecuteReader())
 				{
-					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 					List<DbEntityRelation> relations = new List<DbEntityRelation>();
 					while (reader.Read())
 					{
@@ -201,8 +204,8 @@ namespace WebVella.Erp.Database
             DbBaseField originField = originEntity.Fields.FirstOrDefault(f => f.Id == relation.OriginFieldId);
             DbBaseField targetField = targetEntity.Fields.FirstOrDefault(f => f.Id == relation.TargetFieldId);
 
-			string originTableName = $"rec_{originEntity.Name}";
-			string targetTableName = $"rec_{targetEntity.Name}";
+			string originTableName = DbIdentifier.Validate($"rec_{originEntity.Name}");
+			string targetTableName = DbIdentifier.Validate($"rec_{targetEntity.Name}");
 
 			try
 			{
@@ -258,7 +261,12 @@ namespace WebVella.Erp.Database
 		public void CreateManyToManyRecord(Guid relationId, Guid originId, Guid targetId)
 		{
 			var relation = Read(relationId);
-			string tableName = $"rel_{relation.Name}";
+			// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The origin and target
+			// ids below are bound as parameters, but the relation table name is an identifier and is
+			// concatenated into the INSERT, so it is validated against the allow-list here. Validate
+			// returns the name unchanged for every conforming value, so the emitted SQL is identical
+			// to before for all legitimate relations.
+			string tableName = DbIdentifier.Validate($"rel_{relation.Name}");
 
 			using (var connection = DbContext.Current.CreateConnection())
 			{
@@ -274,7 +282,9 @@ namespace WebVella.Erp.Database
 			if(!originId.HasValue && !targetId.HasValue)
 				throw new Exception("Both origin id and target id cannot be null when delete many to many relation!");
 
-			string tableName = $"rel_{relationName}";
+			// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Identifier
+			// concatenated into the DELETE statements below; ids are parameterised, this is not.
+			string tableName = DbIdentifier.Validate($"rel_{relationName}");
 
 			using (var connection = DbContext.Current.CreateConnection())
 			{

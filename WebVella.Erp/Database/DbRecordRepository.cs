@@ -135,7 +135,7 @@ namespace WebVella.Erp.Database
 				parameters.Add(param);
 			}
 
-			string tableName = RECORD_COLLECTION_PREFIX + entityName;
+			string tableName = GetTableNameForEntity(entityName);
 			DbRepository.InsertRecord(tableName, parameters);
 		}
 		public void Update(string entityName, IEnumerable<KeyValuePair<string, object>> recordData)
@@ -185,7 +185,7 @@ namespace WebVella.Erp.Database
 			if (!id.HasValue)
 				throw new StorageException("ID is missing. Cannot update records without ID specified.");
 
-			string tableName = RECORD_COLLECTION_PREFIX + entityName;
+			string tableName = GetTableNameForEntity(entityName);
 
 			var updateSuccess = DbRepository.UpdateRecord(tableName, parameters);
 			if (!updateSuccess)
@@ -194,7 +194,7 @@ namespace WebVella.Erp.Database
 
 		public void Delete(string entityName, Guid id)
         {
-            string tableName = RECORD_COLLECTION_PREFIX + entityName;
+            string tableName = GetTableNameForEntity(entityName);
 
             EntityRecord outRecord = Find(entityName, id);
             if (outRecord == null)
@@ -205,7 +205,7 @@ namespace WebVella.Erp.Database
 
         public EntityRecord FindTreeNodeRecord(string entityName, Guid id)
         {
-            string tableName = RECORD_COLLECTION_PREFIX + entityName;
+            string tableName = GetTableNameForEntity(entityName);
 
             EntityRecord record = new EntityRecord();
 
@@ -270,7 +270,7 @@ namespace WebVella.Erp.Database
 
         public long Count(EntityQuery query)
         {
-            string tableName = RECORD_COLLECTION_PREFIX + query.EntityName;
+            string tableName = GetTableNameForEntity(query.EntityName);
             using (DbConnection con = DbContext.Current.CreateConnection())
             {
                 string sql = $"SELECT COUNT( {tableName}.id ) FROM {tableName} ";
@@ -303,7 +303,7 @@ namespace WebVella.Erp.Database
 
         public void CreateRecordField(string entityName, Field field)
         {
-            string tableName = RECORD_COLLECTION_PREFIX + entityName;
+            string tableName = GetTableNameForEntity(entityName);
 
             DbRepository.CreateColumn(tableName, field);
             if (field.Unique)
@@ -318,12 +318,12 @@ namespace WebVella.Erp.Database
 			if (field.GetFieldType() == FieldType.AutoNumberField)
 				return;
 
-            string tableName = RECORD_COLLECTION_PREFIX + entityName;
+            string tableName = GetTableNameForEntity(entityName);
 
 			bool overrideNulls = field.Required && field.GetFieldDefaultValue() != null;
-			DbRepository.SetColumnDefaultValue(RECORD_COLLECTION_PREFIX + entityName, field, overrideNulls);
+			DbRepository.SetColumnDefaultValue(GetTableNameForEntity(entityName), field, overrideNulls);
 
-			DbRepository.SetColumnNullable(RECORD_COLLECTION_PREFIX + entityName, field.Name, !field.Required);
+			DbRepository.SetColumnNullable(GetTableNameForEntity(entityName), field.Name, !field.Required);
 			
            
 
@@ -336,7 +336,7 @@ namespace WebVella.Erp.Database
 
         public void RemoveRecordField(string entityName, Field field)
         {
-            string tableName = RECORD_COLLECTION_PREFIX + entityName;
+            string tableName = GetTableNameForEntity(entityName);
 
             //probably constraint will be removed automatically by postgresql, but to be sure
             if (field.Unique)
@@ -551,7 +551,10 @@ namespace WebVella.Erp.Database
 						if (string.IsNullOrWhiteSpace(value as string))
 							return null;
 
-						return PasswordUtil.GetMd5Hash(value as string);
+						//THREAT ADDRESSED - finding C-03, CWE-916 / CWE-759, OWASP A02:2021. Was an
+						//unsalted single-pass MD5 digest; now a salted, work-factored
+						//PBKDF2-HMAC-SHA-256 value. See WebVella.Erp/Utilities/PasswordUtil.cs.
+						return PasswordUtil.HashPassword(value as string);
 					}
 				}
 				return value;
@@ -928,7 +931,7 @@ namespace WebVella.Erp.Database
                         }
                         else if (relationField.Relation.RelationType == EntityRelationType.ManyToMany)
                         {
-                            string relationTable = "rel_" + relationField.Relation.Name;
+                            string relationTable = GetTableNameForRelation(relationField.Relation.Name);
                             string targetJoinAlias = relationName + "_target";
                             string originJoinAlias = relationName + "_origin";
 
@@ -1340,7 +1343,7 @@ namespace WebVella.Erp.Database
                     }
                     else if (relationFieldMeta.Relation.RelationType == EntityRelationType.ManyToMany)
                     {
-                        string relationTable = "rel_" + relationFieldMeta.Relation.Name;
+                        string relationTable = GetTableNameForRelation(relationFieldMeta.Relation.Name);
                         string targetJoinAlias = relationName + "_target";
                         string originJoinAlias = relationName + "_origin";
                         string targetJoinTable = GetTableNameForEntity(relationFieldMeta.TargetEntity);
@@ -1576,9 +1579,40 @@ namespace WebVella.Erp.Database
             return GetTableNameForEntity(entity.Name);
         }
 
+        // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Every value in this
+        // repository is already bound as a parameter, but PostgreSQL cannot parameterise an
+        // IDENTIFIER, so the record table name is necessarily concatenated into SQL text. This
+        // method is the single chokepoint through which that name is built for the whole class -
+        // roughly sixty call sites reach SQL through it - so validating here closes the identifier
+        // injection exposure for all of them at once instead of patching each construction.
+        //
+        // DbIdentifier.Validate is used rather than DbIdentifier.Quote deliberately. Validate
+        // returns the identifier BYTE-FOR-BYTE unchanged once it is proven to match the allow-list,
+        // so every caller receives exactly the string it received before this change: the bare
+        // "rec_<name>". That matters because the returned value is not only dropped into FROM and
+        // JOIN positions but is also used to build a textual column prefix - see the
+        // entityTablePrefix concatenation in GenerateWhereClause - and is embedded in the
+        // REGULAR_FIELD_SELECT format. Quoting would alter every one of those strings, and the
+        // security benefit would be nil: the allow-list already rejects the double quote, upper
+        // case, whitespace, semicolons, comment markers and every other character injection
+        // depends on, which makes injection impossible by construction. Quoting would only add
+        // behavioural risk to a fix that is otherwise byte-identical for all legitimate input.
+        //
+        // A rejected name throws DbException rather than being sanitised: silently repairing a
+        // hostile identifier would leave the vulnerability open while making the finding read as
+        // closed.
         private string GetTableNameForEntity(string entityName)
         {
-            return RECORD_COLLECTION_PREFIX + entityName;
+            return DbIdentifier.Validate(RECORD_COLLECTION_PREFIX + entityName);
+        }
+
+        // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Companion chokepoint for
+        // many-to-many relation tables, which are emitted as JOIN targets and as join aliases in the
+        // generated SQL. Validate rather than Quote for the same reason as above: the returned value
+        // is reused to build alias and column-prefix strings, so it must stay byte-identical.
+        private static string GetTableNameForRelation(string relationName)
+        {
+            return DbIdentifier.Validate("rel_" + relationName);
         }
 
         internal List<Field> ExtractQueryFieldsMeta(EntityQuery query)
@@ -1853,7 +1887,10 @@ namespace WebVella.Erp.Database
                     if (string.IsNullOrWhiteSpace(value as string))
                         return null;
 
-                    return PasswordUtil.GetMd5Hash(value as string);
+                    //THREAT ADDRESSED - finding C-03, CWE-916 / CWE-759, OWASP A02:2021. Was an
+                    //unsalted single-pass MD5 digest; now a salted, work-factored
+                    //PBKDF2-HMAC-SHA-256 value. See WebVella.Erp/Utilities/PasswordUtil.cs.
+                    return PasswordUtil.HashPassword(value as string);
                 }
                 return value;
             }

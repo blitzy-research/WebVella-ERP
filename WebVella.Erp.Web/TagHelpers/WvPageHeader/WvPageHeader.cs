@@ -114,7 +114,15 @@ namespace WebVella.Erp.Web.TagHelpers
 
 						var backBtnEl = new TagBuilder("a");
 						backBtnEl.AddCssClass("btn btn-sm btn-outline-secondary btn-back");
-						backBtnEl.Attributes.Add("href", ReturnUrl);
+						// SECURITY (CWE-79 / CWE-601): this attribute is the single href sink for every return
+						// URL rendered by the platform's page header - 44 views bind return-url to it, and the
+						// PcPageHeader component feeds it from both the inbound query string and a configured
+						// data source. TagBuilder HTML-encodes the value, which closes attribute breakout, but
+						// encoding does not constrain the URI scheme: an unvalidated "javascript:alert(1)"
+						// stays executable on click, and "//attacker.example" stays a phishing redirect.
+						// Validating here rather than at each feeder keeps one authority over the sink, so a
+						// future caller cannot introduce the same defect by supplying its own value.
+						backBtnEl.Attributes.Add("href", BaseErpPageModel.SanitizeReturnUrl(ReturnUrl));
 						var backBtnIconEl = new TagBuilder("span");
 						backBtnIconEl.AddCssClass("fa fa-arrow-left");
 						backBtnEl.InnerHtml.AppendHtml(backBtnIconEl);

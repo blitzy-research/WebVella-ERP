@@ -37,7 +37,18 @@ namespace WebVella.Erp.ConsoleApp
 			CultureInfo.DefaultThreadCurrentCulture = customCulture;
 			CultureInfo.DefaultThreadCurrentUICulture = customCulture;
 
-			var configurationBuilder = new ConfigurationBuilder().AddJsonFile("config.json".ToApplicationPath());
+			// SECURITY - finding M-2 (CWE-20, CWE-798), OWASP A05 Security Misconfiguration.
+			// THREAT: this console host initializes ErpSettings from its own builder rather than through
+			// AddErp, so it needed the same treatment as the web hosts: with a JSON-only chain the connection
+			// string and encryption key could only come from a tracked file. Environment variables are added
+			// last so an operator-supplied value overrides the committed one.
+			// No user-secrets provider here, deliberately - this is a Microsoft.NET.Sdk console application with
+			// no IHostEnvironment and no hosting-environment concept, so there is no "Development" signal to
+			// gate a developer-only store on. Environment variables cover it, and they are the channel the
+			// ErpSettings startup diagnostics name.
+			var configurationBuilder = new ConfigurationBuilder()
+				.AddJsonFile("config.json".ToApplicationPath())
+				.AddEnvironmentVariables();
 			ErpSettings.Initialize(configurationBuilder.Build());
 			DbContext.CreateContext(ErpSettings.ConnectionString);
 			ErpService service = new ErpService();

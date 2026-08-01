@@ -6,6 +6,7 @@ using System.Data;
 using System.Dynamic;
 using System.Linq;
 using WebVella.Erp.Jobs;
+using WebVella.Erp.Api.Models;
 
 namespace WebVella.Erp.Api.Models.AutoMapper.Profiles
 {
@@ -32,7 +33,10 @@ namespace WebVella.Erp.Api.Models.AutoMapper.Profiles
 			job.CompleteClassName = (string)src["complete_class_name"];
 			if (!string.IsNullOrWhiteSpace(src["attributes"].ToString()))
 			{
-				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
+				// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+				// Software and Data Integrity Failures). Job attributes and results are declared dynamic and persisted with TypeNameHandling.All,
+				// so their stored $type tokens are attacker-influenceable wherever a job can be queued.
+				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 				job.Attributes = JsonConvert.DeserializeObject<ExpandoObject>((string)src["attributes"], settings);
 			}
 
@@ -43,13 +47,13 @@ namespace WebVella.Erp.Api.Models.AutoMapper.Profiles
 					try
 					{
 						//we need to keep backword compadability - so we attempt to deserialize to Expando
-						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
+						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 						job.Result = JsonConvert.DeserializeObject<ExpandoObject>((string)src["result"], settings);
 					}
 					catch
 					{
 						//if we fail with Expando, try to deserialize to new JobResultWrapper
-						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
+						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 						job.Result = JsonConvert.DeserializeObject<JobResultWrapper>((string)src["result"], settings).Result;
 					}
 				}
@@ -90,7 +94,7 @@ namespace WebVella.Erp.Api.Models.AutoMapper.Profiles
 			if (src == null)
 				return null;
 
-			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
+			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 
 			SchedulePlan schedulePlan = new SchedulePlan();
 

@@ -45,7 +45,9 @@ namespace WebVella.Erp.Plugins.SDK
             foreach (Field field in fields)
             {
                 bool overrideNulls = field.Required && field.GetFieldDefaultValue() != null;
-                DbRepository.SetColumnDefaultValue("rec_" + field.EntityName, field, overrideNulls);
+                // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Identifier
+                // reaches ALTER TABLE ... SET DEFAULT; validated against the allow-list here.
+                DbRepository.SetColumnDefaultValue(DbIdentifier.Validate("rec_" + field.EntityName), field, overrideNulls);
             }
         }
     }

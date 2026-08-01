@@ -19,7 +19,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<!-- SECURITY H-19 (OWASP A06/A08): folder casing corrected to match the on-disk path; the previous "WebVella.ERP" broke solution-wide restore on case-sensitive filesystems, silently dropping the core project from dependency auditing. -->
+		<!-- SECURITY H-19 (OWASP A06:2021 Vulnerable and Outdated Components / A08:2021, CWE-1104-adjacent): keep this directory segment cased exactly as the folder on disk. An upper-cased "WebVella.ERP" segment broke solution-wide restore on case-sensitive filesystems, silently dropping the core project - and every package advisory it carries - out of the dependency-audit graph, so the vulnerability scan reported falsely clean. -->
 		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 

@@ -70,8 +70,118 @@ namespace WebVella.Erp.Web.Models
 
 		public ValidationException Validation { get; private set; } = new ValidationException();
 
+		private string returnUrl = "";
+
+		/// <summary>
+		/// The caller-supplied URL a page returns to when the user cancels or completes an edit.
+		/// Always a safe, application-local URL: the setter rejects anything else.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding H-1, CWE-601 (URL redirection to untrusted site / open redirect) and
+		/// CWE-79 (cross-site scripting via a dangerous URI scheme), OWASP A03 Injection / A01.
+		///
+		/// THREAT: this value arrives entirely from the request - by model binding from the query string
+		/// or form, and again in Init below from Request.Query - and it reaches two kinds of sink:
+		///   * it is emitted as a whole href, so "javascript:alert(document.domain)" executed as script on
+		///     this application's own origin the moment a user clicked Cancel; and
+		///   * it is passed to Redirect(...), so "//attacker.example/path" sent the user off-site while the
+		///     URL bar still showed this application's domain - a credential-phishing redirect.
+		/// Razor's automatic HTML encoding, applied earlier in this remediation, closed the ATTRIBUTE
+		/// BREAKOUT half of the problem, but encoding cannot make a hostile URL safe: "javascript:..." and
+		/// "//attacker.example" contain no characters that HTML encoding alters, so both survived intact.
+		/// Validating the SCHEME AND LOCALITY is the only fix, and it has to happen before the value is
+		/// stored rather than at each sink.
+		///
+		/// WHY THE SETTER: sanitizing here makes this property the single chokepoint. Model binding, the
+		/// explicit assignment in Init, and any future assignment all pass through it, so every consumer
+		/// is covered by construction - 48 Razor views that render this value and 17 call sites that pass
+		/// it to Redirect(...), across this assembly and the SDK plugin. Fixing the three views the review
+		/// sampled would have left the other 45 and every redirect sink exposed; fixing each sink instead
+		/// would mean 65 edits that a 66th consumer could silently miss.
+		///
+		/// It also removes a latent fault: login.cshtml.cs passes this value to LocalRedirectResult, which
+		/// THROWS InvalidOperationException on a non-local URL. A crafted returnUrl therefore turned a
+		/// *successful* sign-in into an unhandled exception - a 500 carrying a stack trace to an anonymous
+		/// caller. That throw is unreachable now that the value cannot be non-local. (logout.cshtml.cs
+		/// reaches LocalRedirectResult too, but passes the constant "/" and was never exposed.)
+		///
+		/// A derived page model MUST NOT re-declare this property with the "new" modifier. Model binding
+		/// targets the most-derived declaration, so a shadowing property silently bypasses this setter and
+		/// reintroduces the vulnerability. login.cshtml.cs did exactly that and has been corrected; it is
+		/// the reason this warning is recorded here rather than left implicit.
+		/// </remarks>
 		[BindProperty(Name = "returnUrl", SupportsGet = true)]
-		public string ReturnUrl { get; set; } = "";
+		public string ReturnUrl
+		{
+			get { return returnUrl; }
+			set { returnUrl = SanitizeReturnUrl(value); }
+		}
+
+		/// <summary>
+		/// Reduces a caller-supplied return URL to one that is guaranteed safe to emit as an href and to
+		/// pass to a redirect: an application-local, scheme-less path.
+		/// </summary>
+		/// <remarks>
+		/// Applies the same rule as IUrlHelper.IsLocalUrl, implemented directly so that it is a pure
+		/// function - it needs no IUrlHelper, no PageContext and no HTTP context, so it is valid during
+		/// model binding (before PageContext is assigned) and is unit-testable in isolation. The rule:
+		/// a URL is local when it starts with a single '/' not followed by '/' or '\', or with "~/".
+		/// Everything else - absolute URLs, protocol-relative "//host", backslash variants, and every
+		/// scheme including javascript:, data: and vbscript: - is rejected.
+		///
+		/// An empty or absent value is preserved as empty rather than rewritten to the fallback, because
+		/// most pages are reached with no returnUrl at all and render this value directly into a
+		/// return-url attribute; substituting "/" there would change what every one of those pages emits.
+		/// A value that is PRESENT but unsafe is replaced with the site root, which is the "fall back to a
+		/// safe local route" behaviour, so a hostile link degrades to a harmless one instead of failing.
+		/// </remarks>
+		internal static string SanitizeReturnUrl(string candidate)
+		{
+			// Absent means absent: preserve it so pages with no returnUrl render exactly as before.
+			if (string.IsNullOrEmpty(candidate))
+				return "";
+
+			// Browsers ignore leading and trailing whitespace in a URL, so a validator that does not
+			// would accept " javascript:..." and hand the browser something it treats as a scheme.
+			var url = candidate.Trim();
+			if (url.Length == 0)
+				return "";
+
+			// Browsers also strip TAB, CR and LF from WITHIN a scheme, so "java\tscript:alert(1)" is
+			// treated as "javascript:". Normalising those away is guesswork; rejecting any value that
+			// contains a control character is not, and no legitimate return URL contains one.
+			foreach (var character in url)
+			{
+				if (character < ' ' || character == '\u007f')
+					return SafeReturnUrlFallback;
+			}
+
+			if (url[0] == '/')
+			{
+				// "/" alone is the site root and is local.
+				if (url.Length == 1)
+					return url;
+
+				// "//host" is protocol-relative and "/\host" is the backslash equivalent; both leave the
+				// origin, which is precisely the open-redirect vector.
+				if (url[1] != '/' && url[1] != '\\')
+					return url;
+
+				return SafeReturnUrlFallback;
+			}
+
+			// "~/path" is the app-relative form Razor understands.
+			if (url.Length > 1 && url[0] == '~' && url[1] == '/')
+				return url;
+
+			// Anything else carries a scheme or an authority: not local.
+			return SafeReturnUrlFallback;
+		}
+
+		/// <summary>
+		/// The safe local route an unsafe return URL degrades to.
+		/// </summary>
+		private const string SafeReturnUrlFallback = "/";
 
 		public string CurrentUrl { get; set; } = "";
 
@@ -177,6 +287,24 @@ namespace WebVella.Erp.Web.Models
 			{
 				ReturnUrl = HttpUtility.UrlDecode(PageContext.HttpContext.Request.Query["returnUrl"].ToString());
 			}
+			//SECURITY (CWE-79 reflected XSS / CWE-601 open redirect / OWASP A03:2021 Injection):
+			//ReturnUrl is attacker-supplied, URL-DECODED request input - it arrives either through the
+			//[BindProperty(Name = "returnUrl", SupportsGet = true)] binder declared above or through the
+			//explicit UrlDecode immediately above - and it then flows unchanged into anchor href values,
+			//into the return-url attribute of the page-header tag helper, and into Redirect(ReturnUrl)
+			//after POST. HTML-encoding those sinks stops a crafted value from breaking out of the
+			//surrounding attribute, but it does NOT constrain the value as a URL: "javascript:alert(1)"
+			//passes through encoding untouched and executes in this application's authenticated origin
+			//when the link is clicked, while "https://evil.example" or "//evil.example" turns the
+			//platform into an open redirector. Validation is the only control that closes those, so it
+			//is applied HERE, at the single point where ReturnUrl is resolved, rather than at each of
+			//the sinks - one check covers every consumer and none can be forgotten.
+			//The call is unconditional on purpose so that it also covers the model-binder path, which
+			//the surrounding query-string test above does not reach.
+			//A rejected value degrades to an empty string, which is exactly what every page model
+			//already treats as "no return URL supplied" and answers with its own server-authored local
+			//default - so existing navigation behaviour is preserved rather than broken.
+			ReturnUrl = PageUtils.GetSafeReturnUrl(ReturnUrl);
 			ErpAppContext = ErpAppContext.Current;
 			CurrentUrl = PageUtils.GetCurrentUrl(PageContext.HttpContext);
 

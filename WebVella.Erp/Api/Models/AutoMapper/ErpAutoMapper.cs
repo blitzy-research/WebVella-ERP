@@ -1,9 +1,9 @@
-﻿using AutoMapper;
-using AutoMapper.Configuration;
-using Microsoft.Extensions.Logging.Abstractions;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text;
+using AutoMapper;
+using AutoMapper.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace WebVella.Erp.Api.Models.AutoMapper
 {

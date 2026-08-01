@@ -131,7 +131,13 @@ namespace WebVella.Erp.Web.Components
                     if (ErpRequestContext != null && ErpRequestContext.PageContext != null && ErpRequestContext.PageContext.HttpContext.Request.Query.ContainsKey("returnUrl")
                         && !String.IsNullOrWhiteSpace(ErpRequestContext.PageContext.HttpContext.Request.Query["returnUrl"]))
                     {
-                        ViewBag.ProccessedReturnUrl = ErpRequestContext.PageContext.HttpContext.Request.Query["returnUrl"].ToString();
+                        // SECURITY (CWE-79 / CWE-601): this reads the return URL straight off the raw query
+                        // string, so it bypasses the validating setter on BaseErpPageModel.ReturnUrl entirely.
+                        // The value reaches the page header's back-button href, where an unvalidated
+                        // "javascript:" URI remains executable on click. Validated at the point of ingress so
+                        // that every consumer of ViewBag.ProccessedReturnUrl - both component views - receives
+                        // an application-local path.
+                        ViewBag.ProccessedReturnUrl = BaseErpPageModel.SanitizeReturnUrl(ErpRequestContext.PageContext.HttpContext.Request.Query["returnUrl"].ToString());
                     }
 					else if (!String.IsNullOrWhiteSpace(instanceOptions.ReturnUrl))
 					{

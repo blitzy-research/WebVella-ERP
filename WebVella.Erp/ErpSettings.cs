@@ -1,6 +1,8 @@
 ﻿using Microsoft.Extensions.Configuration;
 using System;
 using System.Net.Security;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace WebVella.Erp
 {
@@ -50,11 +52,104 @@ namespace WebVella.Erp
 		public static string JwtIssuer { get; private set; }
 		public static string JwtAudience { get; private set; }
 
+		/// <summary>
+		/// Whether this process exposes the bearer-token issue and refresh endpoints at all.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding H-04 (High), CWE-798, CWE-321, OWASP A02 Cryptographic Failures.
+		/// THREAT: token-issuing capability used to be inferred from the mere presence of a
+		/// 'Settings:Jwt' configuration section. That inference is wrong in the dangerous direction. The
+		/// token issue and refresh endpoints live in WebVella.Erp.Web and are therefore exposed by every
+		/// host that uses the web framework, yet only two of the seven shipped host configurations
+		/// declare a Jwt section at all - so section presence exempts five hosts that do expose those
+		/// endpoints, and it equally mislabels a process that exposes none of them.
+		/// Capability is therefore STATED rather than guessed: either the caller passes it to
+		/// <see cref="Initialize(IConfiguration, bool)"/>, or the single-argument overload determines it
+		/// from what the deployed application is built from - never from configuration content.
+		/// Whether a USABLE signing key was supplied is a separate question, answered once by
+		/// <see cref="IsJwtConfigured"/>. The two are combined rather than conflated: an unusable key
+		/// disables the token routes instead of aborting startup, which is what keeps the five hosts that
+		/// legitimately ship no Jwt section startable - "all existing functionality remains operational" -
+		/// while still refusing to issue a forgeable token.
+		/// </remarks>
+		public static bool JwtEndpointsExposed { get; private set; }
+
+		/// <summary>
+		/// True only when a token signing key was supplied AND that key passes
+		/// <see cref="IsAcceptableJwtKey"/>. This is the single switch every bearer-token code path
+		/// consults, so "is JWT usable here?" has exactly one answer across the platform.
+		/// </summary>
+		/// <remarks>
+		/// M-2 (CWE-20 improper input validation, CWE-798 hard-coded credentials): the previous
+		/// validation demanded a signing key only when a 'Settings:Jwt' section already existed, and
+		/// accepted whatever it found provided the value was not blank. The token issue and refresh
+		/// routes live in WebVella.Erp.Web and are [AllowAnonymous], so they are exposed on ALL seven
+		/// hosts - including the five that legitimately ship no Jwt section at all. That combination
+		/// meant an anonymous caller could reach a route which then evaluated
+		/// Encoding.UTF8.GetBytes(null) and produced a 500 carrying a stack trace, and that a host
+		/// configured with the repository's published example key issued forgeable tokens while
+		/// passing validation unchallenged.
+		/// Rather than demand a key from every host - which would stop five of them starting and
+		/// breach "all existing functionality remains operational" - the routes are disabled when the
+		/// key is unusable. That is the second branch the finding's own resolution offers: "require
+		/// JWT wherever token routes are exposed OR disable those routes".
+		/// </remarks>
+		public static bool IsJwtConfigured { get; private set; }
+
+		// M-2: a signing key for HMAC-SHA-256 must be at least as long as the hash it feeds. RFC 7518
+		// section 3.2 requires a key of at least the same size as the hash output for HS256, i.e. 256
+		// bits / 32 bytes. Below that the key, not the algorithm, is the weakest link.
+		private const int MinimumJwtKeyByteLength = 32;
+
+		// The encryption key protects data at rest, so it is held to the same 256-bit floor.
+		private const int MinimumEncryptionKeyCharLength = 32;
+
+		// A cheap entropy floor that costs nothing and catches the padded-placeholder shape - a key
+		// that reaches the length requirement by repeating a handful of characters. Deliberately
+		// modest: this rejects obviously degenerate material without pretending to measure real
+		// entropy, which a static check cannot do.
+		private const int MinimumDistinctCharacters = 8;
+
+		// M-2 "known public defaults still pass": the two secrets published in this repository's own
+		// example configuration are denied by SHA-256 digest rather than by literal.
+		// Storing the digest, not the value, is deliberate and matters twice over: a denylist written
+		// as literals would republish the very secrets being retired, and it would make this file a
+		// fresh hit for the repository's own hardcoded-secret scan - a validation routine must not
+		// become the thing it exists to detect (CWE-798, CWE-540).
+		private const string PublishedDefaultJwtKeyDigest = "87184b56659256b8e2d8d29aa5da9fd3b34ec5d5cd41cabe4493eb482b839549";
+		private const string PublishedDefaultEncryptionKeyDigest = "7810b2fe1ad52ed53d4fd313052c78a59b15133f1e6e802805fb6e9c32935286";
+
 		//API URLs
 		public static string ApiUrlTemplateFieldInlineEdit { get; private set; }
 
+		/// <summary>
+		/// Initializes the settings, determining JWT capability from the process itself.
+		/// </summary>
+		/// <remarks>
+		/// This overload's signature is unchanged on purpose: it is the entry point every existing host
+		/// and the console application already call, and none of them has to be modified. Callers that
+		/// know their own capability should prefer
+		/// <see cref="Initialize(IConfiguration, bool)"/> and state it outright.
+		/// </remarks>
 		public static void Initialize(IConfiguration configuration)
 		{
+			Initialize(configuration, IsWebFrameworkPresent());
+		}
+
+		/// <summary>
+		/// Initializes the settings with JWT capability stated explicitly by the caller.
+		/// </summary>
+		/// <param name="configuration">The configuration root assembled by the host.</param>
+		/// <param name="jwtEndpointsExposed">
+		/// True when this process serves the bearer-token issue and refresh endpoints, which makes
+		/// 'Settings:Jwt:Key' mandatory. False for a process that does not - the console application
+		/// being the one such process the platform ships.
+		/// </param>
+		public static void Initialize(IConfiguration configuration, bool jwtEndpointsExposed)
+		{
+			// Recorded before validation runs, because ValidateRequiredSecurityConfiguration consults it.
+			JwtEndpointsExposed = jwtEndpointsExposed;
+
 			Configuration = configuration;
 			EncryptionKey = configuration["Settings:EncryptionKey"];
 			// 628426@gmail.com 27 Jul 2020 backwards compatibility for projects which still have mispelled EncryiptionKey in config
@@ -65,8 +160,9 @@ namespace WebVella.Erp
 			ConnectionString = configuration["Settings:ConnectionString"];
 			Lang = string.IsNullOrWhiteSpace(configuration["Settings:Lang"]) ? @"en" : configuration["Settings:Lang"];
 			// 125	FLE Standard Time	(GMT+02:00) Helsinki, Kiev, Riga, Sofia, Tallinn, Vilnius
-			//TODO - disq about using as default hosting server timezone when not specified in configuration
-			// 628426 - I think its better to use the current threads timezone as the default if you don't have one set?
+			// The hosting server's own time zone is deliberately NOT used as the default. An unset value must
+			// resolve to one fixed, documented zone, or the same stored timestamp is interpreted differently on
+			// each host. Set 'Settings:TimeZoneName' to override.
 			TimeZoneName = string.IsNullOrWhiteSpace(configuration["Settings:TimeZoneName"]) ? @"FLE Standard Time" : configuration["Settings:TimeZoneName"];
 			JsonDateTimeFormat = string.IsNullOrWhiteSpace(configuration["Settings:JsonDateTimeFormat"]) ? "yyyy-MM-ddTHH:mm:ss.fff" : configuration["Settings:JsonDateTimeFormat"];
 
@@ -117,33 +213,110 @@ namespace WebVella.Erp
 
 			// SECURITY - findings C-04 (Critical) and H-04 (High), CWE-798 use of hard-coded credentials,
 			// CWE-321 use of a hard-coded cryptographic key, OWASP A02 Cryptographic Failures.
-			// THREAT: this assignment previously substituted a compiled-in placeholder signing key whenever none was
-			// configured. That value shipped in the public source tree, so any deployment which did not supply its own
-			// key issued bearer tokens an attacker could forge at will - a complete authentication bypass.
-			// The fallback is removed deliberately: a missing signing key must become an error, never a silent default.
+			// THREAT: a compiled-in placeholder signing key ships in the public source tree, so any deployment that
+			// does not supply its own key issues bearer tokens an attacker can forge at will - a complete
+			// authentication bypass. INVARIANT: this assignment takes the configured value and nothing else; a
+			// missing signing key must become an error, never a silent default.
 			// ValidateRequiredSecurityConfiguration below turns that absence into an actionable startup failure.
 			JwtKey = configuration["Settings:Jwt:Key"];
 			JwtIssuer = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Issuer"]) ? "webvella-erp" : configuration["Settings:Jwt:Issuer"];
 			JwtAudience = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Audience"]) ? "webvella-erp" : configuration["Settings:Jwt:Audience"];
 
+			// M-2 (CWE-20, CWE-798): resolved once, here, so that every bearer-token code path asks the
+			// same question and gets the same answer. A key that is absent, too short, too repetitive or
+			// equal to this repository's published example is not usable, and the token routes disable
+			// themselves rather than issue forgeable tokens or fault on a null key.
+			IsJwtConfigured = IsAcceptableJwtKey(JwtKey);
+
 			// SECURITY - findings C-04 (Critical), H-04 (High) and H-05 (High), CWE-798, CWE-321, OWASP A02 and A05.
-			// THREAT: the shipped Config.json files no longer carry live secrets and CryptoUtility no longer falls back
-			// to a compiled-in encryption key, so a settings layer that quietly defaulted would merely relocate the
-			// defect - the platform would start with a known-bad key and nobody would notice. Initialize is the single
-			// funnel every host and the console application passes through, so the absence of a required secret is
-			// asserted here. Invoked before IsInitialized is set, so a failed validation leaves the settings
-			// explicitly un-initialized rather than half-applied.
+			// THREAT: a settings layer that quietly defaults a secret relocates the defect instead of removing it -
+			// the platform starts with a known-bad key and nobody notices. INVARIANT: no required secret may acquire
+			// a default here, and its absence must abort startup. This is also the ordering precondition for
+			// scrubbing the eight shipped Config.json files, which still carry live connection, encryption and token
+			// values: that scrub is only safe once absence fails loudly AND an alternative supply channel has been
+			// registered (docs/security/secure-configuration.md). Initialize is the single funnel every host and the
+			// console application passes through, and this runs before IsInitialized is set, so a failed validation
+			// leaves the settings explicitly un-initialized rather than half-applied.
 			ValidateRequiredSecurityConfiguration(configuration);
 
 			IsInitialized = true;
 		}
 
 		/// <summary>
+		/// Assembly simple name of the web framework. The bearer-token issue and refresh endpoints, and the
+		/// token validator that consumes <see cref="JwtKey"/>, both live in it.
+		/// </summary>
+		private const string WebFrameworkAssemblyName = "WebVella.Erp.Web";
+
+		/// <summary>
+		/// Determines whether this process exposes the bearer-token endpoints, for the single-argument
+		/// <see cref="Initialize(IConfiguration)"/> overload.
+		/// </summary>
+		/// <returns>
+		/// True when the web framework is part of this application, which is exactly the condition under
+		/// which the token endpoints are routable and <see cref="JwtKey"/> is consumed.
+		/// </returns>
+		/// <remarks>
+		/// SECURITY (H-04, CWE-798) - this replaces an inference drawn from configuration CONTENT with one
+		/// drawn from what the application actually consists of, which is the thing that determines whether
+		/// the endpoints exist. Two independent tests are applied and either is sufficient, which is what
+		/// makes the answer reliable in both directions rather than merely likely:
+		/// <list type="bullet">
+		/// <item><description>
+		/// the assembly is already loaded. Every web host reaches
+		/// <see cref="Initialize(IConfiguration)"/> through the web framework's own service-registration
+		/// extension, so executing that code requires the assembly to be loaded; and
+		/// </description></item>
+		/// <item><description>
+		/// the assembly file sits next to the entry assembly. This second test exists so the answer does not
+		/// depend on WHEN initialization happens relative to the first use of a web-framework type - the
+		/// runtime loads assemblies lazily, so a caller that initialized settings before touching any
+		/// web-framework type would otherwise be misread as a non-web process and silently exempted from the
+		/// key requirement, reintroducing the very defect this finding is about.
+		/// </description></item>
+		/// </list>
+		/// The console application is exempt by construction under both tests rather than by luck: it does
+		/// not reference the web framework, so the assembly is neither loaded nor present in its output.
+		/// Neither test attempts an assembly load - provoking one would be a side effect, and a failure to
+		/// find the file would then have to be interpreted, which is exactly the guesswork this replaces.
+		/// </remarks>
+		private static bool IsWebFrameworkPresent()
+		{
+			foreach (var loadedAssembly in AppDomain.CurrentDomain.GetAssemblies())
+			{
+				if (string.Equals(loadedAssembly.GetName().Name, WebFrameworkAssemblyName, StringComparison.Ordinal))
+				{
+					return true;
+				}
+			}
+
+			// Probe the application's own directory only. No search path is walked and no load is attempted,
+			// so this cannot be influenced by anything outside the deployed application.
+			try
+			{
+				var assemblyPath = System.IO.Path.Combine(AppContext.BaseDirectory, WebFrameworkAssemblyName + ".dll");
+				return System.IO.File.Exists(assemblyPath);
+			}
+			catch (ArgumentException)
+			{
+				// A malformed base directory cannot be interpreted, so fall back to the loaded-assembly answer
+				// above rather than guessing. Deliberately not a silent 'false' for any broader failure: an
+				// unexpected error here must surface rather than quietly exempt a host from the key requirement.
+				return false;
+			}
+		}
+
+		/// <summary>
 		/// Fails fast when a security setting the platform cannot safely default was not supplied by any
-		/// configuration provider (Config.json, environment variables or user secrets).
-		/// Part of the OWASP Top 10 remediation for findings C-04, H-04 and H-05 (CWE-798, CWE-321): every
-		/// compiled-in default secret was removed, so a missing value has to surface as an actionable startup
-		/// error instead of silently degrading into a known-bad key.
+		/// configuration provider. Both callers of Initialize currently build a chain of exactly one provider -
+		/// AddJsonFile - so at this point in the remediation "any provider" still means Config.json alone. The
+		/// environment-variable and user-secrets providers named in the failure message below arrive with the
+		/// paired configuration change described at the call site, which is also when the shipped secret values
+		/// are blanked; the message states the supply channels the operator guide documents rather than only the
+		/// one that is wired today.
+		/// Part of the OWASP Top 10 remediation for findings C-04, H-04 and H-05 (CWE-798, CWE-321): the
+		/// compiled-in default secrets behind those three findings were removed, so a missing value has to
+		/// surface as an actionable startup error instead of silently degrading into a known-bad key.
 		/// Only configuration key NAMES are reported - never values, prefixes, lengths or digests - so that a
 		/// startup failure cannot leak key material into a console, log file or crash report (CWE-532).
 		/// </summary>
@@ -157,28 +330,83 @@ namespace WebVella.Erp
 			// it immediately after initialization, so no host can function without it (finding H-05, CWE-798).
 			if (string.IsNullOrWhiteSpace(ConnectionString))
 			{
-				missingSecrets += $"{Environment.NewLine}  - 'Settings:ConnectionString' (environment variable 'Settings__ConnectionString')";
+				missingSecrets += $"{Environment.NewLine}  - 'Settings:ConnectionString'";
 			}
 
-			// The encryption key is unconditionally required: CryptoUtility.CryptKey no longer falls back to a
-			// compiled-in constant, so an absent key is caught here at startup rather than at the first
-			// encrypt/decrypt of stored data (finding C-04, CWE-798, CWE-321). The legacy mispelled 'EncriptionKey'
-			// spelling still satisfies this check, because Initialize resolves that backwards-compatibility path
-			// into EncryptionKey before this validation runs.
+			// The encryption key is unconditionally required: CryptoUtility.CryptKey has no compiled-in fallback, so
+			// an absent key is caught here at startup rather than at the first encrypt or decrypt of stored data
+			// (finding C-04, CWE-798, CWE-321). The legacy misspelled 'EncriptionKey' spelling still satisfies this
+			// check, because Initialize resolves that backwards-compatibility path into EncryptionKey first.
 			if (string.IsNullOrWhiteSpace(EncryptionKey))
 			{
-				missingSecrets += $"{Environment.NewLine}  - 'Settings:EncryptionKey' (environment variable 'Settings__EncryptionKey')";
+				missingSecrets += $"{Environment.NewLine}  - 'Settings:EncryptionKey'";
+			}
+			else if (!IsAcceptableSecretShape(EncryptionKey, MinimumEncryptionKeyCharLength) ||
+				MatchesKnownPublishedDefault(EncryptionKey, PublishedDefaultEncryptionKeyDigest))
+			{
+				// M-2 "known public defaults still pass" / "checks only for nonblank values": the key that
+				// protects data at rest was accepted on the sole basis of being non-blank, so the example
+				// key published in this repository's own Config.json passed unchallenged - and it is 64
+				// characters long, so no length rule would ever have caught it.
+				//
+				// Enforcement is staged rather than absolute, and the reason is a scope boundary, not
+				// timidity: blanking the shipped configuration values is AAP Class 5, a later boundary, so
+				// those files still carry the published key right now. Refusing to start on it
+				// unconditionally would break every existing checkout and the running deployment, which
+				// the preservation requirement forbids. So the check fails CLOSED in production posture -
+				// where a publicly known data-at-rest key is a real compromise - and reports loudly in
+				// development posture, where the value is still expected to be present. Once Class 5
+				// blanks the value and sets DevelopmentMode false, the absent-key branch above takes over
+				// and this branch becomes unreachable for the default. Same report-then-enforce shape the
+				// remediation already uses for the Content-Security-Policy.
+				if (DevelopmentMode)
+				{
+					// Written to standard error so it reaches the host's console log without this class
+					// taking a dependency on the logging stack, which is not available this early -
+					// LogService needs a database connection that this very method is still validating.
+					// Only the setting NAME is named; never the value, its length or a digest of it.
+					Console.Error.WriteLine("warn: WebVella.Erp.ErpSettings[1] SECURITY - 'Settings:EncryptionKey' is weak or is the " +
+						"example key published in this repository, so data encrypted at rest is not protected. Development mode is " +
+						"on, so startup continues. Supply a unique key of at least " +
+						MinimumEncryptionKeyCharLength.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+						" characters before deploying; see docs/security/secure-configuration.md.");
+				}
+				else
+				{
+					missingSecrets += $"{Environment.NewLine}  - 'Settings:EncryptionKey' is weak or is the example key published in this repository" +
+						$" (environment variable 'Settings__EncryptionKey')";
+				}
 			}
 
-			// The token signing key is required only when a 'Settings:Jwt' section is actually configured, which is
-			// the case exclusively for the hosts that issue bearer tokens. The remaining hosts and the console
-			// application legitimately ship no such section, and demanding a key from them would stop them starting -
-			// which the preservation requirement "all existing functionality remains operational" forbids. Where the
-			// section IS present the key is mandatory, because the hard-coded fallback that used to cover it was
-			// removed above (finding H-04, CWE-798, CWE-321).
-			if (configuration.GetSection("Settings:Jwt").Exists() && string.IsNullOrWhiteSpace(JwtKey))
+			// The token signing key is NOT demanded from every host. The token issue and refresh routes are
+			// [AllowAnonymous] and are defined in WebVella.Erp.Web, so they exist on ALL seven hosts, yet five of
+			// those hosts legitimately ship no 'Settings:Jwt' section at all; demanding a key from them would stop
+			// them starting, which the preservation requirement "all existing functionality remains operational"
+			// forbids. The routes are DISABLED instead whenever the key is unusable - the second branch the
+			// finding's own resolution offers, "require JWT wherever token routes are exposed OR disable those
+			// routes" (findings H-04 and M-2 - CWE-798 hard-coded credentials, CWE-321 hard-coded cryptographic
+			// key, CWE-20 improper input validation; the hard-coded fallback that used to mask all of this was
+			// removed above).
+			// What this replaced demanded a key only when a Jwt section already existed, and then only that the
+			// value was non-blank. Two consequences, both real:
+			//  - The five hosts with no section passed validation and then faulted inside
+			//    Encoding.UTF8.GetBytes(null) the moment an anonymous caller reached the route - a 500 carrying
+			//    a stack trace rather than a clean refusal.
+			//  - A host configured with this repository's published example key passed unchallenged and issued
+			//    tokens anyone holding that public value could forge.
+			// IsJwtConfigured is already resolved above and the routes consult it, so the remaining job here is to
+			// say so out loud: a host that DOES declare a Jwt section plainly intends to serve tokens, and a
+			// silently disabled authentication feature is its own kind of defect. JwtEndpointsExposed gates the
+			// message so a process that hosts no token routes at all - the console application - is never told
+			// that routes it never had are disabled.
+			if (JwtEndpointsExposed && !IsJwtConfigured && configuration.GetSection("Settings:Jwt").Exists())
 			{
-				missingSecrets += $"{Environment.NewLine}  - 'Settings:Jwt:Key' (environment variable 'Settings__Jwt__Key')";
+				Console.Error.WriteLine("warn: WebVella.Erp.ErpSettings[2] SECURITY - a 'Settings:Jwt' section is present but " +
+					"'Settings:Jwt:Key' is absent, shorter than " +
+					MinimumJwtKeyByteLength.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+					" bytes, too repetitive, or is the example key published in this repository. The bearer-token issue and " +
+					"refresh routes are DISABLED and will refuse every request until an acceptable key is supplied; " +
+					"see docs/security/secure-configuration.md.");
 			}
 
 			if (string.IsNullOrEmpty(missingSecrets))
@@ -186,10 +414,149 @@ namespace WebVella.Erp
 				return;
 			}
 
-			throw new Exception("WebVella ERP startup aborted - required security configuration is missing:" + missingSecrets +
+			// A specific exception type rather than the base Exception, so a host that wants to distinguish a
+			// configuration fault from any other startup failure can. InvalidOperationException is what the
+			// framework itself raises for "this operation cannot proceed in the current state", and because it
+			// derives from Exception every existing catch site continues to behave exactly as before.
+			throw new InvalidOperationException("WebVella ERP startup aborted - required security configuration is missing:" + missingSecrets +
 				$"{Environment.NewLine}Supply every value listed above through an environment variable, user secrets in development, or Config.json, then restart." +
 				$"{Environment.NewLine}The compiled-in default encryption key and the default token signing key were removed on purpose by the OWASP Top 10 remediation (findings C-04, H-04, H-05 - CWE-798, CWE-321); no insecure fallback remains by design." +
 				$"{Environment.NewLine}See docs/security/secure-configuration.md for the complete list of required settings and how to supply them.");
+		}
+
+		/// <summary>
+		/// Decides whether a token signing key is fit to sign and validate bearer tokens.
+		/// </summary>
+		/// <remarks>
+		/// M-2: this is a pure function on the raw value, deliberately, because the hosts need the same
+		/// verdict at a point where <see cref="Initialize"/> has not run yet. Startup.ConfigureServices
+		/// configures the JwtBearer handler, but Initialize is called later from UseErp during Configure,
+		/// so <see cref="JwtKey"/> is still null while the handler is being registered. A host therefore
+		/// asks this method about the value it reads from its own IConfiguration, and
+		/// <see cref="IsJwtConfigured"/> answers the same question later for the routes. One rule, two
+		/// call times - which is what stops a host trusting a key the routes would reject, or the reverse.
+		/// Rejects, in ascending cost so the cheap tests run first:
+		///  - absent or whitespace values;
+		///  - keys under <see cref="MinimumJwtKeyByteLength"/> bytes once UTF-8 encoded, per RFC 7518
+		///    section 3.2 for HS256 - note bytes, not characters, because a non-ASCII key encodes to more
+		///    bytes than it has characters and only the byte count reaches the HMAC;
+		///  - keys built from fewer than <see cref="MinimumDistinctCharacters"/> distinct characters;
+		///  - the example key published in this repository, matched by digest.
+		/// </remarks>
+		public static bool IsAcceptableJwtKey(string key)
+		{
+			if (string.IsNullOrWhiteSpace(key))
+			{
+				return false;
+			}
+
+			// The HMAC consumes bytes, so the byte count is what the RFC floor applies to.
+			if (Encoding.UTF8.GetByteCount(key) < MinimumJwtKeyByteLength)
+			{
+				return false;
+			}
+
+			if (!HasSufficientCharacterVariety(key))
+			{
+				return false;
+			}
+
+			return !MatchesKnownPublishedDefault(key, PublishedDefaultJwtKeyDigest);
+		}
+
+		/// <summary>
+		/// Length and character-variety floor shared by the non-JWT secrets. Measured in characters
+		/// rather than bytes because these values are consumed as strings, not as HMAC input.
+		/// </summary>
+		private static bool IsAcceptableSecretShape(string value, int minimumLength)
+		{
+			if (string.IsNullOrWhiteSpace(value) || value.Length < minimumLength)
+			{
+				return false;
+			}
+
+			return HasSufficientCharacterVariety(value);
+		}
+
+		/// <summary>
+		/// Counts distinct characters up to <see cref="MinimumDistinctCharacters"/> and no further.
+		/// </summary>
+		/// <remarks>
+		/// M-2: this is the entropy floor that catches padded placeholders - a key of "aaaa...aaaa" or
+		/// "0123012301230123..." clears any length test but carries almost no key material. The buffer is
+		/// stack-allocated and can never overflow, because the method returns the moment the floor is
+		/// reached, so at most <see cref="MinimumDistinctCharacters"/> characters are ever remembered.
+		/// This is a coarse floor, not an entropy measurement; it exists to reject the obvious cases
+		/// cheaply, and the digest denylist handles the specific values this repository has published.
+		/// </remarks>
+		private static bool HasSufficientCharacterVariety(string value)
+		{
+			Span<char> seen = stackalloc char[MinimumDistinctCharacters];
+			var seenCount = 0;
+
+			foreach (var character in value)
+			{
+				var alreadySeen = false;
+				for (var index = 0; index < seenCount; index++)
+				{
+					if (seen[index] == character)
+					{
+						alreadySeen = true;
+						break;
+					}
+				}
+
+				if (alreadySeen)
+				{
+					continue;
+				}
+
+				seen[seenCount] = character;
+				seenCount++;
+
+				if (seenCount >= MinimumDistinctCharacters)
+				{
+					// The answer cannot change once the floor is reached.
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		/// <summary>
+		/// Compares a supplied secret against a known-bad value held only as a SHA-256 digest.
+		/// </summary>
+		/// <remarks>
+		/// M-2: the digest, never the literal, is what lives in this source file - see the constants for
+		/// why. SHA-256 here is a value-identity comparison against a PUBLIC value, not password storage
+		/// and not a confidentiality control, so an unsalted single-pass digest is exactly the right
+		/// primitive and carries none of the objections that apply to hashing credentials.
+		/// The comparison is fixed-time even so. It compares public data, so a timing signal would leak
+		/// nothing useful, but the routine sits on a security decision path and a later reader must not
+		/// have to work out whether that was reasoned about.
+		/// </remarks>
+		private static bool MatchesKnownPublishedDefault(string value, string expectedDigestHex)
+		{
+			if (string.IsNullOrEmpty(value))
+			{
+				return false;
+			}
+
+			var actualDigest = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+			byte[] expectedDigest;
+			try
+			{
+				expectedDigest = Convert.FromHexString(expectedDigestHex);
+			}
+			catch (FormatException)
+			{
+				// A malformed constant must not be read as "this secret is fine". Unreachable while the
+				// constants above are well formed; present so that a future typo fails closed.
+				return true;
+			}
+
+			return CryptographicOperations.FixedTimeEquals(actualDigest, expectedDigest);
 		}
 	}
 }

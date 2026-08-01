@@ -218,7 +218,13 @@
 
     <script>
 		var FilesServerLoad = @Html.WvJsonRaw(Model.JsonFiles);
-		var CurrentType = 	"@Html.WvJsonRaw(Model.CurrentType)";
+		@* SECURITY - finding M-5 (CWE-116 improper encoding, CWE-79), OWASP A03. This value is
+		   interpolated INSIDE a quoted JavaScript string, not emitted as a JSON document like
+		   FilesServerLoad above it, so it needs JavaScript string-context encoding. WvJsonRaw escapes
+		   only '<', which leaves a '"' free to close this literal and turn the remainder of the line
+		   into executable script, and a trailing backslash free to escape the closing quote.
+		   WvJsScriptString encodes the complete string-context threat set with the framework encoder. *@
+		var CurrentType = 	"@Html.WvJsScriptString(Model.CurrentType)";
 		var CurrentSort = 	@Html.Raw(Model.CurrentSort);
 		var CurrentPage = 	@Html.Raw(Model.CurrentPage);
 		var CurrentPageSize = 	@Html.Raw(Model.CurrentPageSize);

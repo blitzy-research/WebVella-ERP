@@ -47,7 +47,10 @@ namespace WebVella.Erp.Database
 					{
 						List<DbParameter> parameters = new List<DbParameter>();
 
-						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+						// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+						// Software and Data Integrity Failures). Entity documents are read back with polymorphic type handling so the DbBaseField
+						// hierarchy round-trips. The binder constrains which types a stored $type token may name.
+						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 						DbParameter parameterId = new DbParameter();
 						parameterId.Name = "id";
@@ -61,7 +64,11 @@ namespace WebVella.Erp.Database
 						parameterJson.Type = NpgsqlDbType.Json;
 						parameters.Add(parameterJson);
 
-						string tableName = RECORD_COLLECTION_PREFIX + entity.Name;
+						// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). This name is
+						// concatenated into CREATE TABLE and the CREATE COLUMN statements below, so it is
+						// validated against the allow-list at construction. Validate returns it unchanged
+						// for conforming names, so the emitted DDL is identical for legitimate entities.
+						string tableName = DbIdentifier.Validate(RECORD_COLLECTION_PREFIX + entity.Name);
 
 						DbRepository.CreateTable(tableName);
 						foreach (var field in entity.Fields)
@@ -162,7 +169,7 @@ namespace WebVella.Erp.Database
 				{
 					NpgsqlCommand command = con.CreateCommand("UPDATE entities SET json=@json WHERE id=@id;");
 
-					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 					var parameter = command.CreateParameter() as NpgsqlParameter;
 					parameter.ParameterName = "json";
@@ -210,6 +217,7 @@ namespace WebVella.Erp.Database
 					JsonSerializerSettings settings = new JsonSerializerSettings
 					{
 						TypeNameHandling = TypeNameHandling.Auto,
+						SerializationBinder = ErpSerializationBinder.Instance,
 						NullValueHandling = NullValueHandling.Ignore,
 						MissingMemberHandling = MissingMemberHandling.Ignore,
 					};
@@ -272,7 +280,18 @@ namespace WebVella.Erp.Database
 
 						var entity = Read(entityId);
 
-						NpgsqlCommand command = con.CreateCommand("DELETE FROM entities WHERE id=@id; DROP TABLE rec_" + entity.Name);
+						// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The entity
+						// id is bound as a parameter below, but PostgreSQL cannot parameterise the
+						// identifier in DROP TABLE, so the record table name has to be concatenated
+						// into the statement text. This is the highest-consequence identifier sink in
+						// the platform: the statement is already a multi-statement batch, so a name
+						// carrying a semicolon would append attacker-chosen DDL to a command that is
+						// running inside a transaction with full schema rights.
+						// DbIdentifier.Quote validates the name against the allow-list and emits it
+						// double-quoted, and throws rather than sanitising if it does not conform.
+						// Quoting is behaviour-preserving here: the allow-list admits only lower-case
+						// names, which fold to themselves, so "rec_x" and rec_x address the same table.
+						NpgsqlCommand command = con.CreateCommand("DELETE FROM entities WHERE id=@id; DROP TABLE " + DbIdentifier.Quote("rec_" + entity.Name));
 
 						var parameterId = command.CreateParameter() as NpgsqlParameter;
 						parameterId.ParameterName = "id";
