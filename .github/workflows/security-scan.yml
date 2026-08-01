@@ -4,10 +4,13 @@
 # of the security brief, "validate remediation through automated scanning".
 #
 # The build-level half of the gate is the repository-root Directory.Build.props
-# (NuGetAudit, NuGetAuditMode=all, NuGetAuditLevel=low, NU1901-NU1904 promoted to
+# (NuGetAudit, NuGetAuditMode=all, NuGetAuditLevel=low, NU1900-NU1905 promoted to
 # build errors, EnableNETAnalyzers, AnalysisLevel=latest-recommended). This
 # workflow deliberately restates none of those properties: every project inherits
-# them, so the gate cannot drift between a local build and CI.
+# them, so the gate cannot drift between a local build and CI. NU1900 and NU1905
+# are in that promotion list because an audit that could not obtain a
+# vulnerability database used to report nothing and pass - a gate that fails open
+# is worse than no gate, because it is trusted.
 #
 # Validation-gate coverage, including three disclosed tooling substitutions. The
 # external scanners named in the brief (Security Code Scan / Semgrep, OWASP
@@ -38,11 +41,25 @@ name: Security Scan
 
 on:
   push:
-    # This repository's default branch is `master`. Naming any other branch here
-    # would leave the gate permanently dormant, so the value is deliberate.
-    branches: [master]
+    # EVERY branch, deliberately. Restricting this to the default branch made the
+    # gate unobtainable exactly where it is most useful: a security fix is
+    # developed on a feature branch, and a gate that cannot run until the change
+    # has already been merged proves nothing about the change. `workflow_dispatch`
+    # is no substitute either - GitHub only offers it for the copy of the file on
+    # the default branch, so a workflow revision living on a feature branch has no
+    # way to be exercised at all. Running on every push is what makes Objective 5
+    # ("validate remediation through automated scanning") true before the merge
+    # rather than after it.
+    branches: ['**']
   pull_request:
     branches: [master]
+  # A dependency gate that only reacts to pushes cannot see an advisory published
+  # against a package this repository has not touched - which is the normal way a
+  # dependency becomes vulnerable (A06:2021, Vulnerable and Outdated Components).
+  # The weekly run re-audits an unchanged tree against a changed advisory
+  # database, so the posture stays verified rather than merely once-verified.
+  schedule:
+    - cron: '0 3 * * 1'
   # Lets a maintainer re-baseline the scan evidence on demand after a dependency
   # or configuration change, without waiting for a push.
   workflow_dispatch:
@@ -88,9 +105,53 @@ jobs:
         with:
           global-json-file: global.json
 
+      # H-19 (A06/A08) regression assertion - the in-CI proof that the core
+      # project is really in the scan graph. The restore below would also fail if
+      # the casing regressed, but only incidentally and with an MSB3202 that says
+      # nothing about security; this step states the property directly and names
+      # the finding, so a future contributor who reintroduces the defect is told
+      # what they broke instead of debugging a missing-file error.
+      #
+      # Two assertions, because either alone is insufficient. The negative one
+      # catches a reintroduced `WebVella.ERP\` reference anywhere in the build
+      # graph. The positive one proves the core project is genuinely enumerated
+      # by the solution and that its file exists - a reference can be correctly
+      # cased and still dangle. This is deliberately ordered BEFORE the restore:
+      # a false "clean" audit caused by an absent project is the exact failure
+      # mode H-19 describes, and it must be impossible to reach.
+      - name: Assert the project-reference path casing has not regressed
+        run: |
+          status=0
+          # Fixed-string search rather than a regex, so the '.' is a literal dot
+          # and the trailing path separator is matched exactly as the defect
+          # wrote it. \134 is the octal escape for a backslash - built this way,
+          # and printed with printf rather than echo, so that neither the shell
+          # nor a linter has to guess at an escape.
+          bad_prefix=$(printf 'WebVella.ERP\134')
+          if git grep -In -F "$bad_prefix" -- '*.sln' '*.csproj'; then
+            printf '%s\n' "::error::H-19 regressed - a project reference uses the upper-case path '${bad_prefix}' while the directory on disk is 'WebVella.Erp'. On a case-sensitive filesystem the solution restore fails, the core project drops out of the scan graph, and the dependency audit reports FALSELY CLEAN. Correct the casing; do not work around it."
+            status=1
+          else
+            printf '%s\n' "PASS no '${bad_prefix}' project reference in any .sln or .csproj"
+          fi
+          core='WebVella.Erp/WebVella.Erp.csproj'
+          # \134 is the octal escape for a backslash: normalises a Windows-style
+          # separator in the listing without an ambiguous inline escape.
+          if ! dotnet sln WebVella.ERP3.sln list | tr '\134' '/' | grep -qxF "$core"; then
+            printf '%s\n' "::error::H-19 regressed - the core project ${core} is not enumerated by WebVella.ERP3.sln, so every solution-level scan below would silently exclude the project that owns the platform's package graph."
+            status=1
+          elif [ ! -f "$core" ]; then
+            printf '%s\n' "::error::H-19 regressed - ${core} is enumerated by the solution but does not exist on disk."
+            status=1
+          else
+            printf '%s\n' "PASS ${core} is enumerated by the solution and present on disk"
+          fi
+          exit "$status"
+
       # Gate 2, part 1 - where the composition gate actually fires.
-      # Directory.Build.props promotes NU1901-NU1904 to build errors, so a
-      # restore that surfaces any advisory at any severity fails the job here.
+      # Directory.Build.props promotes NU1900-NU1905 to build errors, so a
+      # restore that surfaces any advisory at any severity - or that cannot
+      # obtain advisory data at all - fails the job here.
       # Solution-wide by design (see the H-19 note on runs-on): a per-project
       # restore would not prove the core project is present in the scan graph.
       - name: Restore with dependency auditing
@@ -145,34 +206,83 @@ jobs:
       # literal of its own - a sweep that echoed what it found, or that
       # hardcoded the key it searched for, would itself leak the secret it is
       # meant to police.
+      #
+      # DETECTION ENVELOPE, stated so it is auditable rather than assumed. This
+      # substitutes for gitleaks / truffleHog / detect-secrets, so its blind
+      # spots matter as much as its coverage. Four bypasses were found by
+      # fixture-testing an earlier revision of this sweep and are closed here:
+      #   - CASE. The matcher was case-sensitive, so "connectionString" passed;
+      #     the pathspec was case-sensitive too, so a lower-case `config.json`
+      #     and any `appsettings.json` were never inspected at all. Now `-iE`
+      #     plus `:(icase)` pathspecs. Both pathspecs are written with a LEADING
+      #     `*`, which matters: a git pathspec is anchored at the repository
+      #     root, so `appsettings*.json` would only ever match a top-level file
+      #     and would silently skip all five that live in project directories.
+      #   - PREFIX. The alternation anchored `ConnectionString` and
+      #     `EncryptionKey` exactly, so `CloudBlobStorageConnectionString` - a
+      #     key this repository really carries in
+      #     WebVella.Erp.Site.Sdk/Config.json - passed while populated. Every
+      #     alternative is now prefix-tolerant, and SecretKey, ApiKey,
+      #     ClientSecret, Token and Pwd are added.
+      #   - LINE ORIENTATION. grep matches within a line, so a key and its value
+      #     split across two lines passed. Newlines are collapsed before
+      #     matching.
+      #   - EMPTY SWEEP. A pathspec that matches nothing produced no FAIL and no
+      #     PASS, and the gate reported success having inspected nothing. An
+      #     explicit swept-count assertion now fails closed.
+      # Deliberately preserved: an empty value PASSES (it is the required end
+      # state, not a finding) while a whitespace-only value FAILS.
+      #
+      # The two source checks below assert their target EXISTS before grepping
+      # it. `grep -q` on a missing file exits 2, which took the else branch and
+      # printed PASS for a file that was not there - so renaming either file
+      # while reintroducing its regression used to pass the gate silently. An
+      # assertion that cannot run is a failure, never a pass.
       - name: Sweep for hardcoded credentials
         run: |
           printf '' > secret-sweep.txt
           status=0
           report() { echo "$1" | tee -a secret-sweep.txt; }
-          pattern='"(ConnectionString|EncryptionKey|[A-Za-z]*Password|[A-Za-z]*SigningKey|Key)"[[:space:]]*:[[:space:]]*"[^"]+"'
+          pattern='"([A-Za-z]*ConnectionString|[A-Za-z]*EncryptionKey|[A-Za-z]*Password|[A-Za-z]*Pwd|[A-Za-z]*SigningKey|[A-Za-z]*SecretKey|[A-Za-z]*ApiKey|[A-Za-z]*ClientSecret|[A-Za-z]*Token|Key)"[[:space:]]*:[[:space:]]*"[^"]+"'
+          flatten() { tr '\n' ' ' < "$1"; }
+          swept=0
           while IFS= read -r cfg; do
-            if grep -qE "$pattern" "$cfg"; then
-              names=$(grep -oE "$pattern" "$cfg" | grep -oE '^"[A-Za-z]+"' | sort -u | tr '\n' ' ')
+            swept=$((swept + 1))
+            if flatten "$cfg" | grep -qiE "$pattern"; then
+              names=$(flatten "$cfg" | grep -oiE "$pattern" | grep -oE '^"[^"]+"' | sort -u | tr '\n' ' ')
               report "FAIL $cfg carries populated secret key(s): $names"
               status=1
             else
               report "PASS $cfg"
             fi
-          done < <(git ls-files '*Config.json')
-          # C-04: the compiled-in default encryption key constant must stay gone.
-          if grep -qE '"[A-Za-z0-9+/=]{32,}"' WebVella.Erp/Utilities/CryptoUtility.cs; then
-            report "FAIL WebVella.Erp/Utilities/CryptoUtility.cs retains a long embedded literal"
+          done < <(git ls-files ':(icase)*config.json' ':(icase)*appsettings*.json' | sort -u)
+          if [ "$swept" -eq 0 ]; then
+            report "FAIL the configuration sweep inspected no tracked file - the pathspec matched nothing, so this gate proved nothing"
             status=1
           else
-            report "PASS WebVella.Erp/Utilities/CryptoUtility.cs"
+            report "swept $swept tracked configuration file(s)"
+          fi
+          # C-04: the compiled-in default encryption key constant must stay gone.
+          crypto_file='WebVella.Erp/Utilities/CryptoUtility.cs'
+          if [ ! -f "$crypto_file" ]; then
+            report "FAIL $crypto_file is missing - the C-04 regression check cannot run"
+            status=1
+          elif grep -qE '"[A-Za-z0-9+/=]{32,}"' "$crypto_file"; then
+            report "FAIL $crypto_file retains a long embedded literal"
+            status=1
+          else
+            report "PASS $crypto_file"
           fi
           # C-01: the shipped default administrator credential must stay gone.
-          if grep -qE '\["password"\][[:space:]]*=[[:space:]]*"[^"]+"' WebVella.Erp/ERPService.cs; then
-            report "FAIL WebVella.Erp/ERPService.cs assigns a literal seed password"
+          seed_file='WebVella.Erp/ERPService.cs'
+          if [ ! -f "$seed_file" ]; then
+            report "FAIL $seed_file is missing - the C-01 regression check cannot run"
+            status=1
+          elif grep -qE '\["password"\][[:space:]]*=[[:space:]]*"[^"]+"' "$seed_file"; then
+            report "FAIL $seed_file assigns a literal seed password"
             status=1
           else
-            report "PASS WebVella.Erp/ERPService.cs"
+            report "PASS $seed_file"
           fi
           if [ "$status" -ne 0 ]; then
             echo "::error::Gate 3 failed - tracked credential material detected. Supply secrets through environment variables as described in docs/security/secure-configuration.md."
@@ -180,6 +290,59 @@ jobs:
             echo "Gate 3 passed - no tracked credential material detected."
           fi
           exit "$status"
+
+      # NEGATIVE CONTROL - the in-CI proof that Gate 2 can actually fail. Every
+      # step above is a green-when-clean assertion, and a green run is
+      # indistinguishable from a gate that has stopped working: an audit that
+      # obtains no vulnerability database reports nothing and passes. This step
+      # inverts the test. It builds a throwaway project - inside the repository
+      # root so it inherits the real Directory.Build.props, which is the property
+      # under test - referencing AutoMapper 14.0.0, whose High-severity advisory
+      # GHSA-rvv3-g6hj-g44x / CVE-2026-32933 (CWE-674) is the very advisory
+      # finding H-01 closed by pinning [15.1.3]. The restore MUST fail with
+      # NU1903.
+      #
+      # If it does not fail, the gate is not gating - because the advisory data
+      # is unreachable, because the promotion list was weakened, or because the
+      # audit is off - and this job goes red with that stated plainly, rather
+      # than reporting a clean posture it did not verify. This is the same threat
+      # the NU1900/NU1905 promotions address, caught independently: the
+      # promotions make missing data fatal, and this control proves the whole
+      # chain end to end.
+      #
+      # Ordered AFTER the real gates on purpose, so a probe failure can never be
+      # mistaken for a finding against this repository's own dependency graph.
+      # The probe is not a solution member and is never committed; it is removed
+      # unconditionally, including when it fails, so it cannot leak into the
+      # secret sweep, the build or the uploaded evidence.
+      - name: Negative control - a known advisory must fail the build
+        run: |
+          probe_dir='.gate-negative-control'
+          cleanup() { rm -rf "$probe_dir"; }
+          trap cleanup EXIT
+          rm -rf "$probe_dir"
+          mkdir -p "$probe_dir"
+          {
+            echo '<Project Sdk="Microsoft.NET.Sdk">'
+            echo '  <PropertyGroup>'
+            echo '    <TargetFramework>net10.0</TargetFramework>'
+            echo '  </PropertyGroup>'
+            echo '  <ItemGroup>'
+            echo '    <PackageReference Include="AutoMapper" Version="14.0.0" />'
+            echo '  </ItemGroup>'
+            echo '</Project>'
+          } > "$probe_dir/probe.csproj"
+          if dotnet restore "$probe_dir/probe.csproj" --force > negative-control.txt 2>&1; then
+            echo "::error::The dependency gate is NOT gating. A restore of a project referencing AutoMapper 14.0.0 - carrying published High-severity advisory GHSA-rvv3-g6hj-g44x - succeeded. Either the advisory database was unavailable (NU1900/NU1905), NuGetAudit is off, or the NU19xx promotions in Directory.Build.props were weakened. Every clean result reported by this job is therefore unverified. Do not merge on the strength of it."
+            tail -n 40 negative-control.txt
+            exit 1
+          fi
+          if ! grep -q 'NU1903' negative-control.txt; then
+            echo "::error::The negative-control restore failed, but not with NU1903. The failure is unrelated to the advisory, so Gate 2's advisory detection remains unproven."
+            tail -n 40 negative-control.txt
+            exit 1
+          fi
+          echo "Negative control passed - the known High advisory failed the restore with NU1903, so Gate 2 provably fails on advisories rather than merely printing them."
 
       # Deliverable evidence. The brief requires scanner-derived before/after
       # results so docs/security/security-audit-report.md and
@@ -195,14 +358,36 @@ jobs:
           path: |
             vulnerable-packages.txt
             secret-sweep.txt
+            negative-control.txt
           if-no-files-found: warn
 
 # CI-COVERAGE NOTE - H-18 (CWE-1104, end-of-life framework), documented here and
-# not fixed from this file. The three WebVella.Erp.WebAssembly projects were
-# historically outside the solution graph, which left them unreachable by any
-# solution-level command and therefore entirely unscanned. The solution now
-# enumerates all 19 code projects - Client, Server and Shared included - and
-# every one targets net10.0, so the steps above do cover them. Any residual
-# WebAssembly build-graph risk stays owned by docs/security/risk-register.md:
-# altering the solution is out of scope for this workflow, which records the
-# state of the graph rather than changing it.
+# not fixed from this file. Stated precisely, because a security artefact that
+# overstates its own coverage is worse than one that admits a gap.
+#
+# TWO OF THE THREE WebVella.Erp.WebAssembly projects - Server and Shared - are
+# outside the solution graph. The Client has always been a member. So the
+# solution-level steps above reach 17 of the repository's 19 projects, and
+# `dotnet list WebVella.ERP3.sln package --vulnerable` enumerates
+# WebVella.Erp.WebAssembly (Client) but neither .Server nor .Shared. Any claim
+# that a green run here covers all 19 would be false.
+#
+# WHAT IS AND IS NOT COVERED FOR THOSE TWO. Adding them to the solution is out of
+# scope for this remediation - the audit plan scopes WebVella.ERP3.sln to the
+# H-19 casing correction alone - and this workflow records the state of the graph
+# rather than changing it. But they are not unprotected:
+#   - Directory.Build.props is DIRECTORY-scoped, not solution-scoped, so both
+#     inherit the whole gate regardless of membership. Verified per project with
+#     `dotnet msbuild <csproj> -getProperty:` on every gate property:
+#     NuGetAudit=true, NuGetAuditMode=all, NuGetAuditLevel=low, the full NU19xx
+#     promotion list, EnableNETAnalyzers=true, AnalysisLevel=latest-recommended.
+#   - H-18 itself is fixed in both: `-getProperty:TargetFramework` reports
+#     net10.0, off the end-of-life 7.0 line, and no 7.x package entry survives.
+#   - Their composition is verified by their own commands rather than by this
+#     job: standalone `dotnet restore`, `dotnet build --no-restore
+#     --no-incremental` and `dotnet list package --vulnerable
+#     --include-transitive` per project, all exiting 0 with no advisory.
+# The residual - that those per-project verifications are performed and recorded
+# out of band instead of re-proved on every push - is owned by
+# docs/security/risk-register.md, with the evidence in
+# docs/security/remediation-log.md.

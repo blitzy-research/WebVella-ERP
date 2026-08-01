@@ -75,9 +75,56 @@
 	     APPENDED, never overwritten: the .NET SDK itself contributes NU1605
 	     (package downgrade) and SYSLIB0011 (BinaryFormatter obsoletion, itself a
 	     CWE-502 signal) to this property. Assigning a bare literal here would
-	     silently drop both. -->
+	     silently drop both.
+
+	     Threat addressed by NU1900 and NU1905 - A GATE THAT FAILS OPEN. The four
+	     severity diagnostics above can only fire when the audit actually obtained
+	     a vulnerability database. When it did not, the audit reports nothing and
+	     restore succeeds, so a package carrying a known High advisory passes
+	     every gate in complete silence. Two configurations produce exactly that:
+	         - NU1900, "error occurred while getting package vulnerability data" -
+	           a package source that is reachable but whose advisory endpoint is
+	           not. An internal mirror, an Azure Artifacts upstream, an
+	           air-gapped runner or a blocked egress proxy all land here.
+	         - NU1905, "audit source provided no vulnerability database" - a
+	           NuGetAuditSource is configured but serves no advisory data.
+	     Both configurations were reproduced against this very file, using a probe
+	     that references a package with a published High advisory, and they do NOT
+	     behave the same - stated precisely, because overstating what this
+	     property group achieves would itself be a fail-open:
+	         - Advisory endpoint unreachable (a dead egress proxy). Before the
+	           promotion: restore exit 0 with nothing but `warning NU1900`. After:
+	           restore exit 1, `error NU1900: Warning As Error: Error occurred
+	           while getting package vulnerability data`. CLOSED HERE.
+	         - Package source supplying no vulnerability database at all (a local
+	           folder source or an internal mirror). Restore exits 0 with ZERO
+	           NuGet diagnostics of ANY kind - there is no code to promote, so
+	           this property group cannot close it, and honesty requires saying so
+	           rather than implying blanket coverage. It is closed instead by the
+	           workflow's advisory negative control, which restores a knowingly
+	           vulnerable probe and fails the job when that restore SUCCEEDS. That
+	           control was verified to fire in exactly this configuration.
+	     The principle behind both is the audit's own premise for elevating H-19:
+	     a "clean" scan obtained from an incomplete graph is worthless, and a
+	     clean scan obtained from an absent advisory database is worthless for the
+	     same reason.
+
+	     DISCLOSED TRADE-OFF, accepted deliberately: a transient nuget.org
+	     interruption now fails the build instead of passing it quietly. That is
+	     the correct direction for a gate whose entire purpose is to be
+	     trustworthy - an unavailable-data build is retried, whereas a
+	     falsely-green build is shipped. The failure is also self-describing: the
+	     NU1900 text names the source it could not reach. Never demote these two
+	     codes to make a flaky network quiet; re-run the job instead.
+
+	     Belt-and-braces, and NECESSARILY so rather than as a nicety: as recorded
+	     above, one of the two fail-open configurations emits no diagnostic for
+	     this property group to promote. The workflow's advisory negative control
+	     is what covers it, and neither mechanism is redundant with the other.
+	     Removing either reopens a configuration in which every gate in this
+	     repository reports green on a package with a known High advisory. -->
 	<PropertyGroup>
-		<WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsAsErrors>
+		<WarningsAsErrors>$(WarningsAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904;NU1905</WarningsAsErrors>
 	</PropertyGroup>
 
 	<!-- Threat addressed: insecure coding patterns reaching production
