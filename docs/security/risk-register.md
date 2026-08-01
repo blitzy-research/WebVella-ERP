@@ -33,7 +33,13 @@ the same risk written from different angles; the subject and status in this tabl
 | `RISK-016` | Three navigation anchors carry `href="javascript: void(0)"` — Bootstrap dropdown placeholders, **not** injection sinks. | Named, not a defect | Platform team |
 | `RISK-017` | One host's `Startup.cs` lacks the UTF-8 byte-order mark the repository's own `.editorconfig` mandates. | Named, not fixed | Platform team |
 | `RISK-018` – `RISK-020` | Further pre-existing issues named but deliberately not fixed; see the table under *risks arising from the integrated controls*. | Named, not fixed | Platform team |
-| `RISK-021` | **The shipped `Config.json` files still contain a live connection string, encryption key and `DevelopmentMode: true`.** The secret-management class is not part of this change. | Open, out of scope here | Platform team |
+| `RISK-021` | The shipped `Config.json` files contained a live connection string, encryption key, token signing key, storage connection string and mail password, with `DevelopmentMode: true`. **All eight files are now scrubbed**, `web.config` sets `Production`, and the seeded administrator credential is no longer a literal. | **Closed** for the tracked configuration files; see `RISK-026` for the residual | Platform team |
+| `RISK-026` | One demo credential remains in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs`, and every secret ever published in this repository's **history** stays public. | Named, not fixed — out of the authorised file set | Platform team |
+| `RISK-027` | The generated initial administrator password has **no change-required-on-first-login marker**, because adding one requires a schema change the constraints forbid. | Accepted | Platform team |
+| `RISK-028` | When the only configured package source is a **local folder mirror**, the dependency restore emits no `NU19xx` diagnostic at all, so promoting the audit codes to errors cannot close that fail-open path. It is closed instead by the workflow's advisory negative control. | Accepted — mitigated by a second, independent mechanism | Platform team |
+| `RISK-029` | A `.csproj` that **assigns** rather than appends to `WarningsAsErrors` would silently discard the whole dependency gate for that project. No project does so today; the structural fix (a `Directory.Build.targets` re-appending the codes after every project body) is outside the authorised file set. | Named, not fixed — documented control only | Platform team |
+| `RISK-030` | A solution-level command reaches **17** of the repository's **19** projects; the two WebAssembly projects must be audited with explicit per-project commands. Solution membership was deliberately left unchanged, because altering it is not a security fix. | Accepted — disclosed in CI and in the guides | Platform team |
+| `RISK-031` | Running an **unpublished** build directory under a non-Development environment leaves every `/_content/**` static asset unmapped, returning `405 Allow: DELETE` and an unstyled site. The obvious workaround — setting `ASPNETCORE_ENVIRONMENT=Development` — would undo the `H-12` and `H-15` remediations. Pre-existing; the host builder is outside the authorised file set. | Named, not fixed — documented control only | Platform team |
 | `RISK-022` | Content-Security-Policy ships in report-only mode, because four components emit inline script and enforcing it immediately would break them. | Accepted | Platform team |
 | `RISK-023` | Four by-design raw-output channels are deliberately not encoded, because encoding them would disable the features they implement. | Accepted | Platform team |
 | `RISK-024` | The static-analysis backlog is reported as warnings rather than enforced as errors, because promoting roughly 3,000 pre-existing diagnostics would force the mass refactor the constraints forbid. | Accepted | Platform team |
@@ -437,7 +443,7 @@ correct.
 | --- | --- |
 | **Status** | Accepted — reported, measured and left visible. Not suppressed. |
 | **Related control** | Gate 1, static analysis (`EnableNETAnalyzers`, `AnalysisLevel=latest-recommended` in `Directory.Build.props`) |
-| **Scope** | Repository-wide, all 19 projects |
+| **Scope** | Repository-wide, all 19 projects — `Directory.Build.props` is directory-scoped, so the analyzer gate reaches both non-solution-member projects too (see `RISK-030` for the separate question of which projects a *solution-level command* reaches) |
 
 Enabling the .NET analyzer set across the platform surfaces **3,072 warnings** on a full rebuild.
 None is newly introduced: no source file was modified by the class that enabled the gate, so every
@@ -1019,39 +1025,194 @@ shape of a value returned to every consumer of `Job.Result` — precisely the be
 minimal-change constraint forbids. Named so that a future reader does not attribute it to the binder
 work, and so that anyone who does intend to reorder the attempts knows what depends on it.
 
-#### RISK-021 — The shipped configuration files still contain development secrets
+#### RISK-021 — The shipped configuration files contained development secrets (now closed)
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Open — outstanding work in a different vulnerability class.** Not a residual of this checkpoint; the enabling half is done, the scrub is not. |
+| **Status** | **Closed for the tracked configuration files.** The enabling half had landed earlier; the scrub itself has now landed too. The residual is tracked separately as `RISK-026`. |
 | **Related finding** | The secret-management class (hardcoded credentials, weak shipped signing key, development mode enabled). Adjacent to M-2, which delivered the validation and provider chain. |
 
-All eight `Config.json` files, and one host's `web.config`, still carry development values in the
-tracked tree: connection strings including passwords, `"DevelopmentMode": "true"`, and a token signing
-key that is **published in this public repository**. A demo credential also appears in a WebAssembly
-client page.
+**The state this entry originally described.** All eight `Config.json` files, and one host's
+`web.config`, carried development values in the tracked tree: connection strings including passwords,
+`"DevelopmentMode": "true"`, and a token signing key **published in this public repository** — which
+`WebVella.Erp.Site/JWT_README.txt` additionally republished as documentation. The seeded administrator
+password was the literal `"erp"`. A demo credential also appeared in a WebAssembly client page.
 
-**This is recorded explicitly because the documentation could otherwise mislead.** The validation and
-provider-chain work makes those values *unusable as secrets* — the published signing key is rejected by
-digest comparison, so it disables the bearer-token routes instead of being trusted, and there is no
-compiled-in fall-back for the encryption key. It would be easy, and wrong, to read that work as meaning
-the files are already clean. They are not.
+**What was closed.** Every secret value in all eight `Config.json` files is now blank, every file sets
+`"DevelopmentMode": "false"`, `WebVella.Erp.Site/web.config` sets `Production`, `JWT_README.txt` no
+longer republishes the key, and `WebVella.Erp/ERPService.cs` resolves the initial administrator
+password from an operator-supplied setting or generates a 20-character CSPRNG password surfaced once at
+provisioning. The files were **scrubbed and retained, never deleted** — the JSON configuration source
+is not optional, so deleting them breaks start-up outright. Ordering was load-bearing and was already
+satisfied: the provider chain had to land *before* any scrub, or every host would fail to start with no
+channel to supply a replacement.
 
-**What is already true:**
+**Verified rather than asserted.** The secrets gate now passes on the tracked tree, sweeping 13
+configuration files with 15 checks and 0 failures. A host started with a required secret absent aborts
+with a message naming only the missing key **names**. A host started with both secrets supplied *only*
+through environment variables boots and serves a successful login. The details are in the
+[remediation log](remediation-log.md).
 
-* Known published key material is refused, not used.
-* Environment variables override the file, so operators have a supply channel that touches no tracked
-  file. See [the secure configuration guide](secure-configuration.md).
+**What is still true, and why it still matters:**
+
+* Known published key material is refused by digest comparison, not merely absent — so a value
+  recovered from this repository's history cannot be used even deliberately.
+* Environment variables supply the secrets, touching no tracked file. See
+  [the secure configuration guide](secure-configuration.md) and
+  [`README.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/README.md).
 * Absent or insufficient-entropy secrets fail closed outside Development.
 
-**What remains:** blanking the secret values in all eight files while **retaining the files** (the JSON
-source is not optional, so deleting them breaks start-up outright), setting development mode to false,
-and flipping the environment marker in `web.config`. Ordering matters and is already satisfied: the
-provider chain had to land *before* any scrub, or every host would fail to start with no way to supply
-a replacement.
+**Operator obligation.** Every value that ever appeared in this repository's history must still be
+treated as public knowledge and never reused. The application will not start until the required
+secrets are supplied; that is the intended behaviour, not a defect.
 
-**Operator obligation in the meantime:** treat every value in those files as public knowledge and
-override all three secrets, set the environment to `Production`, and set development mode to false.
+#### RISK-026 — Residual secret exposure outside the scrubbed file set
+
+| Field | Value |
+| --- | --- |
+| **Status** | Named, not fixed — outside the authorised file set. |
+| **Related finding** | Residual of `RISK-021`. |
+
+Two residuals survive the scrub and are recorded rather than implied.
+
+* **A demo credential in the Blazor WebAssembly client.**
+  `WebVella.Erp.WebAssembly/Client/Pages/Index.razor.cs` authenticates with a literal e-mail and
+  password. The Blazor WebAssembly client project is explicitly outside this remediation's authorised
+  file set, so it was not modified. The exposure is bounded: the credential is only useful against a
+  deployment that still has the corresponding seeded account, and the seeded account no longer has a
+  known password on a freshly provisioned installation. **Recommended fix:** replace the literal with
+  an empty form binding, or delete the auto-login call, in a change scoped to the client project.
+* **Repository history.** Blanking a tracked file does not remove the value from earlier commits. The
+  two published defaults are additionally rejected by digest comparison, which is the durable control;
+  the connection-string password and mail password are not, and must be rotated. **Recommended fix:**
+  rotate every credential that ever appeared in a tracked file, and treat history rewriting as a
+  separate, owner-approved operation.
+
+#### RISK-027 — The generated initial administrator password is not forced to be rotated
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted. |
+| **Related finding** | C-01 (hardcoded default administrator password). |
+
+The seeded credential is now strong and unique per installation: 20 characters drawn from a
+65-character ambiguity-free alphabet by `RandomNumberGenerator.GetItems<char>`, roughly 120 bits of
+entropy, surfaced exactly once on stderr at provisioning. What it does **not** have is a
+change-required-on-first-login marker, because there is no field to carry one and adding a column is a
+schema change the constraints forbid.
+
+The compensating controls are that the password is unique per installation, is printed once rather
+than stored anywhere retrievable, and is printed together with an instruction to change it
+immediately. **Recommended fix, for a change permitted to alter the schema:** add a
+`must_change_password` boolean to the user entity and gate the post-login redirect on it.
+
+#### RISK-028 — A local package mirror makes the dependency audit silently inert
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — mitigated by a second, independent mechanism. |
+| **Related finding** | The dependency gate's fail-open behaviour. |
+
+Promoting `NU1900` and `NU1905` to errors closes the case where the advisory database is
+**unreachable**: the restore then fails with `error NU1900` instead of passing with a warning. It
+cannot close the case where the only configured package source is a **local folder mirror**, because
+that configuration emits **no `NU19xx` diagnostic at all** — there is nothing to promote. Both
+configurations were reproduced; they behave differently, and that difference is the whole point of
+this entry.
+
+The mitigation is a different mechanism rather than a stronger version of the same one: the CI
+workflow restores a throwaway project pinned to a package with a known High-severity advisory and
+**requires** that restore to fail with `NU1903`. Against a local-mirror configuration that step fails
+the job and states that every clean result in the run is unverified. **Neither mechanism is redundant
+with the other**, which is why both are kept. The residual is that a developer running a local restore
+outside CI has only the promotion, not the control.
+
+#### RISK-029 — A project assigning `WarningsAsErrors` would discard the dependency gate
+
+| Field | Value |
+| --- | --- |
+| **Status** | Named, not fixed — documented control only. |
+| **Related finding** | The dependency gate's inheritance model. |
+
+MSBuild imports `Directory.Build.props` **before** the body of each project file, so a `.csproj`
+containing a bare `<WarningsAsErrors>CS0168</WarningsAsErrors>` overwrites the gate's promotion rather
+than adding to it — and the build then stays green with a known High-severity advisory in that
+project's graph. Measured: a probe declaring exactly that resolves the property to
+`CS0168;SYSLIB0011` and restores a vulnerable package at exit 0 with only `warning NU1903`.
+
+**No project in this repository does this today**, verified rather than assumed: `Directory.Build.props`
+is the only MSBuild customisation file in the tree, and none of the 19 `.csproj` files mentions
+`WarningsAsErrors`, `TreatWarningsAsErrors` or `NoWarn`. The in-scope control is documentation — the
+contributor warning in [the secure configuration guide](secure-configuration.md) and the design note in
+[the remediation log](remediation-log.md). **Recommended structural fix:** add a
+`Directory.Build.targets` that re-appends the six codes after all project bodies are evaluated, making
+the mistake impossible rather than merely documented. Not done here because it adds a second
+build-customisation file outside the authorised file set.
+
+#### RISK-030 — A solution-level command covers 17 of 19 projects
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — disclosed in CI and in the guides. |
+| **Related finding** | H-19 (build-graph integrity) and H-18 (end-of-life framework). |
+
+`WebVella.ERP3.sln` enumerates 17 of the repository's 19 `.csproj` files;
+`WebVella.Erp.WebAssembly/Server` and `.../Shared` are not members. A solution-wide restore, build,
+audit or analyzer run therefore does not see them, and they must be covered by explicit per-project
+commands. Both are clean when so covered.
+
+The two projects were briefly enrolled in the solution and that enrolment was **reverted**: changing
+the solution's project membership is not a security fix, and the only authorised change to that file
+is the project-reference path casing repair. Two consequences are easy to get backwards and are stated
+explicitly: the `net10.0` **retarget survived** the revert, so H-18 stays closed; and the build gate
+**survived** it too, because `Directory.Build.props` is directory-scoped rather than solution-scoped —
+verified by evaluating all six gate properties on both non-member projects. The residual is purely one
+of command coverage, and it is disclosed in the workflow's own coverage note so that no green
+solution-level run is mistaken for repository-wide coverage. **Recommended fix, for a change permitted
+to alter the solution:** enrol both projects, or add their explicit per-project audit to every
+pipeline.
+
+#### RISK-031 — Unpublished output under a non-Development environment serves no static assets, and the obvious workaround undoes two remediations
+
+| Field | Value |
+| --- | --- |
+| **Status** | Named, not fixed — documented control only. |
+| **Related finding** | `H-12` (development mode disabled) and `H-15` (HSTS and HTTPS redirection), both of which the tempting workaround would undo. |
+
+Observed during this checkpoint's cross-cutting regression verification, not reported by any finding.
+Running `WebVella.Erp.Site` from `bin/Debug/net10.0` with `ASPNETCORE_ENVIRONMENT=Production` made
+**every** `/_content/**` request return `405` with `Allow: DELETE`, so the application rendered with
+browser-default styling and the browser console filled with resource and MIME-refusal errors.
+
+The cause is a launch configuration, not a defect in anything this remediation touched, and it was
+root-caused rather than assumed. These hosts ship **no `wwwroot`** — none is present in the source
+tree, none in the build output, and `git ls-files` shows none was ever tracked — so all static content
+is served from Razor Class Libraries through the `_content/**` convention. That convention depends on
+the static-web-assets manifest, which ASP.NET Core's loader reads **only when the environment is
+Development**, unless the host builder opts in explicitly; `WebVella.Erp.Site/Program.cs` uses
+`WebHost.CreateDefaultBuilder(args)` and does not call `UseStaticWebAssets()`. Under Production the
+manifest is therefore never read, `_content/**` is unmapped, and the request falls through to a
+`DELETE`-only catch-all route — which is exactly where the `405` and its `Allow: DELETE` originate.
+Confirmed by the controlled experiment: the *same binary* serving the *same URLs* returns `405
+text/html` under Production and `200` with correct content types under Development.
+
+The security-relevant part is not the `405`. It is that the seven security headers **are** still
+emitted on that `405`, so a header verification still passes while the site looks broken — and the
+quickest way to make the styling return is to set `ASPNETCORE_ENVIRONMENT=Development`, which
+**re-enables the developer exception page (`H-12`) and disables both `UseHsts()` and
+`UseHttpsRedirection()` (`H-15`), because those are deliberately guarded to non-Development
+environments.** A cosmetic annoyance thus creates direct pressure toward a real security regression,
+which is why it is recorded here rather than left as a note.
+
+Attribution is explicit: `WebVella.Erp.Site/Program.cs` and any `wwwroot` are untouched by this
+remediation — `git diff` against the checkpoint base returns nothing for either path, and there are no
+uncommitted changes to them. The condition predates this work and is unrelated to it.
+
+**Recommended fix, for a change permitted to alter the host builders:** call `UseStaticWebAssets()`
+explicitly on the host builder, or verify only `dotnet publish` output, where the assets are
+materialised physically and the manifest is not needed. Either closes the symptom without touching the
+environment setting. Until then the operator guidance is stated in the
+[secure configuration guide](secure-configuration.md).
 
 ### Documented-only findings
 
@@ -1066,6 +1227,15 @@ the enhancement-beyond-remediation that the constraints forbid.
 
 Recognised as valuable, all outside this remediation's scope, none started:
 
+* **Make a non-published Production run behave like a published one.** Have the host builders call
+  `UseStaticWebAssets()`, or standardise verification on `dotnet publish` output, so that no operator
+  is ever tempted to restore styling by setting `ASPNETCORE_ENVIRONMENT=Development` and silently
+  undoing the `H-12` and `H-15` remediations (`RISK-031`).
+* **Add `autocomplete` attributes to the login form's e-mail and password inputs.** Chrome raises an
+  informational advisory on `/login` for their absence. It is neither a console error nor a warning and
+  carries no confirmed security finding, so it is noted for completeness only, as HTML hygiene rather
+  than remediation.
+
 * **A test suite.** The repository contains no test project, test file or test framework reference in
   any of its 19 projects, which made the "existing test suite passes" validation gate vacuous by
   construction. The substitute verification regime is recorded in the
@@ -1074,6 +1244,13 @@ Recognised as valuable, all outside this remediation's scope, none started:
 * A distributed store for login throttling (RISK-008).
 * A revocable refresh-token table with rotation and reuse detection (RISK-007).
 * Completing the Content-Security-Policy rollout to enforcing mode (RISK-022).
+* A `Directory.Build.targets` re-appending the promoted audit codes after every project body, so the
+  dependency gate cannot be discarded by a single careless `.csproj` assignment (RISK-029).
+* Either enrolling both WebAssembly projects in the solution, or making their explicit per-project
+  audit a permanent pipeline step, so repository-wide coverage stops depending on remembering to run
+  three commands instead of one (RISK-030).
+* A `must_change_password` marker on the user entity, so the generated initial administrator password
+  is *forced* to be rotated rather than merely advised (RISK-027).
 * Replacing the two permissive CORS policies with explicit allow-lists (RISK-013).
 * Integration with a dedicated secret manager, rather than environment variables alone.
 * Centralised log aggregation, intrusion detection, and a web application firewall.

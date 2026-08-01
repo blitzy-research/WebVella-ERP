@@ -9,10 +9,15 @@ the credential format change in the [credential migration guide](credential-migr
 
 ## Read this first — the state of the shipped configuration
 
-**The tracked `Config.json` files still contain development values.** At this commit
-`WebVella.Erp.Site/Config.json` carries a live `ConnectionString` including a password, a live
-`EncryptionKey`, and `"DevelopmentMode": "true"`. Scrubbing those files belongs to the
-secret-management class, which is **not** part of this change and is recorded as `RISK-021`.
+**The tracked `Config.json` files have been scrubbed.** All eight now carry **empty** secret values
+and `"DevelopmentMode": "false"`, and `WebVella.Erp.Site/web.config` sets `Production`. The files are
+retained rather than deleted, because the JSON configuration source is not optional and deleting them
+breaks start-up outright. `RISK-021` is closed for the tracked configuration files.
+
+**The application therefore will not start until you supply the required secrets — by design.** It
+fails fast with a message naming each missing setting and never its value. Older passages further down
+this document were written before the scrub landed and describe the files as still carrying live
+values; where they do, the *What is in force at this commit* table below is authoritative.
 
 Treat every value in every tracked configuration file as public. Two consequences follow, and they
 are the whole point of this guide:
@@ -41,9 +46,10 @@ of this commit.
 | Cookies | `SecurePolicy` always outside Development, `SameSite=Lax`, explicit expiry window |
 | Rate limiting | `UseRateLimiter()` in all seven hosts, positioned after both static-file middlewares so assets are never throttled |
 | Login throttling | Per-account and per-address counters over a bounded private store, consulted at the login page and at the anonymous token route (`RISK-008`) |
-| Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with `NU1901`–`NU1904` promoted to errors, and .NET analyzers at `latest-recommended` kept as warnings. Verified inherited by **19 of 19** projects |
+| Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors: the four severity codes `NU1901`–`NU1904` **and** the two data-availability codes `NU1900` and `NU1905`. .NET analyzers at `latest-recommended` are kept as warnings. Verified inherited by **19 of 19** projects — `Directory.Build.props` is directory-scoped, so inheritance does not depend on solution membership |
 | Toolchain pin | `global.json` pins `10.0.302` with `rollForward: disable`, because both gates are SDK-version dependent |
-| Still open | `AllowAnyOrigin()` at `WebVella.Erp.Site/Startup.cs:L81` and `WebVella.Erp.Site.Project/Startup.cs:L69` (`RISK-013`); shipped secrets (`RISK-021`); SMTP certificate validation (finding `H-11`); two bearer-token error paths that return stack traces unconditionally (`RISK-014`) |
+| Shipped secrets | **Scrubbed.** All eight `Config.json` files carry empty secret values and `DevelopmentMode: false`, `WebVella.Erp.Site/web.config` sets `Production`, and the seeded administrator password is no longer a literal (`RISK-021`, now closed). One demo credential remains in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs`, which is outside this change's file scope |
+| Still open | `AllowAnyOrigin()` at `WebVella.Erp.Site/Startup.cs:L81` and `WebVella.Erp.Site.Project/Startup.cs:L69` (`RISK-013`); SMTP certificate validation (finding `H-11`); two bearer-token error paths that return stack traces unconditionally (`RISK-014`) |
 
 ## How this guide is organised
 
@@ -342,7 +348,7 @@ itself while holding the feature band.
 | `NuGetAudit` | `true` | Dependency auditing on. |
 | `NuGetAuditMode` | `all` | Direct **and transitive** packages are audited. |
 | `NuGetAuditLevel` | `low` | Advisories of every severity are reported, not just High and Critical. |
-| `WarningsAsErrors` | appends `NU1901;NU1902;NU1903;NU1904` | A package advisory **fails the build**. |
+| `WarningsAsErrors` | appends `NU1900;NU1901;NU1902;NU1903;NU1904;NU1905` | A package advisory **fails the build** — and so does an audit that could not be performed. |
 | `EnableNETAnalyzers` | `true` | The .NET analyzers run on every compilation. |
 | `AnalysisLevel` | `latest-recommended` | The recommended rule set, including the security rules. |
 
@@ -351,7 +357,29 @@ It must be an MSBuild properties file rather than an editor-configuration file: 
 configuration would not reach the files inside those subtrees. MSBuild inheritance is not affected by
 that scoping.
 
-Analyzer diagnostics remain **warnings**. Only the four dependency codes are errors. Promoting the
+> **Contributor warning — always *append* to `WarningsAsErrors`, never assign it.** Write
+> `<WarningsAsErrors>$(WarningsAsErrors);CS0168</WarningsAsErrors>`. A project that assigns the
+> property instead — `<WarningsAsErrors>CS0168</WarningsAsErrors>` — **silently discards the entire
+> dependency gate for that project**, and the build stays green while a High-severity advisory sits
+> in its graph. This is not hypothetical: MSBuild imports `Directory.Build.props` *before* the body
+> of the project file, so a later bare assignment overwrites the promotion rather than adding to it.
+> A probe declaring `<WarningsAsErrors>CS0168</WarningsAsErrors>` under this repository's props
+> resolves the property to `CS0168;SYSLIB0011` — every promoted `NU19xx` code, and the SDK's own
+> `NU1605`, gone — and then restores a package with a known High advisory at **exit 0 with only
+> `warning NU1903`**.
+>
+> No project in this repository currently does this, and that was verified rather than assumed:
+> `Directory.Build.props` is the **only** MSBuild customisation file in the tree (there is no
+> `Directory.Build.targets` and no `Directory.Packages.props`), and none of the 19 `.csproj` files
+> mentions `WarningsAsErrors`, `TreatWarningsAsErrors` or `NoWarn` at all. The `NU1605;SYSLIB0011`
+> that appears in the resolved value comes from the .NET SDK, which appends *after* this props file.
+> The gate is intact today; it is one careless assignment away from not being. A
+> `Directory.Build.targets` re-appending the codes after all project bodies would make this
+> structurally impossible, and is recorded as a follow-up in the
+> [risk register](risk-register.md) rather than done here, because it is outside this change's
+> authorised file set.
+
+Analyzer diagnostics remain **warnings**. Only the six dependency codes are errors. Promoting the
 analyzer backlog on roughly 700 pre-existing files would demand a mass refactor, which is out of
 scope; the dependency codes are errors because they are actionable by a version change.
 
@@ -364,9 +392,12 @@ scope; the dependency codes are errors because they are actionable by a version 
 dotnet restore WebVella.ERP3.sln
 dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive
 
-# All 19 projects are solution members, so the command above covers every one of them.
-# (Both WebAssembly projects were outside the solution when this guide was first written;
-#  they were added, and retargeted from net7.0 to net10.0, in the same change.)
+# That command covers the 17 projects that are solution members - NOT all 19.
+# WebVella.Erp.WebAssembly/Server and /Shared are deliberately not solution members, so they
+# must be audited explicitly. Both were retargeted from net7.0 to net10.0, and both inherit the
+# same gate through Directory.Build.props (which is directory-scoped, not solution-scoped):
+dotnet list WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj package --vulnerable --include-transitive
+dotnet list WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.csproj package --vulnerable --include-transitive
 
 # Static analysis gate: must be 0 errors. Analyzer diagnostics appear as warnings.
 dotnet build WebVella.ERP3.sln -c Debug
@@ -397,9 +428,11 @@ Stated plainly, so the confidence attached to each claim is visible:
   Where the code and the specification disagreed, the code is what is documented.
 * **The `Settings:Jwt` host table was produced by inspecting all eight shipped configuration files**,
   not inferred from which hosts appear to use tokens.
-* **Two status gaps are disclosed rather than smoothed over**: the configuration provider chain does
-  not yet read environment variables (§2), and the headers middleware is not yet registered in any
-  host pipeline (§5). Both are stated at the point where an operator would otherwise be misled.
+* **Two status gaps were disclosed here when this angle was written, and both have since closed.**
+  The configuration provider chain now reads environment variables at every builder site (§2), and
+  the headers middleware is now registered through `AddErp` and ordered in all seven host pipelines
+  (§5). The *What is in force at this commit* table at the top of this document is the authoritative
+  current state; where an older angle below still describes a gap, that table wins.
 * **The encryption-key impact assessment in §3 is based on a repository-wide search** for callers of
   the encrypt and decrypt members, which found only commented-out ones. It cannot account for custom
   plugin code in your own deployment, which is why §3 step 1 is written as a conditional.
@@ -483,11 +516,13 @@ existing deployments keep working and are not recommended for new configuration.
 
 ### Why the configuration files must be scrubbed rather than deleted
 
-> **State at this commit:** the scrub described in this section has **not** been performed — the
-> tracked `Config.json` files still carry a live connection string, encryption key and
-> `DevelopmentMode: true`. What *has* landed is the enabling change: the provider chain now consults
-> environment variables, so a value can be supplied without editing a tracked file. Read this section
-> as the ordering constraint the secret-management class must respect (`RISK-021`).
+> **State at this commit:** the scrub described in this section **has** now been performed — all eight
+> tracked `Config.json` files carry empty secret values and `DevelopmentMode: false`. It landed *after*
+> the enabling change it depended on: the provider chain consults environment variables, so a value can
+> be supplied without editing a tracked file. That ordering was mandatory rather than incidental —
+> scrubbing first would have left every host unstartable with no channel to supply a replacement.
+> `RISK-021` is closed for the tracked files; the residual, an unrelated demo credential in the Blazor
+> WebAssembly client and the values still present in repository history, is `RISK-026`.
 
 Configuration is built in `WebVella.Erp.Web/ErpMvcExtensions.cs` from a JSON file and, in the
 current tree, nothing else: a `ConfigurationBuilder` with a base path and `AddJsonFile("config.json")`,
@@ -696,7 +731,7 @@ static-analysis and composition-analysis gate. It sets:
 NuGetAudit          true
 NuGetAuditMode      all
 NuGetAuditLevel     low
-WarningsAsErrors    $(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904
+WarningsAsErrors    $(WarningsAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904;NU1905
 EnableNETAnalyzers  true
 AnalysisLevel       latest-recommended
 ```
@@ -704,6 +739,21 @@ AnalysisLevel       latest-recommended
 `NU1901`, `NU1902`, `NU1903` and `NU1904` are the dependency-audit diagnostics for low, moderate,
 high and critical severity. **A dependency advisory therefore fails the build by design.** That is
 the gate working, not a defect.
+
+`NU1900` and `NU1905` are promoted alongside them for a different reason, and it matters: they are
+not severities but *data-availability* diagnostics. `NU1900` is raised when the audit source cannot
+be reached, `NU1905` when the configured source supplies no vulnerability data at all. Left as
+warnings, either one produces the worst possible outcome for a gate — a build that exits `0` while
+auditing nothing, with a known High advisory sitting in the graph unreported. Promoting them converts
+"the audit could not run" into a failure instead of a silent pass. The disclosed trade-off is that a
+transient outage of the advisory database now fails the build rather than passing it; that is the
+correct direction for a security gate, and the failure text names the cause precisely.
+
+One residual is stated plainly because the promotion does **not** close it: when the only configured
+package source is a local folder mirror, the restore emits no `NU19xx` diagnostic whatsoever — there
+is nothing to promote. That configuration is caught instead by the workflow's negative-control step,
+which requires a project referencing a known-vulnerable package to *fail* the restore with `NU1903`
+and fails the job when it does not. Neither mechanism is redundant with the other.
 
 Several of these choices need their reasons recorded.
 
@@ -715,11 +765,15 @@ Several of these choices need their reasons recorded.
   `.editorconfig` files in this repository each declare `root = true`, so a root editor-config would
   not reach any file inside the four subtrees that hold the code this remediation touches.
   `Directory.Build.props` is imported by every project regardless.
-- **`global.json` pins the SDK** to `10.0.302` with `rollForward: latestPatch`. That keeps the pin
-  deterministic on one feature band while still accepting an SDK security patch. A bare pin would
-  accept a newer feature band and reintroduce non-reproducibility; disabling roll-forward entirely
-  would make the repository unbuildable on a machine carrying only a patched SDK.
-- **Analyzer diagnostics remain warnings.** Only the four dependency codes are errors. Promoting
+- **`global.json` pins the SDK** to `10.0.302` with `rollForward: disable`. That is the strictest of
+  the three candidates and is what the tree carries: it freezes the toolchain to that exact version
+  and fails with an actionable message naming the required version when it is absent. A bare pin
+  would accept a newer feature band and reintroduce non-reproducibility. The weaker `latestPatch`
+  was considered and rejected — it still lets the patch level drift, and both halves of this gate
+  (the audit defaults and the analyzer rule set) are SDK-version dependent, so patch drift is enough
+  to change a gate result. The cost of `disable` is that the exact SDK must be installed; that is
+  accepted, because a reproducible gate is the whole point of pinning.
+- **Analyzer diagnostics remain warnings.** Only the six dependency codes are errors. Promoting
   roughly 700 source files' worth of pre-existing analyzer warnings would demand exactly the mass
   refactor the change scope forbids. The static-analysis gate passes when there are zero diagnostics
   in the **active** security rule families across the remediated files, not repository-wide.
@@ -759,12 +813,16 @@ Two limits on that output must be understood rather than assumed away.
   restore failed on a case-sensitive filesystem and the core project — the one that owned the graph's
   only High-severity advisory — was silently absent from the audit. A clean result obtained before
   that repair meant nothing at all.
-- **A solution-level command now reaches all 19 projects.** When this guide was first written
-  `WebVella.Erp.WebAssembly/Server` and `WebVella.Erp.WebAssembly/Shared` were not solution members
-  and had to be audited explicitly. Both were added to `WebVella.ERP3.sln` and retargeted to
-  `net10.0` in the same change, so the per-project commands below are no longer necessary — they are
-  kept only as the way to audit a project that is ever added to the repository without being added to
-  the solution:
+- **A solution-level command reaches 17 projects, not 19.** `WebVella.Erp.WebAssembly/Server` and
+  `WebVella.Erp.WebAssembly/Shared` are **not** solution members. They were briefly added to
+  `WebVella.ERP3.sln`, and that addition was reverted: the authorised change to the solution file is
+  the project-reference path casing repair and nothing else, so the solution graph is exactly the 17
+  code projects it has always contained. Both WebAssembly projects were still retargeted from
+  `net7.0` to `net10.0`, and both still inherit the full gate, because `Directory.Build.props` is
+  directory-scoped rather than solution-scoped — verified by evaluating `NuGetAudit`,
+  `NuGetAuditMode`, `NuGetAuditLevel`, `WarningsAsErrors`, `EnableNETAnalyzers` and `AnalysisLevel`
+  on both non-member projects. The per-project commands below are therefore **required**, not
+  optional:
 
 ```bash
 dotnet list WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj package --vulnerable --include-transitive
@@ -773,13 +831,20 @@ dotnet list WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.cspr
 
   Both are clean, and both inherit the same gate properties through `Directory.Build.props`, but a
   continuous-integration job that only restores the solution will never look at them. That residual
-  coverage gap is recorded in the [risk register](risk-register.md); it is stated here so that nobody
-  reads a green solution build as covering all nineteen projects.
+  coverage gap is recorded in the [risk register](risk-register.md) and is disclosed in the workflow
+  itself; it is stated here so that nobody reads a green solution build as covering all nineteen
+  projects. **A green solution run covers 17 of the repository's 19 projects. Any claim that it
+  covers all 19 is false.**
 
-One open decision currently sits on top of this gate: with the dependency codes promoted to errors, a
-build cannot be green while a vulnerable package remains, and the object-mapping library's advisory
-can only be cleared by moving to a version whose licence terms are a repository-owner question. That
-decision is recorded in the [risk register](risk-register.md) and is deliberately not settled here.
+One open decision sits on top of this gate, and its two halves must not be confused. With the
+dependency codes promoted to errors a build cannot be green while a vulnerable package remains, so
+the object-mapping library **has** been moved to the lowest patched version, `[15.1.3]`. The advisory
+is therefore **closed** and the dependency gate is green. What is *not* settled is the consequence of
+that move: every version patching the advisory is licensed under the Reciprocal Public License 1.5,
+which conflicts with the product's declared licence expression and its publication to nuget.org. That
+is a repository-owner decision, not an engineering one; it is recorded as `RISK-001` in the
+[risk register](risk-register.md), together with the reversal path if the owner declines the licence
+terms, and it is deliberately not settled here.
 
 ### Login latency after the credential change
 
@@ -812,11 +877,12 @@ Every behaviour described here is the behaviour of the code as it now stands, no
 
 Three configuration values must be supplied by you.
 
-**Read this before anything else in this section.** The shipped `Config.json` files **still contain
-development values** — connection strings with passwords, a development-mode flag set to `true`, and a
-token signing key that is published in this public repository. Scrubbing them belongs to a separate
-vulnerability class that has not landed yet; it is tracked as `RISK-021` in
-[the risk register](risk-register.md).
+**Read this before anything else in this section.** This passage was written while the shipped
+`Config.json` files still contained development values, and it has since been overtaken: all eight
+files now carry **empty** secret values and `"DevelopmentMode": "false"`, `web.config` sets
+`Production`, and `RISK-021` is closed for the tracked files. Every value that ever appeared in those
+files remains public in this repository's **history**, so it must still be treated as compromised —
+that residual is `RISK-026` in [the risk register](risk-register.md).
 
 What *is* already in force is the layer that makes those values unusable in a deployment:
 
@@ -1007,9 +1073,10 @@ Set the environment to **`Production`** for any installation reachable by untrus
 
 * `WebVella.Erp.Site/web.config` forces `ASPNETCORE_ENVIRONMENT=Development`, which enables the
   developer exception page - a full stack trace on any unhandled error. **Override it.**
-* **The shipped `Config.json` files still set `"DevelopmentMode": "true"`.** Correcting that in the
-  tracked files belongs to the secret-management class and has not landed (`RISK-021`), so you must set
-  it to `false` — or override it by environment variable — as part of deployment.
+* **The shipped `Config.json` files now set `"DevelopmentMode": "false"`**, and
+  `WebVella.Erp.Site/web.config` now sets `Production`. Both were corrected in the tracked files
+  (`RISK-021`, closed). Verify the effective values in your own deployment anyway, since either can be
+  overridden by an environment variable that outranks the file.
 
 Development mode also relaxes the cookie `SecurePolicy` and suppresses HSTS and HTTPS redirection, so leaving it on disables several controls in this document at once.
 
@@ -1043,6 +1110,28 @@ curl -s -X POST https://your-host/api/v3/en_US/auth/jwt/token \
 ```
 
 Confirm as well that the seeded administrator credential no longer authenticates, and that a guest-role account cannot create users or roles.
+
+> **Verify against published output, and never "fix" a missing-stylesheet symptom by setting
+> `Development`.** Step 1 above fetches a `/_content/...` asset because the headers must reach static
+> responses, not only dynamic ones. If you run an **unpublished** build directory — `bin/Debug/net10.0`
+> — with `ASPNETCORE_ENVIRONMENT=Production`, every `/_content/**` URL returns **`405` with
+> `Allow: DELETE`** instead of the asset, and the site renders unstyled. This is a launch-configuration
+> artifact, not a header defect: these hosts ship no `wwwroot`, so all static content arrives from
+> Razor Class Libraries, and ASP.NET Core's static-web-assets manifest is loaded only in the
+> Development environment unless the host builder opts in explicitly. The unmapped request then falls
+> through to a `DELETE`-only catch-all route, which is where the `405` and its `Allow: DELETE` come
+> from. The seven headers *are* still present on that `405`, so the header check itself still passes —
+> which is precisely why the symptom is easy to misread.
+>
+> Two correct responses: run `dotnet publish` and verify the published output, which materialises the
+> assets physically; or, if a non-published Production run is genuinely needed, have the host builder
+> call `UseStaticWebAssets()` explicitly. **The tempting third option — setting
+> `ASPNETCORE_ENVIRONMENT=Development` to make the styling come back — silently undoes two
+> remediations at once**, because it re-enables the developer exception page (finding H-12) and
+> disables `UseHsts()` and `UseHttpsRedirection()`, both of which are deliberately guarded to
+> non-Development environments (finding H-15). Recorded as `RISK-031` in the
+> [risk register](risk-register.md); the host builder is outside this change's authorised file set, so
+> it is documented rather than altered.
 
 ### Related documents
 
@@ -1105,11 +1194,16 @@ and both matter operationally:
 
 #### Ordering prerequisite before any value is scrubbed
 
-The shipped `Config.json` files still carry live connection strings, a live encryption key and, for
-the two token-issuing hosts, a live signing key. Replacing those values with blanks is a **separate
-change with a hard prerequisite**: the configuration provider chain must be extended *first*.
-Scrubbing before the chain is extended leaves operators with no channel by which to supply the
-secrets, and every host then fails to start.
+*Retained because the constraint still governs any future change to these files, and because it is why
+the scrub landed when it did rather than earlier.*
+
+The shipped `Config.json` files **used to** carry live connection strings, a live encryption key and,
+for the two token-issuing hosts, a live signing key; they are now blank. Replacing those values with
+blanks was a **separate change with a hard prerequisite**: the configuration provider chain had to be
+extended *first*. Scrubbing before the chain was extended would have left operators with no channel by
+which to supply the secrets, and every host would then have failed to start. That order was followed,
+which is why the scrub is safe today — and it must be followed again by anyone who adds a new required
+setting to these files.
 
 The required order is therefore:
 
@@ -1212,10 +1306,13 @@ sequenced apart.
 
 ### Toolchain pin
 
-`global.json` pins the SDK to `10.0.302` with `rollForward: latestPatch`. Both the NuGet audit
-defaults and the analyzer rule set are SDK-version dependent, so an unpinned toolchain makes the
+`global.json` pins the SDK to `10.0.302` with `rollForward: disable` — the strictest setting, which
+freezes the toolchain to that exact version rather than letting the patch level drift. Both the NuGet
+audit defaults and the analyzer rule set are SDK-version dependent, so an unpinned toolchain makes the
 dependency gate and the static-analysis gate non-reproducible — a scan result that varies with
 whatever SDK happens to be installed is not evidence (finding L-07). `Directory.Build.props` at the
 repository root carries the gate itself: dependency auditing across all dependencies at the lowest
-reporting level, the four NuGet audit diagnostics promoted to build errors, and the .NET analyzers
-enabled at the recommended level.
+reporting level, **six** NuGet audit diagnostics promoted to build errors — the four severity codes
+`NU1901`–`NU1904` plus the data-availability codes `NU1900` and `NU1905`, so an audit that could not
+run fails the build instead of passing it silently — and the .NET analyzers enabled at the recommended
+level.

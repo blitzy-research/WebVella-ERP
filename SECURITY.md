@@ -65,7 +65,7 @@ an audit finding can be compared directly:
 
 The platform has been through a security audit against the **OWASP Top 10 (2021)**. The findings, their severities, and what was done about each are recorded in the documents linked below. Three things about the posture are worth stating plainly here, because they change what an operator has to do:
 
-* **Known published secrets are rejected rather than trusted — but the shipped configuration files have not yet been scrubbed.** The connection string, the encryption key and the JWT signing key must be supplied by the operator, by environment variable or another configuration provider. Values that are absent, or that match a known published default, are refused rather than silently used, and there is no compiled-in fall-back. **However, the tracked `Config.json` files still contain development values, including a signing key published in this repository**; removing them belongs to a vulnerability class that has not landed yet. Treat every value in those files as public and override all three. See [the secure configuration guide](docs/security/secure-configuration.md).
+* **Secrets are supplied by the operator, and known published secrets are rejected rather than trusted.** The connection string, the encryption key and the JWT signing key must be supplied by environment variable or another configuration provider. Values that are absent, or that match a known published default, are refused rather than silently used, and there is no compiled-in fall-back. The tracked `Config.json` files now ship with **empty** secret values and `"DevelopmentMode": "false"`, and `WebVella.Erp.Site/web.config` sets `Production`. The files are retained rather than deleted, because the JSON configuration source is not optional and deleting them breaks start-up. **Every value ever published in this repository's history must still be treated as compromised** — rejection by digest comparison means a historically published key cannot be reused even deliberately. See [the secure configuration guide](docs/security/secure-configuration.md).
 * **The bearer-token routes disable themselves when the signing key is unacceptable.** This is deliberate. A signing key that is published in a public repository is a key an attacker also holds, and a token endpoint signing with it would let anyone mint an administrator token. Supplying a real key re-enables the routes.
 * **Stored password hashes are upgraded transparently, on each user's next successful login.** No password reset is forced and no user is locked out. See [the credential migration guide](docs/security/credential-migration.md).
 * **Any secret that was ever committed must be rotated, not merely replaced.** A value removed from the working tree remains in repository history, so anyone deploying from this source has to generate fresh material for the encryption key, the token signing key and the database credentials. The published values in this repository are to be treated as public for all time.
@@ -80,7 +80,8 @@ inherited by every project:
 | Control | Property | Effect |
 | --- | --- | --- |
 | Dependency auditing | `NuGetAudit=true`, `NuGetAuditMode=all`, `NuGetAuditLevel=low` | Every direct **and transitive** package is checked against the advisory database, reporting advisories of every severity. |
-| Advisories fail the build | `NU1901`–`NU1904` promoted through `WarningsAsErrors` | A package with a published advisory cannot be introduced without the build failing. |
+| Advisories fail the build | `NU1901`–`NU1904` promoted through `WarningsAsErrors` | A package with a published advisory of any severity cannot be introduced without the build failing. |
+| An audit that cannot run also fails the build | `NU1900` and `NU1905` promoted through `WarningsAsErrors` | These are *availability* diagnostics, not severities: the advisory source was unreachable, or supplied no data. Left as warnings they produce a green build that audited nothing. Six codes are promoted in total. |
 | Static analysis | `EnableNETAnalyzers=true`, `AnalysisLevel=latest-recommended` | The .NET security analyzer rules run on every compilation — hard-coded keys, disabled certificate validation, SQL injection, insecure deserialisation, weak hashing, non-random initialisation vectors, cookie security. |
 
 Analyzer diagnostics are reported as **warnings**, not errors, deliberately: enabling them across
@@ -103,16 +104,33 @@ Open decisions and accepted residual risk are in the [risk register](docs/securi
 
 ### Before you run this in production
 
-The shipped configuration is **development configuration**. It is not safe to deploy as-is: the
-`Config.json` files carry working values including a database password, an encryption key and a token
-signing key, and every one of them sets `DevelopmentMode` to `true`. Treat the shipped values as
-compromised — they are public in this repository's history.
+The shipped `Config.json` files no longer carry secrets: the connection string, encryption key, token
+signing key, cloud storage connection string and mail password are **blank**, and every file sets
+`DevelopmentMode` to `false`. **The application will therefore not start until you supply the required
+secrets** — that is deliberate, and it fails fast with a message naming each missing setting (never
+its value).
 
-The [secure configuration guide](docs/security/secure-configuration.md) is the checklist. At minimum:
-replace every secret with a value of your own, set `DevelopmentMode` to `false`, set
-`ASPNETCORE_ENVIRONMENT` to `Production`, and read the
+Any value that ever appeared in this repository's history must be treated as compromised. The two
+published defaults — the example encryption key and the example token signing key — are additionally
+rejected by digest comparison, so they cannot be reused even on purpose.
+
+At minimum, supply these as environment variables:
+
+```bash
+export Settings__ConnectionString='Host=...;Database=...;Username=...;Password=...'
+export Settings__EncryptionKey="$(openssl rand -hex 32)"
+export Settings__Jwt__Key="$(openssl rand -base64 48)"   # only for hosts exposing token routes
+export ASPNETCORE_ENVIRONMENT=Production
+```
+
+The [secure configuration guide](docs/security/secure-configuration.md) is the full checklist, and
+[`README.md`](README.md) carries the complete required-settings table. Read the
 [credential migration guide](docs/security/credential-migration.md) before upgrading an existing
 installation.
+
+One demo credential remains in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs`.
+It is browser-side sample code outside the scope of this remediation, and it is recorded in the risk
+register rather than silently left.
 
 ## Security documentation
 
@@ -148,9 +166,13 @@ than recorded is very welcome:
 
 * Anything already recorded in the [audit report](docs/security/security-audit-report.md) or the
   [risk register](docs/security/risk-register.md), including the open licensing decision `RISK-001`.
-* The shipped development secrets in `Config.json` and the development-mode defaults. These are
-  documented above and in the secure configuration guide; they are configuration you are expected to
-  replace, not a defect to report.
+* Secrets that appear in this repository's **history**. The tracked `Config.json` files now ship
+  blank, and the two published default keys are rejected by digest comparison, so they cannot be used
+  even deliberately. History cannot be rewritten retrospectively; treat those values as public and
+  never reuse them. This is documented above and in the secure configuration guide rather than being a
+  defect to report.
+* The demo credential in the Blazor WebAssembly client page `Client/Pages/Index.razor.cs`. Known,
+  recorded, and outside the scope of the remediation that scrubbed the server-side configuration.
 * Components that emit author-supplied markup or script by design — the HTML-block page component and
   the generated inline-script emitters. These are raw output channels on purpose; the control is that
   authoring them requires a privileged role. Report a way to reach them *without* that role.
