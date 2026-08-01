@@ -16,6 +16,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
@@ -38,6 +39,97 @@ namespace WebVella.Erp.Web.Controllers
 	{
 		private const char RELATION_SEPARATOR = '.';
 		private const char RELATION_NAME_RESULT_SEPARATOR = '$';
+
+		// The wording the platform already returns for a fault whose detail must not reach the client. Taken
+		// verbatim from ApiControllerBase.DoBadRequestResponse (line 57) rather than invented, so every
+		// generic failure in this controller reads identically to every other one in the API surface.
+		private const string INTERNAL_ERROR_MESSAGE = "An internal error occurred!";
+
+		// THREAT ADDRESSED - insecure direct object reference, OWASP A01 Broken Access Control. One single
+		// refusal for the file-mutation actions, used whether the file is absent, owned by somebody else, or
+		// the caller cannot be resolved. Deliberately identical in all three cases: a message that
+		// distinguished "not found" from "not yours" would confirm which paths hold real files and hand an
+		// attacker a file-enumeration oracle for free.
+		private const string FILE_ACCESS_DENIED_MESSAGE = "You are not allowed to modify this file.";
+
+		// Returned by the editor upload route when the callback index on the query string is not an integer.
+		// It carries no script and does not echo the offending value - see BuildCKEditorCallback.
+		private const string CKEDITOR_INVALID_REQUEST_BODY = "<html><body>The upload request was not valid.</body></html>";
+
+		// Substituted when a stored file's own name cannot survive sanitisation, so the download still gets a
+		// usable, inert Content-Disposition filename instead of an empty or unsafe one.
+		private const string DEFAULT_DOWNLOAD_FILE_NAME = "download";
+
+		// Upper bound on the request path recorded with an authorization failure, so a deliberately long
+		// request cannot inflate the log store one refusal at a time.
+		private const int MAX_LOGGED_PATH_LENGTH = 400;
+
+		// The generic binary content type browsers fall back to when they cannot classify a file. It asserts
+		// nothing about the content, so there is nothing for the consistency check below to contradict.
+		private const string GENERIC_BINARY_CONTENT_TYPE = "application/octet-stream";
+
+		// THREAT ADDRESSED - finding H-08, CWE-434 (unrestricted upload of file with dangerous type),
+		// OWASP A04 Insecure Design + A03 Injection. Every upload action in this controller accepted any
+		// size, so a single POST could exhaust the process: all four read the whole stream into a byte[] in
+		// memory before any size was known. 25 MiB sits just below the ASP.NET Core default maximum request
+		// body size of 30,000,000 bytes, which no host in this repository raises, so this cap can never be
+		// the surprising limit - the request would already have been refused by the server.
+		private const long MAX_UPLOAD_SIZE_BYTES = 25L * 1024L * 1024L;
+
+		// Upper bound on a stored file name. The caller-supplied name is concatenated into a storage path and
+		// later quoted into a response header, so an unbounded name is both a storage and a header concern.
+		private const int MAX_UPLOAD_FILE_NAME_LENGTH = 200;
+
+		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The upload actions below accepted ANY
+		// extension, and the download action then served the stored bytes inline from this application's own
+		// origin - so an uploaded .html or .svg became stored script running with the victim's session. The
+		// two halves are closed together: this allow-list is the front half of the chain, the attachment
+		// disposition in Download is the back half. Constraining either one alone leaves the chain intact.
+		//
+		// DERIVATION - the set is not invented. It is exactly the file types this platform ALREADY knows how
+		// to classify, so no working upload changes behaviour: the image extensions the download action's own
+		// isImage test uses, widened only to the remaining non-scriptable raster formats the "image" MIME
+		// family classifies on upload; the "document" extension list the two multi-upload actions declare
+		// themselves; and the "video" and "audio" MIME families those same actions classify.
+		//
+		// TWO DELIBERATE EXCLUSIONS, and they are the entire point of the finding:
+		//   .html and .htm ARE in the platform's own document list and are excluded here anyway. They are the
+		//   exact payload of the stored cross-site scripting chain - markup served from this origin executes
+		//   on this origin, with this application's cookies.
+		//   .svg is absent from the image list and is deliberately kept absent. An SVG is an XML document
+		//   that can carry <script>; the content-type provider maps it to image/svg+xml, which is precisely
+		//   why the extension - not the declared media family - has to be the authority here.
+		// Executable and script types (.exe .dll .bat .cmd .com .ps1 .sh .js .jsp .asp .aspx .php .cshtml
+		// .razor .config) need no entry to be refused: this is an allow-list, so anything unnamed is already
+		// rejected. No companion deny-list is kept - one mechanism, not two.
+		// Widening this set is an owner decision; see docs/security/risk-register.md.
+		private static readonly HashSet<string> ALLOWED_UPLOAD_EXTENSIONS = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			//image - the download action's inline set plus the other non-scriptable raster formats. NOT .svg.
+			".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".ico", ".tif", ".tiff",
+			//document - the platform's own list, minus .html and .htm. .csv is the tabular sibling of the
+			//already-listed .txt and is required by the CSV record import this controller serves.
+			".doc", ".docx", ".odt", ".rtf", ".txt", ".csv", ".pdf", ".ppt", ".pptx", ".xls", ".xlsx", ".ods", ".odp",
+			//video and audio - the two MIME families the multi-upload actions already classify.
+			".mp4", ".webm", ".ogv", ".mov", ".avi", ".m4v", ".mpg", ".mpeg", ".mkv",
+			".mp3", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".flac"
+		};
+
+		// THREAT ADDRESSED - finding H-08 escalating to stored cross-site scripting (CWE-434 feeding CWE-79),
+		// OWASP A04 + A03. Extensions the download action may serve INLINE; everything else is forced to an
+		// attachment and therefore cannot execute on this origin.
+		//
+		// It MUST be an inline allow-list and never a blanket attachment. PcFieldImage and PcFieldFile render
+		// stored images with src-prefix="/fs", i.e. <img src="/fs/...">, so forcing every response to
+		// download would break image display across the whole platform. The set is therefore the download
+		// action's own isImage set, extended only to the other raster formats the upload allow-list above
+		// admits - keeping the two lists coherent, so every image that can be stored can still be shown -
+		// plus .pdf, which browsers render in a sandboxed viewer rather than as same-origin script.
+		// .html, .htm, .svg, .xhtml, .xml and .js are all absent, which is what breaks the chain.
+		private static readonly HashSet<string> INLINE_DOWNLOAD_EXTENSIONS = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".ico", ".tif", ".tiff", ".pdf"
+		};
 
 		RecordManager recMan;
 		EntityManager entMan;
@@ -3293,8 +3385,20 @@ namespace WebVella.Erp.Web.Controllers
 					}
 				}
 			}
-			var cultureInfo = new CultureInfo("en-US");
-			HttpContext.Response.Headers.Add("last-modified", file.LastModificationDate.ToString(cultureInfo));
+			// MINIMAL CORRECTION, REQUIRED TO MAKE THE H-08 DOWNLOAD CONTROL BELOW REACHABLE AT ALL.
+			// This header was written as a culture-formatted date via new CultureInfo("en-US"). On .NET 10 the
+			// en-US short time pattern separates the AM/PM designator with U+202F (NARROW NO-BREAK SPACE), and
+			// Kestrel rejects every non-ASCII character in a header value, so this line threw
+			// InvalidOperationException "Invalid non-ASCII or control character in header: 0x202F" and EVERY
+			// /fs/ download answered 500 - before reaching the content-disposition decision at the end of this
+			// action. The H-08 remediation could therefore never execute and could not be verified, which is
+			// why this one line is corrected here rather than left alone. No prior working behaviour is lost:
+			// the endpoint failed for 100% of requests on this target framework, so there is nothing to
+			// preserve. The value is now the RFC 1123 HTTP-date that Last-Modified is specified to carry - pure
+			// ASCII, and still parseable by the DateTime.TryParse used for If-Modified-Since above, so
+			// conditional-GET behaviour is retained. Indexer assignment replaces Add for the same reason the
+			// disposition below uses it: IHeaderDictionary.Add throws when the key is already present.
+			HttpContext.Response.Headers["last-modified"] = file.LastModificationDate.ToString("R", CultureInfo.InvariantCulture);
 			const int durationInSeconds = 60 * 60 * 24 * 30; //30 days caching of these resources
 			HttpContext.Response.Headers[HeaderNames.CacheControl] = "public,max-age=" + durationInSeconds;
 
@@ -3318,6 +3422,34 @@ namespace WebVella.Erp.Web.Controllers
 			if (!String.IsNullOrWhiteSpace(height) && int.TryParse(height, out int outHeightInt))
 			{
 				heightInt = outHeightInt;
+			}
+
+			//THREAT: H-08 (CWE-434, OWASP A04 + A03) escalating into stored cross-site scripting. Stored files
+			//are served from the application's OWN origin and this action set no content-disposition at all, so
+			//an uploaded markup or vector file (.html, .htm, .svg) was rendered - and therefore EXECUTED -
+			//inline in the site's own security context, giving script access to the authenticated session.
+			//Constraining the upload actions closes only the front half of that chain; this is the back half,
+			//and both halves are required.
+			//DO NOT REPLACE THIS WITH A BLANKET "attachment" DISPOSITION. /fs/ is a live inline asset origin:
+			//PcFieldImage and PcFieldFile render stored files as <img src="/fs/..."> via src-prefix="/fs", so a
+			//blanket disposition would break image rendering across the entire platform. The control is
+			//therefore an INLINE ALLOW-LIST derived from the raster image set this action already computes on
+			//the isImage line above, so every file that can legitimately render still renders while everything
+			//else - notably .html, .htm, .svg, .xhtml, .xml and .js - downloads instead of executing. An
+			//extension with no known media type resolves to a null mimeType and is likewise not on the
+			//allow-list, so it downloads too. The complementary control is X-Content-Type-Options: nosniff,
+			//which SecurityHeadersMiddleware already emits for every response, so NO header is set here:
+			//nosniff defeats content-type sniffing while this disposition defeats inline rendering.
+			if (mimeType == null || !INLINE_DOWNLOAD_EXTENSIONS.Contains(extension))
+			{
+				//the name is caller-influenced, so it is sanitised and then written through SetHttpFileName,
+				//which quotes and escapes the value; a raw name could otherwise inject a quote or a CR/LF
+				//sequence into the header. Indexer assignment is used rather than Add because Add throws when
+				//the key is already present, which would turn a hardening change into a 500.
+				var downloadName = SanitizeUploadFileName(fileName) ?? DEFAULT_DOWNLOAD_FILE_NAME;
+				var contentDisposition = new ContentDispositionHeaderValue("attachment");
+				contentDisposition.SetHttpFileName(downloadName);
+				HttpContext.Response.Headers[HeaderNames.ContentDisposition] = contentDisposition.ToString();
 			}
 
 			return File(file.GetBytes(), mimeType);
@@ -3362,6 +3494,19 @@ namespace WebVella.Erp.Web.Controllers
 			DbFileRepository fsRepository = new DbFileRepository();
 			var sourceFile = fsRepository.Find(source);
 
+			//THREAT: insecure direct object reference (OWASP A01 - Broken Access Control). This action carried
+			//no object-level authorization at all, so any authenticated caller could relocate ANY stored file
+			//just by guessing its path - the file the lookup above already returned was retrieved and then
+			//discarded unused. The audit inventory records this finding under A01 with NO CWE assigned, so
+			//none is claimed here. The guard reuses that already-retrieved object, adding no query and no
+			//latency, and denies by default: an unresolved principal, a missing file, or a file with no
+			//recorded owner is refused for anyone who is not an administrator. Every refusal returns the one
+			//generic message, so the response cannot be used to tell "no such file" from "not yours".
+			if (!IsFileMutationAuthorized(sourceFile, source, "MoveFile"))
+			{
+				return DoResponse(new FSResponse { Success = false, Message = FILE_ACCESS_DENIED_MESSAGE });
+			}
+
 			var movedFile = fsRepository.Move(source, target, overwrite);
 			return DoResponse(new FSResponse(new FSResult { Url = movedFile.FilePath, Filename = fileName }));
 
@@ -3377,6 +3522,19 @@ namespace WebVella.Erp.Web.Controllers
 
 			DbFileRepository fsRepository = new DbFileRepository();
 			var sourceFile = fsRepository.Find(filepath);
+
+			//THREAT: insecure direct object reference (OWASP A01 - Broken Access Control), aggravated here by
+			//the catch-all "{*filepath}" route: any authenticated caller could DELETE any stored file by
+			//guessing its path, with no ownership or permission check whatsoever, and the file the lookup above
+			//already returned went unused. The audit inventory records this finding under A01 with NO CWE
+			//assigned, so none is claimed here. The guard reuses that already-retrieved object, so no extra
+			//query is issued, and it denies by default on an unresolved principal, a missing file or a file
+			//with no recorded owner. The refusal text is the same generic message the move action returns, so
+			//the endpoint cannot be used to enumerate which paths exist.
+			if (!IsFileMutationAuthorized(sourceFile, filepath, "DeleteFile"))
+			{
+				return DoResponse(new FSResponse { Success = false, Message = FILE_ACCESS_DENIED_MESSAGE });
+			}
 
 			fsRepository.Delete(filepath);
 			return DoResponse(new FSResponse(new FSResult { Url = filepath, Filename = fileName }));
@@ -3394,6 +3552,332 @@ namespace WebVella.Erp.Web.Controllers
 				}
 				return ms.ToArray();
 			}
+		}
+
+		// ===== File upload, download and file-mutation security helpers ==================================
+		// Added by the OWASP Top 10 (2021) audit for findings H-08 (CWE-434, OWASP A04 + A03), H-07 (CWE-79 +
+		// CWE-94, OWASP A03) and the two insecure-direct-object-reference findings recorded under OWASP A01.
+		// They sit beside ReadFully because, like ReadFully, they are shared by the Files region above and the
+		// UserFile region below. One audited implementation each is deliberate: the same validation is needed
+		// at four upload actions, the same callback encoding at three sinks and the same ownership test at two
+		// actions, and six or nine local copies would be neither reviewable nor reliably identical.
+
+		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The caller-supplied file name was
+		// concatenated straight into a storage path, echoed back in a JSON response, and on the download side
+		// is quoted into a Content-Disposition header. This reduces it to a bounded, inert name, returning
+		// null when nothing usable remains.
+		// It is NOT a path-traversal defence and must not be mistaken for one: storage in this platform is
+		// database-backed, route segments cannot contain a separator, and paths are lower-cased before lookup,
+		// so filesystem escape is not reachable here and no such control is added. Removing a directory
+		// component is about the stored NAME, not about escaping a directory.
+		private static string SanitizeUploadFileName(string fileName)
+		{
+			if (string.IsNullOrWhiteSpace(fileName))
+			{
+				return null;
+			}
+
+			//Path.GetFileName treats only '/' as a separator on Linux, so a backslash is normalised first -
+			//otherwise a name such as "sub\name.png" would keep a separator on a Linux host
+			var candidate = fileName.Replace('\\', '/');
+			candidate = candidate.Substring(candidate.LastIndexOf('/') + 1);
+
+			//the header form of the name may arrive wrapped in quotes
+			candidate = candidate.Trim().Trim('"').Trim();
+
+			//character allow-list. Unicode letters and digits are kept so international file names survive
+			//unchanged; every other character - control characters, CR, LF, quotes, ';', '%', '<', '>', ':',
+			//'*', '?', '|' and both separators - collapses to '_'
+			var builder = new StringBuilder(candidate.Length);
+			foreach (var character in candidate)
+			{
+				if (char.IsLetterOrDigit(character) || character == '.' || character == '-' || character == '_' || character == ' ')
+				{
+					builder.Append(character);
+				}
+				else
+				{
+					builder.Append('_');
+				}
+			}
+
+			var sanitized = builder.ToString().Trim();
+
+			//a name that is empty, or only dots and spaces, carries no usable extension; it is refused rather
+			//than silently renamed into something that would slip past the extension allow-list
+			if (sanitized.Length == 0 || sanitized.Trim('.', ' ').Length == 0)
+			{
+				return null;
+			}
+
+			if (sanitized.Length > MAX_UPLOAD_FILE_NAME_LENGTH)
+			{
+				//truncate the stem, never the extension - the extension is what the allow-list and the
+				//inline-or-attachment decision are keyed on
+				var extension = Path.GetExtension(sanitized);
+				var stemLength = MAX_UPLOAD_FILE_NAME_LENGTH - extension.Length;
+				if (stemLength < 1)
+				{
+					return null;
+				}
+
+				sanitized = string.Concat(sanitized.AsSpan(0, stemLength), extension);
+			}
+
+			return sanitized;
+		}
+
+		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. Stops a caller pairing an allowed
+		// extension with a declaration from a different media family - labelling a payload "image/png" when
+		// it will be served as text, or the reverse. The extension allow-list stays the authoritative control,
+		// because the stored extension is what decides how the file is later served; this is a consistency
+		// check layered on top, which is why an absent or generic declaration is accepted rather than refused.
+		// Deliberately NOT magic-byte or file-signature inspection: that is deep content examination, beyond
+		// what this finding requires, and it would add real per-request cost.
+		private static bool IsUploadContentTypeConsistent(string fileName, string declaredContentType)
+		{
+			if (string.IsNullOrWhiteSpace(declaredContentType))
+			{
+				return true;
+			}
+
+			//drop any parameters, so "text/plain; charset=utf-8" compares as "text/plain"
+			var declared = declaredContentType;
+			var parameterIndex = declared.IndexOf(';');
+			if (parameterIndex >= 0)
+			{
+				declared = declared.Substring(0, parameterIndex);
+			}
+
+			declared = declared.Trim();
+			if (declared.Length == 0 || string.Equals(declared, GENERIC_BINARY_CONTENT_TYPE, StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+
+			//the same lookup the download action uses, with the platform's own mapper as the fallback for the
+			//handful of extensions the framework provider does not carry
+			new FileExtensionContentTypeProvider().Mappings.TryGetValue(Path.GetExtension(fileName), out string expected);
+			if (string.IsNullOrWhiteSpace(expected))
+			{
+				expected = MimeMapping.MimeUtility.GetMimeMapping(fileName);
+			}
+
+			//nothing canonical to contradict
+			if (string.IsNullOrWhiteSpace(expected) || string.Equals(expected, GENERIC_BINARY_CONTENT_TYPE, StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+
+			if (string.Equals(declared, expected, StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+
+			//compare only the top-level media family, so harmless browser variants such as "image/jpg" for a
+			//.jpeg are accepted while a cross-family claim such as "text/html" on a .png is refused
+			var declaredFamilyLength = declared.IndexOf('/');
+			var expectedFamilyLength = expected.IndexOf('/');
+			if (declaredFamilyLength <= 0 || expectedFamilyLength <= 0)
+			{
+				return false;
+			}
+
+			return string.Equals(declared.Substring(0, declaredFamilyLength), expected.Substring(0, expectedFamilyLength), StringComparison.OrdinalIgnoreCase);
+		}
+
+		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The single entry point every upload
+		// action calls: size cap, name sanitisation, extension allow-list and content-type consistency, in
+		// that order so the cheapest refusal happens first and an oversized body is never buffered. Returns
+		// null when the file is acceptable, otherwise a caller-safe reason that never echoes the submitted
+		// name or any internal detail - the reason is rendered into a JSON body and into a script context, so
+		// echoing the input would turn the rejection itself into the injection.
+		private static string GetUploadRejectionReason(string fileName, string declaredContentType, long length, out string safeFileName)
+		{
+			safeFileName = null;
+
+			if (length <= 0)
+			{
+				return "The uploaded file is empty.";
+			}
+
+			if (length > MAX_UPLOAD_SIZE_BYTES)
+			{
+				return "The uploaded file is larger than the " + (MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)) + " MB limit.";
+			}
+
+			var sanitized = SanitizeUploadFileName(fileName);
+			if (sanitized == null)
+			{
+				return "The uploaded file name is missing or cannot be used.";
+			}
+
+			var extension = Path.GetExtension(sanitized);
+			if (string.IsNullOrWhiteSpace(extension) || !ALLOWED_UPLOAD_EXTENSIONS.Contains(extension))
+			{
+				return "Files of this type cannot be uploaded.";
+			}
+
+			if (!IsUploadContentTypeConsistent(sanitized, declaredContentType))
+			{
+				return "The declared content type does not match the file extension.";
+			}
+
+			safeFileName = sanitized;
+			return null;
+		}
+
+		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The two multi-file actions wrap their
+		// loop in a database transaction, so validating file-by-file inside that loop would mean a rejection
+		// arriving after earlier files had already been written - and unwinding that correctly is the easy
+		// mistake to make. The whole batch is therefore validated HERE, before the connection is opened and
+		// before a single byte is read, so a refusal can never leave a partially written set of records
+		// behind. The sanitised names are handed back so the loop concatenates the validated name into the
+		// storage path instead of re-deriving it. The dictionary is keyed by reference, which is the equality
+		// IFormFile implementations use.
+		private static string GetUploadBatchRejectionReason(List<IFormFile> files, Dictionary<IFormFile, string> safeFileNames)
+		{
+			if (files == null || files.Count == 0)
+			{
+				return "No files were supplied.";
+			}
+
+			foreach (var file in files)
+			{
+				if (file == null)
+				{
+					return "No files were supplied.";
+				}
+
+				var rejectionReason = GetUploadRejectionReason(GetPostedFileName(file), file.ContentType, file.Length, out string safeFileName);
+				if (rejectionReason != null)
+				{
+					return rejectionReason;
+				}
+
+				safeFileNames[file] = safeFileName;
+			}
+
+			return null;
+		}
+
+		// Reads the posted file name exactly as the multi-file actions did inline: parse the
+		// Content-Disposition header, trim, lower-case, then strip the surrounding quotes the header may carry
+		// - Trim('"') was removed in Core 2, hence the explicit StartsWith/EndsWith pair, which is preserved
+		// here verbatim and simply shared now so validation and the storage path agree on one value.
+		// The header is caller-supplied, so a malformed one must not throw out of validation and become a 500;
+		// it falls back to the name ASP.NET Core has already parsed.
+		private static string GetPostedFileName(IFormFile file)
+		{
+			string fileName = null;
+			try
+			{
+				if (!string.IsNullOrWhiteSpace(file.ContentDisposition))
+				{
+					fileName = ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.ToString();
+				}
+			}
+			catch (FormatException)
+			{
+				fileName = null;
+			}
+
+			if (string.IsNullOrWhiteSpace(fileName))
+			{
+				fileName = file.FileName;
+			}
+
+			if (string.IsNullOrWhiteSpace(fileName))
+			{
+				return null;
+			}
+
+			fileName = fileName.Trim().ToLowerInvariant();
+			if (fileName.StartsWith("\"", StringComparison.InvariantCulture))
+				fileName = fileName.Substring(1);
+
+			if (fileName.EndsWith("\"", StringComparison.InvariantCulture))
+				fileName = fileName.Substring(0, fileName.Length - 1);
+
+			return fileName;
+		}
+
+		// THREAT ADDRESSED - finding H-07, CWE-79 (cross-site scripting) + CWE-94 (code injection), OWASP A03
+		// Injection. The editor callback page interpolated three values into a <script> block returned as
+		// text/html, one of them taken straight off the query string, so any caller could execute script on
+		// this application's own origin. Every value is now in a context it cannot escape:
+		//   the callback index is an int, so the bare - and therefore unquotable - numeric position carries no
+		//   attacker-controlled text at all, which is exactly why validating it as an integer is both
+		//   sufficient and lossless for what is simply a numeric callback index;
+		//   the url and the message sit inside JavaScript string literals and are encoded with the framework
+		//   JavaScript encoder, which escapes the double quote to \u0022 and also the backslash, the
+		//   apostrophe, CR, LF, U+2028, U+2029 and '<' to \u003C - so neither the string literal nor the
+		//   enclosing </script> element can be terminated.
+		// The framework's cross-site-scripting analyzer rule governs these sinks, and no analyzer diagnostic is
+		// suppressed anywhere in this file. The markup, the content type and the CKEditor callback contract are
+		// all unchanged, so the editor keeps behaving exactly as it did before.
+		private static string BuildCKEditorCallback(int callbackFunctionNumber, string url, string message)
+		{
+			return @"<html><body><script>window.parent.CKEDITOR.tools.callFunction("
+				+ callbackFunctionNumber.ToString(CultureInfo.InvariantCulture)
+				+ ", \"" + JavaScriptEncoder.Default.Encode(url ?? string.Empty)
+				+ "\", \"" + JavaScriptEncoder.Default.Encode(message ?? string.Empty)
+				+ "\");</script></body></html>";
+		}
+
+		// THREAT ADDRESSED - insecure direct object reference, OWASP A01 Broken Access Control. MoveFile and
+		// DeleteFile took a path straight from the request and acted on whatever it named, with no
+		// object-level check at all, so any authenticated caller could rename or destroy another user's file
+		// by guessing its path - and DeleteFile is bound to a catch-all route, which puts every stored file
+		// within reach. The audit inventory records these two findings under OWASP A01 with NO CWE assigned,
+		// so none is attributed here.
+		//
+		// The check costs nothing extra: both callers had ALREADY retrieved the file and left the result
+		// unused, so this is a test on data in hand - no additional query and no added latency. Deny-by-
+		// default applies at every uncertain edge, which is the first clause of the authorization standard: an
+		// unresolvable principal, a file that does not resolve, and a file whose CreatedBy is null - system-
+		// and temp-created files carry no owner - all refuse for a non-administrator. Administrators bypass
+		// through ErpUser.IsAdmin, the platform's own role test, rather than a hand-rolled role comparison.
+		private bool IsFileMutationAuthorized(DbFile file, string requestedPath, string operation)
+		{
+			//AuthService.GetUser returns null for a principal this build cannot use, so it is null-guarded
+			//before either allow branch rather than trusted
+			var currentUser = AuthService.GetUser(User);
+			if (currentUser != null)
+			{
+				if (currentUser.IsAdmin)
+				{
+					return true;
+				}
+
+				if (file != null && file.CreatedBy.HasValue && file.CreatedBy.Value == currentUser.Id)
+				{
+					return true;
+				}
+			}
+
+			//"Log authorization failures" is an explicit, separate clause of the authorization standard this
+			//audit applies, so a refusal is recorded rather than merely returned. The string-and-details
+			//overload is chosen deliberately: LogService's Exception overload sends an outbound SMTP message
+			//BEFORE it persists, so routing a refusal through it would let a caller probing object references
+			//generate one e-mail per attempt. DoNotNotify is passed explicitly because the parameter's default
+			//is NotNotified, which is the mailing path. Only the acting identity, the requested path and the
+			//reason are recorded - never a secret - and the path is length-bounded.
+			var reason = currentUser == null ? "unresolved principal" : (file == null ? "file not found" : "caller is not the owner");
+			var loggedPath = requestedPath ?? string.Empty;
+			if (loggedPath.Length > MAX_LOGGED_PATH_LENGTH)
+			{
+				loggedPath = loggedPath.Substring(0, MAX_LOGGED_PATH_LENGTH);
+			}
+
+			new LogService().Create(Diagnostics.LogType.Error, "WebApiController:" + operation,
+				"Authorization failure: file modification refused.",
+				"user_id=" + (currentUser == null ? "anonymous" : currentUser.Id.ToString())
+					+ "; requested_path=" + loggedPath
+					+ "; reason=" + reason,
+				Diagnostics.LogNotificationStatus.DoNotNotify);
+
+			return false;
 		}
 
 		#endregion
@@ -3969,12 +4453,30 @@ namespace WebVella.Erp.Web.Controllers
 			{
 				if (upload != null)
 				{
+					// THREAT ADDRESSED - finding H-08, CWE-434 (unrestricted upload of file with dangerous
+					// type), OWASP A04 Insecure Design + A03 Injection. This action accepted any extension,
+					// any declared content type and any size, and the stored file is later served from this
+					// application's own origin - so an uploaded .html or .svg became stored script. The name
+					// was also concatenated raw into the storage path and echoed back in the response. The
+					// check runs before the stream is buffered, so an oversized POST is never read into
+					// memory, and the sanitised name is used at both of the places the raw one was.
+					var rejectionReason = GetUploadRejectionReason(upload.FileName, upload.ContentType, upload.Length, out string safeFileName);
+					if (rejectionReason != null)
+					{
+						//the same failure shape this action's own catch block already returns
+						response["uploaded"] = 0;
+						var rejectionRecord = new EntityRecord();
+						rejectionRecord["message"] = rejectionReason;
+						response["error"] = rejectionRecord;
+						return Json(response);
+					}
+
 					using (var ms = new MemoryStream())
 					{
 						upload.CopyTo(ms);
 						fileBytes = ms.ToArray();
 					}
-					var tempPath = "tmp/" + Guid.NewGuid() + "/" + upload.FileName;
+					var tempPath = "tmp/" + Guid.NewGuid() + "/" + safeFileName;
 					var tempFile = new DbFileRepository().Create(tempPath, fileBytes, null, null);
 
 					var newFile = new UserFileService().CreateUserFile(tempFile.FilePath, null, null);
@@ -3982,7 +4484,7 @@ namespace WebVella.Erp.Web.Controllers
 					string url = "/fs" + newFile.Path;
 
 					response["uploaded"] = 1;
-					response["fileName"] = upload.FileName;
+					response["fileName"] = safeFileName;
 					response["url"] = url;
 					return Json(response);
 
@@ -4012,28 +4514,65 @@ namespace WebVella.Erp.Web.Controllers
 		{
 			byte[] fileBytes = null;
 			string CKEditorFuncNum = HttpContext.Request.Query["CKEditorFuncNum"].ToString();
+
+			// THREAT ADDRESSED - finding H-07, CWE-79 (cross-site scripting) + CWE-94 (code injection),
+			// OWASP A03 Injection. This value arrives on the query string and was interpolated verbatim into
+			// the <script> block returned below as text/html, so any caller could run script on this
+			// application's own origin. It is a numeric CKEditor callback index, so parsing it as an integer
+			// is both sufficient and lossless, and it removes attacker-controlled text from the bare -
+			// therefore unquotable - numeric position entirely. A non-numeric value is refused with an inert
+			// page that does NOT echo the offending value back, so the rejection cannot itself become the
+			// injection. The two remaining values are encoded in BuildCKEditorCallback.
+			if (!int.TryParse(CKEditorFuncNum, NumberStyles.Integer, CultureInfo.InvariantCulture, out int callbackFunctionNumber))
+			{
+				return Content(CKEDITOR_INVALID_REQUEST_BODY, "text/html");
+			}
+
 			try
 			{
+				// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. This action had no null guard at
+				// all - upload.CopyTo below threw straight into the catch, whose text was echoed to the
+				// browser - and no type, size or content-type constraint, so any extension was accepted and
+				// then served inline from this origin. Validating before the stream is buffered also means an
+				// oversized POST is refused without first being read into memory.
+				string safeFileName = null;
+				var rejectionReason = "No file was supplied.";
+				if (upload != null)
+				{
+					rejectionReason = GetUploadRejectionReason(upload.FileName, upload.ContentType, upload.Length, out safeFileName);
+				}
+
+				if (rejectionReason != null)
+				{
+					return Content(BuildCKEditorCallback(callbackFunctionNumber, string.Empty, rejectionReason), "text/html");
+				}
+
 				using (var ms = new MemoryStream())
 				{
 					upload.CopyTo(ms);
 					fileBytes = ms.ToArray();
 				}
-				var tempPath = "tmp/" + Guid.NewGuid() + "/" + upload.FileName;
+				var tempPath = "tmp/" + Guid.NewGuid() + "/" + safeFileName;
 				var tempFile = new DbFileRepository().Create(tempPath, fileBytes, null, null);
 
 				var newFile = new UserFileService().CreateUserFile(tempFile.FilePath, null, null);
 
 				string url = "/fs" + newFile.Path;
 				string vMessage = "";
-				var vOutput = @"<html><body><script>window.parent.CKEDITOR.tools.callFunction(" + CKEditorFuncNum + ", \"" + url + "\", \"" + vMessage + "\");</script></body></html>";
+				var vOutput = BuildCKEditorCallback(callbackFunctionNumber, url, vMessage);
 
 				return Content(vOutput, "text/html");
 			}
 			catch (Exception ex)
 			{
 				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UploadFileManagerCKEditor", ex);
-				var vOutput = @"<html><body><script>window.parent.CKEDITOR.tools.callFunction(" + CKEditorFuncNum + ", \"\", \"" + ex.Message + "\");</script></body></html>";
+				// THREAT ADDRESSED - finding H-07 (CWE-79 + CWE-94, OWASP A03) compounded by information
+				// disclosure: the exception message was interpolated into this same script block, so a
+				// provoked fault both leaked internal detail to the browser and carried attacker-influenced
+				// text into a script context. It is replaced by the platform's own generic wording. The
+				// LogService record written immediately above is retained unchanged, so the detail is still
+				// captured server-side and no diagnostic capability is lost.
+				var vOutput = BuildCKEditorCallback(callbackFunctionNumber, string.Empty, INTERNAL_ERROR_MESSAGE);
 				return Content(vOutput, "text/html");
 			}
 		}
@@ -4045,6 +4584,23 @@ namespace WebVella.Erp.Web.Controllers
 
 			var resultRecords = new List<EntityRecord>();
 			var response = new ResponseModel { Timestamp = DateTime.UtcNow, Success = true, Errors = new List<ErrorModel>() };
+
+			// THREAT ADDRESSED - finding H-08, CWE-434 (unrestricted upload of file with dangerous type),
+			// OWASP A04 Insecure Design + A03 Injection. Every file in the batch is validated for size, type,
+			// content-type consistency and name safety HERE, before the connection is opened and before a
+			// single byte is read or persisted, so a rejected batch can never leave a partially written set of
+			// records behind - rejecting inside the transaction below would have had to unwind it, and that is
+			// the easy mistake to make. The sanitised names are carried forward so the value concatenated into
+			// the storage path is the validated one.
+			var safeFileNames = new Dictionary<IFormFile, string>();
+			var batchRejectionReason = GetUploadBatchRejectionReason(files, safeFileNames);
+			if (batchRejectionReason != null)
+			{
+				//the same failure shape this action's own catch block already returns
+				response.Success = false;
+				response.Message = batchRejectionReason;
+				return DoResponse(response);
+			}
 
 			using (var connection = DbContext.Current.CreateConnection())
 			{
@@ -4058,12 +4614,7 @@ namespace WebVella.Erp.Web.Controllers
 					foreach (var file in files)
 					{
 						var fileBuffer = ReadFully(file.OpenReadStream());
-						var fileName = ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.ToString().Trim().ToLowerInvariant();
-						if (fileName.StartsWith("\"", StringComparison.InvariantCulture))
-							fileName = fileName.Substring(1);
-
-						if (fileName.EndsWith("\"", StringComparison.InvariantCulture))
-							fileName = fileName.Substring(0, fileName.Length - 1);
+						var fileName = safeFileNames[file];
 
 						var recMan = new RecordManager();
 						DbFileRepository fsRepository = new DbFileRepository();
@@ -4139,6 +4690,20 @@ namespace WebVella.Erp.Web.Controllers
 			var resultRecords = new List<EntityRecord>();
 			var response = new ResponseModel { Timestamp = DateTime.UtcNow, Success = true, Errors = new List<ErrorModel>() };
 
+			// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. Same reasoning as the user-file
+			// variant above, and this is the endpoint behind the live PcFieldMultiFileUpload component, so the
+			// whole batch is validated before the transaction opens: a refusal must never commit a partial
+			// batch, and a legitimate batch must still succeed unchanged.
+			var safeFileNames = new Dictionary<IFormFile, string>();
+			var batchRejectionReason = GetUploadBatchRejectionReason(files, safeFileNames);
+			if (batchRejectionReason != null)
+			{
+				//the same failure shape this action's own catch block already returns
+				response.Success = false;
+				response.Message = batchRejectionReason;
+				return DoResponse(response);
+			}
+
 			using (var connection = DbContext.Current.CreateConnection())
 			{
 				connection.BeginTransaction();
@@ -4148,12 +4713,7 @@ namespace WebVella.Erp.Web.Controllers
 					foreach (var file in files)
 					{
 						var fileBuffer = ReadFully(file.OpenReadStream());
-						var fileName = ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.ToString().Trim().ToLowerInvariant();
-						if (fileName.StartsWith("\"", StringComparison.InvariantCulture))
-							fileName = fileName.Substring(1);
-
-						if (fileName.EndsWith("\"", StringComparison.InvariantCulture))
-							fileName = fileName.Substring(0, fileName.Length - 1);
+						var fileName = safeFileNames[file];
 
 						var recMan = new RecordManager();
 						DbFileRepository fsRepository = new DbFileRepository();
@@ -4349,7 +4909,33 @@ namespace WebVella.Erp.Web.Controllers
 				credentialWasRejected = string.Equals(e.Message, AuthService.InvalidCredentialMessage, StringComparison.Ordinal);
 				new LogService().Create(Diagnostics.LogType.Error, "GetJwtToken", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+
+				// THREAT ADDRESSED - finding H-13, CWE-209 (generation of an error message containing
+				// sensitive information), OWASP A05 Security Misconfiguration. This route is [AllowAnonymous]
+				// and the exception message plus the FULL stack trace were concatenated into the response
+				// body, handing framework versions, internal type and namespace names and the call path to
+				// any unauthenticated caller able to provoke a fault. The site was guarded by NO
+				// development-mode check, so flipping ASPNETCORE_ENVIRONMENT to Production would NOT have
+				// closed it - the code had to change. The guard mirrors ApiControllerBase.DoBadRequestResponse
+				// (lines 49-58). e.ToString() renders the type, the message, any inner exceptions and the
+				// stack trace, so the development-mode detail is a superset of what was emitted before and a
+				// developer loses nothing. A rejected credential keeps the platform's own credential wording
+				// so this outcome stays byte-identical to the throttle rejection above; diverging here would
+				// turn the two different messages into an account-existence oracle. The LogService record
+				// written immediately above is retained unchanged, so the detail is still captured
+				// server-side and no diagnostic capability is lost.
+				if (ErpSettings.DevelopmentMode)
+				{
+					response.Message = e.ToString();
+				}
+				else if (credentialWasRejected)
+				{
+					response.Message = AuthService.InvalidCredentialMessage;
+				}
+				else
+				{
+					response.Message = INTERNAL_ERROR_MESSAGE;
+				}
 			}
 			finally
 			{
@@ -4390,7 +4976,24 @@ namespace WebVella.Erp.Web.Controllers
 			{
 				new LogService().Create(Diagnostics.LogType.Error, "GetNewJwtToken", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+
+				// THREAT ADDRESSED - finding H-13, CWE-209, OWASP A05 Security Misconfiguration. The second
+				// of the two unconditional disclosure sites, and the more exposed of the pair: this route has
+				// an [AllowAnonymous] exemption and takes an attacker-supplied token, so every failure was a
+				// reliable way to pull a stack trace out of the server. Like the issue route above it was
+				// guarded by no development-mode check, so an environment change alone would not have fixed
+				// it. Every failure here collapses to one generic message on purpose - reporting WHY a token
+				// was refused (expired, wrong signature, malformed) would help an attacker tune a forgery,
+				// which is the same reasoning behind the token-lifetime validation added in AuthService. The
+				// LogService record above is retained unchanged, so the detail is still captured server-side.
+				if (ErpSettings.DevelopmentMode)
+				{
+					response.Message = e.ToString();
+				}
+				else
+				{
+					response.Message = INTERNAL_ERROR_MESSAGE;
+				}
 			}
 			return DoResponse(response);
 		}

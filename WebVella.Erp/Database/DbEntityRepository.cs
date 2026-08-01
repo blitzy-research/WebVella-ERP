@@ -48,8 +48,19 @@ namespace WebVella.Erp.Database
 						List<DbParameter> parameters = new List<DbParameter>();
 
 						// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-						// Software and Data Integrity Failures). Entity documents are read back with polymorphic type handling so the DbBaseField
-						// hierarchy round-trips. The binder constrains which types a stored $type token may name.
+						// Software and Data Integrity Failures). Entity documents are written with
+						// polymorphic type handling so the DbBaseField hierarchy in DbEntity.Fields
+						// round-trips, which stamps a $type discriminator on every field element.
+						// TypeNameHandling is deliberately RETAINED rather than set to None: every
+						// entity already persisted carries those discriminators - the shipped role
+						// entity stores "WebVella.Erp.Database.DbGuidField, WebVella.Erp" - so
+						// removing type handling would stop existing installations loading their own
+						// schema. The weakness is closed by constraining RESOLUTION instead, to an
+						// enumerated first-party allow-list. Attaching the binder on this serialize
+						// path changes nothing that is stored, because the binder below overrides
+						// BindToType only and leaves BindToName to the base implementation, so the
+						// $type strings written here stay byte-identical to the ones written before
+						// this change.
 						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 						DbParameter parameterId = new DbParameter();
@@ -169,6 +180,13 @@ namespace WebVella.Erp.Database
 				{
 					NpgsqlCommand command = con.CreateCommand("UPDATE entities SET json=@json WHERE id=@id;");
 
+					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+					// Software and Data Integrity Failures). The same constraint as the Create path
+					// above, on the document this method rewrites: TypeNameHandling is retained so
+					// the DbBaseField hierarchy keeps round-tripping, and the binder confines which
+					// types a stored $type token may resolve to. Because the binder overrides
+					// BindToType only, the discriminators written back here are unchanged, so an
+					// entity updated by this build still loads on one running the previous build.
 					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 					var parameter = command.CreateParameter() as NpgsqlParameter;
@@ -214,6 +232,15 @@ namespace WebVella.Erp.Database
 				using (NpgsqlDataReader reader = command.ExecuteReader())
 				{
 
+					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+					// Software and Data Integrity Failures). This is the deserialize side, and the
+					// one place in this file where the binder actually fires. Left unconstrained,
+					// automatic type handling resolves whatever $type token the entities table
+					// happens to contain into a CLR type, which is a well-known
+					// remote-code-execution primitive. TypeNameHandling is retained because the
+					// stored documents cannot be read without it, and resolution is constrained
+					// instead to an enumerated first-party allow-list: a token naming anything
+					// outside that list is refused rather than resolved.
 					JsonSerializerSettings settings = new JsonSerializerSettings
 					{
 						TypeNameHandling = TypeNameHandling.Auto,

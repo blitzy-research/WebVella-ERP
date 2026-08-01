@@ -2422,6 +2422,49 @@ installations.
 * Interactive verification across 11 authenticated pages; zero occurrences of any failure signature
   across four independent observation channels.
 
+#### `JobProfile.cs` — the four job and schedule attachment sites, measured
+
+The four `TypeNameHandling.All` sites in `WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs`
+(pre-remediation `L35`, `L46`, `L52`, `L93`) each attach the shared singleton
+`ErpSerializationBinder.Instance`. `TypeNameHandling.All` is **retained** at all four, because
+removing it would fail to deserialise job and schedule payloads already in the database. The
+singleton is referenced rather than constructed because `JobConvert` and `SchedulePlanConvert` run
+once per `DataRow`; that choice is **compliance with the ten-percent performance boundary, not an
+optimisation**. One attachment at the schedule site covers **two** consumers, `ScheduledDays` and the
+schedule's `job_attributes`. The redundant `using WebVella.Erp.Api.Models;` an earlier revision added
+was removed: `WebVella.Erp.Api.Models` *encloses* this file's namespace, so the type already
+resolves, and a rebuild with the import absent proves it.
+
+**Harness: 90 checks, 90 passed, 0 failed** (0 errors from the project; solution-wide restore and
+build both clean; `dotnet test --list-tests` discovers nothing, so the test-suite gate is vacuous as
+recorded above and no test asset was created). Every legitimate payload was deserialised twice — once
+through the attachment-site settings and once through the pre-remediation settings — and compared by
+re-serialisation, so *equality is the preservation proof*.
+
+| Property verified | Observed result |
+| --- | --- |
+| Job `attributes`, the site with **no** `try`/`catch` | A payload carrying `string`, `int`, `long`, `double`, `decimal`, `bool`, `DateTime`, `DateTimeOffset`, `TimeSpan`, `Guid`, `Uri`, `List<object>`, `Dictionary<string,object>`, `object[]`, `string[]`, `HashSet<string>` and a nested list-of-dictionary graph deserialises without throwing and **identically** with and without the binder |
+| Legacy `ExpandoObject` `result` (inner `try`) | Deserialises through the inner `try`, content and nested collections preserved, **identical** to the control, and does not fall through to the outer `catch` |
+| Current `JobResultWrapper` `result` | The target-typed statement deserialises through the binder, the allow-list admits the **internal** first-party wrapper type, `.Result` unwraps correctly, and the result is **identical** to the control |
+| Schedule plan, both consumers | `SchedulePlanDaysOfWeek` round-trips with the correct days set and `HasOneSelectedDay()` intact; the schedule `job_attributes` round-trips with its nested list; both **identical** to the control |
+| **Exploit confirmed, then closed** | With the binder absent, a `$type` nested in `JobResultWrapper.Result` — declared `dynamic` — **instantiated `System.Diagnostics.Process`**. With the binder attached the identical payload is refused with a `JsonSerializationException`. This is the decisive evidence that the finding is closed at this file, rather than merely configured |
+| Gadgets refused, with a control | 8 discriminators refused at an `object` target — `Process`, `DataSet`, `StringBuilder`, `MemoryStream`, `Hashtable`, `Type`, `Assembly` and a `List<StringBuilder>` smuggling a forbidden argument — each against a control confirming the payload was accepted or resolved **without** the binder |
+| Hostile value on the real schedule path | A hostile `schedule_days` discriminator is refused **inside `SchedulePlanConvert`** with a `JsonSerializationException` |
+| Malformed discriminators | 8 refused cleanly as `JsonSerializationException` — an unknown first-party type, an unknown assembly, `System.`, a bare backtick, `[[[`, `System.Object[[]]`, ``a`1[[``, and a first-party type name vouched for by the look-alike assembly `WebVella.ErpEvil`. None surfaced as `TypeLoadException`, `FileNotFoundException` or `NullReferenceException`, so a malformed stored value cannot become a denial of service on the job-read path |
+| Pre-existing fallback preserved | Invalid JSON in `result` still degrades to `"ERROR WHILE DESERIALIZE: "` with its trailing space and the raw payload appended, and the trigger is the pre-existing parse failure rather than the binder |
+
+#### Measured limitation worth stating plainly
+
+Newtonsoft dispatches an `ExpandoObject` target to its own `ExpandoObjectConverter`, which treats
+`$type` as an ordinary member and **never resolves it**. At the three sites whose target is
+`ExpandoObject` the binder is therefore **inert — and no type is instantiated from the payload
+either**, with or without it. Those sites are defence in depth: correct to attach, and load-bearing
+the moment a target type changes, but not where the exposure lived. The exposure lived at the two
+sites whose target is a POCO — the `JobResultWrapper` statement and the `SchedulePlanDaysOfWeek`
+statement — and inside any `dynamic` or `object`-typed member of such a target, which is exactly
+where the confirmed-then-closed exploit above sits. Stating this is more useful than claiming four
+uniformly closed sinks.
+
 ### Class: HTTP edge — headers, transport, cookies, rate limiting
 
 **Findings closed:** H-8 (headers middleware never invoked), L-1 (policy publicly replaceable;

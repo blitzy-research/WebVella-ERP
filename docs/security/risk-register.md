@@ -37,6 +37,7 @@ the same risk written from different angles; the subject and status in this tabl
 | `RISK-022` | Content-Security-Policy ships in report-only mode, because four components emit inline script and enforcing it immediately would break them. | Accepted | Platform team |
 | `RISK-023` | Four by-design raw-output channels are deliberately not encoded, because encoding them would disable the features they implement. | Accepted | Platform team |
 | `RISK-024` | The static-analysis backlog is reported as warnings rather than enforced as errors, because promoting roughly 3,000 pre-existing diagnostics would force the mass refactor the constraints forbid. | Accepted | Platform team |
+| `RISK-025` | Residual observations around the `H-10` deserialisation binder: the binder is measurably **inert at an `ExpandoObject` target**, the serialisation counterparts are deliberately unconstrained, and the `JobResultWrapper` fallback branch is effectively unreachable for well-formed payloads. **Cited from `WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs`.** | Accepted / named, not fixed | Platform team |
 
 ### Identifiers renumbered while consolidating this register
 
@@ -972,6 +973,51 @@ result is not misread.
 | RISK-018 | Four accessibility advisories (label/form-field association, missing autocomplete attributes). | Not security findings; documentation only. |
 | RISK-019 | Two vendored source-map files return HTTP 405. Requested only by browser developer tools, never by any page. | Cosmetic. |
 | RISK-020 | On one management page `document.title` disagrees with the visible heading. | Cosmetic. |
+| RISK-025 | Three residual observations around the `H-10` binder, all measured rather than assumed — see the detailed entry below. | Two are by design and one is a pre-existing functional quirk with no security consequence. |
+
+#### RISK-025 — Residual observations around the H-10 deserialisation binder
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted for the first two; named-not-fixed for the third. |
+| **Related finding** | `H-10` — unsafe polymorphic deserialisation (CWE-502, OWASP A08:2021). |
+| **Cited from** | `WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs` |
+
+**1. The binder is inert at an `ExpandoObject` target — accepted, by design.** Newtonsoft dispatches
+an `ExpandoObject` target to its own `ExpandoObjectConverter`, which treats `$type` as an ordinary
+member and never resolves it. Measured: an identical gadget payload yields the same
+`ExpandoObject` with keys `[$type]` with the binder attached and with it absent. The consequence is
+benign in both directions — **no type is instantiated from the payload at those sites either way**, so
+they were never the CWE-502 exposure, and the attachment is defence in depth that becomes
+load-bearing the moment a target type changes. It is recorded because a reader who assumes all four
+attachment sites are equally load-bearing would over-state the control, and because a future change
+of target type from `ExpandoObject` to `object` would silently move the site from inert to critical.
+The exposure lived at the POCO-targeted statements and inside any `dynamic` or `object`-typed member
+of one, which is where the confirmed-then-closed exploit is recorded in the
+[remediation log](remediation-log.md).
+
+**2. The serialisation counterparts are deliberately unconstrained — accepted, by design.**
+`WebVella.Erp/Jobs/JobDataService.cs` configures `TypeNameHandling.All` at four sites and is the
+*write* counterpart that produces the exact JSON `JobProfile.cs` reads;
+`WebVella.Erp/Notifications/NotificationContext.cs` configures `TypeNameHandling.Auto` at two.
+Serialisation is **not** the CWE-502 attack surface: constraining what the platform is willing to
+*write* protects nothing, because the attacker's leverage is over what is *read*, and it would break
+writing. `BindToName` is correspondingly left unoverridden on the binder itself. Both files
+nonetheless attach the binder at their read-adjacent settings, which is harmless and consistent; no
+further change is warranted and none should be made on the strength of a scanner hit against
+`TypeNameHandling` alone.
+
+**3. The `JobResultWrapper` fallback branch is effectively unreachable — named, not fixed.** The job
+`result` read path attempts `ExpandoObject` first, for backward compatibility, and falls back to
+`JobResultWrapper` in a `catch`. Because `ExpandoObject` deserialisation **succeeds** on
+wrapper-shaped JSON — again, `ExpandoObjectConverter` treats `$type` as an ordinary member — the first
+attempt wins and the fallback is not reached for a well-formed wrapper payload; the caller receives an
+`ExpandoObject` carrying `$type` and `result` keys rather than the unwrapped value. Measured
+identically with and without the binder, so this is **pre-existing behaviour and not a regression**.
+It is a functional quirk with no security consequence, and correcting the ordering would change the
+shape of a value returned to every consumer of `Job.Result` — precisely the behavioural change the
+minimal-change constraint forbids. Named so that a future reader does not attribute it to the binder
+work, and so that anyone who does intend to reorder the attempts knows what depends on it.
 
 #### RISK-021 — The shipped configuration files still contain development secrets
 

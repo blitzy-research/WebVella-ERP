@@ -956,8 +956,16 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     {
 
                         // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-                        // Software and Data Integrity Failures). Entity and relation metadata read during SDK code generation, plus the record snapshots it
-                        // emits. The binder constrains which types a stored $type token may name.
+                        // Software and Data Integrity Failures): TypeNameHandling resolves a $type
+                        // discriminator carried in the stored payload into a CLR type, which with an
+                        // unconstrained binder is a well documented remote-code-execution primitive.
+                        // TypeNameHandling is deliberately RETAINED - the entity metadata already
+                        // persisted in the legacy database carries discriminators on every element of
+                        // DbEntity.Fields, because the declared element type DbBaseField is abstract
+                        // and the runtime elements are its concrete subclasses, so removing it would
+                        // stop existing installations loading at all - and is constrained instead by
+                        // an explicit type allow-list. ErpSerializationBinder overrides BindToType
+                        // only, so the $type strings written on serialisation are unchanged.
                         JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
                         List<DbEntity> entities = new List<DbEntity>();
                         while (reader.Read())
@@ -990,6 +998,16 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     using (NpgsqlDataReader reader = command.ExecuteReader())
                     {
 
+                        // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+                        // Software and Data Integrity Failures): TypeNameHandling resolves a $type
+                        // discriminator carried in the stored payload into a CLR type, which with an
+                        // unconstrained binder is a well documented remote-code-execution primitive.
+                        // TypeNameHandling is deliberately RETAINED - already-persisted relation
+                        // payloads carry discriminators and would fail to load without it - and is
+                        // constrained instead by an explicit type allow-list. ErpSerializationBinder
+                        // overrides BindToType only, so the $type strings written on serialisation are
+                        // unchanged. The shared singleton is referenced rather than a per-call
+                        // instance because this settings object feeds the reader loop below.
                         JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
                         List<DbEntityRelation> relations = new List<DbEntityRelation>();
                         while (reader.Read())
@@ -1276,7 +1294,7 @@ namespace WebVella.Erp.Plugins.SDK.Services
             {
                 // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Second relation
                 // read path in this file; the schema qualifier stays outside the validated fragment
-                // for the same reason as in ReadNNRelationRecords.
+                // for the same reason as in ReadOldNNRelationRecords.
                 var command = con.CreateCommand($"SELECT * FROM public.{DbIdentifier.Quote("rel_" + relation.Name)}");
                 DataTable dt = new DataTable();
                 new NpgsqlDataAdapter(command).Fill(dt);
@@ -9221,6 +9239,17 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
 
             var response = $"#region << ***Create record*** Id: {rec["id"]} ({currentEntity.Name}) >>\n" +
             "{\n" +
+                // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+                // Software and Data Integrity Failures): TypeNameHandling resolves a $type
+                // discriminator into a CLR type. TypeNameHandling is deliberately RETAINED - the
+                // record snapshots this generator emits carry discriminators and would not round
+                // trip without it - and is constrained instead by an explicit type allow-list.
+                // NOTE: this is a SERIALIZE call emitting generated source text. Attaching the
+                // binder here is safe only because BindToName is left to the base implementation,
+                // so the emitted $type strings stay byte-identical and SDK code generation is
+                // unaffected. The binder is appended inside the existing single-line initializer
+                // because it sits in an interpolation hole of a non-verbatim interpolated string,
+                // which cannot contain a newline; expanding it across lines would not compile.
                 $"\tvar json = @\"{JsonConvert.SerializeObject(rec, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance }).EscapeMultiline()}\";\n" +
                 $"\tEntityRecord rec = JsonConvert.DeserializeObject<EntityRecord>(json);\n" +
                 $"\tvar result = recMan.CreateRecord(\"{currentEntity.Name}\", rec);\n" +
@@ -9244,6 +9273,17 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
             {
                 var response = $"#region << ***Update record*** Id: {rec["id"]} ({currentEntity.Name}) >>\n" +
                 "{\n" +
+                    // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+                    // Software and Data Integrity Failures): TypeNameHandling resolves a $type
+                    // discriminator into a CLR type. TypeNameHandling is deliberately RETAINED - the
+                    // record snapshots this generator emits carry discriminators and would not round
+                    // trip without it - and is constrained instead by an explicit type allow-list.
+                    // NOTE: this is a SERIALIZE call emitting generated source text. Attaching the
+                    // binder here is safe only because BindToName is left to the base implementation,
+                    // so the emitted $type strings stay byte-identical and SDK code generation is
+                    // unaffected. The binder is appended inside the existing single-line initializer
+                    // because it sits in an interpolation hole of a non-verbatim interpolated string,
+                    // which cannot contain a newline; expanding it across lines would not compile.
                     $"\tvar json = @\"{JsonConvert.SerializeObject(rec, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance }).EscapeMultiline()}\";\n" +
                     $"\tEntityRecord rec = JsonConvert.DeserializeObject<EntityRecord>(json);\n" +
                     $"\tvar result = recMan.UpdateRecord(\"{currentEntity.Name}\", rec);\n" +

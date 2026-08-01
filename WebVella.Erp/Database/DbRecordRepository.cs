@@ -354,7 +354,13 @@ namespace WebVella.Erp.Database
             {
                 if (!(field is RelationFieldMeta))
                 {
-                    record[field.Name] = ExtractFieldValue(jObj[field.Name], field);
+                    //SECURITY C-02 (CWE-200 / CWE-522, OWASP A01:2021 + A02:2021): relational read
+                    //projection seam. See RedactEncryptedFieldValue for the full rationale and for
+                    //why the redaction is deliberately NOT placed inside ExtractFieldValue.
+                    //This private helper is reached only from within this class - the recursion just
+                    //below and Find(EntityQuery) - so redacting here cannot affect credential
+                    //resolution, which uses the separate private copy in Eql/EqlCommand.cs.
+                    record[field.Name] = RedactEncryptedFieldValue(ExtractFieldValue(jObj[field.Name], field), field);
                 }
                 else
                 {
@@ -368,6 +374,75 @@ namespace WebVella.Erp.Database
                 }
             }
             return record;
+        }
+
+        /// <summary>
+        /// Replaces the value of an encrypted <see cref="PasswordField"/> with
+        /// <see cref="RecordManager.EncryptedFieldRedactedValue"/> on the way out of a record query
+        /// projection, so a stored credential hash never leaves the server. Every other field type,
+        /// and a password field that is not flagged as encrypted, passes through untouched.
+        /// </summary>
+        /// <param name="value">The already-extracted projection value.</param>
+        /// <param name="field">The field the value was projected from.</param>
+        /// <returns>
+        /// <see cref="RecordManager.EncryptedFieldRedactedValue"/> when <paramref name="field"/> is
+        /// an encrypted <see cref="PasswordField"/> and a value is actually present; otherwise
+        /// <paramref name="value"/> unchanged. A null value stays null: inventing a marker where
+        /// there was no value would change observable behaviour, and the write-side guard keys on
+        /// the marker rather than on null.
+        /// </returns>
+        /// <remarks>
+        /// SECURITY C-02 (CWE-200 exposure of sensitive information to an unauthorized actor,
+        /// CWE-522 insufficiently protected credentials / OWASP A01:2021 Broken Access Control +
+        /// A02:2021 Cryptographic Failures).
+        ///
+        /// THREAT ADDRESSED: a stored password hash was returned verbatim by every record query
+        /// projection, to callers of any role. Field permissions are enforced ONLY in the
+        /// presentation layer - WebVella.Erp.Web/Components/PcFieldBase/PcFieldBase.cs gates the
+        /// whole field-permission evaluation behind "if (entityField.EnableSecurity)", and
+        /// EnableSecurity is a plain bool defaulting to false in
+        /// WebVella.Erp/Api/Models/FieldTypes/BaseField.cs - and there is no data-layer equivalent
+        /// anywhere. The mandated Authorization Enforcement standard requires authorization to be
+        /// validated "on every request, not just in the UI", so the value is replaced here, in the
+        /// repository's own query projection, and a hash never leaves the server.
+        ///
+        /// Redaction is UNCONDITIONAL with respect to role, including administrators: the
+        /// acceptance criterion is "no API response and no query projection returns a password
+        /// hash, for any role". It is deliberately NOT conditional on SecurityContext, on an
+        /// ignoreSecurity flag or on role membership - a role-conditional projection would both
+        /// leave the hash reachable and add exactly the complexity the Minimal Change Clause
+        /// forbids.
+        ///
+        /// WHY THIS IS A SEPARATE HELPER AND NOT A LINE INSIDE
+        /// <see cref="ExtractFieldValue(object, Field, bool)"/> - this is the part that must not be
+        /// "simplified". That method is public static and is called from
+        /// WebVella.Erp/Eql/EqlCommand.cs, which is the path
+        /// WebVella.Erp/Api/SecurityManager.cs.GetUser(email, password) resolves a credential
+        /// through; that path bypasses RecordManager and Find(EntityQuery) entirely and needs the
+        /// REAL stored hash in order to verify a login. Redacting inside ExtractFieldValue would
+        /// hand SecurityManager this marker instead of the hash and EVERY LOGIN WOULD FAIL. The two
+        /// call sites of this helper are therefore the two record-projection seams of
+        /// Find(EntityQuery) - the non-relational reader loop and the private
+        /// ConvertJObjectToEntityRecord used by the relational branch - both unreachable from
+        /// EqlCommand, which carries its own separate private ConvertJObjectToEntityRecord.
+        ///
+        /// Keyed on the EXISTING Encrypted flag only. Blanket field-permission enforcement across
+        /// every field type and every projection is explicitly out of scope: an empty read
+        /// permission is treated as denial by the presentation layer, so a blanket port would hide
+        /// fields wholesale. The residual general gap is recorded in
+        /// docs/security/risk-register.md rather than fixed here.
+        /// </remarks>
+        private static object RedactEncryptedFieldValue(object value, Field field)
+        {
+            //Encrypted is bool?, so the comparison is written "== true" on purpose: it treats null
+            //as "not encrypted", which is the semantics every other PasswordField test in this file
+            //already has. Never write a bare truthiness test or "!= false" here.
+            if (value != null && field is PasswordField && ((PasswordField)field).Encrypted == true)
+            {
+                return RecordManager.EncryptedFieldRedactedValue;
+            }
+
+            return value;
         }
 
         public static object ExtractFieldValue(object value, Field field, bool encryptPasswordFields = false)
@@ -549,6 +624,31 @@ namespace WebVella.Erp.Database
 					if (((PasswordField)field).Encrypted == true)
 					{
 						if (string.IsNullOrWhiteSpace(value as string))
+							return null;
+
+						//SECURITY C-02 guard - DATA-INTEGRITY CRITICAL. A caller that read this
+						//record through a query projection receives
+						//RecordManager.EncryptedFieldRedactedValue in place of the stored hash (see
+						//RedactEncryptedFieldValue above). If that marker is round-tripped back into
+						//a write it must NEVER be hashed: doing so would replace the account's real
+						//credential with a hash of the marker and PERMANENTLY DESTROY it, because
+						//both MD5 and PBKDF2 are one-way. On a multi-record round-trip that would
+						//destroy every affected account's password at once - a data-destroying
+						//outcome from a fix whose whole purpose is to prevent disclosure.
+						//
+						//null is returned rather than the marker, an empty string, or a hash. It is
+						//this branch's own established "do not write a real value here" signal - the
+						//IsNullOrWhiteSpace guard immediately above already returns null - and it is
+						//the value the record-write collectors in WebVella.Erp/Api/RecordManager.cs
+						//already treat as "omit this field", leaving the persisted column
+						//byte-identical. That omission in RecordManager is the primary (Layer 1)
+						//control; this check is defence in depth (Layer 2) so no present or future
+						//caller of this method can reintroduce the defect.
+						//
+						//StringComparison.Ordinal is mandatory: a culture-sensitive or
+						//case-insensitive comparison could either miss the marker (destroying a
+						//credential) or match a value that is not the marker.
+						if (string.Equals(value as string, RecordManager.EncryptedFieldRedactedValue, StringComparison.Ordinal))
 							return null;
 
 						//THREAT ADDRESSED - finding C-03, CWE-916 / CWE-759, OWASP A02:2021. Was an
@@ -777,7 +877,14 @@ namespace WebVella.Erp.Database
                                 {
                                     string fieldName = reader.GetName(index);
                                     Field field = fields.Single(x => x.Name == fieldName);
-                                    record[fieldName] = reader[index] == DBNull.Value ? null : ExtractFieldValue(reader[index], field); ;
+                                    //SECURITY C-02 (CWE-200 / CWE-522, OWASP A01:2021 + A02:2021):
+                                    //non-relational read projection seam. See
+                                    //RedactEncryptedFieldValue for the full rationale and for why the
+                                    //redaction is deliberately NOT placed inside ExtractFieldValue.
+                                    //The existing DBNull.Value-to-null normalisation is preserved and
+                                    //still runs first, so an absent value stays null rather than
+                                    //becoming a marker.
+                                    record[fieldName] = RedactEncryptedFieldValue(reader[index] == DBNull.Value ? null : ExtractFieldValue(reader[index], field), field); ;
                                 }
 
                                 result.Add(record);
@@ -1887,10 +1994,37 @@ namespace WebVella.Erp.Database
                     if (string.IsNullOrWhiteSpace(value as string))
                         return null;
 
-                    //THREAT ADDRESSED - finding C-03, CWE-916 / CWE-759, OWASP A02:2021. Was an
-                    //unsalted single-pass MD5 digest; now a salted, work-factored
-                    //PBKDF2-HMAC-SHA-256 value. See WebVella.Erp/Utilities/PasswordUtil.cs.
-                    return PasswordUtil.HashPassword(value as string);
+                    //THREAT ADDRESSED - finding C-03, CWE-916 / CWE-759, OWASP A02:2021, and the
+                    //structural consequence of closing it. This branch is NOT a write path: its
+                    //return value becomes the NpgsqlParameter of a SQL WHERE-clause predicate,
+                    //consumed by the two GenerateWhereClause call sites above (both of which honour
+                    //skipClause by dropping the clause). Hashing here therefore produced
+                    //"WHERE <table>.password = @param", and an unsalted MD5 digest is deterministic,
+                    //so that comparison used to work - which is precisely what made it a password
+                    //confirmation ORACLE: any caller able to build a filter on the password field
+                    //could confirm a guess by observing whether a row came back.
+                    //
+                    //A salted, work-factored hash is different on every invocation, so the same
+                    //predicate can never match anything. Emitting it would be a SILENT functional
+                    //regression - a filter that returns nothing, for no visible reason - which the
+                    //preservation requirement "all existing functionality remains operational"
+                    //forbids. The clause is therefore DROPPED instead, using this method's own
+                    //existing skipClause mechanism (the same mechanism ExtractQueryFieldJsonValue
+                    //already uses when a query parameter is absent). That also closes the oracle
+                    //outright rather than merely breaking it.
+                    //
+                    //Safe because nothing in this repository queries by password value any more:
+                    //WebVella.Erp/Api/SecurityManager.cs.GetUser(email, password) - the only such
+                    //query that ever existed - now resolves by e-mail and verifies the credential in
+                    //application code via PasswordUtil.VerifyPassword.
+                    //
+                    //This also means the redaction marker can never reach a predicate: the clause is
+                    //dropped before any value of any shape is bound.
+                    //
+                    //The IsNullOrWhiteSpace guard above is deliberately left as it was, without
+                    //setting skipClause, so its pre-existing behaviour is preserved exactly.
+                    skipClause = true;
+                    return null;
                 }
                 return value;
             }

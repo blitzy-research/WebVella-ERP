@@ -41,6 +41,12 @@ namespace WebVella.Erp.Web
 			// inherit it from one edit. The options type carries the mandated Content-Security-Policy
 			// as a get-only computed property, so this registration cannot be used to weaken it; only
 			// the report-only/enforcing switch is settable.
+			//
+			// Registration only. The middleware's pipeline POSITION is deliberately NOT set here and must
+			// never be: UseErp runs late in every host pipeline, whereas the headers have to be emitted
+			// ahead of UseResponseCompression and ahead of both UseStaticFiles calls or they never reach
+			// static and compressed responses at all. Each host therefore calls UseSecurityHeaders()
+			// early in its own Configure method. This extension registers; the hosts order.
 			services.AddOptions<SecurityHeadersOptions>();
 
 			// THREAT ADDRESSED - finding H-16, CWE-307 (Improper Restriction of Excessive
@@ -113,36 +119,51 @@ namespace WebVella.Erp.Web
 					if (!string.IsNullOrWhiteSpace(configFolder))
 						configPath = System.IO.Path.Combine(configFolder, configPath);
 
-					// SECURITY - finding M-2 (CWE-20 improper input validation, CWE-798 hard-coded credentials),
-					// OWASP A05 Security Misconfiguration.
+					// SECURITY - findings C-04, H-04 and H-05 (CWE-798 use of hard-coded credentials, CWE-321
+					// use of a hard-coded cryptographic key; review finding M-2, CWE-20 improper input
+					// validation), OWASP A05 Security Misconfiguration.
 					// THREAT: this is the single initialization path that feeds ErpSettings for every one of the
 					// seven hosts, and it consumed the JSON file and nothing else. Config.json was therefore the
 					// ONLY channel through which a secret could ever be supplied, which had two consequences:
 					// the platform's own startup errors named environment variables that no provider could
-					// satisfy, and blanking those files - the next step of this remediation - would have left
+					// satisfy, and blanking those files - the paired step of this remediation - would have left
 					// every host permanently unstartable with no way to supply a replacement value.
 					//
-					// Provider order deliberately mirrors the framework's own convention in
-					// WebHost.CreateDefaultBuilder: JSON file first, then user secrets in development, then
-					// environment variables LAST. Later providers win, so an operator-supplied environment
-					// variable always overrides a value committed to the repository. That precedence IS the
-					// control - it is what lets a deployment replace a shipped default without editing a tracked
-					// file, and what makes the secret scrub survivable.
+					// Provider ORDER is the control, not an incidental detail. Later providers win, so the
+					// tracked JSON file stays FIRST and environment variables come immediately AFTER it: the
+					// shipped secret values are blanked to empty strings rather than removed, so only a later
+					// provider can put a real secret back. Reverse the two and the blank JSON string would
+					// clobber the operator's environment variable and every host would abort on ErpSettings'
+					// fail-fast validation. Keys use the framework's section separator - for example
+					// Settings__ConnectionString, Settings__EncryptionKey and Settings__Jwt__Key; the complete
+					// list is in docs/security/secure-configuration.md. Nothing is defaulted or logged here.
+					// The JSON source stays NON-optional on purpose: the Config.json files are blanked, never
+					// deleted, so an absent file must still fail loudly rather than yield a silently empty
+					// configuration.
 					var configurationBuilder = new ConfigurationBuilder().SetBasePath(env.ContentRootPath).AddJsonFile(configPath);
+					configurationBuilder.AddEnvironmentVariables();
 
 					if (env.IsDevelopment())
 					{
-						// The entry assembly is the host executable, so each host resolves its own secret store
-						// rather than sharing this library's. optional: true means a host that has never run
-						// 'dotnet user-secrets init' - i.e. carries no UserSecretsId - is skipped silently
-						// instead of throwing during startup. Development only, by design: user secrets are a
-						// developer convenience with no protection at rest and must never be a production channel.
+						// User secrets come LAST, and only in Development, so a developer's own store takes
+						// precedence over an ambient machine-wide environment variable - which is the whole
+						// reason the store exists. It is never load-bearing: outside Development this provider is
+						// not added at all, because the store sits unencrypted on disk and must never be a
+						// production supply channel. Every non-development chain is therefore exactly
+						// JSON file then environment variables.
+						// The entry assembly is the host executable, so each host resolves its own store rather
+						// than this library's - this library declares no UserSecretsId and must not.
+						// optional: true is stated EXPLICITLY rather than left to an overload default, because
+						// only ONE of the seven hosts declares a UserSecretsId at all and every AddUserSecrets
+						// overload given optional: false throws InvalidOperationException when that attribute is
+						// absent - which would abort startup for the other six hosts and the console
+						// application, turning a secret-management fix into an outage. Pinning the value here
+						// means the tolerant behaviour is a contract at this call site rather than an
+						// invisible default that a later overload change could silently flip.
 						var entryAssembly = Assembly.GetEntryAssembly();
 						if (entryAssembly != null)
 							configurationBuilder.AddUserSecrets(entryAssembly, optional: true);
 					}
-
-					configurationBuilder.AddEnvironmentVariables();
 
 					ErpSettings.Initialize(configurationBuilder.Build());
 				}
