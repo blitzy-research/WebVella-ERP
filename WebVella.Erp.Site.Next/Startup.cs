@@ -33,6 +33,16 @@ namespace WebVella.Erp.Site.Next
 			services.AddRouting(options => { options.LowercaseUrls = true; });
 
 			//CORS policy declaration
+			// DELIBERATELY UNCHANGED - finding H-14 (CWE-942, overly permissive cross-domain policy), OWASP
+			// A05, scopes that remediation to the two hosts that called AllowAnyOrigin: WebVella.Erp.Site and
+			// WebVella.Erp.Site.Project. This host is one of the five that already name their origins, so it
+			// is outside H-14 and the named policy below is retained verbatim - tightening a policy that is
+			// already restrictive would change working behaviour for no security gain.
+			//
+			// The hard-coded http://localhost origins are a KNOWN low-severity note, documented rather than
+			// fixed: they are development-time Node.js origins, and because HTTPS redirection below is
+			// guarded to non-Development it never rewrites the plaintext preflight they depend on. Do not
+			// "complete" the CORS work here - there is none outstanding for this host.
 			services.AddCors(options =>
 			{
 				options.AddPolicy("AllowNodeJsLocalhost",
@@ -71,10 +81,19 @@ namespace WebVella.Erp.Site.Next
 						options.AccessDeniedPath = new PathString("/error?access_denied");
 						options.ReturnUrlParameter = "returnUrl";
 
-						// THREAT ADDRESSED - review finding M-REV-09 (CWE-614 sensitive cookie without the 'Secure'
-						// attribute, CWE-1275 improper SameSite attribute, CWE-613 insufficient session expiration), OWASP
+						// THREAT ADDRESSED - finding H-15 (CWE-614 sensitive cookie without the 'Secure' attribute,
+						// CWE-319 cleartext transmission of sensitive information) and review finding M-REV-09
+						// (CWE-1275 improper SameSite attribute, CWE-613 insufficient session expiration), OWASP
 						// A02 / A05, and Agent Action Plan section 0.6.1 Class 6, which mandates "an always-secure policy, a
 						// same-site policy, an explicit expiry window and sliding expiration".
+						//
+						// H-15's cookie half is closed by the four attributes the call below applies: HttpOnly, an
+						// always-secure policy, SameSite and a bounded window. SameSite is Lax and MUST NOT be
+						// "upgraded" to Strict - Strict withholds the cookie on the return-URL round trip back
+						// from /login that options.ReturnUrlParameter above depends on, which would break a working
+						// sign-in. The window is 24 hours, matching AuthService.AUTH_TICKET_EXPIRY_DURATION_MINUTES,
+						// because a ticket's explicit ExpiresUtc overrides ExpireTimeSpan: were the two to disagree,
+						// whichever is longer would become unreachable configuration.
 						//
 						// This host used to carry its own copy of those four settings, as did the other six, and the copies
 						// had drifted from the frozen session contract in two ways that mattered: the secure policy

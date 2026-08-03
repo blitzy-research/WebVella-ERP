@@ -192,7 +192,21 @@ namespace WebVella.Erp.Site.MicrosoftCDM
 			app.UseRouting();
 
 			// THREAT ADDRESSED - finding H-08 / H-16, CWE-307 (improper restriction of excessive
-			// authentication attempts): activates the per-remote-address fixed window registered in AddErp.
+			// authentication attempts), OWASP A07 Identification and Authentication Failures: unlimited
+			// request rates left credential stuffing and brute-force guessing unthrottled at the transport
+			// level. This activates the per-remote-address fixed window registered in AddErp.
+			//
+			// Transport level is only HALF of H-16, and the halves are not interchangeable: the mandated
+			// five-attempt lockout is a separate per-account control applied at the login page, so a slow
+			// distributed guess spread thinly across many addresses is still stopped by the account counter
+			// even though it never trips this limiter.
+			//
+			// The window and permit count are deliberately generous - one interactive ERP screen fans out
+			// into many dynamic API calls, and a limiter that refuses legitimate use converts a security fix
+			// into an outage - and they are single-sourced in AddErp rather than restated per host, because
+			// seven copies of a security constant is precisely the drift M-REV-09 was raised for. Tightening
+			// them is an operator decision, not a per-host edit.
+			//
 			// Positioned after both UseStaticFiles calls so static assets are never throttled, and after
 			// UseRouting so endpoint metadata is available to the limiter.
 			app.UseRateLimiter();

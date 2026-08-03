@@ -25,6 +25,13 @@ namespace WebVella.Erp.Site.Project
 
 	public class Startup
 	{
+		// Separators accepted between entries in the cross-origin allow-list. Both are accepted for the
+		// same reason ErpMvcExtensions.ForwardedHeadersListSeparators accepts both: operators supply this
+		// value through an environment variable, where a semicolon is the more familiar separator, and
+		// through JSON, where a comma is. Held in a static field rather than allocated inline at the call
+		// site, matching that established idiom.
+		private static readonly char[] CorsAllowedOriginsSeparators = new[] { ',', ';' };
+
 		public IConfigurationRoot Configuration { get; private set; } = null;
 		// This method gets called by the runtime. Use this method to add services to the container.
 		public void ConfigureServices(IServiceCollection services)
@@ -92,12 +99,25 @@ namespace WebVella.Erp.Site.Project
 			//});
             // THREAT ADDRESSED - finding H-14 (CWE-942 permissive cross-domain policy with untrusted domains),
             // OWASP A05 Security Misconfiguration: the default policy called AllowAnyOrigin(), so ANY website a
-            // signed-in user visited could issue cross-origin requests to this host and read the responses. The
-            // allow-list below reuses the origins from the restrictive policy kept in comment form immediately
-            // above, which is this repository's own documented intent for this host. Note that this host's
-            // commented policy names FOUR origins - it adds http://localhost:2202 to the three the sibling
-            // WebVella.Erp.Site host lists - so the allow-lists differ per host by design rather than by
-            // oversight; each host reuses its own recorded intent.
+            // signed-in user visited could issue cross-origin requests to this host and read the responses.
+            //
+            // The allow-list is now read from configuration and is EMPTY unless an operator supplies it, which
+            // is the deny-by-default posture the Authorization Enforcement standard mandates. The four
+            // http://localhost origins this replaced were the ones named in the restrictive policy kept in
+            // comment form immediately above, and taking them as the fix was itself the residual defect:
+            // they are DEVELOPMENT origins compiled into every production build, so on any host where another
+            // process can bind those ports - a container sibling, a co-tenant, a developer tool, anything
+            // running as another user on the same machine - that process obtained cross-origin read access to
+            // this ERP host, and no operator could remove them or add a legitimate origin without a rebuild.
+            //
+            // Supplied as a single ','/';'-delimited string through Settings__Cors__AllowedOrigins rather than
+            // as a JSON array, because an array cannot be provided through one environment variable - it would
+            // need Settings__Cors__AllowedOrigins__0, __1 and so on - and the environment is the supply
+            // channel the scrubbed Config.json leaves. The key is deliberately NOT added to Config.json: an
+            // absent key already means deny-by-default, so adding one would only invite a checked-in origin
+            // list. Origins are trimmed and otherwise used exactly as written, because origin matching is
+            // exact and "helpful" normalisation would silently widen or narrow the set.
+            //
             // AllowCredentials() is deliberately NOT added: the framework rejects it alongside AllowAnyOrigin(),
             // so credentialed cross-origin requests were never actually permitted here and adding it now would
             // WIDEN behaviour rather than preserve it. AllowAnyMethod()/AllowAnyHeader() are retained because
@@ -106,10 +126,18 @@ namespace WebVella.Erp.Site.Project
             // AddDefaultPolicy is kept rather than converted to a named policy so the app.UseCors() call in
             // Configure needs no change at all, which also preserves the load-bearing UseCors-before-HTTPS-
             // redirection ordering documented at that call site.
+            string configuredCorsOrigins = Configuration["Settings:Cors:AllowedOrigins"];
+            string[] allowedCorsOrigins = string.IsNullOrWhiteSpace(configuredCorsOrigins)
+                ? Array.Empty<string>()
+                : configuredCorsOrigins.Split(CorsAllowedOriginsSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
             services.AddCors(options =>
             {
+                // WithOrigins on an empty array is legal and adds no origin, so the policy matches nothing and
+                // the middleware emits no Access-Control-Allow-Origin at all. That is the intended unconfigured
+                // state: same-origin requests are untouched, every cross-origin one is refused.
                 options.AddDefaultPolicy(policy =>
-                    policy.WithOrigins("http://localhost:3333", "http://localhost:3000", "http://localhost", "http://localhost:2202")
+                    policy.WithOrigins(allowedCorsOrigins)
                         .AllowAnyMethod()
                         .AllowAnyHeader());
             });

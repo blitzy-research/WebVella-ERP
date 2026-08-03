@@ -45,6 +45,16 @@ namespace WebVella.Erp.Site.Sdk
 				{
 					options.Conventions.AuthorizeFolder("/");
 					options.Conventions.AllowAnonymousToPage("/login");
+
+					// ACCEPTED RISK, NOT AN OVERSIGHT - finding M-09 (CWE-306, missing authentication for a
+					// critical function), OWASP A07 Identification and Authentication Failures. AuthorizeFolder("/")
+					// above is deny-by-default, so the line below is an EXPLICIT exemption: it publishes the SDK
+					// developer page to unauthenticated callers, and this host is the only one of the seven that
+					// grants it. Deliberately RETAINED rather than removed, under Minimal Change guideline 8
+					// ("document out-of-scope concerns but do not fix unless Critical") - it is a Medium that does
+					// not meet the compensating-control test, so removing it here would be unrequested scope and
+					// would break the SDK development workflow that depends on reaching /dev without a session.
+					// Recorded as a recommendation in docs/security/risk-register.md; close it there, not here.
 					options.Conventions.AllowAnonymousToPage("/dev");
 				})
 				.AddNewtonsoftJson(options =>
@@ -192,9 +202,20 @@ namespace WebVella.Erp.Site.Sdk
 			app.UseRouting();
 
 			// THREAT ADDRESSED - finding H-08 / H-16, CWE-307 (improper restriction of excessive
-			// authentication attempts): activates the per-remote-address fixed window registered in AddErp.
+			// authentication attempts), OWASP A07 Identification and Authentication Failures: activates the
+			// per-remote-address fixed window registered in AddErp.
 			// Positioned after both UseStaticFiles calls so static assets are never throttled, and after
 			// UseRouting so endpoint metadata is available to the limiter.
+			//
+			// This is the TRANSPORT-LEVEL layer only, and it is deliberately not the primary control. The
+			// mandated five-attempt account lockout is a separate, per-account mechanism in
+			// WebVella.Erp.Web/Services/LoginThrottleService.cs, consulted from the login page handler; a
+			// volumetric limiter cannot substitute for it because an attacker spread thinly across many
+			// addresses stays under any per-address budget. Consequently the registered permit limit is
+			// deliberately GENEROUS: a single ERP page load fans out into many requests (Razor Pages, the
+			// Blazor hub, API and inline-edit calls), so a tight window would break legitimate interactive
+			// use - a far worse outcome than the marginal benefit, and a breach of the requirement that
+			// existing functionality be preserved exactly. Tune the limit in AddErp, never per host.
 			app.UseRateLimiter();
 			app.UseAuthentication();
 			app.UseAuthorization();

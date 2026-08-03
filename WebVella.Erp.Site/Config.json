@@ -16,13 +16,18 @@
 		// because a later provider can only override a key that exists. Startup aborts with an
 		// actionable message when a required value is absent; see
 		// docs/security/secure-configuration.md for the complete list and the supply channels.
+		// The alternative connection string this file used to carry in a comment is kept below as a
+		// credential-free SHAPE ONLY - a commented-out secret is committed, published and mirrored
+		// exactly as a live one is, and no scanner can tell the two apart. Every angle-bracketed
+		// token is a placeholder, never a usable value.
+		//"ConnectionString": "Server=<host>;Port=<port>;User Id=<user>;Password=<password>;Database=<database>;Pooling=true;MinPoolSize=1;MaxPoolSize=100;CommandTimeout=120;",
 		"ConnectionString": "",
 		"EncryptionKey": "",
 		"Lang": "en",
 		"Locale": "en-US",
 		"TimeZoneName": "FLE Standard Time",
 		"CacheKey": "", //if empty current date will be used 
-		"DevelopmentMode": "false",
+		"DevelopmentMode": "false", //H-12 (CWE-489, CWE-209; A05): shipped "true" - debug behaviour and verbose errors. String by design.
 		"EnableBackgroundJobs": "false",
 		"EnableFileSystemStorage": "false",
 		"FileSystemStorageFolder": "\\\\192.168.10.25\\Share\\erp3-files",
