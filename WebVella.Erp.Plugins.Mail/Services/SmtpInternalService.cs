@@ -810,6 +810,15 @@ namespace WebVella.Erp.Plugins.Mail.Services
 					if (SmtpService.AllowInvalidRemoteCertificates)
 						client.ServerCertificateValidationCallback = (s, c, h, e) => SmtpService.AllowInvalidRemoteCertificates;
 
+					// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02):
+					// MailKit defaults this to true and it was left implicit, which turned revocation
+					// REACHABILITY into an unconfigurable delivery prerequisite - and on THIS path, the one the
+					// background queue job drives, the consequence is not a thrown exception an operator sees but
+					// a queue that retries to abort while the relay certificate is perfectly valid. Stated
+					// explicitly and bound to the same single policy member as the four Api.SmtpService sites -
+					// hence one configuration key - which still defaults to checking.
+					client.CheckCertificateRevocation = SmtpService.CheckRemoteCertificateRevocation;
+
 					client.Connect(service.Server, service.Port, service.ConnectionSecurity);
 
 					if (!string.IsNullOrWhiteSpace(service.Username))

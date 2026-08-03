@@ -49,7 +49,7 @@ of this commit.
 | Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors: the four severity codes `NU1901`–`NU1904` **and** the two data-availability codes `NU1900` and `NU1905`. .NET analyzers run with `AnalysisLevel=latest-recommended` for the general categories and **`AnalysisLevelSecurity=latest-all` for the whole Security category**; their diagnostics are kept as warnings at the project level and enforced instead by the workflow's Gate 1 allow-list. Verified inherited by **19 of 19** projects — `Directory.Build.props` and the repository-root `.globalconfig` are directory-scoped, so inheritance does not depend on solution membership |
 | Toolchain pin | `global.json` pins `10.0.302` with `rollForward: latestPatch`, because both gates are selected by the SDK feature band |
 | Shipped secrets | **Scrubbed.** All eight `Config.json` files carry empty secret values and `DevelopmentMode: false`, `WebVella.Erp.Site/web.config` sets `Production`, and the seeded administrator password is no longer a literal (`RISK-021`, now closed). One demo credential remains in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs`, which is outside this change's file scope |
-| Mail transport | SMTP server certificates are **validated by default**. `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` bypasses validation only when `Settings:EmailSMTPAllowInvalidCertificates` is `true` — environment form `Settings__EmailSMTPAllowInvalidCertificates` — which exists for self-signed development servers and must never be set in production |
+| Mail transport | SMTP server certificates are **validated by default**. `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` bypasses validation only when `Settings:EmailSMTPAllowInvalidCertificates` is `true` — environment form `Settings__EmailSMTPAllowInvalidCertificates` — which exists for self-signed development servers, is honoured only in Development posture, and must never be set in production. **Revocation is checked by default too**, so the relay's chain must expose a reachable CRL or OCSP endpoint; `Settings:EmailSMTPCheckCertificateRevocation=false` narrows that single check — in any posture — while leaving chain, expiry and host-name verification in force (`RISK-060`). See *SMTP certificate revocation* |
 | Closed since the inventory was taken | `RISK-013` is **closed**: no host applies `AllowAnyOrigin()` any longer. Both `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` serve explicit origin allow-lists, each reusing the origins recorded in its own previously commented-out policy, and the call survives only inside explanatory comments — `git grep -n 'AllowAnyOrigin' -- '*.cs'` returns comment lines and nothing applied. Finding `H-11` is **closed at all five sites**, not four: every `ServerCertificateValidationCallback` in the mail plugin — the four in `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` and the one in `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` — now yields the `AllowInvalidRemoteCertificates` setting rather than a literal `true`, and that setting parses to `false` unless an operator sets `Settings__EmailSMTPAllowInvalidCertificates` to `true`. `RISK-014` is **closed**: both anonymous bearer-token error paths in `WebVella.Erp.Web/Controllers/WebApiController.cs` return a generic message outside Development and retain their server-side log record |
 
 ## How this guide is organised
@@ -513,6 +513,7 @@ default is no longer standing between ordinary record data and a script sink. It
 | HTTPS redirection | Enable it, guarded to non-development environments. |
 | HSTS | Enable it, guarded to non-development environments, ordered **before** redirection. Do not enable HSTS on a hostname you also serve over plain HTTP for other purposes — the `includeSubDomains` directive applies to every subdomain. |
 | Cookies | `Secure`, `HttpOnly` and an explicit `SameSite` policy. Use `SameSite=Lax`, not `Strict`: `Strict` breaks the return-URL round trip through the login page, and `Lax` is the framework's documented default posture. |
+| SMTP relay certificates | Validated by default, **including revocation**. The relay's chain must expose a reachable CRL distribution point or OCSP responder, or the handshake fails with `unable to get certificate CRL` while the certificate is otherwise valid. See *SMTP certificate revocation* below for the recognition signature and the two supported fixes; `Settings:EmailSMTPCheckCertificateRevocation=false` narrows the check without weakening chain, expiry or host-name verification. |
 
 **Sequencing caveat — this one bites.** Introducing HTTPS redirection *before* the cross-origin
 policy is tightened breaks CORS preflight requests, which fail with an invalid-redirect error rather
@@ -721,6 +722,27 @@ Then confirm the fail-fast behaviour is real rather than merely configured: star
 `Settings:ConnectionString` or `Settings:EncryptionKey` removed. It must abort at startup with a
 message naming the missing setting and nothing else. If it starts, a fallback still exists somewhere.
 
+Confirm the mail transport's two certificate settings are still bound the way they are documented —
+both are read at every send, so a rename or a typo in either is silent until mail stops:
+
+```bash
+# The accept-any opt-out must be gated on posture, and the revocation switch must NOT be.
+grep -n 'EmailSMTPAllowInvalidCertificates\|EmailSMTPCheckCertificateRevocation' \
+  WebVella.Erp.Plugins.Mail/Api/SmtpService.cs        # exactly one read of each key
+
+# Every send path must set the revocation policy. This must print 5 - four direct sites plus the
+# queued one - and any lower number means a path was left on the implicit default.
+grep -rc 'CheckCertificateRevocation = ' \
+  WebVella.Erp.Plugins.Mail/Api/SmtpService.cs \
+  WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs | awk -F: '{t+=$2} END {print t}'
+```
+
+Then exercise the revocation path against your own relay rather than trusting the setting: send a test
+message with the setting absent. If it fails with a chain status of only `unable to get certificate
+CRL`, your relay's chain has no reachable revocation source — fix the chain, or set
+`Settings__EmailSMTPCheckCertificateRevocation=false` and record `RISK-060`. Re-send afterwards; it
+must deliver, and the host log must carry exactly one `SmtpService[2]` notice.
+
 ---
 
 ### Method and limitations
@@ -813,6 +835,8 @@ in `Config.json` until then.
 | `Settings__Jwt__Audience` | `Settings:Jwt:Audience` | No | Defaults to `webvella-erp` |
 | `Settings__InitialAdministratorPassword` | `Settings:InitialAdministratorPassword` | Yes when provisioning a new database, and when upgrading an installation still carrying the published default administrator password | 12–128 characters, chosen by the operator. Nothing is generated and nothing is printed; provisioning and the version 4 migration abort naming only the key if it is absent |
 | `Settings__EmailSMTPPassword` | `Settings:EmailSMTPPassword` | Only when e-mail is enabled | Ships empty |
+| `Settings__EmailSMTPAllowInvalidCertificates` | `Settings:EmailSMTPAllowInvalidCertificates` | No | Accepts **any** SMTP server certificate. Honoured only alongside `Settings:DevelopmentMode`; refused, and reported once per process, anywhere else. Never set it in production |
+| `Settings__EmailSMTPCheckCertificateRevocation` | `Settings:EmailSMTPCheckCertificateRevocation` | No | Defaults to `true`. Set to `false` **only** when the relay's certificate chain cannot publish a reachable CRL or OCSP endpoint — see *SMTP certificate revocation*. Chain, expiry and host name stay verified; honoured in every posture; reported once per process (`RISK-060`) |
 | `Settings__DevelopmentMode` | `Settings:DevelopmentMode` | No | Must be `false` outside development |
 | `ASPNETCORE_ENVIRONMENT` | hosting environment | Recommended | Must **not** be `Development` in production |
 
@@ -1049,6 +1073,120 @@ The replacement is an explicit configuration flag that **defaults to secure**. A
 development mail server stays usable through deliberate opt-in, so a development convenience can
 never again ship as a production default. **Leave the opt-in off in production**, and treat a
 certificate failure as a signal to fix the server's certificate rather than to disable the check.
+
+That opt-in — `Settings:EmailSMTPAllowInvalidCertificates`, environment form
+`Settings__EmailSMTPAllowInvalidCertificates` — is honoured **only** when `Settings:DevelopmentMode`
+is also set. Enabled anywhere else it is refused, and the refusal is reported once per process on
+standard error. It is therefore **not** a remedy for the situation described next, and must not be
+reached for as one.
+
+#### SMTP certificate revocation
+
+**Your relay's certificate chain must expose a reachable CRL distribution point or OCSP responder.**
+This is a genuine new prerequisite, not a restatement of the previous section, and it is the one
+operational consequence of enabling certificate validation that will surprise you.
+
+MailKit checks revocation by default, so once the always-true callback was removed the platform began
+consulting the revocation source named in the relay's certificate. If that source cannot be reached —
+an internal CA that publishes no CRL, a leaf issued without a `crlDistributionPoints` extension, or a
+host whose egress filtering blocks the fetch — the handshake fails even though the certificate is
+otherwise perfectly valid.
+
+**Recognising it.** The failure is `MailKit.Security.SslHandshakeException` wrapping
+`AuthenticationException: The remote certificate was rejected by the provided
+RemoteCertificateValidationCallback`, and the chain-status detail contains **only**:
+
+```text
+unable to get certificate CRL
+```
+
+No expiry bullet, no host-name bullet, no untrusted-root bullet. Read that combination literally: it
+says *"I could not find out whether this certificate has been revoked"*, **not** *"this certificate is
+untrusted"*. Reaching for the accept-any-certificate opt-out in response would be treating a
+reachability problem as a trust problem, and would remove transport authentication entirely to fix a
+missing CRL.
+
+**Fixing it, in order of preference.**
+
+1. **Publish the revocation source.** Re-issue the relay leaf with a `crlDistributionPoints` extension
+   pointing at a CRL your hosts can actually fetch, sign the CRL with a CA that carries `cRLSign` and a
+   subject key identifier, and serve it in **DER** form. Allow the application host outbound access to
+   that URL. This keeps every check in force and is the only option that leaves a revoked relay
+   certificate refused.
+2. **Narrow the check, and only the check.** Set `Settings:EmailSMTPCheckCertificateRevocation` to
+   `false` — environment form `Settings__EmailSMTPCheckCertificateRevocation=false`. Mail delivery
+   resumes, and the trust chain, validity dates, key usage and host name are **still verified**, so a
+   self-signed, expired, wrong-name or wrong-CA certificate is refused exactly as before. What you give
+   up is precisely one thing: a relay certificate whose key has leaked and whose issuer has since
+   revoked it will no longer be refused. Record it as an accepted risk (`RISK-060`) and remove the
+   setting once option 1 is available.
+
+| Property | Value |
+| --- | --- |
+| Setting | `Settings:EmailSMTPCheckCertificateRevocation` |
+| Environment form | `Settings__EmailSMTPCheckCertificateRevocation` |
+| Default when absent | `true` — revocation **is** checked |
+| Values that disable the check | only a value that parses as boolean `false` (`false`, `False`, `FALSE`, with surrounding whitespace tolerated) |
+| Values that leave it enabled | absent, blank, `true`, and anything unparseable such as `no`, `0`, `off`, `disabled` |
+| Posture gate | **none, deliberately.** Unlike the accept-any-certificate opt-out, this one is honoured in every posture including Production — a control that is inert in production is no remedy for a production outage, and the relaxation is narrow enough to be supportable there |
+| Parsing | non-throwing, so a typo cannot turn a mail configuration mistake into a `FormatException` on every outbound message. The insecure state is `false`, so the test is arranged such that only an explicit `false` disables the check |
+| Visibility when disabled | one notice per process on standard error, naming the setting key and nothing else: `warn: WebVella.Erp.Plugins.Mail.Api.SmtpService[2] SECURITY - 'Settings:EmailSMTPCheckCertificateRevocation' is false, so SMTP server certificates are accepted WITHOUT a revocation check.` |
+| Sites governed | all five: the four in `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` and the queued one in `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs`, from a single policy member so no site can drift |
+
+**Two consequences worth knowing before you deploy.**
+
+- Revocation checking genuinely works rather than failing blindly, which is why option 1 is preferred
+  and why option 2 is a real, if bounded, loss. A leaf revoked in its issuer's CRL is refused with a
+  distinct `certificate revoked` chain bullet, while a non-revoked leaf validated against that same
+  freshly published CRL still delivers.
+- The queued send path fails **differently** from the interactive one. A direct `SendEmail` throws
+  where the caller can see it; the background queue records the handshake text in the message's
+  `server_error`, increments `retries_count`, reschedules, and eventually marks the message
+  `Aborted`. If mail silently stops flowing and the queue is filling with aborted rows, read
+  `server_error` before anything else — the CRL bullet will be sitting in it.
+- Both these paths measure a cost, and it is small: warm secure-TLS delivery is within a few
+  milliseconds of the accept-all baseline, plus a one-off chain fetch the first time a CRL is
+  retrieved and cached.
+
+#### Two SMTP transport misconfigurations that are easy to mistake for certificate failures
+
+Both of the settings above govern what happens **when TLS is negotiated**. Two common relay
+misconfigurations never get that far, and both are frequently misread as certificate problems — which
+sends the investigation to the wrong setting. Neither is changed by the certificate hardening; both are
+pre-existing properties of the transport configuration, recorded here so the symptoms are recognisable.
+They are carried in the risk register as `RISK-062` and `RISK-063`.
+
+**A connection-security value that disagrees with the port hangs for two minutes.** The mail plugin does
+not set a send timeout, so MailKit's default of 120,000 ms applies to every connect. If a service row is
+configured for implicit TLS (`SslOnConnect`) against a port that expects `STARTTLS`, or for `STARTTLS`
+against a port that answers with a TLS handshake immediately, neither side makes progress and nothing is
+reported for two full minutes.
+
+- The symptom is a **hang**, not an error: an interactive send appears to freeze, and a queue pass appears
+  to stall on one message.
+- It is not a certificate failure, and no certificate setting affects it. Neither
+  `Settings:EmailSMTPCheckCertificateRevocation` nor `Settings:EmailSMTPAllowInvalidCertificates` will
+  change the outcome by one millisecond.
+- Check the `connection_security` value on the `smtp_service` row against what the relay actually offers
+  on that port. The conventional pairings are `SslOnConnect` with 465, and `StartTls` with 587 or 25.
+
+**A service row configured for cleartext delivers with no certificate involved at all.** A
+`connection_security` of `None` connects in the clear, and `StartTlsWhenAvailable` silently degrades to
+cleartext against a relay that does not advertise `STARTTLS`. On such a row the message body — and, when
+the row carries a username, the **relay credential** — is transmitted unencrypted, and the send succeeds
+while certificate revocation checking is at its secure default, because no certificate is presented,
+requested or examined.
+
+- Do not read that success as a bypass of the certificate controls. There is no certificate on this path
+  for them to act on. Concluding otherwise sends the fix toward the certificate policy, which cannot
+  help, and away from the transport configuration, which is the only thing that can.
+- The platform applies no minimum-security floor to the column, so this is a deployment responsibility.
+  On any row that carries a username, use `StartTls` or `SslOnConnect` — never `None`, and prefer
+  `StartTls` over `StartTlsWhenAvailable` so a relay that stops advertising `STARTTLS` fails loudly
+  instead of quietly downgrading.
+- Verify it on the wire rather than from the configuration: a relay conversation that never issues
+  `STARTTLS` and never establishes TLS is delivering in the clear regardless of what the row is
+  intended to mean.
 
 #### The environment marker
 
@@ -1818,6 +1956,7 @@ value that ships in the public source tree.
 | `Settings:Jwt:Issuer` | No | Token issuer. Defaults to `webvella-erp`. |
 | `Settings:Jwt:Audience` | No | Token audience. Defaults to `webvella-erp`. |
 | `Settings:DevelopmentMode` | No | Defaults to `false`. Must remain `false` in any deployment reachable by untrusted users (finding H-12). |
+| `Settings:EmailSMTPCheckCertificateRevocation` | No | Defaults to `true`, so an SMTP relay certificate's revocation status **is** checked. Set it to `false` only when the relay's chain cannot publish a reachable CRL or OCSP responder; the trust chain, validity dates and host name remain verified either way. Unlike `Settings:EmailSMTPAllowInvalidCertificates` it is honoured in every posture, because a control that is inert in production is no remedy for a production outage. See *SMTP certificate revocation* and `RISK-060`. |
 
 `ErpSettings.Initialize` validates the required values in one pass and reports **every** missing key
 in a single startup failure, so a mis-provisioned deployment does not need one restart per variable.

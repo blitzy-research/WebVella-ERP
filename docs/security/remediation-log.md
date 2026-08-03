@@ -5624,6 +5624,69 @@ inside the getter matters and is deliberate: the setting is parsed first, so an 
 never enabled the opt-out is never told anything; the posture check comes second; the refusal notice
 fires only in the one case that is actually a misconfiguration.
 
+### Follow-up: certificate revocation needed a switch of its own
+
+Runtime testing of the change above surfaced a consequence the certificate work had not accounted
+for, and it is recorded here as part of the same vulnerability class because it is a property of the
+same five sites.
+
+**What was found.** MailKit initialises `CheckCertificateRevocation` to `true`, and none of the five
+sites assigned it, so removing the always-true callback silently made **revocation reachability** a
+delivery prerequisite. A relay whose certificate is entirely valid — correct host name, in date,
+issued by a CA the host trusts — but whose chain names no reachable CRL distribution point, or whose
+CRL fetch is blocked by egress filtering, stopped being reachable at all. The handshake fails with
+`SslHandshakeException` whose chain detail contains nothing but `unable to get certificate CRL`, which
+reads like an untrusted certificate and is not one. Two files changed.
+
+| File | Change | Threat addressed |
+| --- | --- | --- |
+| `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` | New `CheckRemoteCertificateRevocation` policy member reading `Settings:EmailSMTPCheckCertificateRevocation`, plus `client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;` at the four direct sites and a second one-shot notice latch | CWE-299 improper check for certificate revocation, in **both** directions: an unchecked revocation list accepts a revoked relay certificate, and an uncheckable one denies service to a valid relay |
+| `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` | The same assignment at the fifth, queued site, bound to the same member | CWE-299 on the path where the symptom is a filling retry queue rather than a thrown exception |
+
+**Why a second setting rather than widening the first.** The accept-any-certificate opt-out is refused
+outside Development *by design*, so it is not — and must not become — the remedy for a production
+outage. Widening it would have handed back exactly the accept-any behaviour H-11 exists to remove. The
+two relaxations are not comparable in width: accepting any certificate removes transport
+authentication entirely, whereas declining to consult a revocation list removes one check of several
+and leaves the trust chain, the validity dates, the key usage and the host name all still enforced.
+That difference is what makes the second setting supportable in production while the first is not, and
+it is why this one carries **no posture gate**.
+
+**Why the default is inverted relative to its neighbour, and how.** The secure state here is `true`,
+not `false`, so the fail-safe parsing had to be arranged the other way round: only a value that
+genuinely parses as boolean `false` disables the check, while absent, blank, `true` and anything
+unparseable — `no`, `0`, `off` — all resolve to `true`. The non-throwing overload is kept for the same
+reason as its neighbour: a configuration typo must not raise `FormatException` on every outbound
+message and turn a mistake into a mail outage. A settings layer that has not been initialised yields
+`true` as well, so the policy fails secure before configuration exists.
+
+**Why it is reported when disabled.** A deployment running without revocation checking is in a
+weakened, if deliberate and supported, posture. One notice per process on standard error — latched by
+`Interlocked.CompareExchange`, the same idiom as the refusal notice, and for the same reason, since
+the policy is read at least once per message — puts that on the record instead of leaving it inferable
+only from configuration nobody re-reads. Only the setting **name** is named, never a credential, a
+server or a port.
+
+**What was deliberately not done.** The revocation mode is not made granular — there is no
+"soft-fail", no offline-only mode and no per-service override — because MailKit exposes one boolean
+and the platform's constraint is the least invasive control that closes the finding. Nor was
+`client.Timeout` touched while in the same statement block; it is a separate pre-existing observation
+recorded in the risk register.
+
+### Follow-up verification
+
+| Check | Method | Result |
+| --- | --- | --- |
+| The mechanism, isolated from the application | `X509Chain` probe over a purpose-built PKI, run at `RevocationMode=Online` and `NoCheck` | trusted leaf with **no** CRL distribution point: `Online` fails with `RevocationStatusUnknown|OfflineRevocation`, `NoCheck` passes. Trusted leaf with a reachable **DER** CRL: passes in both modes. Self-signed leaf: fails `UntrustedRoot` in **both** modes — so the relaxation cannot be mistaken for accept-any |
+| The finding's own reproduction, end to end | real send through `EmailServiceManager.GetSmtpService` → `SendEmail` against a STARTTLS relay whose trusted-CA leaf publishes no CRL distribution point | with the setting **absent** the send is refused and the chain detail is exactly `unable to get certificate CRL` — the secure default is preserved. With `Settings__EmailSMTPCheckCertificateRevocation=false` in **Production** posture the same relay **delivers** — the remedy the finding reported as missing now exists |
+| The relaxation is narrow | the same send, revocation disabled, against a self-signed relay and against a relay whose certificate names `not-localhost.invalid` | both still **refused**, with `UntrustedRoot` and a host-name mismatch respectively. Disabling revocation does not disable validation |
+| The wider opt-out is still refused in production | `Settings__EmailSMTPAllowInvalidCertificates=true` with no `Settings__DevelopmentMode` | still refused, still exactly one `SmtpService[1]` notice. The new setting did not weaken the old gate |
+| Fail-safe parsing | absent, blank, whitespace, `true`, and the unparseable values `no`, `0`, `off`, `disabled`, `yes` | every one leaves revocation **enabled**; only `false`, `False`, `FALSE` and whitespace-padded forms disable it |
+| All five sites honour it | the four direct overloads and the queued path, each driven with the setting off and on | five sites, five consistent outcomes; the queued path additionally records the CRL text in `server_error`, increments `retries_count` and reschedules, then delivers and clears the error once the setting is applied |
+| No regression | reachable-CRL relay, both settings states, plus the four direct overloads and a queue batch | delivered in every case; `rec_email` rows end `Sent` with `scheduled_on` NULL and `server_error` empty |
+| Notice hygiene | repeated sends in one process with revocation disabled | exactly **one** `SmtpService[2]` notice regardless of message count; zero notices when the setting is absent; no credential, server or port in any notice |
+| Build gate | mail plugin and full-solution builds | exit 0, **0 errors**; no analyzer diagnostic lands on any added line |
+
 **Why `Password` is excluded from JSON but not from the record mapping.** The AutoMapper profile
 reads and writes the property directly rather than through JSON, so every legitimate send and every
 administrator save still carries the value. `[JsonIgnore]` removes it only from serialised output —

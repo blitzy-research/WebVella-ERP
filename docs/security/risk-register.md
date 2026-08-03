@@ -72,6 +72,16 @@ the same risk written from different angles; the subject and status in this tabl
 | `RISK-057` | `ScheduleManager.ProcessSchedulesAsync` writes its own failure through `Log.Create` inside a `catch` with no inner guard, so a transient PostgreSQL timeout on that diagnostic write escapes to the thread pool and terminates the entire web host. Observed once under extreme machine load. Pre-existing platform code, byte-identical to `HEAD`, and a reliability rather than a security defect. | Documented — out of scope under AAP 0.3.2 (no refactoring beyond security) | Platform team |
 | `RISK-058` | Two third-party assets shipped by the `WebVella.TagHelpers` package reference source maps (`bootstrap.css.map`, `decimal.min.js.map`) that the package does not include. Requests for them return the application's uniform catch-all 405. Only a browser with DevTools attached ever issues them. Vendor content, which AAP 0.3.2 excludes from modification. | Documented — out of scope (third-party content, version updates only) | Platform team |
 | `RISK-059` | `global.json` pins the SDK as `10.0.302` but with `rollForward: latestPatch`, so a later patch on the 10.0.3xx band is accepted. A patch can move an analyzer rule set or a dependency-audit default, which is a reproducibility residual in the gate itself. `disable` was rejected because it makes the repository unbuildable the moment the exact patch is superseded on a developer machine or a CI image — a hard outage traded for a drift risk. | Accepted | Platform team |
+| `RISK-060` | An installation may set `Settings:EmailSMTPCheckCertificateRevocation` to `false` to reach an SMTP relay whose certificate chain publishes no fetchable CRL or OCSP endpoint. That relaxation is honoured **in every posture, including Production, deliberately** — and while it leaves the trust chain, validity dates, key usage and host name enforced, it does mean a relay certificate whose key has leaked and whose issuer has since revoked it will no longer be refused. The alternative was worse in both directions: leaving revocation unconditional denies service to valid relays with no supported remedy, and the only pre-existing escape hatch accepts *any* certificate and is refused in production. | Accepted — conditional on the operator recording it; the preferred fix is to publish the revocation source | Deployment owner |
+| `RISK-061` | `SmtpInternalService.ProcessSmtpQueue` serialises itself with a `static object` lock and a `static bool` in-progress flag, which are per-process. Two hosts, or a host plus the console application, each run a full pass over the same `Pending` rows and each delivers them: three queued messages driven by two concurrent processes produced six deliveries against three database rows, all left at `Sent`. There is no row-level claim (no `SELECT … FOR UPDATE SKIP LOCKED`, no owner column, no lease) so the duplication is structural, not a race window. Pre-existing platform code, byte-identical to `HEAD`, and a delivery-semantics rather than a security defect. | Documented — out of scope under AAP 0.1.3 guideline 8 (document, do not fix unless Critical) | Platform team |
+| `RISK-062` | Neither `SmtpService` nor `SmtpInternalService` ever assigns `client.Timeout`, so MailKit's constructor default of 120,000 ms stands at all five connect sites. A connection-security value that disagrees with the port — implicit TLS configured against a STARTTLS port, or the reverse — therefore blocks the calling request or the queue pass for two minutes before it reports anything. Identical before and after the H-11 change; the certificate work neither introduced nor widened it. | Documented — out of scope under AAP 0.1.3 guideline 8; the operator-facing symptom is recorded in the secure-configuration guide | Platform team |
+| `RISK-063` | An SMTP service row whose `connection_security` is `0` (`SecureSocketOptions.None`) delivers over an unencrypted channel, and if the row also carries a username the relay credential is transmitted in the clear. Observed on the wire: no `STARTTLS` issued, no TLS established, the `AUTH` command sent on the cleartext socket, and the message accepted — all while certificate revocation checking was at its secure default, because no certificate is involved on that path at all. This is a transport-configuration property (CWE-319), not a gap in certificate validation, and the platform applies no minimum-security floor to the value. | Documented — out of scope under AAP 0.1.3 guideline 8 and 0.3.2 (no feature additions); a deployment-configuration responsibility | Deployment owner |
+| `RISK-064` | The four direct `SmtpService.SendEmail` overloads construct and persist their `Email` record only after `client.Send` returns, so a send that throws leaves no `rec_email` row at all: a failed direct send produced zero rows where the same send after remediation produced one at `Sent`. The queued path is asymmetric — it persists the row first and records the failure text in `server_error` — so a transport failure is auditable when queued and invisible when sent directly. An observability gap rather than a security defect; the exception still propagates to the caller and the platform's own log path is unaffected. | Documented — out of scope under AAP 0.1.3 guideline 8 | Platform team |
+| `RISK-065` | `SmtpInternalService.ValidatePreUpdateRecord` reads the incoming `port` with `rec["port"] as string` and then builds its error model with the hard cast `(string)rec["port"]`, while the create-side hook uses `rec["port"]?.ToString()` for both. An update whose `port` arrives as a JSON number is therefore rejected — `InvalidCastException: Unable to cast object of type 'System.Int32' to type 'System.String'` thrown inside the validation hook — and `RecordManager` converts it to the generic `The entity record was not update. An internal error occurred!` with no field-level detail. The identical value sent as a string succeeds. Pre-existing: the checkpoint diff for this file is exactly the two certificate hunks. | Documented — out of scope under AAP 0.1.3 guideline 8 (a correctness defect with no security consequence) | Platform team |
+| `RISK-066` | The SMTP-service test page path raises `ValidationException` through its parameterless constructor and attaches every detail to `.Errors`, so the exception's own `Message` carries no text. Any consumer that logs or displays `ex.Message` alone — including the generic internal-error surface that `RecordManager` produces — reports a failure with no indication of which field was rejected or why. Observed together with `RISK-065`: the caller received only the generic internal-error string and an empty error collection. | Documented — out of scope under AAP 0.1.3 guideline 8 | Platform team |
+| `RISK-067` | `ErpSettings.Initialize` parses seven boolean settings with the idiom `string.IsNullOrWhiteSpace(...) ? default : bool.Parse(...)`, so a malformed value fails the host closed with `FormatException: String 'notabool' was not recognized as a valid Boolean.` The message names the offending **value** but never the offending **key**, unlike the encryption-key validation in the same file which names its setting explicitly. Failing closed is the correct posture and is deliberately preserved; only the diagnosability is poor, and it applies to `Settings:DevelopmentMode` — the discriminator for the certificate opt-out posture — among six others. | Documented — out of scope under AAP 0.1.3 guideline 8 and 0.3.2 (no refactoring beyond security) | Platform team |
+| `RISK-068` | `SmtpService.Username` carries `[JsonProperty("username")]` and is therefore present in any serialisation of a cached SMTP service, while `Password` carries `[JsonIgnore]` and is correctly withheld. The `smtp_service` entity is administrator-only and the username alone is not a credential, so the residual is the disclosure of one half of a relay credential pair to a principal who can already read the row. Recorded so the asymmetry is a deliberate, reviewed position rather than an oversight. | Documented — out of scope under AAP 0.1.3 guideline 8 | Platform team |
+
 
 ### Identifiers renumbered while consolidating this register
 
@@ -2317,6 +2327,75 @@ residual risks worth stating rather than leaving implicit.
 configuration has been initialised — a mail send attempted during start-up cannot obtain the bypass
 by racing the configuration load.
 
+### RISK-060 — An operator may disable SMTP certificate revocation checking, in any posture
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted, conditionally — the preferred fix is to publish the revocation source; disabling the check is the supported fallback and must be recorded by the deployment that uses it. |
+| **Related finding** | H-11 follow-up (CWE-299 improper check for certificate revocation, CWE-295, OWASP A02:2021) |
+| **Owner** | Deployment owner |
+
+**What this is a residual of.** Closing H-11 removed an always-true certificate callback, which had
+been masking every chain error including revocation ones. MailKit checks revocation by default, so the
+moment real validation applied, a relay whose certificate is *entirely valid* — correct host name, in
+date, issued by a CA the host trusts — but whose chain names no fetchable CRL distribution point
+became unreachable. Measured, not theorised: two relays differing **only** in revocation reachability
+behave differently, and the failing one reports a chain status of nothing but `unable to get
+certificate CRL`. Real deployments in that position are ordinary rather than exotic — an internal CA
+that publishes no CRL, a leaf issued without a `crlDistributionPoints` extension, or a host whose
+egress filtering blocks the fetch.
+
+**Why the residual exists at all.** Every available answer carried a cost, and the one chosen carries
+the smallest:
+
+* *Leave revocation unconditional.* Rejected. It denies service to valid relays with **no** supported
+  remedy, because the only pre-existing escape hatch accepts any certificate and is refused outside
+  Development. That combination is the defect the follow-up exists to remove.
+* *Widen the accept-any opt-out into production.* Rejected outright. It hands back precisely the
+  behaviour H-11 removed, for the sake of a missing CRL.
+* *Add a second, narrower switch.* Chosen. `Settings:EmailSMTPCheckCertificateRevocation=false`
+  disables one check and leaves the trust chain, the validity dates, the key usage and the host name
+  all enforced.
+
+**What is actually given up, stated precisely.** One thing: a relay certificate whose private key has
+leaked and whose issuer has since revoked it will no longer be refused. Everything else still refuses
+— a self-signed certificate, an expired one, one naming the wrong host, one from a CA the host does not
+trust. That was verified in both modes rather than reasoned about: with revocation disabled, a
+self-signed relay still fails `UntrustedRoot` and a wrong-name relay still fails on the host name.
+
+**Why it has no posture gate, unlike `RISK-033`.** A control that is inert in production is no remedy
+for a production outage — that is the whole substance of the finding this closes. The two relaxations
+are not comparable in width, and the register should not pretend they are: accepting any certificate
+removes transport authentication entirely, whereas skipping a revocation lookup removes one check of
+several. The first is a development convenience and is correctly refused in production; the second is
+an operational accommodation for a real and lawful PKI topology, and is correctly honoured there.
+
+**What bounds the residual.**
+
+* **Secure by default, with the default inverted relative to its neighbour.** Only a value that parses
+  as boolean `false` disables the check. Absent, blank, `true`, and unparseable values such as `no`,
+  `0` and `off` all leave revocation enabled, as does a settings layer that has not yet been
+  initialised. An operator cannot arrive here by typo — only by decision.
+* **It is announced.** One notice per process on standard error, naming the setting key and nothing
+  else, so the weakened posture is on the record rather than inferable only from configuration nobody
+  re-reads. As with `RISK-033`, it is a statement about configuration rather than an event, so a log
+  pipeline attached after start-up will not see it; the configuration is the authoritative check.
+* **It governs all five send sites from one member**, so no path can drift into a different revocation
+  posture from the others.
+* **Revocation checking genuinely works when left on**, which is what makes turning it off a real if
+  bounded loss rather than a formality: a leaf revoked in its issuer's CRL is refused with a distinct
+  `certificate revoked` chain bullet, while a non-revoked leaf validated against that same freshly
+  published CRL still delivers.
+
+**How to retire it.** Re-issue the relay leaf with a `crlDistributionPoints` extension pointing at a
+CRL the application hosts can fetch, sign that CRL with a CA carrying `cRLSign` and a subject key
+identifier, publish it in DER form, then remove the setting and confirm a test send still delivers.
+The [secure configuration guide](secure-configuration.md) carries the step-by-step form of this.
+
+**Not covered by this entry.** Granular revocation behaviour — soft-fail, offline-only, or a per-service
+override — is not offered. MailKit exposes a single boolean, and inventing a richer policy on top of it
+would exceed the least-invasive-control constraint that governs this remediation.
+
 ### RISK-034 — The permission migration preserves operator-created delegations
 
 > **Compare `RISK-050`.** The schema version 5 migration for the `user` and `role` entities takes the
@@ -3317,3 +3396,273 @@ green.
 in the gate's own evidence on every run and assert it against the pin, so a roll-forward is visible in the
 log rather than inferred; and add a lock file (`packages.lock.json`) so the dependency graph is reproducible
 independently of the SDK that restores it.
+
+## Detailed entries — pre-existing mail-transport observations recorded during the H-11 follow-up
+
+The eight entries below were surfaced by the runtime QA pass over the SMTP transport-security change
+(`H-11`) and its dependency companion (`H-20`). None of them was introduced by that change: each was
+reproduced against code that is byte-identical to `HEAD` for the lines concerned, and the checkpoint diff
+for `SmtpInternalService.cs` is exactly the certificate hunks. None is Critical. Under the Minimal Change
+Clause — guideline 8, *document out-of-scope concerns but do not fix unless Critical*, reinforced by
+AAP 0.3.2 which forbids refactoring beyond security and forbids feature additions — the correct
+disposition for all eight is to record them here with a concrete recommended fix, not to change code.
+
+Each entry states what was **observed**, not what was assumed, because six of the eight were reproduced at
+runtime against a real PostgreSQL-backed installation and real SMTP endpoints rather than read off the
+source alone.
+
+### RISK-061 — the SMTP queue's concurrency guard is per-process, so two hosts deliver every message twice
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented — out of scope under AAP 0.1.3 guideline 8. |
+| **Related finding** | Pre-existing; surfaced by the `H-11` runtime pass. Adjacent to `H-11` only in that both live in `SmtpInternalService.cs`. |
+| **Owner** | Platform team |
+
+`SmtpInternalService` declares `private static object lockObject` and
+`private static bool queueProcessingInProgress`, and `ProcessSmtpQueue` takes that lock on entry and
+again on exit. Both are **process** state. Nothing in the database marks a row as claimed: the pass
+selects `Pending` rows whose `scheduled_on` has elapsed, sends each, then writes the outcome.
+
+**What was observed.** Three messages were queued against a relay that accepts, `scheduled_on` was
+backdated, and two `ProcessSmtpQueue` passes were started concurrently in separate processes. The relay
+recorded **six** deliveries. The database held **three** rows, all at `Sent`. Every recipient therefore
+received the message twice while the audit trail showed a single clean delivery each.
+
+**Why this is structural rather than a race window.** The duplication does not depend on interleaving at a
+particular instant. Each process independently observes the same eligible set, and neither has any means of
+telling the other that a row is in flight. Narrowing the timing would not reduce the duplication; only a
+claim that both processes can see would.
+
+**Why it is nevertheless out of scope here.** It is a delivery-semantics defect, not a security weakness:
+no confidentiality, integrity or authorisation boundary is crossed, and the duplicate is the same message to
+the same recipient. Fixing it means introducing a distributed claim — a schema change, or a lease column, or
+an advisory lock — which AAP 0.9.2 forbids outright (*no schema change*) and AAP 0.3.2 classes as an
+architectural change.
+
+**How the residual is bounded today.** A single-host deployment running a single background-job scheduler is
+unaffected, which is the shape the platform's own job infrastructure assumes. The exposure appears only when
+the console application is run against a live database alongside a web host, or when a host is scaled out.
+
+**Recommended fix, for a change permitted to touch the schema:** claim each row before sending, using
+`SELECT … FOR UPDATE SKIP LOCKED` inside the transaction that flips the row out of `Pending`, so a second
+process sees an empty eligible set rather than the same one. If a schema change is unacceptable, take a
+PostgreSQL advisory lock keyed on the queue (`pg_try_advisory_lock`) around the whole pass, which converts
+the per-process flag into a per-database one with no DDL. Either way, keep the existing in-process flag: it
+still prevents a second pass inside one host.
+
+### RISK-062 — no send timeout is configured, so a transport misconfiguration blocks for two minutes
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented — out of scope under AAP 0.1.3 guideline 8; the operator-visible symptom is recorded in `secure-configuration.md`. |
+| **Related finding** | Pre-existing; identical before and after `H-11`. |
+| **Owner** | Platform team |
+
+A repository-wide search for `.Timeout` across the mail plugin returns **no hits**, so MailKit's constructor
+default governs every one of the five connect sites. Probing the library directly reports
+`SmtpClient.Timeout = 120000` — two minutes.
+
+**What was observed.** The same probe also reports `CheckCertificateRevocation = True`, which is the
+independent confirmation of the root cause behind `H-11`'s follow-up: the plugin inherits whatever MailKit
+defaults to, for both properties, because it assigns neither.
+
+**Why it matters operationally.** A `connection_security` value that disagrees with the port is the common
+misconfiguration — implicit TLS against a STARTTLS port, or STARTTLS against a port that answers with a TLS
+ClientHello. Neither fails fast. The request thread, or the queue pass, blocks for the full two minutes and
+only then surfaces an error, which reads as a hang rather than as a configuration mistake.
+
+**Why it is out of scope here.** The value is identical before and after the certificate work; nothing in
+`H-11` introduced or widened it, and choosing a timeout is a behavioural change to every send path, which is
+precisely what the preservation requirement protects.
+
+**Recommended fix:** set `client.Timeout` from the SMTP service row — a new optional column, defaulting to
+the current 120,000 ms so no existing installation changes behaviour — or, without a schema change, from a
+`Settings:EmailSMTPTimeoutMilliseconds` key with the same default. Apply it at all five connect sites, next
+to the two policy assignments already there, so the transport knobs stay in one place.
+
+### RISK-063 — a service row may be configured for cleartext, and then the relay credential travels in the clear
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented — out of scope under AAP 0.1.3 guideline 8 and AAP 0.3.2; a deployment-configuration responsibility. |
+| **Related finding** | Adjacent to `H-11` but distinct from it. CWE-319, cleartext transmission. |
+| **Owner** | Deployment owner |
+
+`SmtpService.ConnectionSecurity` is mapped straight from the `connection_security` column and handed to
+`client.Connect` unaltered. The platform applies no floor: `0` means `SecureSocketOptions.None`, and
+`StartTlsWhenAvailable` silently degrades to cleartext against a relay that does not advertise `STARTTLS`.
+
+**What was observed on the wire.** A service row with `connection_security = 0` and a username configured
+was driven against an endpoint that advertises `AUTH` on the cleartext channel. The transcript shows the
+connection established with `tls=False`, `STARTTLS` advertised by the server and never issued by the client,
+the `AUTH` command sent on the unencrypted socket, and the message accepted. The send returned success while
+certificate revocation checking was at its **secure default** — because on this path no certificate is
+presented, requested or examined at all.
+
+**Why this is not an `H-11` bypass, and why saying so precisely matters.** It is tempting to read
+"delivered without any certificate validation" as a hole in the certificate work. It is not. The certificate
+controls govern what happens when TLS is negotiated; this row never negotiates TLS. Conflating the two would
+misdirect the fix toward the certificate policy, which cannot help, and away from the transport
+configuration, which is the only thing that can.
+
+**What is actually given up.** Message contents and, when a username is present, the relay credential are
+readable by anything on the path. The credential is the more serious half, because it is long-lived and
+reusable.
+
+**Recommended fix:** reject the insecure combination at the point where it is authored rather than at send
+time — extend the `smtp_service` create and update validation hooks to refuse `connection_security = None`
+whenever a username is present, and to warn when it is set at all. That is a validation-hook change with no
+schema impact. Operators who genuinely relay to a trusted host over a loopback or private segment can be
+given an explicit opt-out key, kept symmetrical with the two certificate keys already documented.
+
+### RISK-064 — a failed direct send leaves no audit row, while a failed queued send does
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented — out of scope under AAP 0.1.3 guideline 8. |
+| **Related finding** | Pre-existing; surfaced by the `H-11` runtime pass because the change makes certificate refusals a routine failure mode. |
+| **Owner** | Platform team |
+
+All four direct `SendEmail` overloads follow the same shape: connect, authenticate if a username is present,
+send, disconnect — and only then construct the `Email` record and persist it with `Status = Sent`. Any
+throw from the connect, authenticate or send step therefore returns before the record exists.
+
+**What was observed.** With the mail table emptied, a direct send that failed on certificate validation left
+**zero** rows. The identical send, made deliverable, left **one** row at `Sent`. The queued path behaves the
+other way round: it persists the row first, so a failure is recorded against it with the transport error
+text in `server_error` and the retry counter advanced.
+
+**Why the asymmetry became visible now.** Before `H-11` an accept-any-certificate callback meant transport
+failures were rare in practice. Enforcing validation makes a refusal an ordinary outcome, and the ordinary
+outcome of a *direct* send failure is that nothing is written down.
+
+**Why it is out of scope here.** The exception still propagates to the caller, which is the contract the
+existing callers are written against, and the platform's own logging path is untouched. Persisting a
+`Failed` row for direct sends changes what those callers observe and what the mail list screens show — a
+user-facing behavioural change the preservation requirement forbids.
+
+**Recommended fix:** persist the `Email` record *before* attempting delivery on the direct paths, exactly as
+the queued path does, and update it to `Sent` on success or to a failed state with `server_error` populated
+on exception, re-throwing afterwards so the caller contract is unchanged. That makes the audit trail
+symmetrical without altering what any caller sees.
+
+### RISK-065 — the update-side validation hook casts where the create-side converts, so a numeric port is rejected
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented — out of scope under AAP 0.1.3 guideline 8; a correctness defect with no security consequence. |
+| **Related finding** | Pre-existing. The checkpoint diff for this file is exactly the two certificate hunks. |
+| **Owner** | Platform team |
+
+The two validation hooks disagree on how they read the same field. `ValidatePreCreateRecord` uses
+`rec["port"]?.ToString()` both for the parse and for the error model. `ValidatePreUpdateRecord` uses
+`rec["port"] as string` for the parse and the hard cast `(string)rec["port"]` for the error model.
+
+**What was observed.** Driving the real registered hook through `RecordManager.UpdateRecord` with `port`
+supplied as a boxed `Int32` failed, and with development diagnostics enabled the cause is exact:
+`InvalidCastException: Unable to cast object of type 'System.Int32' to type 'System.String'`, thrown inside
+`ValidatePreUpdateRecord`. The identical value supplied as a `String` succeeded. So the field is not merely
+mis-parsed — the hook throws while building the error it meant to report.
+
+**Why the failure is worse than a rejected field.** `as string` yields `null` for any non-string, so the
+parse fails and control enters the error branch; the error branch then performs the hard cast on the same
+non-string value and throws. `RecordManager` catches it and answers with the generic
+`The entity record was not update. An internal error occurred!`, so the caller learns neither the field nor
+the reason. See `RISK-066` for the second half of that diagnostic loss.
+
+**Why it is out of scope here.** No security boundary is involved: the entity is administrator-only, the
+update is refused rather than accepted, and it fails closed. It is a type-handling defect in pre-existing
+platform code, and AAP 0.3.2 forbids refactoring beyond security requirements.
+
+**Recommended fix:** make the update hook read the field exactly as the create hook does —
+`rec["port"]?.ToString()` in both the `Int32.TryParse` call and the `ErrorModel.Value` assignment — and
+audit the other
+`case` arms of the same `switch` for the same `as string` / `(string)` idiom, since the asymmetry is a
+copy-editing divergence rather than a deliberate distinction.
+
+### RISK-066 — a validation exception carries no message, so only its error collection is informative
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented — out of scope under AAP 0.1.3 guideline 8. |
+| **Related finding** | Pre-existing; the companion to `RISK-065`. |
+| **Owner** | Platform team |
+
+The SMTP-service test-page path constructs `new ValidationException()` and attaches every detail through
+`AddError` before `CheckAndThrow`. The exception's own `Message` is therefore whatever the parameterless
+constructor produces, and carries no description of what was rejected.
+
+**What was observed.** In the `RISK-065` reproduction the caller received only the generic internal-error
+string and an **empty** error collection, so neither channel identified the field. Any consumer that logs
+`ex.Message` — the common shape — records a failure with no diagnostic content at all.
+
+**Why it is out of scope here.** It is a diagnosability defect. It leaks nothing and grants nothing; and the
+opposite defect would be worse, since a validation exception whose message concatenated the field values
+would be an information-disclosure finding of its own on a surface that reaches the browser.
+
+**Recommended fix:** pass a short, non-reflective summary to the constructor — the count and the field names,
+never the submitted values — so a single-channel consumer still learns which fields failed, and keep the
+per-field detail in `.Errors` where it is today.
+
+### RISK-067 — a malformed boolean setting fails the host closed without naming the setting
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented — out of scope under AAP 0.1.3 guideline 8 and AAP 0.3.2. |
+| **Related finding** | Pre-existing platform configuration code. Relevant to `H-11`/`RISK-033` because `Settings:DevelopmentMode` is the discriminator for the certificate opt-out posture. |
+| **Owner** | Platform team |
+
+`ErpSettings.Initialize` parses seven boolean settings with one idiom:
+`string.IsNullOrWhiteSpace(configuration["…"]) ? <default> : bool.Parse(configuration["…"])`. A blank value
+takes the default; a malformed value reaches `bool.Parse` and throws.
+
+**What was observed.** With `Settings__DevelopmentMode=notabool` the host aborts with
+`FormatException: String 'notabool' was not recognized as a valid Boolean.` at `ErpSettings.Initialize`. The
+message names the **value** and never the **key**. An operator with several boolean settings configured must
+bisect them to find the culprit. The same file's encryption-key validation, by contrast, names its setting
+explicitly and explains what is required — so the good pattern already exists a few hundred lines away.
+
+**Why failing closed is right and is deliberately preserved.** An unparseable posture flag must never be
+silently coerced. `Settings:DevelopmentMode` decides whether the accept-any-certificate opt-out is honoured
+(`RISK-033`); defaulting a typo to `false` would be defensible, defaulting it to `true` would be a
+vulnerability, and guessing at all is worse than refusing to start. The refusal is the correct behaviour.
+Only the message is deficient.
+
+**Why it is out of scope here.** It is a diagnosability improvement across seven unrelated settings in a
+core file the checkpoint does not otherwise touch, which is refactoring beyond the security requirement.
+
+**Recommended fix:** introduce one private helper that takes the key and the default, calls `bool.TryParse`,
+and on failure throws a message naming the key, the received value and the accepted spellings — then route
+all seven call sites through it. The behaviour stays identical (blank takes the default, malformed refuses to
+start); only the message improves. The new `Settings:EmailSMTPCheckCertificateRevocation` and the existing
+`Settings:EmailSMTPAllowInvalidCertificates` deliberately do **not** share this shape: they are read after
+startup and must never abort a send, so both parse non-throwing and fail safe instead.
+
+### RISK-068 — the SMTP relay username is serialised while the password is withheld
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented — out of scope under AAP 0.1.3 guideline 8. |
+| **Related finding** | The counterpart to the already-remediated credential exposure on the same type. |
+| **Owner** | Platform team |
+
+On `SmtpService`, `Password` carries `[JsonIgnore]` with an inline comment recording why — a serialised dump
+of a cached service previously carried the plaintext credential out of the process — while `Username` carries
+`[JsonProperty("username")]` and is present in every serialisation.
+
+**What is actually exposed.** One half of a credential pair, to a principal who can already read the
+`smtp_service` entity, which is administrator-only. A username is not a secret on its own; its value to an
+attacker is that it removes the guessing half of a credential-stuffing attempt against the relay.
+
+**Why it is out of scope here.** The entity's read permission already restricts it to administrators, so
+withholding the username from serialisation would not change who can learn it — it would only change one
+serialisation path, while the record screen, the query API and the database all continue to show it. That is
+motion without a reduction in exposure, and AAP 0.1.3 guideline 4 forbids changes that do not close a
+weakness.
+
+**Recommended fix, if the serialised shape is ever exposed to a non-administrator surface:** treat the pair
+symmetrically — `[JsonIgnore]` on `Username` as well, with the record screen reading it from the entity
+record rather than from the serialised service — and re-verify that the SMTP test page and the queue
+processor, which both consume the cached service, still authenticate.
+
