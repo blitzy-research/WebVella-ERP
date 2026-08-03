@@ -3910,7 +3910,9 @@ namespace WebVella.Erp.Web.Controllers
 			//authorized path between the check and the write. expectedSourceId pins the mutation to the exact
 			//row that was authorized: the repository applies its UPDATE only when the row still carries that
 			//identifier at that path, and returns null when it does not, so a raced request is refused rather
-			//than applied to a file nobody authorized.
+			//than applied to a file nobody authorized. Reaching this line means IsFileMutationAuthorized
+			//returned true, which it does only for a file that resolved - so sourceFile is non-null here
+			//(CWE-476).
 			var movedFile = fsRepository.Move(source, target, overwrite, sourceFile.Id);
 			if (movedFile == null)
 			{
@@ -3949,7 +3951,8 @@ namespace WebVella.Erp.Web.Controllers
 			//authorization above tested a row read on an earlier connection; without pinning, a concurrent
 			//move could put a different user's file at this path between the check and the delete, and the
 			//delete is irreversible. The identifier of the authorized row is passed through so the repository
-			//removes that row and no other.
+			//removes that row and no other. Reaching this line means IsFileMutationAuthorized returned true,
+			//which it does only for a file that resolved - so sourceFile is non-null here (CWE-476).
 			fsRepository.Delete(filepath, sourceFile.Id);
 			return DoResponse(new FSResponse(new FSResult { Url = filepath, Filename = fileName }));
 		}
@@ -4348,9 +4351,23 @@ namespace WebVella.Erp.Web.Controllers
 		private bool IsFileMutationAuthorized(DbFile file, string requestedPath, string operation)
 		{
 			//AuthService.GetUser returns null for a principal this build cannot use, so it is null-guarded
-			//before either allow branch rather than trusted
+			//before either allow branch rather than trusted.
+			//
+			//THREAT ADDRESSED - CWE-476 (NULL pointer dereference) on an HTTP-reachable path. The
+			//administrator branch below used to be reached before anything had established that the file
+			//actually resolved, so a mutation naming a path that holds NO file was authorized for an
+			//administrator - and both callers then dereferenced the null row to pin the mutation
+			//(DeleteFile: fsRepository.Delete(filepath, sourceFile.Id); MoveFile: fsRepository.Move(...,
+			//sourceFile.Id)), answering a 500 with an HTML error body instead of this endpoint's FSResponse
+			//envelope. Requiring a resolved file for BOTH allow branches is what makes "returns true" mean
+			//"this file exists AND this caller may mutate it", which is precisely the post-condition those
+			//two call sites rely on. It is also what the case table above already documented - "file does
+			//not resolve -> refuse" - so this aligns the code with its own stated contract rather than
+			//changing it. The refusal is the same generic message and the same audit reason ("file not
+			//found") as every other refusal, so a missing path still cannot be distinguished from a
+			//forbidden one and no existence oracle is created.
 			var currentUser = AuthService.GetUser(User);
-			if (currentUser != null)
+			if (file != null && currentUser != null)
 			{
 				if (currentUser.IsAdmin)
 				{
