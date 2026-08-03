@@ -14,12 +14,25 @@
 <wv-grid small="true" columns="@gridColumns" has-tfoot="false">
 	@foreach (var record in records)
 	{
-		@* Security: stored XSS - label is server-composed markup interpolating database text
-		   (H-06, CWE-79, OWASP A03). Kept raw by design: encoding would escape the per-user avatar
-		   markup and break the widget. Compensating control: markup authoring restricted to
-		   privileged roles + Content-Security-Policy. See docs/security/risk-register.md *@
+		@* SECURITY - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting). REMEDIATED.
+		   THREAT: "label" was a union type - a plain caption on the three summary rows, but an HTML
+		   avatar string on the per-user rows - and this cell rendered it through Html.Raw for every row
+		   alike, so the avatar path and the username, both database text, executed in the browser.
+		   HOW IT IS FIXED: PcProjectWidgetTimesheet.cs no longer builds markup. "label" is now always
+		   plain text and the avatar path travels separately in "label_image", null on the summary rows.
+		   The avatar element is authored here as literal Razor markup, so Razor encodes the src
+		   attribute value and the label text independently and in the right context for each.
+		   The avatar is decorative and the username sits beside it, so alt is intentionally empty.
+		   Do not reintroduce Html.Raw here, and do not move the markup back into the component. *@
+		var labelImagePath = (string)record["label_image"];
 		<wv-grid-row>
-			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">@Html.Raw(record["label"])</wv-grid-column>
+			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">
+				@if (labelImagePath != null)
+				{
+					<img src="@labelImagePath" class="rounded-circle" width="24" alt="" />
+				}
+				@record["label"]
+			</wv-grid-column>
 			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold" : "") text-right">
 				@((decimal)record["day1"] > 0 ? Math.Round((decimal)record["day1"]/60,2) + "h" : "-")
 			</wv-grid-column>

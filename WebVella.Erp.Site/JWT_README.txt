@@ -4,7 +4,7 @@
 
 
 =========================================================================
-2. config.json
+2. Config.json   (that exact spelling - see the note at the end of this file)
 
 add in settings section
 
@@ -81,3 +81,32 @@ in ConfigureServices method change auth to be
 
  =========================================================================
  
+
+=========================================================================
+4. the configuration file name
+
+SECURITY - finding CFG-03; CWE-178 improper handling of case sensitivity,
+CWE-706 use of an incorrectly resolved name or reference.
+The file is named Config.json, with a capital C. Use that exact spelling. An
+earlier revision of this note wrote it in lower case, and the loader asked for
+the lower-case name too, which worked only because Windows and macOS resolve
+filenames case-insensitively. On Linux and in containers the requested name did
+not exist, so a published host either failed to start or - the worse outcome -
+started against an unaudited file that somebody had created to work around the
+failure. Both halves are fixed: all four builder sites now request Config.json
+by its exact name, resolved from AppContext.BaseDirectory rather than from the
+current working directory, so the file is found next to the assembly no matter
+where the process was launched from.
+
+Two consequences for anyone following these instructions:
+
+  - Do NOT create a lower-case config.json anywhere. The continuous security
+    workflow fails the build if a published artifact carries one, because two
+    spellings of the same settings file means the one that is read is decided
+    by the filesystem rather than by the deployment.
+  - Do NOT add a second copy to the project directory. MSBuild item identity is
+    case-insensitive, so Config.json and config.json in the same source folder
+    collide and the build stops with NETSDK1022.
+
+See docs/security/secure-configuration.md for the resolved-path details.
+=========================================================================

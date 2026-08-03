@@ -37,20 +37,20 @@ of this commit.
 
 | Control | State |
 | --- | --- |
-| Configuration provider chain | **The tracked JSON file is always first**, so a blanked value can never override a supplied secret — that precedence is the control, and it holds at all four builder sites. The shared fallback path used by the Crm, Mail, MicrosoftCDM, Next and Sdk hosts is **JSON file → environment variables → user secrets (Development only)** (`WebVella.Erp.Web/ErpMvcExtensions.cs:L143-L165`, reached only when `ErpSettings.IsInitialized` is still false). `WebVella.Erp.Site` (`Startup.cs:L50-L61`) and `WebVella.Erp.Site.Project` (`Startup.cs:L42-L51`) initialise `ErpSettings` themselves and place **environment variables last**, so the fallback never runs for them. `WebVella.Erp.ConsoleApp/Program.cs:L54-L88` now follows the same shape as the shared fallback — **JSON file → environment variables → user secrets (Development only)** — with the environment resolved from `DOTNET_ENVIRONMENT`, falling back to `ASPNETCORE_ENVIRONMENT`, because a console application has no `IHostEnvironment` to consult. Its user-secrets provider is registered against the entry assembly with `optional: true`, which is load-bearing rather than decorative: this project declares no `UserSecretsId`, and every `AddUserSecrets` overload given `optional: false` throws `InvalidOperationException` when that attribute is absent. The practical consequence is stated plainly rather than implied — until the project declares a `UserSecretsId`, that provider contributes no configuration, so the console application's effective chain today is JSON file then environment variables. The two orderings differ **only** in whether a user secret or an ambient environment variable wins in Development when both define the same key; outside Development no user-secrets provider is added anywhere, so every host is exactly JSON file then environment variables |
+| Configuration provider chain | **The tracked JSON file is always first**, so a blanked value can never override a supplied secret — that precedence is the control, and it holds at all four builder sites. The shared fallback path used by the Crm, Mail, MicrosoftCDM, Next and Sdk hosts is **JSON file → environment variables → user secrets (Development only)** (`WebVella.Erp.Web/ErpMvcExtensions.cs`, in `AddErp`, reached only when `ErpSettings.IsInitialized` is still false). `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` (each in its own `Startup.ConfigureServices`) initialise `ErpSettings` themselves and place **environment variables last**, so the fallback never runs for them. `WebVella.Erp.ConsoleApp/Program.cs` now follows the same shape as the shared fallback — **JSON file → environment variables → user secrets (Development only)** — with the environment resolved from `DOTNET_ENVIRONMENT`, falling back to `ASPNETCORE_ENVIRONMENT`, because a console application has no `IHostEnvironment` to consult. Its user-secrets provider is registered against the entry assembly with `optional: true`, which is load-bearing rather than decorative: this project declares no `UserSecretsId`, and every `AddUserSecrets` overload given `optional: false` throws `InvalidOperationException` when that attribute is absent. The practical consequence is stated plainly rather than implied — until the project declares a `UserSecretsId`, that provider contributes no configuration, so the console application's effective chain today is JSON file then environment variables. The two orderings differ **only** in whether a user secret or an ambient environment variable wins in Development when both define the same key; outside Development no user-secrets provider is added anywhere, so every host is exactly JSON file then environment variables |
 | Missing-secret behaviour | Fail fast. `WebVella.Erp/ErpSettings.cs` aborts startup with an actionable message naming each missing or weak setting; `WebVella.Erp/Utilities/CryptoUtility.cs` throws rather than falling back, and the compiled-in default key is gone |
 | Known published defaults | Rejected by SHA-256 digest comparison, so the repository's own example encryption key and token signing key cannot be used even if supplied deliberately |
 | Response security headers | All seven emitted by `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`, registered once through `AddErp` and ordered in **all seven** hosts ahead of `UseResponseCompression` and both `UseStaticFiles` calls |
-| Content-Security-Policy | Emitted in **report-only** mode with a real collection endpoint at `/csp-violation-report` (`RISK-022`) |
+| Content-Security-Policy | Emitted in **report-only** mode carrying the mandated value **verbatim** — `default-src 'self'; script-src 'self'; style-src 'self'` and nothing else. There is **no `report-uri` directive and no collection endpoint**; both were removed, because appending `report-uri` altered the mandated header value and the collector's early return could answer a request without attaching the other six headers. Reports are read from the browser console during the rollout instead (`RISK-022`) |
 | Transport security | `UseHsts()` then `UseHttpsRedirection()` in all seven hosts, guarded to non-Development and ordered **after** `UseCors` so cross-origin preflight is not broken by a redirect |
-| Cookies | `SecurePolicy` always outside Development, `SameSite=Lax`, explicit expiry window |
+| Cookies | `SecurePolicy=Always` **unconditionally, including in Development**, `SameSite=Lax`, a 24-hour sliding expiry window and a 7-day absolute horizon |
 | Rate limiting | `UseRateLimiter()` in all seven hosts, positioned after both static-file middlewares so assets are never throttled |
 | Login throttling | Per-account and per-address counters over a bounded private store, consulted at the login page and at the anonymous token route (`RISK-008`) |
-| Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors: the four severity codes `NU1901`–`NU1904` **and** the two data-availability codes `NU1900` and `NU1905`. .NET analyzers at `latest-recommended` are kept as warnings. Verified inherited by **19 of 19** projects — `Directory.Build.props` is directory-scoped, so inheritance does not depend on solution membership |
-| Toolchain pin | `global.json` pins `10.0.302` with `rollForward: disable`, because both gates are SDK-version dependent |
+| Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors: the four severity codes `NU1901`–`NU1904` **and** the two data-availability codes `NU1900` and `NU1905`. .NET analyzers run with `AnalysisLevel=latest-recommended` for the general categories and **`AnalysisLevelSecurity=latest-all` for the whole Security category**; their diagnostics are kept as warnings at the project level and enforced instead by the workflow's Gate 1 allow-list. Verified inherited by **19 of 19** projects — `Directory.Build.props` and the repository-root `.globalconfig` are directory-scoped, so inheritance does not depend on solution membership |
+| Toolchain pin | `global.json` pins `10.0.302` with `rollForward: latestPatch`, because both gates are selected by the SDK feature band |
 | Shipped secrets | **Scrubbed.** All eight `Config.json` files carry empty secret values and `DevelopmentMode: false`, `WebVella.Erp.Site/web.config` sets `Production`, and the seeded administrator password is no longer a literal (`RISK-021`, now closed). One demo credential remains in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs`, which is outside this change's file scope |
 | Mail transport | SMTP server certificates are **validated by default**. `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` bypasses validation only when `Settings:EmailSMTPAllowInvalidCertificates` is `true` — environment form `Settings__EmailSMTPAllowInvalidCertificates` — which exists for self-signed development servers and must never be set in production |
-| Still open | `AllowAnyOrigin()` remains at **one** host, `WebVella.Erp.Site.Project/Startup.cs:L69` (`RISK-013`, now half closed: `WebVella.Erp.Site` serves an explicit origin allow-list at `Startup.cs:L101-L107`); **one** SMTP certificate-validation bypass remains, at `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs:L791` (finding `H-11`, now partly closed — the four `SmtpService.cs` sites are covered by the row above). `RISK-014` is **closed**: both anonymous bearer-token error paths in `WebVella.Erp.Web/Controllers/WebApiController.cs` return a generic message outside Development and retain their server-side log record |
+| Closed since the inventory was taken | `RISK-013` is **closed**: no host applies `AllowAnyOrigin()` any longer. Both `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` serve explicit origin allow-lists, each reusing the origins recorded in its own previously commented-out policy, and the call survives only inside explanatory comments — `git grep -n 'AllowAnyOrigin' -- '*.cs'` returns comment lines and nothing applied. Finding `H-11` is **closed at all five sites**, not four: every `ServerCertificateValidationCallback` in the mail plugin — the four in `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` and the one in `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` — now yields the `AllowInvalidRemoteCertificates` setting rather than a literal `true`, and that setting parses to `false` unless an operator sets `Settings__EmailSMTPAllowInvalidCertificates` to `true`. `RISK-014` is **closed**: both anonymous bearer-token error paths in `WebVella.Erp.Web/Controllers/WebApiController.cs` return a generic message outside Development and retain their server-side log record |
 
 ## How this guide is organised
 
@@ -90,6 +90,7 @@ into a console, a log file or a crash report (CWE-532).
 | `Settings:Jwt:Key` | `Settings__Jwt__Key` | **Only when a `Settings:Jwt` section exists** | HMAC signing key for bearer tokens. |
 | `Settings:Jwt:Issuer` | `Settings__Jwt__Issuer` | No — defaults to `webvella-erp` | Expected token issuer. |
 | `Settings:Jwt:Audience` | `Settings__Jwt__Audience` | No — defaults to `webvella-erp` | Expected token audience. |
+| `Settings:InitialAdministratorPassword` | `Settings__InitialAdministratorPassword` | No — **first provisioning only** | The first administrator's password on a brand-new database. Absent, provisioning generates a 20-character value with a CSPRNG and prints it once. Present, it must satisfy the password policy or **provisioning aborts** — see [§ The initial administrator password must satisfy the password policy](#the-initial-administrator-password-must-satisfy-the-password-policy). |
 
 #### Why the token key is conditional
 
@@ -108,15 +109,97 @@ configuration files, exactly two declare one:
 Where the section *is* present the key is mandatory, because the hard-coded fallback that used to
 cover it was removed (finding H-04).
 
+#### The initial administrator password must satisfy the password policy
+
+Review finding `F25` (CWE-521, OWASP A07:2021).
+`Settings:InitialAdministratorPassword` is the one security setting whose *value* is validated for
+content rather than merely for presence, and it is the one setting that can abort provisioning
+rather than startup. The rule is the platform password policy, enforced by the single validator
+`PasswordUtil.ValidatePasswordPolicy`:
+
+| Rule | Value |
+| --- | --- |
+| Minimum length | 12 characters |
+| Maximum length | 128 characters |
+| Required character classes | an upper case letter, a lower case letter, a number, and a symbol — all four |
+| Leading or trailing whitespace | rejected, because it is almost always an accident of how the value was supplied |
+
+If the value you supply fails any of these, `InitializeSystemEntities` throws before it creates the
+administrator record. The message names the setting and states the rule; it **never echoes the value,
+its length, or any prefix of it**, for the same reason the missing-setting message never does
+(CWE-532). Verified both directions against a throwaway database: a compliant value provisions two
+seeded accounts carrying 84-character modern hashes, and a non-compliant value leaves **no
+administrator credential behind at all** — it fails closed rather than falling back to a generated
+password, because silently substituting a different password than the operator asked for is worse
+than refusing.
+
+**Why this is a refusal and not a warning.** The setting exists precisely so an operator can choose
+the first credential of a new deployment. That credential is the most privileged one the system will
+ever have, and it is chosen exactly once, unattended, at the moment when nobody is watching a log.
+A warning would be read by nobody; the abort is read by everybody.
+
+**If provisioning aborted on you.** Correct the value and start the host again. Nothing was written,
+so there is no partial state to clean up — the refusal precedes schema creation entirely, which is
+why a verification query for the administrator row at that point reports the table itself does not
+exist. That is a stronger result than *no row exists*, not a missing answer.
+
+**This is not the only place the policy applies.** The same validator guards both
+`SecurityManager.SaveUser` branches and the generic record-write path, so a
+`POST api/v3/{culture}/record/user` carrying a one-character password is refused with a field-level
+error keyed `password` and creates no row. Two exemptions are deliberate and load-bearing — see
+`RISK-047` in the [risk register](risk-register.md).
+
 #### Choosing key values
 
 | Key | Requirement |
 | --- | --- |
 | `Settings:Jwt:Key` | The signing algorithm is HMAC-SHA-256, so supply **at least 32 bytes** of key material — 256 bits. Generate it from a cryptographically secure random source, for example `openssl rand -base64 48`. Do not use a human-readable phrase, and do not repeat a short string to reach the length; the value that shipped in this repository did exactly that and is finding H-04. |
 | `Settings:EncryptionKey` | Generate from a CSPRNG. See §3 before changing this value on an **existing** installation — changing it can make previously encrypted data unreadable. |
-| `Settings:ConnectionString` | Use a least-privilege PostgreSQL role. The role needs DDL rights because schema provisioning is code-driven, but it does not need `SUPERUSER`. |
+| `Settings:ConnectionString` | The role needs DDL rights because schema provisioning is code-driven, and — on this platform as it currently stands — it also needs `SUPERUSER`. See *PostgreSQL role privileges* immediately below; an earlier revision of this guide stated that `SUPERUSER` was not required, which is incorrect and would leave an operator with a role that cannot start the application. |
 
 Rotate all three if this repository's shipped values were ever deployed.
+
+#### PostgreSQL role privileges
+
+The role in `Settings:ConnectionString` must be a **`SUPERUSER`** on the current codebase. This is a correction: this guide previously said `SUPERUSER` was
+unnecessary, and an operator who provisioned a least-privilege role on the strength of that sentence would find the application unable to start at all.
+
+The requirement comes from one specific pair of statements, not from the schema work in general. `WebVella.Erp/Database/DbRepository.cs:17-20` runs:
+
+```sql
+DROP CAST IF EXISTS(varchar AS uuid);
+DROP CAST IF EXISTS(text AS uuid);
+CREATE CAST(text AS uuid) WITH INOUT AS IMPLICIT;
+CREATE CAST(varchar AS uuid) WITH INOUT AS IMPLICIT;
+```
+
+PostgreSQL requires ownership of the cast's source or target type, and `varchar`, `text` and `uuid` are all built-in types owned by the bootstrap superuser. A role
+that owns its own database and can freely issue DDL therefore still cannot execute these four statements. Measured against PostgreSQL 16 with a role holding
+`LOGIN` only and owning the database:
+
+| Statement | Source | Result for a non-`SUPERUSER` owner |
+| --- | --- | --- |
+| `CREATE TABLE …` | ordinary schema provisioning | **succeeds** — ordinary DDL genuinely does not need elevation |
+| `CREATE EXTENSION "uuid-ossp"` | `DbRepository.cs:30` | **succeeds** — `uuid-ossp` has been a *trusted* extension since PostgreSQL 13, so this is **not** a reason to elevate |
+| `CREATE EXTENSION "postgis"` | `DbRepository.cs:37` | fails with `permission denied to create extension "postgis" / Must be superuser` — but the call is wrapped in `try`/`catch` at `DbRepository.cs:34-42` and the failure is deliberately tolerated, so it is **not** a blocker either |
+| `CREATE CAST(varchar AS uuid) …` | `DbRepository.cs:20` | **fails** with `must be owner of type character varying or type uuid` — and it is **not** wrapped in `try`/`catch`. **This is the blocker.** |
+| `DROP CAST IF EXISTS(varchar AS uuid)` | `DbRepository.cs:17` | no-op when the cast is absent, but **fails** with the same ownership error once the cast exists |
+
+Two consequences follow, and both matter operationally:
+
+* **The privilege is needed on every startup, not only at first install.** The cast block is invoked from `WebVella.Erp/ERPService.cs:77`
+  (`DbRepository.CreatePostgresqlCasts()`, immediately after `CreatePostgresqlExtensions()` at `:75`), which sits *before*
+  the `if (currentVersion < 1)` provisioning gate at `ERPService.cs:106`. It is therefore unconditional, and `InitializeSystemEntities` runs from the web host's
+  own startup path (`WebVella.Erp.Web/ErpMvcExtensions.cs:503`). Every process start re-executes the drop-and-recreate.
+* **"Provision once as `SUPERUSER`, then run as a least-privilege role" does not work.** It was tested rather than assumed: with the two casts pre-created by a
+  superuser, the least-privilege role's very next `DROP CAST IF EXISTS` fails with `must be owner of type character varying or type uuid`. Pre-creating the casts
+  makes the situation worse, not better, because the drop then has something to drop.
+
+So there is currently no supported least-privilege configuration. Grant `SUPERUSER`, and compensate at the boundaries that are actually available: give the
+platform its **own dedicated role and database**, never a role shared with other applications; restrict `pg_hba.conf` so that role can only authenticate from the
+application host; and keep the connection string out of the repository exactly as §2 requires. The narrower fix — making the cast block version-gated so it runs
+once and a steady-state role can be unprivileged — is a change to provisioning behaviour rather than a security fix, so it is out of scope for this remediation
+under the minimal-change clause and is recorded as a recommendation in the [risk register](risk-register.md).
 
 ---
 
@@ -130,44 +213,111 @@ Configuration is read from a **JSON file only**. Both configuration builders in 
 new ConfigurationBuilder().SetBasePath(...).AddJsonFile(configPath)
 ```
 
-* `WebVella.Erp.Web/ErpMvcExtensions.cs` — inside `UseErp`, base path `env.ContentRootPath`, file
-  `config.json`, used to build the configuration passed to `ErpSettings.Initialize`.
-* `WebVella.Erp.Site*/Startup.cs` — base path `Directory.GetCurrentDirectory()`, used for the host's
-  own `Configuration` property (which is what supplies the JWT parameters to the authentication
-  handler).
+* `WebVella.Erp.Web/ErpMvcExtensions.cs:L425-L447` — inside `UseErp` (declared at `:L352`), file **`Config.json`**, base
+  path **`AppContext.BaseDirectory`**, then `AddEnvironmentVariables()`, then user secrets in
+  Development. This is the path the Crm, Mail, MicrosoftCDM, Next and Sdk hosts rely on.
+* `WebVella.Erp.Site/Startup.cs:L49-L105` and `WebVella.Erp.Site.Project/Startup.cs:L41-L80` — the
+  same file name and the same base path, used for each host's own `Configuration` property (which is
+  what supplies the JWT parameters to the authentication handler).
+* `WebVella.Erp.ConsoleApp/Program.cs:L74-L105` — the same file name and base path, resolved with an
+  explicit `Path.Combine(AppContext.BaseDirectory, "Config.json")`.
 
-Two consequences follow, and both matter operationally:
+Three consequences follow, and all three matter operationally:
 
 1. **The file source is not optional.** The configuration files cannot be deleted — startup fails
    outright without them. Scrub the values; keep the files.
-2. **Environment variables and user secrets are not yet consulted by these builders.** The startup
-   failure messages name the `Settings__*` environment-variable forms because that is the intended
-   supply channel, and the naming convention above is the one those variables will use — but the
-   provider chain has not yet been extended, so **today the values must be present in the JSON file.**
-
-> **Status — open gap.** Extending the chain with `AddEnvironmentVariables()` (and user secrets in
-> development) at the two sites named above is the remaining part of the secret-management
-> remediation. It is recorded here rather than implied, so that an operator following this guide is
-> not misled into believing an environment variable alone is sufficient at this commit. Until it
-> lands, treat the JSON file as the only supply channel and protect it accordingly: restrict its
-> filesystem permissions to the service account, and keep it out of source control in your
-> deployment pipeline.
+2. **Environment variables are consulted at every one of the four sites**, and user secrets are added
+   in Development. The startup failure messages name the `Settings__*` forms because that is the
+   supply channel that actually works. The tracked JSON file is always registered *first*, so a
+   blanked value can never override a supplied secret — that precedence is the control.
+3. **The base path is the application base directory, not the working directory.** That distinction
+   is a security property rather than a convenience: `Directory.GetCurrentDirectory()` — which is
+   also what `WebHost.CreateDefaultBuilder` defaults `ContentRootPath` to — resolves against whatever
+   directory the process happened to be launched from, so a service unit, a scheduled task or a shell
+   with the wrong `WorkingDirectory` would let the launcher decide which `Config.json` supplies the
+   connection string, the data-at-rest encryption key and the token signing key, or find none at all.
 
 #### The file the runtime actually reads
 
-`UseErp` looks for **`config.json`** — lower-case — relative to the content root. The repository
-ships **`Config.json`** with a capital `C`, which is what the build copies to the output directory.
-On a case-sensitive filesystem such as Linux these are different names, so after publishing you must
-provide the lower-case name in the output directory:
+`Config.json` — with a capital `C`, exactly as the repository tracks it and exactly as both the build
+and the publish output copy it. **No renaming or copying step is required, on any platform.**
+
+An earlier revision of the platform asked for the lower-case spelling `config.json` while shipping
+`Config.json`, and this guide documented a `cp Config.json config.json` workaround for
+case-sensitive filesystems. Both the defect and the workaround are gone. The mismatch was a real
+vulnerability rather than an inconvenience (CWE-178, improper handling of case sensitivity; CWE-706,
+use of an incorrectly resolved name): on Linux and in containers the intended file simply did not
+exist under the requested name, so startup either failed or — worse, once a `config.json` was
+created by hand next to the working directory — silently read a file that was not the audited one.
+
+If you followed the old instruction and left a lower-case `config.json` in a deployment directory,
+**delete it.** It is no longer read, and leaving an unaudited copy of the configuration on disk is
+exactly the exposure the fix removed.
+
+This is not asserted from the source alone. The continuous gate proves it on every run: the
+*Smoke-test Linux startup of the published artifacts* step in
+`.github/workflows/security-scan.yml` publishes `WebVella.Erp.Site`, `WebVella.Erp.Site.Sdk`,
+`WebVella.Erp.Site.Project` and `WebVella.Erp.ConsoleApp`, deletes any lower-case `config.json` from
+the output, launches each **from an unrelated working directory**, and asserts that each one resolved
+its own `Config.json` and reached the fail-fast secret validation rather than a
+`FileNotFoundException`. The evidence is published as `startup-smoke.txt`.
 
 ```bash
-cd WebVella.Erp.Site/bin/Debug/net10.0
-cp Config.json config.json
+# Nothing to do. Publish and run:
+cd WebVella.Erp.Site
+dotnet publish -c Release -o /srv/webvella/site
+cd /srv/webvella/site && dotnet WebVella.Erp.Site.dll
 ```
 
-Do **not** solve this by adding a lower-case `config.json` next to `Config.json` in the *source*
-directory. MSBuild item identity is case-insensitive, so the two names collide and the build fails
-with `NETSDK1022`. Copy it in the output directory, or in your deployment step.
+One detail is worth recording, because it is why this had to be fixed in code rather than by shipping
+a second file: adding a lower-case `config.json` alongside `Config.json` in the *source* directory is
+not possible. MSBuild item identity is case-insensitive, so the two names collide and the build fails
+outright with `NETSDK1022`. The only remaining alternatives were a post-publish copy step in every
+deployment pipeline — unenforceable, and silently absent on the one host that forgets it — or making
+the code ask for the name that actually exists. The code was changed.
+
+> **Status — closed, and this section is superseded.** Review finding `F30`. **The copy above is no
+> longer required and should be removed from deployment steps.** All four builder sites now ask for
+> **`Config.json`** first and accept a lower-case `config.json` only when that is the only name
+> present: `WebVella.Erp.Web/ErpMvcExtensions.cs` (the shared path for all seven web hosts),
+> `WebVella.Erp.Site/Startup.cs`, `WebVella.Erp.Site.Project/Startup.cs` and
+> `WebVella.Erp.ConsoleApp/Program.cs`. Provider order is unchanged — the JSON source is still first
+> and still non-optional.
+>
+> The console host had a **second**, independent defect on the same line, which is why it could not
+> start on Linux at all rather than merely needing the copy: its `ToApplicationPath` helper detected
+> the application root with a Windows-only drive-letter regular expression, so on any other platform
+> the root resolved to the empty string and the file name became relative to the **process working
+> directory**. It now resolves against `AppContext.BaseDirectory`, which is defined on every platform,
+> is independent of the working directory, and is also correct for a single-file publish — unlike the
+> assembly-location probe it replaces. The fallback's own residual is `RISK-049`: a directory that has
+> lost `Config.json` but kept a stale `config.json` will start from the stale copy, so keep one file,
+> not two.
+
+#### The configuration files keep their comments, and two blank values that are deliberate
+
+All eight `Config.json` files and `global.json` carry `//` comments, and this remediation deliberately
+kept them. RFC 8259 admits no comments, but nothing in this repository reads these files as strict
+JSON: the runtime's own reader accepts them, `dotnet` accepts them in `global.json`, and no gate in
+`.github/workflows/security-scan.yml` parses either file — the secret sweep matches key-name
+signatures line by line and never invokes a JSON parser. The comments are, in several files, the only
+in-place explanation of what a setting does, so stripping them would have deleted rationale for no
+verifiable gain. If you introduce a strict consumer later, strip the comments in that consumer's own
+copy rather than in the tracked file.
+
+Two of those notes matter enough to restate here, because in each case a **blank** value is a
+deliberate setting rather than an omission:
+
+- **`CacheKey`** — leaving it empty is meaningful, not merely unset. The platform then derives the
+  cache key from the current date, formatted `yyyyMMdd`, so it rolls over daily.
+- **`CloudBlobStorageConnectionString`** (Sdk host only) — the accepted connection-string forms are
+  documented by the storage library at
+  <https://github.com/aloneguid/storage/blob/develop/doc/blobs.md>. Leaving it blank does **not** leave
+  storage unconfigured: the platform substitutes the literal `disk://path=c:\erp-files`. That default is
+  a Windows path, so a non-Windows deployment that switches `Settings:EnableCloudBlobStorage` on must
+  set this explicitly. Neither setting is one the startup validator requires — it fails startup only
+  for a missing `Settings:ConnectionString`, a missing `Settings:EncryptionKey`, or an encryption key
+  that is weak or is the example value published in this repository.
 
 ---
 
@@ -228,6 +378,7 @@ deployment. Setting one and not the other leaves diagnostics exposed.
 | --- | --- | --- | --- |
 | `Settings:DevelopmentMode` | All eight `Config.json` files | `"true"` | `"false"` |
 | `ASPNETCORE_ENVIRONMENT` | `WebVella.Erp.Site/web.config` sets it to `Development` for IIS-hosted deployments; otherwise the process environment | `Development` | `Production` |
+| `SecurityHeaders__ContentSecurityPolicyReportOnly` | `SecurityHeaders:ContentSecurityPolicyReportOnly` | No | `true` when unset or blank. Set `false` only after the report-only inventory is clean — enforcing the mandated `script-src 'self'` while inline script remains would break the interface (`RISK-022`). A **present but unparseable** value aborts startup rather than defaulting, so a typo cannot quietly drop the platform out of the staged rollout. This is the **only** member of `SecurityHeadersOptions` bound from configuration: the policy text is a `public const`, so no configuration source can weaken, blank or replace it |
 
 `ASPNETCORE_ENVIRONMENT` is what gates the developer exception page. Leaving it at `Development`
 serves full stack traces, source snippets and environment detail to anyone who triggers an error
@@ -258,9 +409,40 @@ assume a production environment marker suppresses all internal detail.
 `X-XSS-Protection: 0` is correct and intentional. The legacy browser XSS auditor it disables was
 itself exploitable; modern guidance is to switch it off and rely on the content policy.
 
-> **Status.** The middleware and its options type exist. It is **not yet registered in any host
-> pipeline** at this commit, so the headers are not being emitted yet. Registration and — critically
-> — *ordering* are the remaining step; see below.
+> **Status: live in all seven hosts.** An earlier revision of this document said the middleware
+> existed but was "not yet registered in any host pipeline". That is no longer true and the statement
+> is retracted here. `UseSecurityHeaders()` is registered in all seven host pipelines, ordered ahead
+> of response compression and ahead of both static-file middlewares. All seven headers were verified
+> **on the wire** against a published host over HTTPS — on a dynamic response (`/login`) and on two
+> static assets — not merely by reading the source.
+
+##### Operator switches for the header block
+
+One key binds from configuration, so enforcement is reachable without a code change:
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `SecurityHeaders__ContentSecurityPolicyReportOnly` | `true` | `true` emits `Content-Security-Policy-Report-Only`; `false` emits the enforcing `Content-Security-Policy`. **The policy value is byte-identical in both modes — only the header name changes.** |
+
+An absent value leaves report-only mode in force; a present but unparseable one aborts startup rather
+than silently defaulting, so a typo cannot quietly drop the platform out of the staged rollout it
+documents.
+
+**There is deliberately no violation-report collector endpoint, and no `report-uri` directive.** An
+intermediate revision of this platform mounted one at `/csp-violation-report`; it was removed, for two
+reasons that both matter operationally. First, it was an anonymous, unauthenticated `POST` endpoint
+reachable on all seven hosts ahead of routing and authentication, and it terminated the request itself —
+so the one response class the header middleware produced was served with none of the seven headers on
+it, defeating the all-responses guarantee the middleware exists to provide. Second, appending
+`; report-uri …` made the emitted policy differ from the mandated value, and the requirement is that the
+value is preserved exactly while only the *delivery mode* is staged. Removing the collector makes both
+defects structurally impossible: one path through the middleware, one policy string.
+
+The practical consequence for the rollout below is that violations surface in the **browser's own
+developer console**, not in a server-side log. Collect them there. If you would rather aggregate them,
+point the policy at an external collector you operate — accepting, if you do, that the emitted value
+then differs from the mandated string, which is a deviation to record in the
+[risk register](risk-register.md) rather than an invisible default.
 
 #### Ordering matters
 
@@ -271,8 +453,24 @@ responses are served without them. `Strict-Transport-Security` must come before 
 #### The content policy ships in report-only mode
 
 `SecurityHeadersOptions.ContentSecurityPolicyReportOnly` defaults to `true`, which emits
-`Content-Security-Policy-Report-Only` instead of `Content-Security-Policy`. **Only the header name
-changes; the policy value is identical in both modes.**
+`Content-Security-Policy-Report-Only` instead of `Content-Security-Policy`. **The *policy* is
+identical in both modes — the directives are the same, and report-only is not a weaker policy.**
+
+One precision, because an earlier revision of this paragraph described the two modes as backed by two
+separate constants, with the report-only value carrying an extra `report-uri` directive. That split was
+removed together with the collector, and the superseded description is corrected here rather than
+quietly dropped. Both header names now carry the single `ContentSecurityPolicy` constant — which is
+`DefaultContentSecurityPolicy`, the mandated directives verbatim with nothing appended — so the value is
+identical in both modes and only the header *name* is switchable. It is a compile-time constant, so no
+host, plugin or configuration source can weaken it.
+
+**The switch is operator-controlled, not compile-time.** Set `SecurityHeaders:ContentSecurityPolicyReportOnly`
+to `false` — environment form `SecurityHeaders__ContentSecurityPolicyReportOnly=false` — and the same value is
+emitted as the enforcing `Content-Security-Policy`. Leave it absent, or blank, for report-only. Note the
+polarity: the bound setting is the REPORT-ONLY flag, so `false` is what enforces. The value is read with
+`bool.TryParse`, so `true` and `false` in any casing are accepted and nothing else is — `1` and `0` are
+not booleans to that parser — and a present-but-unparseable value aborts startup rather than quietly
+selecting either posture.
 
 This is deliberate, and it is the one place where the mandated header set cannot be *enforced* on
 first deployment without breaking the interface. The platform contains components that emit inline
@@ -283,18 +481,27 @@ screens stop working.
 Roll it out in this order:
 
 1. **Deploy report-only** (the default). Nothing breaks; violations are reported, not blocked.
-2. **Collect violation reports** and exercise every screen that renders authored markup or generated
+2. **Collect violations from the browser developer console** — there is no server-side
+   collector, see above — and exercise every screen that renders authored markup or generated
    inline script — the HTML-block component, the sitemap component, the page-body manager.
 3. **Resolve each violation** by moving inline script into a served file, or by adding a nonce or hash
    for the emissions that must stay inline.
-4. **Flip `ContentSecurityPolicyReportOnly` to `false`** once the reports are clean, and re-test the
-   same screens.
+4. **Set `SecurityHeaders:ContentSecurityPolicyReportOnly=false`** once the reports are clean — the
+   bound setting is the report-only flag, so `false` is what enforces — and re-test the same screens. No rebuild is involved,
+   so the step is reversible by removing the setting and restarting.
 
-Do not skip step 2. The four raw-output channels are the concrete reason this staging exists. They
-are not defects to be encoded away — encoding them would disable the features they implement — so the
-control that applies to them is a compensating one: authoring markup or script requires a privileged
-role. That acceptance belongs in the [risk register](risk-register.md), which is where this
-engagement records accepted risk as each vulnerability class lands.
+Do not skip step 2. The four remaining raw-output channels are the concrete reason this staging
+exists. They are not defects to be encoded away — encoding them would disable the features they
+implement — so the control that applies to them is a compensating one: authoring markup or script
+requires a privileged role. That acceptance belongs in the [risk register](risk-register.md), which
+is where this engagement records accepted risk as each vulnerability class lands.
+
+Note that these four are now the **only** raw channels left, which narrows what this staging is
+protecting. The wider set of stored raw-output sinks — the shared navigation and menu views and the
+Project plugin widget views — were closed at their builders rather than accepted, so the report-only
+default is no longer standing between ordinary record data and a script sink. It stands only between
+**author-supplied** markup and script, written by a privileged role, and an enforced policy. See the
+*Stored output encoding* row in the posture table above.
 
 ---
 
@@ -310,18 +517,32 @@ engagement records accepted risk as each vulnerability class lands.
 **Sequencing caveat — this one bites.** Introducing HTTPS redirection *before* the cross-origin
 policy is tightened breaks CORS preflight requests, which fail with an invalid-redirect error rather
 than an obvious redirect. Change the origin allow-list and enable redirection **together**, and
-verify a preflight from an allowed origin afterwards.
+verify a preflight from an allowed origin afterwards. That is how both changes landed here, and the
+verification was executed rather than assumed: with redirection active, an `OPTIONS` preflight from an
+allowed origin over **plain HTTP** answers `204` carrying the full `Access-Control-Allow-*` set and
+**no** `Location` header, because `UseCors` is ordered ahead of `UseHttpsRedirection` in every host and
+short-circuits the preflight before a redirect can be written. A non-preflight plain-HTTP `GET` still
+answers `307` to the HTTPS origin, so transport enforcement is intact and only preflight is exempt.
 
 #### Cross-origin policy
 
-Two hosts ship a permissive any-origin policy — `WebVella.Erp.Site` and `WebVella.Erp.Site.Project`
-(finding H-14). Replace it with an explicit allow-list of the origins your deployment actually
-serves. Each of those two files contains a restrictive named policy in commented-out form directly
-above the permissive one; use its shape.
+All seven hosts now serve an explicit origin allow-list, and no `AllowAnyOrigin()` call remains
+anywhere in the tree (finding H-14, `RISK-013`, closed). The two that previously permitted any origin
+were `WebVella.Erp.Site` (`Startup.cs:L132-L138`) and `WebVella.Erp.Site.Project`
+(`Startup.cs:L109-L115`). Both keep `AddDefaultPolicy` rather than converting to a named policy, so the
+`app.UseCors()` call already present in each `Configure` method continues to apply the policy and the
+pipeline needed no edit at all. `AllowCredentials()` is deliberately absent from both: the framework
+refuses it alongside a wildcard origin, and these two hosts authenticate cross-origin callers with a
+bearer token rather than with a cookie.
 
-The other five hosts already use a restrictive named policy and need no change — though note that
-their allowed origins are hard-coded to localhost values, which you will want to replace with your
-own for a real deployment.
+**The allowed origins are hard-coded localhost values in all seven hosts — they are development
+defaults, not deployment configuration.** Replace them with the origins your deployment actually
+serves before going live; an allow-list naming the wrong origins is not protection, it is a
+mis-statement of it. Verify afterwards that an allowed origin receives `Access-Control-Allow-Origin`
+together with `Vary: Origin`, and that an origin outside the list receives **no** CORS headers at all.
+Do not be misled by the status code while testing: a disallowed origin still receives the normal
+response *status and body*, because CORS is enforced by the browser on the basis of those headers, not
+by the server refusing to answer. The absence of the header is the control.
 
 ---
 
@@ -330,17 +551,26 @@ own for a real deployment.
 `global.json` pins the SDK:
 
 ```json
-"sdk": { "version": "10.0.302", "rollForward": "disable" }
+"sdk": { "version": "10.0.302", "rollForward": "latestPatch" }
 ```
 
 This is a security control, not housekeeping (finding L-07). Both halves of the automated gate are
 SDK-version dependent: the dependency-audit defaults and the analyzer rule set. An unpinned toolchain
 means the same source can produce a different gate result on a different machine, which makes every
-"scan is clean" claim unverifiable. `rollForward: disable` is what the tree now carries, and it is the stricter of the two candidates: it
-freezes the toolchain to the exact version above and fails predictably, with an actionable message
-naming the required version, when it is not installed. The weaker `latestPatch` accepts security
-patches to the SDK
-itself while holding the feature band.
+"scan is clean" claim unverifiable.
+
+`rollForward: latestPatch` is what the tree carries, and it is the correct policy rather than merely
+the more permissive one. The audit-mode default and the analyzer rule set are selected by the SDK
+**feature band**, and `latestPatch` holds the pin on the `10.0.3xx` band — so it delivers exactly the
+reproducibility the finding asks for, while still admitting a security patch of the SDK itself. Pinning
+a toolchain must not become a reason to run an unpatched toolchain.
+
+`disable` was tried and rejected. It freezes the toolchain to the exact version above, which sounds
+stricter but fails on availability: the moment `10.0.302` is superseded, the repository becomes
+unbuildable for every developer and for CI simultaneously — breaking the *all existing functionality
+remains operational* preservation requirement — in exchange for a guarantee the feature band already
+provides. If no SDK on the `10.0.3xx` band is installed at all, `latestPatch` still fails predictably
+with an actionable message naming the required version.
 
 `Directory.Build.props` at the repository root carries the gate and is inherited by every project:
 
@@ -351,7 +581,8 @@ itself while holding the feature band.
 | `NuGetAuditLevel` | `low` | Advisories of every severity are reported, not just High and Critical. |
 | `WarningsAsErrors` | appends `NU1900;NU1901;NU1902;NU1903;NU1904;NU1905` | A package advisory **fails the build** — and so does an audit that could not be performed. |
 | `EnableNETAnalyzers` | `true` | The .NET analyzers run on every compilation. |
-| `AnalysisLevel` | `latest-recommended` | The recommended rule set, including the security rules. |
+| `AnalysisLevel` | `latest-recommended` | The recommended rule set for the non-security categories. |
+| `AnalysisLevelSecurity` | `latest-all` | **The whole Security category**, which `latest-recommended` alone does not deliver — see the coverage table below. The two levels are deliberately different: the security rules are turned all the way up while the style and design backlog stays at the recommended set. |
 
 It must be an MSBuild properties file rather than an editor-configuration file: the four
 `.editorconfig` files in this repository each declare `root = true`, so a repository-root editor
@@ -380,9 +611,82 @@ that scoping.
 > [risk register](risk-register.md) rather than done here, because it is outside this change's
 > authorised file set.
 
-Analyzer diagnostics remain **warnings**. Only the six dependency codes are errors. Promoting the
-analyzer backlog on roughly 700 pre-existing files would demand a mass refactor, which is out of
-scope; the dependency codes are errors because they are actionable by a version change.
+**An earlier revision of this section said "analyzer diagnostics remain warnings; only the six
+dependency codes are errors". That is no longer true and the claim is withdrawn.** The repository-root
+`.globalconfig` promotes **ten security rules to errors**. An earlier revision attributed this to a
+`security-analyzers.ruleset` file promoting 95 rules; no such file exists — severities are set
+rule-by-rule in `.globalconfig`, which the SDK auto-discovers, and the breadth of the category comes
+from `AnalysisLevelSecurity=latest-all` instead. The reasoning that used to justify keeping analyzer
+diagnostics as warnings — that promoting an analyzer backlog across roughly 700 pre-existing files
+would demand a mass refactor — still holds, and it is exactly why the choice of which rules to promote
+was **measured** rather than assumed: every one of the ten emits zero diagnostics on the current tree,
+so promoting it changes nothing about existing code and can only fail on code written afterwards. The
+five rules that do have a backlog (`CA2100`, `CA2326`, `CA2328`, `CA5351`, `CA5362`) are the five
+deliberately held at warning against an enumerated baseline.
+
+For an operator the practical consequence is short: **a build that emits an analyzer error is now a
+gate failure, not noise.** It names a security rule, it is about code changed recently, and demoting
+the rule is not the remedy — `.globalconfig` requires a recorded risk acceptance before any rule moves.
+
+#### CI secret sweep — detection envelope
+
+`.github/workflows/security-scan.yml` substitutes a plain-shell signature sweep for the external
+secrets scanner named in the brief (gitleaks / truffleHog / detect-secrets). Because it is a
+substitute, its blind spots matter as much as its coverage, so the envelope is recorded here rather
+than narrated in the workflow file.
+
+What it asserts: every secret-bearing key in a tracked `Config.json` or `appsettings*.json` is empty;
+`WebVella.Erp/Utilities/CryptoUtility.cs` carries no long embedded literal (finding C-04); and
+`WebVella.Erp/ERPService.cs` assigns no literal seed password (finding C-01). It reports a file path,
+the offending key *names* and a verdict only — never a matched value. Its own six positive fixtures
+are stored base64-encoded rather than in the clear, for one specific reason: written literally they
+would make the sweep match its OWN workflow file, and the only ways out of that would be to exclude
+that file by path — the allowance the patterns deliberately refuse — or to weaken a pattern. The four
+negative fixtures stay in the clear on purpose, because they are the exact benign shapes this
+repository really carries and their presence proves, in the workflow's own source, that they do not
+match.
+
+The shipped sweep matches through **five independent pattern layers**, and a file fails the gate if
+any one of them fires: `L1` (a quoted `key: "value"` or `key = "value"` assignment), `L1B` (the same
+key names unquoted, as in an env-file or shell export), `L2A` (provider-specific literal shapes — a
+PEM private-key header, an AWS access-key id, Slack, GitHub and Google API key prefixes), `L2B` (a
+credential-bearing `scheme://user:password@host` URI), and `L2C` (an ADO.NET-style
+`Server=...;Password=...` string, tolerating up to four intervening `key=value;` pairs). The layers
+carry no path exclusions at all, and binary files are skipped only by `grep -I`.
+
+Separately, **four bypasses** were found by fixture-testing an earlier revision of the sweep and are
+closed in the shipped version. These are a history of defects, not a second enumeration of the layers
+above:
+
+| Bypass | How it evaded detection | How it is closed |
+| --- | --- | --- |
+| Case | A case-sensitive matcher let `connectionString` pass, and a case-sensitive pathspec never inspected a lower-case `config.json` or any `appsettings.json`. | `grep -iE` plus `:(icase)` pathspecs. Both pathspecs carry a leading `*`, because a git pathspec is anchored at the repository root and would otherwise match only a top-level file. |
+| Prefix | The alternation anchored key names exactly, so `CloudBlobStorageConnectionString` — a key this repository really carries — passed while populated. | Every key-name alternative is now prefix-tolerant — the layers prepend `[A-Za-z_]*` to the whole alternation, and the separate `Config.json` emptiness pattern prepends `[A-Za-z]*` to each name — and `SecretKey`, `ApiKey`, `ClientSecret` and `Pwd` were added to both, with `Token` added to the `Config.json` pattern. |
+| Line orientation | `grep` matches within a line, so a key and its value split across two lines passed. | Newlines are collapsed before matching. |
+| Empty sweep | A pathspec matching nothing produced neither a PASS nor a FAIL, and the gate reported success having inspected nothing. | An explicit swept-count assertion fails closed, as does a missing target file for either source check. |
+
+Deliberately preserved behaviour: an **empty** value passes, because that is the required end state,
+while a **whitespace-only** value fails.
+
+Known limits, and why they are acceptable here. File **type** is not a limit: the five layers enumerate
+every tracked file through `git ls-files` piped into `grep`, with no path filter and no extension
+filter, and the two pathspecs bound only the separate `Config.json` emptiness assertion. Three things
+the sweep genuinely cannot see:
+
+- **A secret under a key name none of the layers recognise, in a shape none of them matches.** Bounded
+  by this platform supplying every secret from the environment, so there is no second tracked
+  configuration surface for one to hide in.
+- **A secret inside a file `grep -I` treats as binary.** Measured against this tree that is 48 of 1,574
+  tracked files — 32 PNGs, 12 fonts, a GIF, an icon, a JAR and one 29 MB native DLL, the last recorded
+  as finding L-04. None of them is a configuration surface, and none is text a reviewer would read.
+- **A secret in repository history rather than the checked-out tree.** History rewriting is out of
+  scope; the values already exposed are recorded as requiring rotation in [key rotation is
+  mandatory](#key-rotation-is-mandatory).
+
+The workflow also carries a **negative control**: it restores a throwaway project referencing the
+`AutoMapper` version whose High-severity advisory finding H-01 closed, and fails the job if that
+restore *succeeds*. This is what distinguishes a genuinely clean dependency scan from a gate that has
+silently stopped working — for example because the advisory database was unreachable.
 
 ---
 
@@ -393,14 +697,14 @@ scope; the dependency codes are errors because they are actionable by a version 
 dotnet restore WebVella.ERP3.sln
 dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive
 
-# That command covers the 17 projects that are solution members - NOT all 19.
-# WebVella.Erp.WebAssembly/Server and /Shared are deliberately not solution members, so they
-# must be audited explicitly. Both were retargeted from net7.0 to net10.0, and both inherit the
-# same gate through Directory.Build.props (which is directory-scoped, not solution-scoped):
-dotnet list WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj package --vulnerable --include-transitive
-dotnet list WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.csproj package --vulnerable --include-transitive
+# That single command now covers ALL 19 projects. An earlier revision of this block said it covered
+# only 17 and that the two WebAssembly projects had to be audited separately; both are now solution
+# members, so the two extra commands are no longer required. Confirm the coverage rather than
+# trusting it - this must print 19:
+dotnet sln list | grep -c '\.csproj$'
 
-# Static analysis gate: must be 0 errors. Analyzer diagnostics appear as warnings.
+# Static analysis gate: must be 0 errors. A security analyzer diagnostic is now an ERROR, not a
+# warning, for the 95 promoted rules - so this build failing is a gate failure to be fixed in code.
 dotnet build WebVella.ERP3.sln -c Debug
 ```
 
@@ -460,28 +764,39 @@ correctly is below.
 ### Status of the controls described here
 
 The remediation is committed as one atomic commit per vulnerability class, and this guide is written
-to the configuration model those commits establish. Not every class has landed yet, so the table
-below states plainly what is enforced in the current tree and what arrives with a later commit.
-Nothing here is asserted as already true when it is not.
+to the configuration model those commits establish. **All classes have now landed.** An earlier
+revision of this table marked five controls as *Pending* and two as implemented-but-unregistered; every
+one of those has since landed, and the table below is the corrected state. Each row was re-verified
+against the source rather than carried forward on trust.
 
 | Control | Status in the current tree |
 | --- | --- |
 | Required-secret validation at startup, with fail-fast and no compiled-in fallback | **In force.** `WebVella.Erp/ErpSettings.cs` validates the required values; `WebVella.Erp/Utilities/CryptoUtility.cs` throws rather than falling back |
 | Compiled-in default encryption key | **Removed.** The constant is gone from `CryptoUtility.cs`; a comment records what stood there and why |
 | Compiled-in default token signing key | **Removed.** `ErpSettings.cs` reads `Settings:Jwt:Key` with no literal default |
-| Credential hashing primitive (salted, work-factored, fixed-time verification) | **In force** in `WebVella.Erp/Utilities/PasswordUtil.cs`. Its call sites are switched by the credential-integrity class — see the [credential migration guide](credential-migration.md) |
-| Dependency-audit and analyzer build gate | **In force.** `Directory.Build.props` and the `global.json` toolchain pin |
-| Response security headers | Middleware **implemented** (`WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`); **registration and per-host ordering land with the transport class** |
-| Login lockout after five failed attempts | Service **implemented** (`WebVella.Erp.Web/Services/LoginThrottleService.cs`); **consultation at the login entry point lands with the brute-force class** |
-| Configuration provider chain extended beyond the JSON file | **Pending** — lands with the secret-management class, and it must land **before** any shipped value is blanked |
-| Shipped `Config.json` secret values blanked, `DevelopmentMode` disabled | **Pending** — the eight files still carry live values in the current tree |
-| `web.config` environment marker set to `Production` | **Pending** |
-| Origin allow-list, HSTS, HTTPS redirection, rate limiting | **Pending** — transport and rate-limiting classes |
-| SMTP certificate validation restored | **Pending** — the five bypass sites are still present |
+| Credential hashing primitive (salted, work-factored, fixed-time verification) | **In force**, and **all call sites are switched** — see the [credential migration guide](credential-migration.md) for the per-element table |
+| Dependency-audit and analyzer build gate | **In force.** `Directory.Build.props`, the repository-root `.globalconfig` rule severities, and the `global.json` toolchain pin |
+| Response security headers | **In force.** Registered in all seven host pipelines and ordered ahead of compression and static files. All seven headers verified on the wire against a published host |
+| Login lockout after five failed attempts | **In force.** Registered as a singleton in `AddErp` and consulted at **both** credential entry points — the interactive login page and the anonymous bearer-token route — via `TryBeginAttempt` / `RegisterFailedAttempt` / `RegisterSuccess` / `AbandonAttempt`, with the refresh route using the address-only `IsAddressRefusing` / `RegisterAddressFailure` pair because it presents no username |
+| Configuration provider chain extended beyond the JSON file | **In force.** Environment variables, then user secrets where a `UserSecretsId` is declared, in both the web extension and the console host — landed **before** any shipped value was blanked, which is the only safe order |
+| Shipped `Config.json` secret values blanked, `DevelopmentMode` disabled | **In force.** All eight files carry empty values for the connection string, encryption key, token signing key and mail password, and all eight set `"DevelopmentMode": "false"` explicitly |
+| `web.config` environment marker set to `Production` | **In force** |
+| Origin allow-list, HSTS, HTTPS redirection, rate limiting | **In force** in all seven hosts, with the origin allow-list applied at the two formerly permissive hosts and the ordering constraints verified against a running host |
+| Trusted forwarded-header processing | **In force**, deny-by-default, ordered first so redirection and rate limiting see the real client address |
+| SMTP certificate validation restored | **In force.** The five always-true callbacks now return a configuration flag that defaults to `false`, so an invalid certificate is refused unless an operator explicitly opts in |
 
-Because the shipped configuration files still carry live secrets in the current tree, the
-[rotation instruction below](#key-rotation-is-mandatory) is **more** urgent than it will be after the
-scrub, not less.
+> **`DevelopmentMode` is fail-safe in both directions, but audit your environment as well as your
+> files.** All eight files set `"DevelopmentMode": "false"` explicitly. The setting is read as
+> `IsNullOrWhiteSpace(value) ? false : bool.Parse(value)`, so deleting the key entirely would also
+> yield `false` — there is no configuration state in which a missing value silently enables
+> development behaviour. What *can* re-enable it is a stray `Settings__DevelopmentMode=true` in the
+> environment, because environment variables outrank the JSON provider by design. A clean set of
+> configuration files is therefore necessary but not sufficient.
+
+Because the shipped configuration files previously carried live secrets **in committed history**, the
+[rotation instruction below](#key-rotation-is-mandatory) remains mandatory. Blanking the working tree
+does not remove the values from earlier commits, so every secret that was ever committed must be
+treated as compromised and rotated.
 
 ### Required configuration values
 
@@ -496,6 +811,7 @@ in `Config.json` until then.
 | `Settings__Jwt__Key` | `Settings:Jwt:Key` | Yes for `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` | Only these two hosts ship a `Settings:Jwt` section, and the key is mandatory wherever that section exists |
 | `Settings__Jwt__Issuer` | `Settings:Jwt:Issuer` | No | Defaults to `webvella-erp` |
 | `Settings__Jwt__Audience` | `Settings:Jwt:Audience` | No | Defaults to `webvella-erp` |
+| `Settings__InitialAdministratorPassword` | `Settings:InitialAdministratorPassword` | Yes when provisioning a new database, and when upgrading an installation still carrying the published default administrator password | 12–128 characters, chosen by the operator. Nothing is generated and nothing is printed; provisioning and the version 4 migration abort naming only the key if it is absent |
 | `Settings__EmailSMTPPassword` | `Settings:EmailSMTPPassword` | Only when e-mail is enabled | Ships empty |
 | `Settings__DevelopmentMode` | `Settings:DevelopmentMode` | No | Must be `false` outside development |
 | `ASPNETCORE_ENVIRONMENT` | hosting environment | Recommended | Must **not** be `Development` in production |
@@ -522,13 +838,20 @@ existing deployments keep working and are not recommended for new configuration.
 > the enabling change it depended on: the provider chain consults environment variables, so a value can
 > be supplied without editing a tracked file. That ordering was mandatory rather than incidental —
 > scrubbing first would have left every host unstartable with no channel to supply a replacement.
-> `RISK-021` is closed for the tracked files; the residual, an unrelated demo credential in the Blazor
-> WebAssembly client and the values still present in repository history, is `RISK-026`.
+> `RISK-021` is closed for the tracked files. `RISK-026` recorded two residuals; the demo credential in
+> the Blazor WebAssembly client has since been **removed**, so what remains under that entry is only the
+> values still present in repository history.
 
-Configuration is built in `WebVella.Erp.Web/ErpMvcExtensions.cs` from a JSON file and, in the
-current tree, nothing else: a `ConfigurationBuilder` with a base path and `AddJsonFile("config.json")`,
-with **no** environment-variable provider, **no** user-secrets provider, and the file source **not**
-marked optional. `WebVella.Erp.ConsoleApp/Program.cs` and each host builder follow the same pattern.
+Configuration **used to** be built in `WebVella.Erp.Web/ErpMvcExtensions.cs` from a JSON file and
+nothing else: a `ConfigurationBuilder` with a base path and `AddJsonFile("config.json")`, with **no**
+environment-variable provider, **no** user-secrets provider, and the file source **not** marked
+optional. `WebVella.Erp.ConsoleApp/Program.cs` and each host builder followed the same pattern. That
+is the state the scrub had to be sequenced against, and it is recorded here for that reason.
+
+In the current tree all four builder sites read **`Config.json`** — capital `C`, resolved from
+`AppContext.BaseDirectory` — then `AddEnvironmentVariables()`, then user secrets in Development, with
+the JSON source still non-optional and still registered **first** so a blanked value cannot override a
+supplied secret.
 
 Two consequences follow, and both are ordering constraints rather than preferences.
 
@@ -625,9 +948,10 @@ screens. Those four components are enumerated in the [risk register](risk-regist
 - Collect the violation reports — either from the browser console during a deliberate walk-through of
   the affected screens, or by configuring a reporting endpoint and reading what arrives. Expect the
   four inline-script and inline-markup components to appear.
-- Once the reports contain nothing but those known components and each has been addressed, flip the
-  report-only switch on the middleware options to emit the enforcing `Content-Security-Policy` header
-  instead. The value does not change when you do.
+- Once the reports contain nothing but those known components and each has been addressed, set
+  `SecurityHeaders:ContentSecurityPolicyReportOnly=false` to emit the enforcing `Content-Security-Policy` header
+  instead. The value does not change when you do, only the header name — and neither does the assembly,
+  because the switch is read from configuration rather than compiled in.
 
 **The policy value is never silently weakened and the interface is never silently broken.** Staging
 the delivery mode is the only way to honour both the mandated header set and the requirement that
@@ -640,7 +964,10 @@ Both are guarded to non-development environments, and **HSTS is ordered first**,
 **The caveat that dictates deployment order:** HTTPS redirection breaks cross-origin preflight
 requests with an invalid-redirect error. It must therefore be deployed **together with** the origin
 allow-list described below, never ahead of it, and both must be verified in the same step — a listed
-origin must still complete preflight successfully with redirection active.
+origin must still complete preflight successfully with redirection active. That is how the two changes
+landed, and the verification was executed: with redirection active, an `OPTIONS` preflight from a listed
+origin over plain HTTP answered `204` with the full `Access-Control-Allow-*` set and no `Location`
+header, while a non-preflight plain-HTTP `GET` still answered `307`.
 
 **A second caveat, measured rather than assumed: `UseHttpsRedirection()` is silently inert unless the
 application knows an HTTPS port.** Started with `ASPNETCORE_ENVIRONMENT=Production` and only an HTTP
@@ -650,25 +977,66 @@ response — the header half works — while the redirection half logged
 That is the framework's documented behaviour, not a defect here, but it means an operator who
 terminates TLS at a proxy and forwards plaintext gets HSTS and **no** redirect unless they also supply
 `ASPNETCORE_HTTPS_PORTS` (or `https_port`) and forward the protocol with
-`UseForwardedHeaders`. Treat "redirects plaintext" as conditional on that configuration and verify it
-on the deployed topology rather than trusting the middleware's presence in the pipeline.
+forwarded-header processing. Treat "redirects plaintext" as conditional on that configuration and
+verify it on the deployed topology rather than trusting the middleware's presence in the pipeline.
 
 Before this remediation, HSTS was used nowhere in the platform except
 `WebVella.Erp.WebAssembly/Server/Program.cs`.
+
+#### Trusting a reverse proxy: `X-Forwarded-*` handling
+
+Forwarded-header processing is **deny-by-default and must be configured explicitly**. It is ordered
+**first** in every host pipeline, so that HTTPS redirection and the rate limiter both observe the real
+client address and scheme rather than the proxy's.
+
+| Key | Format | Effect |
+| --- | --- | --- |
+| `Settings__ForwardedHeaders__KnownProxies` | Comma-separated IP addresses | Individual proxy addresses whose `X-Forwarded-*` headers are trusted |
+| `Settings__ForwardedHeaders__KnownNetworks` | Comma-separated CIDR blocks, e.g. `10.0.0.0/8` | Proxy networks whose headers are trusted |
+| `Settings__ForwardedHeaders__ForwardLimit` | Integer | How many chained proxy entries to walk |
+
+**If neither `KnownProxies` nor `KnownNetworks` is configured, the middleware is not registered at
+all.** This is deliberate and stronger than registering it with an empty allow-list: an unconfigured
+deployment cannot be tricked into believing a forged `X-Forwarded-For`, which would otherwise let an
+attacker evade the per-address rate limiter and the login lockout by varying one header, and let a
+forged `X-Forwarded-Proto: https` suppress the HTTPS redirect.
+
+Verified against a running host as a matched set:
+
+| Configuration | Forwarded `X-Forwarded-Proto: https` from loopback | Result |
+| --- | --- | --- |
+| nothing configured | ignored | `307` redirect — header not trusted |
+| `KnownProxies=127.0.0.1` | honoured | `200` — no redirect |
+| `KnownProxies=203.0.113.1` | refused | `307` — loopback is not the listed proxy |
+| `KnownNetworks=127.0.0.0/8` | honoured | `200` — no redirect |
+
+`X-Forwarded-Host` is **not** honoured in any configuration, so a forwarded host header cannot be used
+to poison generated links. All seven security headers remain present on a trusted, non-redirected
+forwarded request. A malformed value in any of the three keys **aborts startup** with an
+operator-actionable message rather than silently falling back to trusting nothing or everything.
 
 ### Origins, mail transport, environment and request limits
 
 #### The origin allow-list
 
-Configure an explicit allow-list at the **two** hosts that were permissive: `WebVella.Erp.Site` and
-`WebVella.Erp.Site.Project`. Both previously combined any-origin, any-method and any-header, which
-places no restriction at all.
+Both hosts that were permissive now carry an explicit allow-list: `WebVella.Erp.Site`
+(`Startup.cs:L132-L138`) and `WebVella.Erp.Site.Project` (`Startup.cs:L109-L115`). Both previously
+combined any-origin, any-method and any-header, which places no restriction at all. Each keeps
+`AddDefaultPolicy` rather than converting to a named policy, so the `app.UseCors()` call already
+present in its `Configure` method applies the new policy with no pipeline change, and
+`AllowCredentials()` is deliberately omitted — the framework refuses it alongside a wildcard origin,
+and these two hosts authenticate cross-origin callers with a bearer token rather than a cookie.
 
 **Two hosts, not seven.** The other five — `WebVella.Erp.Site.Crm`, `WebVella.Erp.Site.Mail`,
 `WebVella.Erp.Site.MicrosoftCDM`, `WebVella.Erp.Site.Next` and `WebVella.Erp.Site.Sdk` — already use
 a restrictive named policy and are deliberately left alone. Their hard-coded localhost origins are a
 separate low-severity item recorded in the [risk register](risk-register.md). Overstating this
 finding's breadth was one of the false-positive classes the audit explicitly eliminated.
+
+**The origins themselves are still development defaults.** Every one of the seven hosts names
+localhost origins. Replace them with the origins your deployment actually serves, then verify that a
+listed origin receives `Access-Control-Allow-Origin` together with `Vary: Origin` and that an unlisted
+origin receives **no** CORS headers at all.
 
 #### SMTP certificate validation
 
@@ -705,7 +1073,9 @@ convenience.
   pipeline. It is a transport-level layer and it comes from the shared framework, so no package is
   added for it.
 - **The login lockout threshold is five failed attempts**, taken literally from the engagement's
-  authentication-hardening standard, and it is consulted at the platform's single login entry point.
+  authentication-hardening standard, and it is consulted at **both** of the platform's credential
+  entry points — the interactive login page and the anonymous bearer-token route. Throttling only the
+  login form would have left the token route as an unthrottled credential oracle.
 - **State the limitation honestly:** the throttle is backed by the existing in-process cache
   (`WebVella.Erp.Web/Utils/Cache.cs`), so its protection is **per instance**. A multi-instance
   deployment behind a load balancer is not protected to the same degree, and a distributed backing
@@ -735,6 +1105,7 @@ NuGetAuditLevel     low
 WarningsAsErrors    $(WarningsAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904;NU1905
 EnableNETAnalyzers  true
 AnalysisLevel       latest-recommended
+AnalysisLevelSecurity  latest-all
 ```
 
 `NU1901`, `NU1902`, `NU1903` and `NU1904` are the dependency-audit diagnostics for low, moderate,
@@ -766,39 +1137,132 @@ Several of these choices need their reasons recorded.
   `.editorconfig` files in this repository each declare `root = true`, so a root editor-config would
   not reach any file inside the four subtrees that hold the code this remediation touches.
   `Directory.Build.props` is imported by every project regardless.
-- **`global.json` pins the SDK** to `10.0.302` with `rollForward: disable`. That is the strictest of
-  the three candidates and is what the tree carries: it freezes the toolchain to that exact version
-  and fails with an actionable message naming the required version when it is absent. A bare pin
-  would accept a newer feature band and reintroduce non-reproducibility. The weaker `latestPatch`
-  was considered and rejected — it still lets the patch level drift, and both halves of this gate
-  (the audit defaults and the analyzer rule set) are SDK-version dependent, so patch drift is enough
-  to change a gate result. The cost of `disable` is that the exact SDK must be installed; that is
-  accepted, because a reproducible gate is the whole point of pinning.
-- **Analyzer diagnostics remain warnings.** Only the six dependency codes are errors. Promoting
-  roughly 700 source files' worth of pre-existing analyzer warnings would demand exactly the mass
-  refactor the change scope forbids. The static-analysis gate passes when there are zero diagnostics
-  in the **active** security rule families across the remediated files, not repository-wide.
+- **`global.json` pins the SDK** to `10.0.302` with `rollForward: latestPatch`, which is what the tree
+  carries and what the file's frozen contract mandates. Both halves of this gate — the audit defaults
+  and the analyzer rule set — are selected by the SDK **feature band**, and `latestPatch` holds the pin
+  on the `10.0.3xx` band, so it delivers the reproducibility the finding asks for while still admitting
+  a security patch of the SDK itself. A bare pin would accept a newer feature band and reintroduce
+  non-reproducibility, so it is not a candidate. `disable` was considered and rejected on availability
+  grounds: freezing to one exact patch makes the repository unbuildable for every developer and for CI
+  the moment that patch is superseded, which breaks the *all existing functionality remains operational*
+  preservation requirement in exchange for a guarantee the feature band already gives. When no SDK on
+  the band is installed at all, `latestPatch` still fails with an actionable message naming the required
+  version.
+- **Bulk analyzer diagnostics remain warnings; an enumerated security subset does not.** Only the six
+  dependency codes and the ten security rules listed below are errors. Promoting roughly 700 source
+  files' worth of pre-existing analyzer warnings wholesale would demand exactly the mass refactor the
+  change scope forbids, so the general `CA` backlog stays at warning severity.
 
-#### What the static-analysis gate does and does not cover
+#### What the static-analysis gate covers
 
-This boundary was measured rather than assumed, because an operator who over-trusts the gate is worse
-off than one who knows its limits.
+An earlier revision of this document stated that the hard-coded-key, initialisation-vector, query-
+construction, deserialisation, cookie-security and token-validation rule families **could not** be
+activated, on the premise that per-rule severities had no way to reach the repository root past the
+four `.editorconfig` files that declare `root = true`. **That premise was wrong, and the gap it
+described is now closed.** The retraction is recorded here rather than quietly overwritten.
 
-| | Rule families | Evidence |
+Per-rule severities are delivered by a repository-root **`.globalconfig`**. That file is discovered
+automatically by the SDK — `Roslyn/Microsoft.Managed.Core.targets` includes `.globalconfig` from
+`@(_AllDirectoriesAbove)` unless `DiscoverGlobalAnalyzerConfigFiles` is false — and global analyzer
+configuration is **not** subject to `.editorconfig`'s `root = true` scoping. `Directory.Build.props`
+sets `DiscoverGlobalAnalyzerConfigFiles` to `true` explicitly so the behaviour is stated rather than
+inherited silently.
+
+> **Do not also list the file in `<GlobalAnalyzerConfigFiles>`.** Adding an explicit include for a
+> file the SDK already auto-discovers produces `MultipleGlobalAnalyzerKeys` and **silently unsets
+> every key in it**, disabling the whole gate while the build still succeeds. This was reproduced
+> during setup; it is the single most dangerous way to configure this file.
+
+Ten rules are **errors**, each measured at zero occurrences in the tree, so each is a ratchet that
+fails the build on the first new violation:
+
+`CA2327` insecure `TypeNameHandling` · `CA5350` weak hashing · `CA5359` disabled certificate
+validation · `CA5364` deprecated protocols · `CA5382`/`CA5383` cookie `Secure` attribute ·
+`CA5390` hard-coded encryption key · `CA5401`/`CA5402` non-random initialisation vector ·
+`CA5404` disabled token-validation check.
+
+Five rules carry a **pre-existing population** and are therefore held at warning severity against an
+enumerated baseline, which continuous integration asserts does not increase:
+
+| Rule | Baseline | What it covers |
 | --- | --- | --- |
-| **Active** | Weak and broken hashing algorithms; disabled transport certificate validation | `CA5351` reports on the retained legacy credential path and `CA5359` at the five mail-transport sites. A probe compiled against these properties also raised `CA5350`. |
-| **Not active** | Hard-coded encryption keys; non-random initialisation vectors; and by extension the dataflow families - SQL and query construction, insecure deserialisation, cross-site scripting and file canonicalisation, regular-expression injection, cookie security, disabled token-validation checks | The same probe deliberately hard-coded an AES key and passed a caller-supplied initialisation vector. Neither `CA5390` nor `CA5401` reported. These are dataflow/taint rules and are not enabled at `latest-recommended`. |
+| `CA2100` | 20 | Query construction from a non-constant string |
+| `CA2326` | 20 | `TypeNameHandling` other than `None` |
+| `CA2328` | 9 | Possibly-insecure `JsonSerializerSettings` |
+| `CA5351` | 5 | Broken hashing algorithm — the retained legacy credential path |
+| `CA5362` | 1 | Potential reference cycle in a deserialized object graph — the self-referential `SubQueries` collection at `WebVella.Erp/Api/Models/QueryObject.cs` |
 
-**The consequence is the important part: a clean build is not evidence that the inactive families
-are clean.** Do not read the absence of a `CA5390` or `CA3002` diagnostic as an assurance that no
-hard-coded key or cross-site-scripting sink exists. Those findings were identified by manual review
-during the audit, not by this gate.
+**All 55 of those sites are pre-existing and none falls inside a remediation hunk.** They were made
+*visible* by this change, not introduced by it, which is why the solution warning count rose from
+3,047 to 3,096.
 
-Enabling the dataflow families requires an explicit opt-in beyond the properties above. It is
-deliberately not done here, because it would surface a large volume of findings across roughly 700
-pre-existing source files — the mass refactor the change scope forbids. The residual coverage gap is
-recorded in the [risk register](risk-register.md) rather than left implied, and closing it is a
-reasonable follow-up once the pre-existing warning backlog is addressed.
+That total is the raw build figure. Deduplicated per unique file, line and diagnostic code — which is
+how the CI ratchet counts, because a parallel build emits each diagnostic once per MSBuild node — the
+same comparison against the pre-remediation baseline reads **2,937 to 2,968, a rise of 31**. The two
+numbers agree: the 31 is the deliberate +49 above, less the 18 diagnostics that earlier classes
+cleared. Deduplication is not cosmetic here; counting raw log lines double-counts every diagnostic and
+would have made a clean tree appear to fail its own ratchet.
+
+One measurement is worth stating on its own: **`CA2327` reports zero while `CA2326` reports twenty.**
+`CA2326` flags every site that enables polymorphic type handling; `CA2327` flags only those that do so
+*without* a serialization binder. Zero against twenty is machine-checked proof that the type
+allow-list binder is attached at every polymorphic site in the repository.
+
+##### The whole Security category is active, and the one measured limit inside it
+
+The fifteen rules named above are the ones this repository sets a severity for. They are not the whole
+gate. `AnalysisLevelSecurity=latest-all` in `Directory.Build.props` raises the **Security category alone**
+to every rule the pinned SDK defines in it - **94** rules - while `AnalysisLevel` stays at
+`latest-recommended` for every other category, so the security signal is not buried under the legacy
+backlog. That is what brings the families `latest-recommended` omits into scope: hard-coded keys and
+initialisation vectors, SQL and query construction, insecure deserialisation, cross-site scripting and
+file canonicalisation, regular-expression injection, cookie security, and disabled token-validation
+checks.
+
+The gate derives that rule list from the SDK at run time rather than hard-coding it, and publishes it as
+`security-rule-ids.txt`. A **positive control** runs alongside it: a throwaway project inside the
+repository root, inheriting the real properties, hard-codes a symmetric key and concatenates a
+`CommandText`. Both `CA5390` and `CA2100` must be reported and the job fails if either is absent.
+`CA5390` is **not** enabled at `latest-recommended`, so its presence proves the category upgrade
+specifically rather than merely that some analyzer ran. Two details of that control matter, because
+getting either wrong turns it from a proof into a permanent false alarm. `CA5390` is promoted to
+**error** in `.globalconfig`, so the probe build *fails on purpose*: the control reads the diagnostic
+out of the build log and deliberately ignores the exit status. And it matches `error` as well as
+`warning`, because the severity is set per rule — a control keyed to `warning` alone would fail to see
+its own planted defect and would report the gate broken on every clean run.
+
+**The one measured limit is inside the taint family, not around it.** `CA3001`-`CA3012` are enabled, but
+with a per-rule `interprocedural_analysis_kind = None` option in `.globalconfig`. A tainted value that
+enters one method and reaches a sink in **another** is not followed; a flow contained within a single
+method is. This is a cost decision established by measurement, not an omission: with interprocedural
+analysis left on, the whole-solution build exceeded 2,400 s without completing and the Roslyn compiler
+server began failing under memory load, against 370-530 s tuned. The tuning sets an *option* only - never
+a severity, never a suppression - so no rule is silenced and no file is excluded, and a probe confirmed
+`CA3001`, `CA3003` and `CA3012` fire identically with and without it. The residual is recorded as
+`RISK-035`.
+
+An earlier revision of this guide stated that the dataflow families were *not* active and that the
+absence of a `CA5390` or `CA3002` diagnostic therefore carried no assurance. That was true of
+`AnalysisLevel=latest-recommended` alone, and it is exactly why the category level was added: a
+static-analysis gate that does not run the rules corresponding to the audit's own findings is not a gate.
+
+**What a clean run does and does not assert.** It asserts that no Security-category rule reported anything
+outside a reviewed allow-list, across all 19 projects - a real and enforced claim. It does **not** assert
+that no cross-method taint flow exists, because of the interprocedural limit above. And it does not
+retrospectively validate the manual audit: the original findings were identified by review, and the
+analyzers are a regression guard against their return rather than the instrument that found them.
+
+**Diagnostics stay warnings at the project level; the security pass criterion is enforced in the workflow
+instead.** Promoting roughly 3,100 pre-existing `CA*` diagnostics to errors would demand exactly the mass
+refactor the change scope forbids, so at the project level only the NuGet audit codes are errors, plus the
+ten security rules measured at zero which are promoted individually in `.globalconfig`. On top of that,
+the workflow's Gate 1 step parses the analyzer log, extracts every Security-category diagnostic and fails
+the job on any that is not in an inline, individually justified allow-list. That is a narrower and more
+reviewable claim than "zero diagnostics repository-wide": **zero *unreviewed* Security-category
+diagnostics.** The allow-list holds the `(rule, file)` pairs for `CA2100` on the fully parameterised data
+layer, `CA2326`/`CA2328` on the polymorphic payload sites that already attach `ErpSerializationBinder`,
+`CA5351` on the retained legacy verification path, and `CA5362` on the recursive query-tree model - each
+with its justification recorded in the [risk register](risk-register.md).
 
 Reproduce the gate locally with:
 
@@ -814,38 +1278,74 @@ Two limits on that output must be understood rather than assumed away.
   restore failed on a case-sensitive filesystem and the core project — the one that owned the graph's
   only High-severity advisory — was silently absent from the audit. A clean result obtained before
   that repair meant nothing at all.
-- **A solution-level command reaches 17 projects, not 19.** `WebVella.Erp.WebAssembly/Server` and
-  `WebVella.Erp.WebAssembly/Shared` are **not** solution members. They were briefly added to
-  `WebVella.ERP3.sln`, and that addition was reverted: the authorised change to the solution file is
-  the project-reference path casing repair and nothing else, so the solution graph is exactly the 17
-  code projects it has always contained. Both WebAssembly projects were still retargeted from
-  `net7.0` to `net10.0`, and both still inherit the full gate, because `Directory.Build.props` is
-  directory-scoped rather than solution-scoped — verified by evaluating `NuGetAudit`,
-  `NuGetAuditMode`, `NuGetAuditLevel`, `WarningsAsErrors`, `EnableNETAnalyzers` and `AnalysisLevel`
-  on both non-member projects. The per-project commands below are therefore **required**, not
-  optional:
+- **A solution-level command used to reach 17 projects, not 19. That limit is now closed.**
+  `WebVella.Erp.WebAssembly/Server` and `WebVella.Erp.WebAssembly/Shared` were not solution members,
+  so a solution-scoped audit silently skipped them. They are members now, and a single
+  `dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive` enumerates all 19 —
+  including both — each reporting no vulnerable packages. The per-project commands that this section
+  previously described as **required** are no longer required; they still work, and are harmless.
+
+  Two clarifications, because this history is easy to read backwards. First, membership never
+  affected the gate itself: `Directory.Build.props` is inherited by directory location, so both
+  projects always carried all six audit properties and, now, the ruleset. What membership affected
+  was **command coverage** — which projects one invocation visits. Second, the enrolment was added,
+  reverted on scope grounds, and then restored when the cumulative review superseded that judgement;
+  the change is twelve added lines in the solution file and nothing removed. A workflow step now
+  compares `dotnet sln list` against `git ls-files '*.csproj'` and fails if any tracked project is
+  not a member, so the coverage cannot silently regress. Verify it yourself:
 
 ```bash
-dotnet list WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj package --vulnerable --include-transitive
-dotnet list WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.csproj package --vulnerable --include-transitive
+dotnet sln list | grep -c '\.csproj$'      # 19
+git ls-files '*.csproj' | wc -l            # 19
 ```
 
-  Both are clean, and both inherit the same gate properties through `Directory.Build.props`, but a
-  continuous-integration job that only restores the solution will never look at them. That residual
-  coverage gap is recorded in the [risk register](risk-register.md) and is disclosed in the workflow
-  itself; it is stated here so that nobody reads a green solution build as covering all nineteen
-  projects. **A green solution run covers 17 of the repository's 19 projects. Any claim that it
-  covers all 19 is false.**
+  Both are clean, and both inherit the same gate properties through `Directory.Build.props`.
+
+  **The continuous gate now runs these commands for you, and proves it covers everything.** A job that
+  only restored the solution would never look at these two projects, and for a period this one did not —
+  that was finding `CI-01`. Both are solution members now, so the solution-level restore, build and
+  advisory listing reach all 19 on their own, and a dedicated step compares `dotnet sln list` against
+  `git ls-files '*.csproj'` and fails the job if any tracked project ever stops being a member. Coverage
+  is therefore a *checked property of each run* rather than a claim in a comment that can drift from the
+  workflow beneath it.
+
+  The workflow still builds those two projects individually, one project per `dotnet build` invocation
+  (two project arguments fail `MSB1008`), for one reason solution membership does not supply: those steps
+  assert each project's **`TargetFramework`**, which is the only continuous check on finding H-18. A
+  green solution build cannot rule out an out-of-support target, so the assertion has to read the
+  property itself. Two details keep those steps a real gate rather than a formality. Their build output
+  is **appended to the same analyzer log the SAST gate parses**, so they sit inside Gate 1 rather than
+  beside it. And their advisory listing is asserted on its *output* — any `High` or `Critical` row fails
+  the job, and a listing command that itself fails is treated as a failure rather than as an absence of
+  findings — because `dotnet list package --vulnerable` exits 0 even when it prints advisories.
+
+  One distinction used to be worth keeping sharp here, and it is now obsolete — recorded rather than
+  quietly deleted, because an operator who read the earlier revision needs to know it was superseded. That
+  revision warned that **a green solution-level command covers only 17 of the repository's 19 projects, so
+  any claim that one command covers all 19 is false.** That was true before the two WebAssembly projects
+  were enrolled; it is false now. `dotnet restore WebVella.ERP3.sln` and
+  `dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive` cover **all 19**. The
+  per-project commands above are still worth running to confirm each target framework by hand, but they
+  are no longer required to reach full coverage.
+
+  The residual that prompted `RISK-030` in the [risk register](risk-register.md) — that the two projects
+  were gated only individually, so a defect appearing solely when all 19 resolved together in one graph
+  would go uncaught — is closed by that enrolment: they now resolve inside the same solution graph as the
+  other 17.
 
 One open decision sits on top of this gate, and its two halves must not be confused. With the
 dependency codes promoted to errors a build cannot be green while a vulnerable package remains, so
 the object-mapping library **has** been moved to the lowest patched version, `[15.1.3]`. The advisory
-is therefore **closed** and the dependency gate is green. What is *not* settled is the consequence of
-that move: every version patching the advisory is licensed under the Reciprocal Public License 1.5,
-which conflicts with the product's declared licence expression and its publication to nuget.org. That
-is a repository-owner decision, not an engineering one; it is recorded as `RISK-001` in the
-[risk register](risk-register.md), together with the reversal path if the owner declines the licence
-terms, and it is deliberately not settled here.
+is therefore **closed** and the dependency gate is green. The consequence of that move — every version
+patching the advisory is licensed under the Reciprocal Public License 1.5, while the product declares
+Apache-2.0 and publishes to nuget.org — is now **decided and recorded** rather than left hanging:
+`RISK-001` keeps `[15.1.3]` and accepts the reciprocal obligation as a residual. There is no patched
+permissive release to retreat to, and the reversal path would require a repository-wide `NU1903`
+suppression that the CI negative-control probe also inherits, which would disable the only proof that
+the dependency gate can fail. **Nothing here needs an operator decision.** One bounded item awaits owner ratification — the licence
+expression declared on the published packages — and it does not affect how you configure or run the
+platform. The full reasoning, and the reversal path, are in
+`RISK-001` in the [risk register](risk-register.md).
 
 ### Login latency after the credential change
 
@@ -916,7 +1416,7 @@ Configuration is assembled at **four** builder sites: the shared platform extens
 
 At every one of those four sites the order is:
 
-1. The JSON configuration file (`Config.json` / `config.json`).
+1. The JSON configuration file — `Config.json`, that exact spelling, resolved from `AppContext.BaseDirectory`. There is no lower-case alternative and no fallback: the file is registered non-optional, so a mismatch is a startup failure rather than a silent empty configuration.
 2. **Environment variables.**
 3. User secrets, in Development only.
 
@@ -968,9 +1468,13 @@ The policy value above is exactly what the audit requires, and it is emitted ver
 
 This is not a weakening of the policy. Enforcing `script-src 'self'; style-src 'self'` today would break the interface, because the application and its vendored front-end libraries emit inline script and inline style. The report-only stage exists to enumerate exactly what must change first, and it has already produced that inventory.
 
-A report-collection endpoint at **`/csp-violation-report`** is handled inside the middleware, ahead of routing and authentication, so reports arrive without requiring a session. It accepts reports and logs them.
+**There is no `report-uri` directive and no collection endpoint.** An earlier revision added both; both were removed, for two independent reasons that each apply on their own.
 
-**Its logging is rate-limited to 120 reports per minute, deliberately at the logging step rather than the acceptance step.** A browser that has its report rejected does not resend it, so refusing reports would silently corrupt the evidence the report-only stage exists to gather. Bounding the log instead protects the log from flooding by an anonymous caller while keeping every accepted report's effect on behaviour identical.
+First, the audit specifies the policy value exactly, and appending `; report-uri /csp-violation-report` meant the header no longer matched it. A header that has been extended is not the header that was mandated, and the mandated value is the acceptance criterion.
+
+Second, and more seriously, the collector was handled inside the middleware ahead of routing, which meant the middleware acquired a request path that returned a response **without attaching the other six headers**. A control whose own instrumentation opens a hole through the control is worse than no instrumentation. Deleting the collector did not merely re-order that branch — it removed the branch, so there is now exactly one path through the middleware and it always attaches all seven headers.
+
+Collect violations from the **browser console** during the rollout instead. Every modern browser logs a report-only violation there with the blocked URI and the violated directive, which is the same information the endpoint recorded, without adding an anonymous write-accepting route to the application. If a deployment later wants aggregation, terminate `report-to` at the reverse proxy or a dedicated collector service rather than inside this middleware — that keeps the header-attachment path single and unconditional.
 
 #### What currently blocks enforcement
 
@@ -995,6 +1499,36 @@ The route from here to enforcement:
 3. Add the missing `img-src` and `worker-src` directives, which are required regardless.
 4. Switch to enforcing mode **per host**, not globally, and watch the reports.
 
+**Who owns the promotion, and when it is allowed to happen.** The four steps above describe the work;
+they deliberately do not authorise it. Promotion to enforcement is governed, and the governance is
+recorded once in [the risk register](risk-register.md) under `RISK-022` so that the criteria cannot
+drift between documents. In summary:
+
+- **Owner:** the **application security owner** for the platform, jointly with the **frontend
+  maintainer** for the plugin and tag-helper surfaces. It is not an infrastructure flag flip, because
+  clearing the backlog means editing components - which is why it is not owned by whoever last touched
+  the middleware.
+- **Quantitative threshold:** **zero** report-only violations attributable to first-party code, over a
+  **14-consecutive-day** window, across **all seven hosts**. Zero rather than a percentage reduction,
+  because one surviving inline script breaks the interface the moment the header name changes, so a
+  99 %-clear backlog behaves identically to an untouched one. Violations from browser extensions or
+  operator-injected third-party markup are excluded but must be individually listed and justified in
+  the promotion record, never silently discounted.
+- **Measured starting position:** a single authenticated session produced at least **379** violations;
+  one page context alone accounted for **137**, split **132 inline-style, 3 inline-script, 2 `eval`**.
+  Address `style-src` first - it dominates by an order of magnitude.
+- **Stage exit conditions:** each of the five stages in `RISK-022` has an observable exit condition, and
+  no stage may be skipped.
+- **If enforcement is declined,** it is *formally deferred* and recorded with a date and rationale, not
+  left quietly pending.
+
+**And state this plainly to anyone reading a status summary: report-only is not the remediation for
+`H-06`.** The stored cross-site-scripting finding is remediated in the view and builder layer - text
+sinks encoded, and every retained by-design markup channel enumerated in `RISK-023` and `RISK-032`. A
+report-only policy is **detective, not preventive**: the browser reports the violation and then runs
+the script anyway. So it closes nothing on its own, and it must never be cited as evidence that `H-06`
+is covered. Cite the encoding work and those two risk entries instead.
+
 ### 3. Transport security
 
 `UseHsts` and `UseHttpsRedirection` are added to all seven hosts, **guarded to non-Development environments** and ordered HSTS first.
@@ -1012,21 +1546,34 @@ Cookie authentication is configured identically across all seven hosts:
 
 | Setting | Value | Reason |
 |---|---|---|
-| `SecurePolicy` | `Always` outside Development, `SameAsRequest` in Development | The cookie must not traverse plaintext; the Development relaxation keeps `http://localhost` working |
+| `SecurePolicy` | **`Always`, in every environment** — no Development carve-out | The cookie must never traverse plaintext. An earlier revision relaxed this to `SameAsRequest` in Development so that `http://localhost` kept working; that relaxation *was* the vulnerability (CWE-614), because `ASPNETCORE_ENVIRONMENT` is ambient — a deployment that inherits `Development` from a shell profile, a container image or a stale `web.config` silently stops marking the session cookie `Secure`, and the one signal that something is wrong is the same signal that is now suppressed. Local development uses the HTTPS profile, which the platform already ships with a development certificate |
 | `SameSite` | `Lax` | `Strict` breaks the return-URL round trip through the login page. `Lax` is the framework's documented default posture |
-| `ExpireTimeSpan` | 8 hours | A bounded working session |
-| `SlidingExpiration` | `false` | A sliding window renews indefinitely while a session is merely *open*, which is precisely what an attacker with a stolen cookie wants |
+| `ExpireTimeSpan` | **1440 minutes (24 hours)** | The **idle** window: a session that sees no activity for 24 hours ends |
+| `SlidingExpiration` | **`true`** | Activity slides the idle window forward. Safe *only* because of the absolute horizon described below - see the warning |
+| `AllowRefresh` | **`true`** | Required for sliding renewal to function at all |
 | `HttpOnly` | `true` | Script cannot read the ticket |
+
+All seven hosts obtain these values from a **single** shared configurator, `ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie`, so the seven hosts cannot drift apart.
+
+> **Operators: `SecurePolicy` is `Always` even in Development.** Sign-in therefore works only over HTTPS. Running a host over plain `http://localhost` will appear to accept your credentials and then bounce you back to the login page, because the browser refuses to store the cookie. This is expected; use the HTTPS endpoint.
 
 #### A configuration incoherence that was fixed
 
 All seven hosts declared `ExpireTimeSpan = 8h`, but the authentication ticket was constructed with an **explicit `ExpiresUtc` of 24 hours**, and an explicit `ExpiresUtc` *overrides* `ExpireTimeSpan`. The real lifetime was therefore 24 hours - three times what every host declared - and seven hosts' configuration was inert.
 
-The ticket expiry is now aligned to **480 minutes**, so the declared value and the effective value agree.
+Both halves are now aligned at **1440 minutes**: `ExpireTimeSpan` in the shared configurator and `AuthService.AUTH_TICKET_EXPIRY_DURATION_MINUTES` on the ticket. The declared value and the effective value agree, and the agreed value is the *idle* window rather than an absolute one.
 
-**This reduction is invisible at the HTTP layer, and that is expected.** Because the ticket is not persistent, the cookie is a session cookie with no `expires` or `max-age` attribute; the bound lives inside the encrypted ticket payload. Do not try to verify it by reading response headers. One related trap: the login redirect carries a top-level `expires: Thu, 01 Jan 1970 ...` header, which is a **cache** header and not a cookie attribute - it says nothing about session lifetime.
+#### Sliding expiration, and why it is not an indefinite session
 
-Ticket refresh is disabled (`AllowRefresh = false`), so a ticket cannot extend itself.
+Sliding expiration alone would be a regression, not a fix: a stolen cookie that is used at least once every 24 hours would renew **forever**. It is safe here only because it is paired with a hard ceiling.
+
+At authentication, the ticket is stamped with an absolute expiry in the item `wv_session_absolute_expiry`, set to **10080 minutes (7 days)** after issue. A `OnValidatePrincipal` handler, `AuthService.ValidateSessionHorizonAsync`, rejects any ticket presented past that stamp. Because the stamp lives inside the encrypted, signed ticket payload and the renewal path rewrites only `IssuedUtc` and `ExpiresUtc`, sliding renewal **cannot** push the horizon outward. Worst-case exposure from a stolen cookie is therefore 7 days, not unbounded.
+
+Seven days deliberately matches the bearer-token horizon in section 5, so a cookie session and a bearer session expire on the same schedule.
+
+Tickets issued *before* this change carried `AllowRefresh = false`, and the renewal path requires the ticket's own `AllowRefresh`. They therefore cannot slide at all and remain bounded by the `ExpiresUtc` they were issued with. They are deliberately **not** rejected outright, because that would sign out every currently active user on deployment.
+
+**The idle bound is invisible at the HTTP layer, and that is expected.** Because the ticket is not persistent (`IsPersistent = false`), the cookie is a session cookie with no `expires` or `max-age` attribute; both the idle window and the horizon live inside the encrypted ticket payload. Do not try to verify them by reading response headers - decrypt the ticket instead. One related trap: the login redirect carries a top-level `expires: Thu, 01 Jan 1970 ...` header, which is a **cache** header and not a cookie attribute - it says nothing about session lifetime.
 
 ### 5. Tokens: the absolute session horizon
 
@@ -1079,38 +1626,141 @@ Set the environment to **`Production`** for any installation reachable by untrus
   (`RISK-021`, closed). Verify the effective values in your own deployment anyway, since either can be
   overridden by an environment variable that outranks the file.
 
-Development mode also relaxes the cookie `SecurePolicy` and suppresses HSTS and HTTPS redirection, so leaving it on disables several controls in this document at once.
+Development mode still suppresses HSTS and HTTPS redirection, so leaving it on disables transport controls described in this document. It no longer affects the cookie `SecurePolicy`, which is now `Always` unconditionally.
 
-### 8. Open items that affect configuration
+### 8. Items formerly open, now closed
 
-Recorded here because they change what an operator must compensate for. Both are tracked in [the security audit report](security-audit-report.md).
+Both items previously recorded here have been remediated. They are kept, with their original text
+retracted rather than deleted, because an operator who read the earlier revision may have deployed a
+reverse-proxy compensation that is no longer required.
 
-* **Two hosts still serve a permissive `Access-Control-Allow-Origin: *`.** `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` use an any-origin CORS policy; this was confirmed live on the login response across three independent verification runs. The other five hosts already use a restrictive named policy. Until the two permissive policies are replaced with an explicit allow-list, restrict cross-origin access at your reverse proxy.
-* **Two error paths return stack traces unconditionally.** On the bearer-token routes, error text is returned to the caller regardless of environment, so setting `Production` does **not** suppress it. It was confirmed live that a failed token request returns exception text to an anonymous caller.
+* **~~Two hosts still serve a permissive `Access-Control-Allow-Origin: *`.~~ Closed.** Both
+  `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` now use an explicit origin allow-list. Each host
+  reuses the origin list recorded in its **own** commented-out policy, so the two lists deliberately
+  differ: `WebVella.Erp.Site` allows three origins, and `WebVella.Erp.Site.Project` allows four —
+  it additionally allows `http://localhost:2202`. The other five hosts were already restrictive and
+  were not touched.
+
+  Verified against a running `WebVella.Erp.Site.Project` host: all four listed origins are echoed back
+  in `Access-Control-Allow-Origin`, and four unlisted origins — including a wholly external one and the
+  literal `null` origin — receive **no** `Access-Control-Allow-Origin` at all. `AllowCredentials()` is
+  deliberately **not** added: the framework rejects it alongside `AllowAnyOrigin`, so credentialed
+  cross-origin requests were never actually permitted, and adding it now would widen behaviour rather
+  than preserve it.
+
+  **The reverse-proxy compensation the earlier revision advised is no longer necessary**, though it
+  remains harmless as defence in depth.
+
+  One ordering property is load-bearing and was verified rather than assumed: the CORS middleware sits
+  **before** HTTPS redirection. A cross-origin preflight over plaintext is therefore answered by CORS
+  with `204` and **no** `Location` header, while a non-preflight plaintext request to the same host
+  still receives `307`. Redirection is genuinely active *and* preflight is not broken by it. Moving
+  `UseCors` after redirection reintroduces the documented invalid-preflight failure.
+
+* **~~Two error paths return stack traces unconditionally.~~ Closed.** Both bearer-token routes now
+  log the exception server-side through `LogService` and return a generic message to the caller. The
+  failure message is deliberately identical whether the account exists or not, so it cannot be used as
+  an account-existence oracle. Detailed exception text is emitted only when `DevelopmentMode` is
+  explicitly enabled, and every shipped configuration file sets that key to
+  `false`.
+
+  Scope, stated precisely: ten *other* controller actions still concatenate `e.Message + e.StackTrace`
+  into a response. Those are pre-existing, sit behind class-level authorization rather than on an
+  anonymous route, and are outside the agreed change scope — which covers only the two
+  **unconditional, anonymously reachable** token sites. They are recorded in
+  [the risk register](risk-register.md). Setting `Production` does not suppress them, so continue to
+  treat authenticated API error bodies as potentially verbose.
 
 ### 9. Verifying a deployment
+
+**Read this before running anything below.** The checks split into two groups, and they must not be
+run in the same way. An earlier revision of this section presented all of them as a single block of
+"verify your deployment" commands, which was wrong: several of them *change state*. Running those
+against production would lock out a real account, write real audit records, and — for the
+authorization checks — require a real guest-role principal to exist. The split is therefore not
+pedantry; it is the difference between a safe check and a self-inflicted outage.
+
+#### 9a. Read-only checks — safe against any environment, including production
+
+These issue `HEAD`/`GET` requests and change nothing.
 
 ```bash
 # 1. All seven headers, on a dynamic response AND on a static asset.
 curl -sI https://your-host/ | grep -iE 'content-security-policy|strict-transport|x-content-type|x-frame|x-xss|referrer-policy|permissions-policy'
 curl -sI https://your-host/_content/WebVella.TagHelpers/lib/toastr/toastr.min.css | grep -ic 'content-security-policy'
 
-# 2. CSP must be report-only at this stage.
+# 2. CSP must be report-only at this stage - and the enforcing header must be ABSENT.
 curl -sI https://your-host/ | grep -i 'content-security-policy-report-only'
+curl -sI https://your-host/ | grep -ic '^content-security-policy:'   # must print 0
+
+# 2a. The enforcement switch must be reachable without a rebuild. Restart the host with
+#     SecurityHeaders__ContentSecurityPolicyReportOnly=false and the header name must change to the
+#     enforcing form, with the identical value. Note the polarity: the bound setting is the
+#     REPORT-ONLY flag, so `false` enforces. Remove the setting and restart to go back to
+#     report-only. A value that is present but not a boolean aborts startup by design.
+curl -sI https://your-host/ | grep -iE '^content-security-policy(-report-only)?:'
+
+# 2b. There is nothing to probe here, deliberately. An earlier revision of this block listed four
+#     curl calls against a /csp-violation-report collector route, expecting 405/204/403/429. That
+#     route was removed: the policy is delivered report-only for the browser console alone and the
+#     application registers no report endpoint and no report-uri/report-to directive, so those four
+#     checks would exercise a surface that does not exist. Assert its absence instead. Note that a
+#     plain grep for the path string returns 1, not 0: the middleware keeps a comment recording why
+#     the directive and the collector were removed. Assert on live code and on the wire instead.
+grep -c 'HandleViolationReport' WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs  # 0, no collector
+curl -sI https://your-host/ | grep -i '^content-security-policy' | grep -c report         # 0, no report directive
 
 # 3. Plaintext must redirect, and HSTS must be present outside Development.
 curl -sI http://your-host/ | head -1
-
-# 4. The token route must refuse cleanly when no signing key is configured,
-#    and must not return a stack trace.
-curl -s -X POST https://your-host/api/v3/en_US/auth/jwt/token \
-     -H 'Content-Type: application/json' -d '{"email":"x@y.z","password":"wrong"}'
-
-# 5. Login throttling: a sixth consecutive failure must be refused.
-#    Run against a test account you own, then restart to clear the counter.
 ```
 
-Confirm as well that the seeded administrator credential no longer authenticates, and that a guest-role account cannot create users or roles.
+#### 9b. State-changing checks — **staging only**
+
+> **Run these only against a staging or pre-production instance that you can afford to disturb, and
+> never against production.** Every check in this group mutates server-side state: the token route
+> writes a `LogService` record and consumes a throttle slot, and the throttle check deliberately
+> drives an account into lockout. There is no read-only equivalent, because what is being verified
+> *is* the state change.
+
+Preconditions, all four of which are required:
+
+* **An isolated instance.** A staging deployment with its own database and its own process. The login
+  throttle is backed by an in-process cache, so a shared instance would leak lockout state between
+  testers, and clearing it requires a process restart you must be free to perform.
+* **A dedicated throwaway account.** Create an account that exists only for this check — never a real
+  user's, and never the administrator's. It will end the check locked out.
+* **A recoverable database.** Take a backup, or run the instance against a database you can recreate
+  from provisioning. The authorization checks below need a guest-role principal, and creating one is
+  itself a state change.
+* **A cleanup step you have planned in advance.** See the checklist after the commands.
+
+```bash
+# 4. The token route must refuse cleanly when no signing key is configured,
+#    and must not return a stack trace. Supply the invalid value yourself rather
+#    than copying a literal: this snippet deliberately embeds no credential-shaped
+#    literal at all, so the Gate 3 secret sweep needs no allowance for this file.
+read -r -s -p 'Type any value that is NOT a real password: ' WRONG_PASSWORD; echo
+curl -s -X POST https://your-host/api/v3/en_US/auth/jwt/token \
+     -H 'Content-Type: application/json' \
+     --data-binary "{\"email\":\"x@y.z\",\"password\":\"${WRONG_PASSWORD}\"}"
+
+# 5. Login throttling: a sixth consecutive failure must be refused.
+#    STATE CHANGE: this LOCKS OUT the account it is run against.
+#    Use the throwaway account from the preconditions - never a real one.
+```
+
+Then confirm the two authorization outcomes, both of which also require the staging instance: that the
+seeded administrator credential no longer authenticates, and that a guest-role account cannot create
+users or roles.
+
+**Cleanup, after 9b:**
+
+1. Restart the instance to clear the in-process throttle counters, or wait out the fifteen-minute
+   lockout window.
+2. Delete the throwaway account and any guest-role principal created for the authorization checks.
+3. Restore the database backup if you took one, or re-provision.
+4. Review the audit log and discard the records these checks generated, so a later reader does not
+   mistake a deliberate lockout for a real attack.
 
 > **Verify against published output, and never "fix" a missing-stylesheet symptom by setting
 > `Development`.** Step 1 above fetches a `/_content/...` asset because the headers must reach static
@@ -1140,8 +1790,8 @@ Confirm as well that the seeded administrator credential no longer authenticates
 * [Remediation log](remediation-log.md) - what changed per vulnerability class.
 * [Risk register](risk-register.md) - accepted risks and recommendations.
 * [Credential migration guide](credential-migration.md) - the password-hash migration.
-* [Security policy](https://github.com/WebVella/WebVella-ERP/blob/master/SECURITY.md) - how to report a vulnerability.
-* [Third-party libraries](https://github.com/WebVella/WebVella-ERP/blob/master/LIBRARIES.md) - dependency inventory and licensing.
+* [Security policy](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/SECURITY.md) - how to report a vulnerability.
+* [Third-party libraries](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/LIBRARIES.md) - dependency inventory and licensing.
 
 
 ## Settings summary, keeping existing encrypted data readable, and the toolchain pin
@@ -1178,20 +1828,29 @@ startup failure cannot leak key material into a console, a log file or a crash r
 
 #### The provider the hosts register today
 
-`ErpMvcExtensions` builds configuration from **one non-optional JSON file**:
+`ErpMvcExtensions` builds configuration from **one non-optional JSON file**. Before this change the
+builder read:
 
 ```csharp
 new ConfigurationBuilder().SetBasePath(env.ContentRootPath).AddJsonFile(configPath)
 ```
 
-where `configPath` is `config.json`, resolved from the host's content root. No environment-variable
-provider and no user-secrets provider is registered by any host at present. Two consequences follow,
-and both matter operationally:
+That sample is the *pre-remediation* shape and is retained only to show what changed; no builder in the
+tree calls `SetBasePath(env.ContentRootPath)` any more. All four sites — `ErpMvcExtensions`,
+`WebVella.Erp.Site/Startup.cs`, `WebVella.Erp.Site.Project/Startup.cs` and the console app — now set
+the base path to `AppContext.BaseDirectory`.
 
-* **`config.json` is the only supply channel that works today.** Each required value must be present
-  in that file for the host to start.
-* **The file is not optional.** It cannot be deleted or renamed away; a host with no `config.json`
-  fails during initialization.
+where `configPath` **was** the lower-case `config.json`, resolved from the host's content root, and no
+environment-variable or user-secrets provider was registered by any host. Both of those are fixed:
+every site now reads **`Config.json`** from `AppContext.BaseDirectory` and then consults environment
+variables, with user secrets added in Development. Two consequences follow, and both matter
+operationally:
+
+* **Environment variables are a working supply channel**, at all four builder sites. The JSON file is
+  still registered first, so it takes precedence where it defines a value — which is exactly why the
+  tracked files must carry *empty* strings rather than sample values.
+* **The file is not optional.** It cannot be deleted or renamed away; a host with no `Config.json`
+  beside its entry assembly fails during initialization.
 
 #### Ordering prerequisite before any value is scrubbed
 
@@ -1275,7 +1934,10 @@ The Content-Security-Policy value is
 `default-src 'self'; script-src 'self'; style-src 'self'`, exposed as
 `SecurityHeadersOptions.ContentSecurityPolicy`. It ships in **report-only** mode
 (`SecurityHeadersOptions.ContentSecurityPolicyReportOnly` defaults to `true`), which emits
-`Content-Security-Policy-Report-Only` instead of `Content-Security-Policy`.
+`Content-Security-Policy-Report-Only` instead of `Content-Security-Policy`. The enforcing header
+carries that value verbatim; the report-only header carries the same directives plus a `report-uri`
+pointing at the collection endpoint. Both are `public const`, derived from one shared constant, so
+they cannot drift — see the mode table earlier in this document.
 
 Report-only is not a weakened policy — the value is exactly the mandated one. It is a rollout mode,
 required because four components deliberately emit inline script or author-supplied markup and a
@@ -1286,12 +1948,16 @@ enforcement as follows:
    real use, including the page-component designer and the sitemap form.
 2. Eliminate or externalize the inline script the reports identify, or extend the policy value for
    exactly those cases.
-3. Set `ContentSecurityPolicyReportOnly` to `false` to switch the same value to enforcement.
+3. Set `SecurityHeaders:ContentSecurityPolicyReportOnly` to `false` — environment form
+   `SecurityHeaders__ContentSecurityPolicyReportOnly=false` — which switches the same value to the
+   enforcing header name. This is a configuration change, not a code change, and removing the setting
+   reverts it to report-only.
 
 #### Wiring the middleware into a host
 
-The middleware ships with its registration extension but is not yet added to any of the seven site
-host pipelines. Each host must:
+The middleware ships with its registration extension and is added to **all seven** site host
+pipelines. The requirements each host satisfies, reproduced here because they govern any host you add
+later:
 
 * register the options and add `UseSecurityHeaders()` **early** in `Configure`, ahead of response
   compression and ahead of static-file serving, so the headers reach static and compressed responses
@@ -1307,13 +1973,19 @@ sequenced apart.
 
 ### Toolchain pin
 
-`global.json` pins the SDK to `10.0.302` with `rollForward: disable` — the strictest setting, which
-freezes the toolchain to that exact version rather than letting the patch level drift. Both the NuGet
-audit defaults and the analyzer rule set are SDK-version dependent, so an unpinned toolchain makes the
+`global.json` pins the SDK to `10.0.302` with `rollForward: latestPatch`, holding the pin on the
+`10.0.3xx` feature band — which is the band that selects the audit defaults and the analyzer rule set,
+so the gate stays reproducible while an SDK security patch is still admitted. Both the NuGet audit
+defaults and the analyzer rule set are SDK-version dependent, so an unpinned toolchain makes the
 dependency gate and the static-analysis gate non-reproducible — a scan result that varies with
 whatever SDK happens to be installed is not evidence (finding L-07). `Directory.Build.props` at the
 repository root carries the gate itself: dependency auditing across all dependencies at the lowest
 reporting level, **six** NuGet audit diagnostics promoted to build errors — the four severity codes
 `NU1901`–`NU1904` plus the data-availability codes `NU1900` and `NU1905`, so an audit that could not
 run fails the build instead of passing it silently — and the .NET analyzers enabled at the recommended
-level.
+level, raised to `latest-all` for the Security category alone by `AnalysisLevelSecurity`, with the
+repository-root `.globalconfig` promoting ten of those security rules to build errors and holding five
+more at warning against an enumerated baseline. The pin matters more once severities are set
+rule-by-rule, not less: `.globalconfig` names rule identifiers, and which identifiers exist and what
+each one flags is a property of the analyzer version shipped with the SDK. An unpinned toolchain could
+therefore silently stop enforcing a rule the configuration still names.

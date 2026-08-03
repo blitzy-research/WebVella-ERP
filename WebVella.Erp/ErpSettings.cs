@@ -308,12 +308,11 @@ namespace WebVella.Erp
 
 		/// <summary>
 		/// Fails fast when a security setting the platform cannot safely default was not supplied by any
-		/// configuration provider. Both callers of Initialize currently build a chain of exactly one provider -
-		/// AddJsonFile - so at this point in the remediation "any provider" still means Config.json alone. The
-		/// environment-variable and user-secrets providers named in the failure message below arrive with the
-		/// paired configuration change described at the call site, which is also when the shipped secret values
-		/// are blanked; the message states the supply channels the operator guide documents rather than only the
-		/// one that is wired today.
+		/// configuration provider. Both callers of Initialize now build a chain of Config.json, then
+		/// environment variables, then user secrets in development, so "any provider" means every supply
+		/// channel the operator guide documents and the failure message names. Config.json stays first and
+		/// non-optional precisely so that an environment variable overrides the blanked shipped value
+		/// rather than being shadowed by it.
 		/// Part of the OWASP Top 10 remediation for findings C-04, H-04 and H-05 (CWE-798, CWE-321): the
 		/// compiled-in default secrets behind those three findings were removed, so a missing value has to
 		/// surface as an actionable startup error instead of silently degrading into a known-bad key.
@@ -349,33 +348,24 @@ namespace WebVella.Erp
 				// key published in this repository's own Config.json passed unchallenged - and it is 64
 				// characters long, so no length rule would ever have caught it.
 				//
-				// Enforcement is staged rather than absolute, and the reason is a scope boundary, not
-				// timidity: blanking the shipped configuration values is AAP Class 5, a later boundary, so
-				// those files still carry the published key right now. Refusing to start on it
-				// unconditionally would break every existing checkout and the running deployment, which
-				// the preservation requirement forbids. So the check fails CLOSED in production posture -
-				// where a publicly known data-at-rest key is a real compromise - and reports loudly in
-				// development posture, where the value is still expected to be present. Once Class 5
-				// blanks the value and sets DevelopmentMode false, the absent-key branch above takes over
-				// and this branch becomes unreachable for the default. Same report-then-enforce shape the
-				// remediation already uses for the Content-Security-Policy.
-				if (DevelopmentMode)
-				{
-					// Written to standard error so it reaches the host's console log without this class
-					// taking a dependency on the logging stack, which is not available this early -
-					// LogService needs a database connection that this very method is still validating.
-					// Only the setting NAME is named; never the value, its length or a digest of it.
-					Console.Error.WriteLine("warn: WebVella.Erp.ErpSettings[1] SECURITY - 'Settings:EncryptionKey' is weak or is the " +
-						"example key published in this repository, so data encrypted at rest is not protected. Development mode is " +
-						"on, so startup continues. Supply a unique key of at least " +
-						MinimumEncryptionKeyCharLength.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-						" characters before deploying; see docs/security/secure-configuration.md.");
-				}
-				else
-				{
-					missingSecrets += $"{Environment.NewLine}  - 'Settings:EncryptionKey' is weak or is the example key published in this repository" +
-						$" (environment variable 'Settings__EncryptionKey')";
-				}
+				// THREAT (findings C-04 Critical and H-05 High, CWE-798 use of hard-coded credentials,
+				// CWE-321 use of a hard-coded cryptographic key, OWASP A02 Cryptographic Failures): a
+				// publicly known data-at-rest key compromises every encrypted value, and it is exactly as
+				// public in a development checkout as it is in production - this repository is open
+				// source, so the example key is already in an attacker's hands either way. Enforcement is
+				// therefore UNCONDITIONAL: there is no DevelopmentMode, environment or posture exemption.
+				// A development bypass would recreate the very defect being removed, because a deployment
+				// would inherit the known-bad key merely by leaving one flag set, and a warning that
+				// startup deliberately ignores is not a control.
+				// The ordering precondition that once justified staging this rejection is now satisfied:
+				// AAP Class 5 has blanked all eight shipped Config.json files and set
+				// 'Settings:DevelopmentMode' to false, so no checkout ships a key this branch would
+				// refuse. A weak or published key can now only arrive from an operator's own supply
+				// channel, which is precisely the case where refusing to start is the correct outcome.
+				// Only the setting NAME is reported - never the value, its length or a digest of it - so
+				// the startup failure cannot leak key material into a console or crash report (CWE-532).
+				missingSecrets += $"{Environment.NewLine}  - 'Settings:EncryptionKey' is weak or is the example key published in this repository" +
+					$" (environment variable 'Settings__EncryptionKey')";
 			}
 
 			// The token signing key is NOT demanded from every host. The token issue and refresh routes are

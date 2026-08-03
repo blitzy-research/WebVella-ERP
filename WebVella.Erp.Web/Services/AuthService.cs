@@ -12,6 +12,10 @@ using System.Threading.Tasks;
 using System.IdentityModel.Tokens.Jwt;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
+// SECURITY (CWE-117): supplies SecurityAuditLog.Normalize, the single shared implementation of the
+// bound-and-neutralise routine SanitizeForLog delegates to, so this class and the login and token-route
+// audit paths cannot drift apart on what counts as neutralised.
+using WebVella.Erp.Web.Utils;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
 
@@ -37,13 +41,67 @@ namespace WebVella.Erp.Web.Services
 		private const string CLAIM_SESSION_ABSOLUTE_EXPIRY = "session_absolute_expiry";
 
 		// H-03 (CWE-613, OWASP A07): bound for the cookie authentication ticket.
-		// H-5: this was 1440 (24h) while all seven hosts declare CookieAuthenticationOptions.ExpireTimeSpan = 8h. Those
-		// two are not peers - CookieAuthenticationHandler applies ExpireTimeSpan ONLY when the ticket carries no explicit
-		// ExpiresUtc, so the explicit value below silently won and every host's 8h window was inert configuration while
-		// the real cookie lifetime was three times longer than any host declared. Aligned to 480 so the declared window
-		// is the effective one and the invariant this comment asserts is actually true. Shortening rather than raising
-		// the hosts is the correct direction for a session-lifetime finding, and it makes seven files' settings live.
-		private const double AUTH_TICKET_EXPIRY_DURATION_MINUTES = 480;
+		//
+		// THREAT ADDRESSED - review finding M-REV-09: this and the hosts' ExpireTimeSpan are not peers.
+		// CookieAuthenticationHandler applies ExpireTimeSpan ONLY when the ticket carries no explicit ExpiresUtc, so the
+		// value here always wins and the hosts' declaration is inert unless the two agree. They had drifted apart - the
+		// hosts declared 8 hours while the frozen session contract is 24 - so the number here is now 1440 and the single
+		// place the hosts get their window from is ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie, which
+		// declares the same 1440. Keep the two in step: they are one contract expressed twice because the framework
+		// requires it in two places, not two independent settings.
+		//
+		// 1440 minutes is an IDLE window, not a session cap: sliding expiration is enabled per the mandated contract,
+		// so activity slides it forward. The cap is AUTH_TICKET_ABSOLUTE_SESSION_HORIZON_MINUTES below.
+		private const double AUTH_TICKET_EXPIRY_DURATION_MINUTES = 1440;
+
+		// Absolute ceiling on a cookie session, past which no amount of activity can carry it.
+		//
+		// THREAT ADDRESSED - CWE-613 (insufficient session expiration), OWASP A07. Sliding expiration is mandated by
+		// Agent Action Plan section 0.6.1 Class 6, and it is a real idle-timeout control, but on its own it is also an
+		// indefinite-renewal primitive: CookieAuthenticationHandler slides the window forward on any request past the
+		// halfway point, so an attacker holding a stolen cookie need only poll it to keep it alive for ever, and the
+		// ExpiresUtc bound is never actually reached. Enabling sliding expiration WITHOUT this ceiling would therefore
+		// have traded one session-expiry weakness for a strictly worse one.
+		//
+		// Seven days deliberately matches JWT_ABSOLUTE_SESSION_HORIZON_MINUTES, so a cookie session and a bearer
+		// session die on the same schedule and an operator has one number to reason about rather than two. Long enough
+		// that ordinary use is undisturbed; short enough that a stolen cookie expires without operator intervention.
+		private const double AUTH_TICKET_ABSOLUTE_SESSION_HORIZON_MINUTES = 10080;
+
+		// Authentication-property item carrying that horizon.
+		//
+		// It is stamped into AuthenticationProperties.Items rather than into a claim on purpose. Items round-trip
+		// through sliding renewal untouched - CookieAuthenticationHandler reuses the decrypted properties and rewrites
+		// only IssuedUtc and ExpiresUtc - so the horizon is fixed at the moment of authentication and cannot be pushed
+		// forward by the very renewal it is there to bound. It also travels inside the encrypted, signed ticket, so a
+		// client can neither read it nor forge a later one. A claim would additionally be visible to every consumer of
+		// the principal, which this value has no reason to be.
+		private const string AUTH_TICKET_ABSOLUTE_EXPIRY_ITEM = "wv_session_absolute_expiry";
+
+		// SECURITY - finding F7 (CWE-613 insufficient session expiration), OWASP A07.
+		// THREAT ADDRESSED: the two JWT validators in this platform disagreed about how much clock drift to
+		// tolerate. This one passed an explicit one-minute skew, while both hosts' AddJwtBearer registrations
+		// omitted ClockSkew entirely and so kept IdentityModel's FIVE-MINUTE default. Framework authorization -
+		// every [Authorize] endpoint reached with a bearer token - runs the HOST's parameters, not these, so an
+		// expired bearer principal stayed authorized for up to four minutes longer than the platform believed,
+		// on exactly the paths where the extra window is worth the most to an attacker holding a stale token.
+		// PUBLIC AND SHARED DELIBERATELY: the mismatch existed because the value was written twice and could
+		// drift. Both hosts now consume THIS member, so parity is compile-time coupled rather than a convention
+		// a future edit can silently break. One minute is retained rather than raised - it is the value the
+		// platform already chose, and shortening a tolerance is the correct direction for an expiry finding.
+		public static readonly TimeSpan JwtClockSkew = TimeSpan.FromMinutes(1);
+
+		// SECURITY - finding F8 (session hijacking): claim carrying the per-sign-in session identifier that
+		// makes a cookie ticket revocable. Shared rather than private because the cookie validation hook that
+		// enforces revocation is wired centrally in ErpMvcExtensions, so the mint site and the check site must
+		// name the SAME claim; a private constant would have forced a duplicated literal, which is exactly how
+		// such pairs drift apart. Internal rather than public because both of those sites live in this one
+		// assembly, so internal is the narrowest visibility that works - and it keeps the claim name out of the
+		// library's public surface, which the no-API-change constraint requires.
+		// Deliberately NOT added to bearer tokens: a bearer credential has no server-side session to end, and
+		// SessionRevocationService.IsRevoked treats an absent claim as not-revoked so those principals are
+		// unaffected. Token revocation is tracked separately as an accepted, recorded residual.
+		internal const string CLAIM_SESSION_ID = "erp_session_id";
 
 		// Suppression window for the token-validation failure log in GetValidSecurityTokenAsync, guarded by the plain
 		// lock idiom this project already uses (Services/CodeEvalService.cs), so a request flood cannot flood the log.
@@ -90,24 +148,42 @@ namespace WebVella.Erp.Web.Services
 				claims.Add(new Claim(ClaimTypes.Email, user.Email));
 				user.Roles.ForEach(role => claims.Add(new Claim(ClaimTypes.Role.ToString(), role.Name)));
 
+				// SECURITY - finding F8 (session hijacking; CWE-613, CWE-384), OWASP A07.
+				// THREAT ADDRESSED: the ticket carried nothing that identified the SIGN-IN, only the user, so
+				// there was no handle by which a single session could ever be ended. Logging out could therefore
+				// only delete the cookie from the one browser that asked, and any copy of it stayed valid for the
+				// full ticket lifetime. This identifier is that handle: LogoutAsync records it as revoked and the
+				// cookie pipeline refuses any ticket carrying a revoked one, so the copy dies on its next request.
+				// A fresh value per sign-in, never derived from the user, so revoking one session cannot end
+				// another and a captured identifier is not predictable from a previous one. Guid.NewGuid is
+				// cryptographically strong on every platform .NET supports, which is the CSPRNG requirement.
+				claims.Add(new Claim(CLAIM_SESSION_ID, Guid.NewGuid().ToString()));
+
 				var claimsIdentity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
 
+				// THREAT ADDRESSED - review finding M-REV-09 (CWE-613, OWASP A07): the frozen session contract is a
+				// 24-hour SLIDING window, and sliding renewal requires BOTH the host's SlidingExpiration and this flag.
+				// This was false, so the mandated sliding half of the contract was unreachable no matter what the hosts
+				// declared. It is now true, and the indefinite-renewal weakness that made disabling it look attractive is
+				// closed properly instead - by the absolute horizon stamped immediately below and enforced on every
+				// request in ValidateSessionHorizonAsync. Those two changes are one change: do not enable this without
+				// the horizon, and do not remove the horizon while this is enabled.
+				DateTimeOffset issuedUtc = DateTimeOffset.UtcNow;
 				var authProperties = new AuthenticationProperties
 				{
-					// H-5 (CWE-613, OWASP A07): THREAT ADDRESSED - indefinite cookie reissue. This was true, which let the
-					// cookie middleware hand out a fresh 24h ticket on any activity past the halfway point, so a stolen
-					// cookie could be renewed for ever and the ExpiresUtc below was never actually reached. The renewal
-					// path requires BOTH the host's SlidingExpiration and this flag, so setting it false pins the ticket to
-					// one immutable original-issued cutoff even if a host's cookie options are later changed - the hosts
-					// already set SlidingExpiration=false, and this is the half of that pair which cannot be lost in a
-					// per-host edit because it is applied once, here, for all seven of them.
-					AllowRefresh = false,
+					AllowRefresh = true,
 					// H-03 (CWE-613, OWASP A07): this was a 100-year expiry, so a stolen authentication cookie never became
-					// useless. An explicit ExpiresUtc wins over the host's ExpireTimeSpan, so this value IS the lifetime.
-					ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(AUTH_TICKET_EXPIRY_DURATION_MINUTES),
+					// useless. An explicit ExpiresUtc wins over the host's ExpireTimeSpan, so this value IS the idle window.
+					ExpiresUtc = issuedUtc.AddMinutes(AUTH_TICKET_EXPIRY_DURATION_MINUTES),
 					IsPersistent = false,
-					IssuedUtc = DateTimeOffset.UtcNow,
+					IssuedUtc = issuedUtc,
 				};
+
+				// Stamped once, here, and never recomputed. Rendered as Unix seconds in the invariant culture so the
+				// value is culture-independent and parses back without ambiguity; a malformed or absent stamp is treated
+				// as an expired session by the validator, which fails closed.
+				authProperties.Items[AUTH_TICKET_ABSOLUTE_EXPIRY_ITEM] =
+					issuedUtc.AddMinutes(AUTH_TICKET_ABSOLUTE_SESSION_HORIZON_MINUTES).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
 
 				IHttpContextAccessor httpContextAccesor = (IHttpContextAccessor)serviceProvider.GetService(typeof(IHttpContextAccessor));
 				// M-03 (OWASP A07): the discarded Task raced the response, so the authentication cookie could be absent from
@@ -119,10 +195,150 @@ namespace WebVella.Erp.Web.Services
 				return null;
 		}
 
-		public void Logout()
+		// Enforces the absolute session horizon on every authenticated request. Wired once, for all seven hosts, by
+		// ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie.
+		//
+		// THREAT ADDRESSED - CWE-613 (insufficient session expiration), OWASP A07. Sliding expiration is mandated, and
+		// it is what turns the 24-hour window into an idle timeout; but the framework's renewal is unbounded, so
+		// without this check a cookie could be slid forward for ever by anything that merely keeps touching it - which
+		// is exactly what an attacker holding a stolen cookie does. This is the ceiling that renewal cannot cross.
+		//
+		// Rejection is deliberately silent. An expired session is a normal lifecycle event, not an authorization
+		// failure, and this handler runs on an anonymous, unauthenticated-reachable path - a caller replaying one
+		// expired cookie in a loop would otherwise be able to drive unbounded log growth for no security value. The
+		// security-relevant events on this path, a failed credential check and a failed token validation, are audited
+		// elsewhere in this class and in the login page.
+		//
+		// The method is written so it cannot throw: an exception escaping principal validation would surface as a 500
+		// on every request carrying a cookie, turning a session-lifetime control into an outage.
+		public static async Task ValidateSessionHorizonAsync(CookieValidatePrincipalContext context)
+		{
+			if (context == null)
+				return;
+
+			// A ticket with no horizon stamp can only be one minted before this control existed: the item travels
+			// inside the encrypted and signed ticket, so a client can neither strip nor add it. Such tickets are
+			// LEFT ALONE rather than rejected, and that is safe rather than lenient - every one of them also carries
+			// AllowRefresh = false, and the renewal path requires the ticket's own AllowRefresh, so they cannot slide
+			// at all and remain bounded by the ExpiresUtc they were issued with. Rejecting them would sign out every
+			// currently signed-in user on deployment for no security gain.
+			if (context.Properties == null
+				|| !context.Properties.Items.TryGetValue(AUTH_TICKET_ABSOLUTE_EXPIRY_ITEM, out string stampedHorizon)
+				|| stampedHorizon == null)
+				return;
+
+			// Present but unreadable is treated as expired. This is unreachable from outside - the value is written by
+			// this class alone, inside a signed ticket - so failing closed here costs nothing and leaves no shape of
+			// stamp that silently disables the ceiling.
+			bool expired;
+			if (!long.TryParse(stampedHorizon, NumberStyles.Integer, CultureInfo.InvariantCulture, out long horizonUnixSeconds))
+			{
+				expired = true;
+			}
+			else
+			{
+				expired = DateTimeOffset.UtcNow >= DateTimeOffset.FromUnixTimeSeconds(horizonUnixSeconds);
+			}
+
+			if (!expired)
+				return;
+
+			context.RejectPrincipal();
+
+			try
+			{
+				await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+			}
+			catch (Exception)
+			{
+				// The principal has already been rejected, so the request is unauthenticated regardless of whether the
+				// expired cookie could be cleared from the response. Swallowing here keeps a failed cookie deletion
+				// from becoming a server error on a path that every authenticated request travels.
+			}
+		}
+
+		// SECURITY - finding F8 (session hijacking; CWE-613 insufficient session expiration), OWASP A07.
+		// THREAT ADDRESSED, three distinct defects in four lines of code:
+		//   (1) FIRE AND FORGET. The returned Task was discarded, so sign-out raced the response. The
+		//       cookie-deletion header could be written after the response had already begun, in which case it
+		//       was silently dropped and the user stayed signed in with no error anywhere.
+		//   (2) ONE SCHEME ONLY. Two of the seven hosts register more than one sign-out-capable scheme, and a
+		//       sign-out that names a single scheme by hand leaves any other holding its state.
+		//   (3) NO SERVER-SIDE INVALIDATION. Deleting a cookie is a request to one browser. A COPY of that
+		//       cookie - from a shared machine, a backup, a proxy log or a cross-site scripting payload -
+		//       remained a fully valid credential for the remainder of the eight-hour ticket lifetime, and the
+		//       legitimate user had no way at all to end it.
+		//
+		// RENAMED, not merely made async, and that is the load-bearing part of the fix: a method still called
+		// Logout() that returned Task would leave every existing `authService.Logout();` call site compiling
+		// unchanged and STILL fire-and-forget, reintroducing defect (1) invisibly. Renaming makes the compiler
+		// find every caller.
+		public async Task LogoutAsync()
 		{
 			IHttpContextAccessor httpContextAccesor = (IHttpContextAccessor)serviceProvider.GetService(typeof(IHttpContextAccessor));
-			httpContextAccesor.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+			HttpContext httpContext = httpContextAccesor?.HttpContext;
+			if (httpContext == null)
+				return;
+
+			// Ordered first on purpose. Revocation reads the claim off the CURRENT principal, and signing out
+			// below replaces it, so doing this afterwards would find nothing to revoke.
+			RevokeCurrentSession(httpContext);
+
+			// Every registered scheme whose handler can actually sign out, resolved from the scheme provider
+			// rather than hard-coded, so a host that adds a second cookie scheme is covered without editing
+			// this method. Two exclusions, both deterministic rather than defensive:
+			//   * a handler that does not implement IAuthenticationSignOutHandler has nothing to sign out -
+			//     JwtBearer is the case that matters here, because a bearer token is stateless and cannot be
+			//     withdrawn by the server at all (recorded as an accepted residual, not silently ignored);
+			//   * PolicySchemeHandler only FORWARDS, and the JWT_OR_COOKIE policy scheme these hosts register
+			//     configures no sign-out forward target, so naming it would raise rather than sign anything out.
+			// Enumerating instead of guessing is what makes this exhaustive; the explicit fallback below keeps
+			// the behaviour correct even if scheme resolution yields nothing at all.
+			var schemeProvider = (IAuthenticationSchemeProvider)serviceProvider.GetService(typeof(IAuthenticationSchemeProvider));
+			var signedOutAtLeastOneScheme = false;
+			if (schemeProvider != null)
+			{
+				foreach (var scheme in await schemeProvider.GetAllSchemesAsync())
+				{
+					if (scheme.HandlerType == null)
+						continue;
+					if (!typeof(IAuthenticationSignOutHandler).IsAssignableFrom(scheme.HandlerType))
+						continue;
+					if (typeof(PolicySchemeHandler).IsAssignableFrom(scheme.HandlerType))
+						continue;
+
+					await httpContext.SignOutAsync(scheme.Name);
+					signedOutAtLeastOneScheme = true;
+				}
+			}
+
+			if (!signedOutAtLeastOneScheme)
+				await httpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+		}
+
+		// SECURITY - finding F8. Records the current sign-in as revoked so that any OTHER copy of the same
+		// cookie is refused from its next request onwards.
+		//
+		// Every exit is silent and non-throwing by design: this runs on the sign-out path, where a failure to
+		// record a revocation must not turn logging out into a server error that leaves the user signed in. An
+		// absent or malformed claim simply means the ticket predates this control - tickets minted before the
+		// upgrade carry no session identifier - and such a ticket is left to expire on its own rather than being
+		// rejected, so an in-flight session is never broken by the deployment itself.
+		private void RevokeCurrentSession(HttpContext httpContext)
+		{
+			var sessionIdClaim = httpContext.User?.FindFirst(CLAIM_SESSION_ID);
+			if (sessionIdClaim == null || !Guid.TryParse(sessionIdClaim.Value, out var sessionId))
+				return;
+
+			var revocations = (SessionRevocationService)serviceProvider.GetService(typeof(SessionRevocationService));
+			if (revocations == null)
+				return;
+
+			// A full ticket lifetime measured from NOW, rather than the ticket's own remaining time. It is a
+			// deliberate over-estimate: reading the real ExpiresUtc would cost a second authenticate call, and
+			// retaining a revocation slightly longer than the credential it kills is the safe direction to err -
+			// the store clamps it to its own ceiling either way.
+			revocations.Revoke(sessionId, DateTime.UtcNow.AddMinutes(AUTH_TICKET_EXPIRY_DURATION_MINUTES));
 		}
 
 		public static ErpUser GetUser(ClaimsPrincipal principal)
@@ -156,11 +372,70 @@ namespace WebVella.Erp.Web.Services
 		// so the response body callers already produce is byte-identical.
 		public const string InvalidCredentialMessage = "Invalid email or password";
 
+		/// <summary>
+		/// Sentinel thrown when the credential is CORRECT but the account still owes a first-login password
+		/// rotation. Deliberately distinct from <see cref="InvalidCredentialMessage"/>.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding C-01 (CWE-1392 use of a default credential, CWE-798), OWASP A07:2021.
+		/// The distinctness matters twice over, and in opposite directions.
+		/// <para>
+		/// IT MUST NOT BE THE CREDENTIAL MESSAGE, because the token endpoint counts a failed attempt against
+		/// the account's lockout budget precisely when it sees that string. The credential presented here is
+		/// valid, so counting it would let the legitimate operator lock themselves out of the account by
+		/// retrying the automation they were trying to configure - a self-inflicted denial of service caused
+		/// by a hardening control. Classified as it is, the endpoint abandons the reserved attempt instead.
+		/// </para>
+		/// <para>
+		/// IT IS ALSO NOT SURFACED TO THE CALLER, and that is intentional rather than an oversight. The token
+		/// route is anonymous, so its existing production branch collapses every non-credential fault to a
+		/// generic message; this outcome falls into that branch untouched, which is why closing this finding
+		/// needed no change to the endpoint at all. The operator's actionable channel is the server-side log
+		/// record the endpoint already writes, together with the provisioning notice that told them to rotate
+		/// in the first place - not a response body that would confirm to an anonymous caller that a guessed
+		/// password was in fact the bootstrap one.
+		/// </para>
+		/// </remarks>
+		public const string PasswordRotationRequiredMessage = "Password rotation required before token issue";
+
+		/// <summary>
+		/// True when the account still carries the first-login rotation marker set by provisioning or by the
+		/// schema version 4 revocation of the credential earlier releases shipped.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding C-01. A single definition shared by both token paths, so issue and refresh can
+		/// never disagree about what "still owes a rotation" means. Null-tolerant throughout: an account whose
+		/// preferences column is absent or empty deserialises to a default instance and reads as false, so a
+		/// missing marker fails OPEN here by design - every account predating this remediation chose its own
+		/// password and owes nothing, and treating absence as "required" would demand a rotation from every
+		/// existing user on upgrade.
+		/// </remarks>
+		private static bool IsPasswordRotationRequired(ErpUser user)
+		{
+			return user?.Preferences?.PasswordChangeRequired == true;
+		}
+
 		public static async ValueTask<string> GetTokenAsync(string email, string password)
 		{
 			var user = new SecurityManager().GetUser(email?.Trim()?.ToLowerInvariant(), password?.Trim());
 			if (user != null && user.Enabled)
 			{
+				// THREAT ADDRESSED - finding C-01 (CWE-1392, CWE-798), OWASP A07:2021. A credential the
+				// platform chose - the password generated at provisioning, or the replacement written when
+				// the version 4 migration revoked the default that earlier releases shipped - is refused a
+				// bearer token until its owner replaces it. That is where the marker's teeth are: a machine
+				// chosen password read off a console is exactly the kind of value that gets pasted into a
+				// deployment script and then never changed, and a JWT is the surface that makes such a value
+				// durable and portable. Checked AFTER the credential is verified, so this reveals nothing to
+				// a caller who has not already presented the correct password.
+				//
+				// Interactive sign-in is deliberately NOT gated. SecurityManager.GetUser is shared with the
+				// login page, so gating it here rather than on this specific path would have locked the
+				// operator out of the only screen that can clear the marker, turning first-login rotation
+				// into an unrecoverable installation.
+				if (IsPasswordRotationRequired(user))
+					throw new InvalidOperationException(PasswordRotationRequiredMessage);
+
 				var (tokenString, token) = await BuildTokenAsync(user);
 				return tokenString;
 			}
@@ -198,7 +473,14 @@ namespace WebVella.Erp.Web.Services
 			if (!string.IsNullOrWhiteSpace(nameIdentifier))
 			{
 				var user = new SecurityManager().GetUser(new Guid(nameIdentifier));
-				if (user is not null && user.Enabled)
+				// THREAT ADDRESSED - finding C-01 (CWE-1392, CWE-798), OWASP A07:2021. Refresh is gated on the
+				// rotation marker as well as on Enabled, which closes a grandfathering hole rather than merely
+				// restating the issue-path check: a token minted BEFORE the version 4 migration marked this
+				// account could otherwise have been renewed indefinitely afterwards, so the migration would
+				// have revoked the password without revoking access obtained with it. Returning null rather
+				// than throwing is this method's established convention for every refusal, and the caller
+				// already treats null as "refuse the refresh", so the outcome needs no new handling.
+				if (user is not null && user.Enabled && !IsPasswordRotationRequired(user))
 				{
 					var (newTokenString, newToken) = await BuildTokenAsync(user, absoluteSessionExpiryUtc.Value);
 					return newTokenString;
@@ -236,13 +518,49 @@ namespace WebVella.Erp.Web.Services
 #pragma warning disable 1998
 		public static async ValueTask<JwtSecurityToken> GetValidSecurityTokenAsync(string token)
 		{
-			var mySecret = Encoding.UTF8.GetBytes(ErpSettings.JwtKey);
-			var mySecurityKey = new SymmetricSecurityKey(mySecret);
+			// THREAT ADDRESSED - finding M-REV-07 (CWE-703 improper check of exceptional conditions, CWE-778
+			// insufficient logging), OWASP A07:2021 + A09:2021. Two coupled defects lived in the three lines that
+			// used to open this method.
+			// (1) The signing key was built BEFORE the try. Encoding.UTF8.GetBytes(null) throws
+			//     ArgumentNullException and SymmetricSecurityKey rejects null and empty material, so whenever
+			//     'Settings:Jwt:Key' is unusable this method threw on its very first statement, OUTSIDE the
+			//     handler that exists to classify and record failures. That is not an exotic condition: the two
+			//     hosts that register Middleware/JwtMiddleware.cs - WebVella.Erp.Site and
+			//     WebVella.Erp.Site.Project - are the only two declaring a 'Settings:Jwt' section, and both ship
+			//     that section with an EMPTY Key because the secret-scrub finding requires the value to come from
+			//     the environment. So under the configuration the repository actually ships, EVERY request
+			//     carrying an Authorization header on EVERY host that runs this middleware raised an exception
+			//     here, which then escaped into the middleware's catch and was discarded. The audit trail the
+			//     catch block below was built to guarantee was structurally unreachable, and a configuration
+			//     fault was indistinguishable from a forged token: both produced nothing at all.
+			// (2) Because the throw came from a null configuration value rather than from the token, no amount of
+			//     logging inside the try could have described it correctly.
+			// The gate below is the fix for both. ErpSettings.IsJwtConfigured is the single platform-wide switch
+			// for "is bearer-token authentication usable here?" (ErpSettings.cs), resolved once at startup by the
+			// same acceptability rule the two token endpoints consult at Controllers/WebApiController.cs:L5312 and
+			// :L5406. Consulting it here closes the one consumer that did not, so an unconfigured host now refuses
+			// bearer tokens cheaply and deterministically instead of by exception. Returning null rather than
+			// throwing is the established contract of this method - every other refusal path returns null, and
+			// both callers already treat null as "no valid token" - so no caller behaviour changes.
+			// Deliberately NOT logged: on an unconfigured host this is the expected steady state for every request
+			// that carries a header, not an anomaly, so recording it would be an attacker-triggerable log flood
+			// (the very property the rate bound below exists to prevent) rather than evidence.
+			if (!ErpSettings.IsJwtConfigured)
+				return null;
+
 			var tokenHandler = new JwtSecurityTokenHandler();
 			try
 			{
+				// M-REV-07: key construction moved inside the try. After the gate above, IsAcceptableJwtKey has
+				// already proven the key is non-null, at least 32 bytes once UTF-8 encoded and not a published
+				// default, so neither statement can throw on any reachable path today. They are inside the handler
+				// so that they cannot become an unhandled throw again if that gate is ever weakened - the same
+				// class of defect this finding reports, made structurally unable to recur.
+				var mySecret = Encoding.UTF8.GetBytes(ErpSettings.JwtKey);
+				var mySecurityKey = new SymmetricSecurityKey(mySecret);
+
 				// H-02 (CWE-613 + CWE-347, OWASP A07): lifetime validation was absent, so an EXPIRED token still validated;
-				// with the [AllowAnonymous] refresh endpoint at Controllers/WebApiController.cs:L4292 a stolen token was
+				// with the [AllowAnonymous] refresh endpoint GetNewJwtToken in Controllers/WebApiController.cs a stolen token was
 				// indefinitely renewable. Analyzer CA5404 covers this; the clock skew is explicit so drift stays bounded.
 				tokenHandler.ValidateToken(token,
 				new TokenValidationParameters
@@ -254,112 +572,140 @@ namespace WebVella.Erp.Web.Services
 					ValidIssuer = ErpSettings.JwtIssuer,
 					ValidAudience = ErpSettings.JwtAudience,
 					IssuerSigningKey = mySecurityKey,
-					ClockSkew = TimeSpan.FromMinutes(1),
+					ClockSkew = JwtClockSkew,
 				}, out SecurityToken validatedToken);
 				return validatedToken as JwtSecurityToken;
 			}
-			catch (Exception ex)
+			// SECURITY - finding F11 (CWE-396 declaration of catch for generic exception), OWASP A09.
+			// THREAT ADDRESSED: this was catch (Exception), so EVERY failure inside ValidateToken - including a
+			// genuine defect in this build such as a null reference, an invalid cast or a missing assembly - was
+			// converted into "the token is invalid" and returned as a clean null. Two consequences, and the second
+			// is the security one: a real fault was silently mislabelled as an authorization outcome, and the
+			// resulting audit record asserted a credential rejection that had never actually been judged, so the
+			// authorization-failure trail this validator exists to produce could be populated with fiction.
+			// NARROWED to the two families ValidateToken documents, and no wider:
+			//   * SecurityTokenException is the root of every IdentityModel validation outcome - expired, not yet
+			//     valid, bad signature, unknown signing key, wrong issuer, wrong audience, malformed, undecryptable -
+			//     so one clause covers all of them and stays correct as the library adds more;
+			//   * ArgumentException covers the input contract: ArgumentNullException for a null or empty token and
+			//     ArgumentException for one past MaximumTokenSizeInBytes, both of which are ordinary hostile input
+			//     on this path and must stay a 401 rather than becoming a 500.
+			// Everything else now propagates into the error pipeline, where a defect belongs. The two clauses share
+			// one recorder rather than duplicating it, so the audit behaviour cannot diverge between them.
+			catch (SecurityTokenException ex)
 			{
-				// "Log authorization failures": failures here were swallowed in silence, so expired or forged tokens left no
-				// audit trail. Three properties of this block are load-bearing and MUST survive any future tidy-up:
-				// (1) DoNotNotify - LogService e-mails before it persists (M-17) and Middleware/JwtMiddleware.cs:L42 runs
-				//     this validator for EVERY request carrying an Authorization header, so a notifying log here would be
-				//     an attacker-triggered mail bomb and DoS amplifier rather than a fix.
-				// (2) Rate-bounded - each write costs a BaseService construction plus a database insert, so a flood must
-				//     produce evidence of a flood instead of a flood of evidence.
-				// (3) Exception type and a DERIVED description only - never the raw token, which is a bearer credential,
-				//     never a stack trace, and (P4-07) never the raw exception message, because IdentityModel composes
-				//     that message out of the rejected token's own claim values.
-				try
-				{
-					var writeLogEntry = false;
-					lock (tokenValidationLogLock)
-					{
-						if (DateTime.UtcNow >= tokenValidationLogLastWrittenUtc.AddMinutes(TOKEN_VALIDATION_LOG_INTERVAL_MINUTES))
-						{
-							tokenValidationLogLastWrittenUtc = DateTime.UtcNow;
-							writeLogEntry = true;
-						}
-					}
-
-					if (writeLogEntry)
-					{
-						// P4-07: ex.Message is NOT passed. DescribeTokenValidationFailure returns a fixed description for
-						// the failure category, optionally suffixed with the leading IDXnnnnn code, and SanitizeForLog
-						// bounds and neutralises whatever comes back. The exception type name stays in the message
-						// argument: it is CLR metadata from a loaded assembly, not payload text.
-						// H-02 (CWE-778): any previously unrecorded audit-write losses are carried into this entry, so a
-						// database outage that suppressed the authorization-failure trail is itself visible IN that trail
-						// rather than only in the absence of records. Read before the write, subtracted only after it, so a
-						// loss recorded concurrently by another request is carried forward instead of being discarded.
-						var unreportedWriteFailures = Volatile.Read(ref tokenValidationAuditWriteFailures);
-						var details = SanitizeForLog(DescribeTokenValidationFailure(ex));
-						if (unreportedWriteFailures > 0)
-						{
-							details = details + " | " + unreportedWriteFailures.ToString(CultureInfo.InvariantCulture)
-								+ " earlier token-validation audit entr(ies) could not be persisted and are unrecorded.";
-						}
-
-						new LogService().Create(Diagnostics.LogType.Error, "AuthService:GetValidSecurityTokenAsync",
-							"JWT validation failed: " + ex.GetType().Name, details,
-							Diagnostics.LogNotificationStatus.DoNotNotify);
-
-						if (unreportedWriteFailures > 0)
-						{
-							Interlocked.Add(ref tokenValidationAuditWriteFailures, -unreportedWriteFailures);
-						}
-					}
-				}
-				// An audit-logging failure must never escape and turn token validation into a server error, but the bare
-				// catch that previously enforced that also swallowed defects and left the loss of a required
-				// authorization-failure audit entry completely invisible. Only the storage failures this write can
-				// actually produce are caught, and each one is counted instead of discarded. Everything else - notably
-				// OutOfMemoryException, StackOverflowException, OperationCanceledException and SecurityException -
-				// propagates untouched. Writing the record reaches Services/LogService.cs:L29 -> Diagnostics/Log.cs:L53,
-				// which opens an Npgsql connection at Diagnostics/Log.cs:L55, inserts into system_log and then releases the
-				// connection; the DoNotNotify status above means the e-mail branch guarded at Services/LogService.cs:L20 is
-				// never entered, so no mail transport failure is possible here, and the plain-Exception throws in
-				// Database/DbConnection.cs:L189 and :L193 are unreachable because this path never begins a transaction on
-				// the connection it opens. Recording the loss cannot throw, so no catch clause can fail in turn.
-				catch (System.Data.Common.DbException)
-				{
-					// Npgsql surfaces every server-side and connection-level fault as NpgsqlException : DbException.
-					// Fully qualified because the platform declares an unrelated Database/DbException.cs of the same
-					// simple name, caught separately below; a future using directive must not silently repoint this.
-					Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-				}
-				catch (WebVella.Erp.Database.DbException)
-				{
-					// The platform's own data-layer exception. Database/DbContext.cs:L81 raises it when a connection is
-					// released out of order, which the audit write can encounter while the request already holds one.
-					Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-				}
-				catch (TimeoutException)
-				{
-					// Connection-pool exhaustion or command timeout while the database is saturated.
-					Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-				}
-				catch (IOException)
-				{
-					// Transport failure writing to or reading from the database socket.
-					Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-				}
-				catch (InvalidOperationException)
-				{
-					// Connection or transaction in an unusable state; also covers ObjectDisposedException, which derives
-					// from it, when the request's database scope has already been torn down.
-					Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-				}
-				catch (NullReferenceException)
-				{
-					// Narrowly justified: JwtMiddleware runs this validator for every request carrying an Authorization
-					// header, including requests handled before or after the ERP database scope exists, and
-					// Diagnostics/Log.cs:L55 dereferences the ambient DbContext.Current without a null guard. That is an
-					// expected environmental condition on this path, not a defect in the code being audited.
-					Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-				}
-
+				RecordTokenValidationFailure(ex);
 				return null;
+			}
+			catch (ArgumentException ex)
+			{
+				RecordTokenValidationFailure(ex);
+				return null;
+			}
+		}
+
+		// SECURITY - finding H-02 / F11. Records one rate-bounded, sanitised audit entry for a token that was
+		// judged and rejected. Extracted from the catch block it used to live in so that the two narrowed clauses
+		// above share a single implementation; the body, and every property its comments assert, is unchanged.
+		private static void RecordTokenValidationFailure(Exception ex)
+		{
+			// "Log authorization failures": failures here were swallowed in silence, so expired or forged tokens left no
+			// audit trail. Three properties of this block are load-bearing and MUST survive any future tidy-up:
+			// (1) DoNotNotify - LogService e-mails before it persists (M-17) and Middleware/JwtMiddleware.cs:L42 runs
+			//     this validator for EVERY request carrying an Authorization header, so a notifying log here would be
+			//     an attacker-triggered mail bomb and DoS amplifier rather than a fix.
+			// (2) Rate-bounded - each write costs a BaseService construction plus a database insert, so a flood must
+			//     produce evidence of a flood instead of a flood of evidence.
+			// (3) Exception type and a DERIVED description only - never the raw token, which is a bearer credential,
+			//     never a stack trace, and (P4-07) never the raw exception message, because IdentityModel composes
+			//     that message out of the rejected token's own claim values.
+			try
+			{
+				var writeLogEntry = false;
+				lock (tokenValidationLogLock)
+				{
+					if (DateTime.UtcNow >= tokenValidationLogLastWrittenUtc.AddMinutes(TOKEN_VALIDATION_LOG_INTERVAL_MINUTES))
+					{
+						tokenValidationLogLastWrittenUtc = DateTime.UtcNow;
+						writeLogEntry = true;
+					}
+				}
+
+				if (writeLogEntry)
+				{
+					// P4-07: ex.Message is NOT passed. DescribeTokenValidationFailure returns a fixed description for
+					// the failure category, optionally suffixed with the leading IDXnnnnn code, and SanitizeForLog
+					// bounds and neutralises whatever comes back. The exception type name stays in the message
+					// argument: it is CLR metadata from a loaded assembly, not payload text.
+					// H-02 (CWE-778): any previously unrecorded audit-write losses are carried into this entry, so a
+					// database outage that suppressed the authorization-failure trail is itself visible IN that trail
+					// rather than only in the absence of records. Read before the write, subtracted only after it, so a
+					// loss recorded concurrently by another request is carried forward instead of being discarded.
+					var unreportedWriteFailures = Volatile.Read(ref tokenValidationAuditWriteFailures);
+					var details = SanitizeForLog(DescribeTokenValidationFailure(ex));
+					if (unreportedWriteFailures > 0)
+					{
+						details = details + " | " + unreportedWriteFailures.ToString(CultureInfo.InvariantCulture)
+							+ " earlier token-validation audit entr(ies) could not be persisted and are unrecorded.";
+					}
+
+					new LogService().Create(Diagnostics.LogType.Error, "AuthService:GetValidSecurityTokenAsync",
+						"JWT validation failed: " + ex.GetType().Name, details,
+						Diagnostics.LogNotificationStatus.DoNotNotify);
+
+					if (unreportedWriteFailures > 0)
+					{
+						Interlocked.Add(ref tokenValidationAuditWriteFailures, -unreportedWriteFailures);
+					}
+				}
+			}
+			// An audit-logging failure must never escape and turn token validation into a server error, but the bare
+			// catch that previously enforced that also swallowed defects and left the loss of a required
+			// authorization-failure audit entry completely invisible. Only the storage failures this write can
+			// actually produce are caught, and each one is counted instead of discarded. Everything else - notably
+			// OutOfMemoryException, StackOverflowException, OperationCanceledException and SecurityException -
+			// propagates untouched. Writing the record reaches Services/LogService.cs:L29 -> Diagnostics/Log.cs:L53,
+			// which opens an Npgsql connection at Diagnostics/Log.cs:L55, inserts into system_log and then releases the
+			// connection; the DoNotNotify status above means the e-mail branch guarded at Services/LogService.cs:L20 is
+			// never entered, so no mail transport failure is possible here, and the plain-Exception throws in
+			// Database/DbConnection.cs:L189 and :L193 are unreachable because this path never begins a transaction on
+			// the connection it opens. Recording the loss cannot throw, so no catch clause can fail in turn.
+			catch (System.Data.Common.DbException)
+			{
+				// Npgsql surfaces every server-side and connection-level fault as NpgsqlException : DbException.
+				// Fully qualified because the platform declares an unrelated Database/DbException.cs of the same
+				// simple name, caught separately below; a future using directive must not silently repoint this.
+				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
+			}
+			catch (WebVella.Erp.Database.DbException)
+			{
+				// The platform's own data-layer exception. Database/DbContext.cs:L81 raises it when a connection is
+				// released out of order, which the audit write can encounter while the request already holds one.
+				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
+			}
+			catch (TimeoutException)
+			{
+				// Connection-pool exhaustion or command timeout while the database is saturated.
+				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
+			}
+			catch (IOException)
+			{
+				// Transport failure writing to or reading from the database socket.
+				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
+			}
+			catch (InvalidOperationException)
+			{
+				// Connection or transaction in an unusable state; also covers ObjectDisposedException, which derives
+				// from it, when the request's database scope has already been torn down.
+				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
+			}
+			catch (NullReferenceException)
+			{
+				// Narrowly justified: JwtMiddleware runs this validator for every request carrying an Authorization
+				// header, including requests handled before or after the ERP database scope exists, and
+				// Diagnostics/Log.cs:L55 dereferences the ambient DbContext.Current without a null guard. That is an
+				// expected environmental condition on this path, not a defect in the code being audited.
+				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
 			}
 		}
 
@@ -496,22 +842,19 @@ namespace WebVella.Erp.Web.Services
 		/// carriage returns are what let a crafted value forge additional entries in a line-oriented log, and they are
 		/// control characters, so replacing rather than stripping them keeps the text readable while removing the
 		/// injection primitive.
+		/// <para>
+		/// DELEGATED, not reimplemented. The identical bound-then-neutralise logic is required by the login audit and
+		/// by both anonymous token routes, so it now lives once in <see cref="SecurityAuditLog.Normalize"/> and this
+		/// method is the thin binding of that helper to this class's own <see cref="MaxLogDetailLength"/>. Two copies
+		/// of a neutralisation routine are two things that can drift apart, and a divergence here would be silent -
+		/// the log would still look correct while one of the two paths had stopped neutralising. Behaviour is
+		/// unchanged: the helper bounds before scanning and replaces control characters with spaces, exactly as the
+		/// body it replaces did.
+		/// </para>
 		/// </remarks>
 		private static string SanitizeForLog(string value)
 		{
-			if (string.IsNullOrEmpty(value))
-			{
-				return string.Empty;
-			}
-
-			var bounded = value.Length <= MaxLogDetailLength ? value : value.Substring(0, MaxLogDetailLength);
-			var builder = new StringBuilder(bounded.Length);
-			foreach (var character in bounded)
-			{
-				builder.Append(char.IsControl(character) ? ' ' : character);
-			}
-
-			return builder.ToString();
+			return SecurityAuditLog.Normalize(value, MaxLogDetailLength);
 		}
 
 

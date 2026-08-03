@@ -51,6 +51,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -155,12 +156,53 @@ namespace WebVella.Erp.Utilities
         /// iterations of key derivation. Ordering is the whole point of the control: validating
         /// content before size is what let a large value pay for itself.
         /// The value is 128 to match exactly the maximum length the password field is provisioned
-        /// with by the system entity definition, so this bound can never refuse a plaintext that
-        /// the platform would otherwise accept, and no legitimate credential is affected. It is
-        /// NOT a security limit on password strength - 128 characters is far above the 12-character
-        /// minimum this remediation sets - it is purely a resource bound.
+        /// with by the system entity definition. It is NOT a security limit on password strength -
+        /// 128 characters is far above the 12-character minimum this remediation sets - it is
+        /// purely a resource bound.
+        /// <para>
+        /// CORRECTION, recorded rather than quietly amended: an earlier revision of this comment
+        /// claimed the agreement with the field definition meant this bound "can never refuse a
+        /// plaintext that the platform would otherwise accept". That was wrong. A
+        /// <c>PasswordField</c>'s <c>MinLength</c> and <c>MaxLength</c> are parsed into the field
+        /// metadata but never enforced on write, so an over-long plaintext does reach
+        /// <see cref="HashPassword(string)"/>, which returns <see cref="string.Empty"/> for it -
+        /// storing a value that nothing can ever verify, silently. Fail-closed, but silent, and on
+        /// the administrator account that outcome is an unreachable installation. Finding C-01
+        /// closes the provisioning route into this by validating the configured first administrator
+        /// password against the full 12-to-128 policy before it is hashed. The equivalent bound is
+        /// NOT enforced on the general user-update path, so that residual is documented in
+        /// docs/security/risk-register.md rather than asserted away here: enforcing field-metadata
+        /// length limits across every write projection is the platform-wide change the engagement's
+        /// minimal-change constraint forbids.
+        /// </para>
         /// </remarks>
-        private const int MaxPasswordLength = 128;
+        internal const int MaxPasswordLength = 128;
+
+        /// <summary>
+        /// The shortest plaintext the platform accepts when a NEW credential is written.
+        /// </summary>
+        /// <remarks>
+        /// Threat addressed - finding M-REV-12 (CWE-521 weak password requirements), and the
+        /// engagement's mandated Authentication Hardening standard "minimum password complexity:
+        /// 12+ characters".
+        /// <para>
+        /// Twelve matches exactly the minimum the system entity definition provisions the password
+        /// field with, so this constant and that metadata cannot drift apart. The metadata alone was
+        /// NOT sufficient: field length metadata is advisory presentation state in this platform and
+        /// is not consulted on the write path, so an API caller or a configured provisioning value
+        /// could write a two-character password while the user interface claimed a twelve-character
+        /// minimum. This is the server-side half of that bound.
+        /// </para>
+        /// <para>
+        /// It is deliberately applied ONLY where a new plaintext is being converted to a stored
+        /// hash. It is NOT applied when an already-verified credential is re-hashed during the
+        /// backward-compatible format migration: an account created under the platform's previous
+        /// six-character minimum must keep working and must still have its legacy digest upgraded,
+        /// and refusing that upgrade would either lock the account out or strand it on MD5 forever.
+        /// Raising a minimum has to govern what is newly written, never what is merely re-encoded.
+        /// </para>
+        /// </remarks>
+        internal const int MinPasswordLength = 12;
 
         /// <summary>
         /// The exact rendered length of a legacy MD5 digest: 16 bytes emitted as two hexadecimal
@@ -168,6 +210,112 @@ namespace WebVella.Erp.Utilities
         /// one, so it is a constant rather than a literal repeated across members.
         /// </summary>
         private const int Md5HexLength = 32;
+
+        /// <summary>
+        /// Tests a NEW plaintext credential against the platform's length policy.
+        /// </summary>
+        /// <param name="password">The plaintext about to be converted to a stored hash.</param>
+        /// <returns>
+        /// <c>null</c> when the value is acceptable; otherwise a short, caller-safe description of
+        /// why it was refused.
+        /// </returns>
+        /// <remarks>
+        /// Threat addressed - finding M-REV-12 (CWE-521), OWASP A07:2021 Identification and
+        /// Authentication Failures.
+        /// <para>
+        /// The returned reason NEVER contains the plaintext, its length, or any derivative of it.
+        /// That is not fastidiousness: the reason is surfaced through a record-write error whose
+        /// message is both returned to the caller and persisted to the system log, so embedding the
+        /// value - or even its exact length - would convert a validation improvement into stored
+        /// credential disclosure (CWE-532). Callers that build a message from this string may pass
+        /// it on verbatim.
+        /// </para>
+        /// <para>
+        /// Only length is enforced here. The mandated standard also names mixed case, numbers and
+        /// symbols, and this method deliberately does not test them: the engagement's Minimal Change
+        /// Clause admits the least invasive control that closes the finding, and composition rules
+        /// applied to a write path that existing installations already use would reject credentials
+        /// those installations legitimately hold today - a functionality regression the preservation
+        /// requirement forbids. Class coverage IS enforced where the platform itself authors a
+        /// credential; see ERPService.GenerateInitialAdministratorPassword.
+        /// </para>
+        /// </remarks>
+        internal static string ValidatePasswordPolicy(string password)
+        {
+            // Size before content, for the same reason every other entry point in this file orders
+            // it that way: this runs on an authenticated write path, but an oversized value must
+            // still cost one integer comparison rather than a full character scan.
+            if (password != null && password.Length > MaxPasswordLength)
+            {
+                return "it is longer than the " + MaxPasswordLength.ToString(CultureInfo.InvariantCulture)
+                    + " character maximum";
+            }
+
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                return "it is empty";
+            }
+
+            if (password.Length < MinPasswordLength)
+            {
+                return "it is shorter than the " + MinPasswordLength.ToString(CultureInfo.InvariantCulture)
+                    + " character minimum";
+            }
+
+            // THREAT ADDRESSED - finding F25 / M-13, CWE-521 (weak password requirements), OWASP
+            // A07:2021. Length alone is NOT the mandated policy. The Authentication Hardening standard
+            // requires "12+ characters, mixed case, numbers, symbols", so a value such as
+            // "aaaaaaaaaaaa" clears every length test above and must still be refused here. A symbol is
+            // defined as any character that is neither a letter nor a digit, rather than as a fixed
+            // punctuation set, so a space in a passphrase counts and a non-cased script such as CJK
+            // does not quietly satisfy the mixed-case requirement by being neither upper nor lower
+            // case. Blank input is refused above rather than passed as "no objection": two of the five
+            // call sites (DbRecordRepository and RecordManager.ExtractFieldValue) do not filter blank
+            // themselves, so answering null there would admit an empty credential.
+
+            bool hasUpperCase = false;
+            bool hasLowerCase = false;
+            bool hasDigit = false;
+            bool hasSymbol = false;
+
+            foreach (char character in password)
+            {
+                if (char.IsUpper(character))
+                {
+                    hasUpperCase = true;
+                }
+                else if (char.IsLower(character))
+                {
+                    hasLowerCase = true;
+                }
+                else if (char.IsDigit(character))
+                {
+                    hasDigit = true;
+                }
+                else if (!char.IsLetterOrDigit(character))
+                {
+                    hasSymbol = true;
+                }
+            }
+
+            if (hasUpperCase && hasLowerCase && hasDigit && hasSymbol)
+            {
+                return null;
+            }
+
+            // One message naming every missing class, rather than one complaint per call. Reporting
+            // them one at a time would make satisfying the policy an iterative guessing game for the
+            // administrator creating the account, and nothing is disclosed by being specific: the
+            // policy is not a secret, and the person reading this message is the person who just
+            // chose the password.
+            StringBuilder missingClasses = new StringBuilder();
+            AppendMissingClass(missingClasses, !hasUpperCase, "an upper case letter");
+            AppendMissingClass(missingClasses, !hasLowerCase, "a lower case letter");
+            AppendMissingClass(missingClasses, !hasDigit, "a number");
+            AppendMissingClass(missingClasses, !hasSymbol, "a symbol");
+
+            return "it is missing " + missingClasses.ToString();
+        }
 
         /// <summary>
         /// Hashes a password for storage using the modern primitive. Every call returns a
@@ -178,22 +326,48 @@ namespace WebVella.Erp.Utilities
         /// <param name="password">The plaintext password.</param>
         /// <returns>
         /// The encoded hash, or <see cref="string.Empty"/> when <paramref name="password"/> is
-        /// null, empty or whitespace. Empty is returned rather than thrown for two reasons: it is
-        /// the contract the existing callers of <see cref="GetMd5Hash(string)"/> already rely on,
-        /// so substituting this member for that one changes no behaviour; and it is fail-closed,
-        /// because an empty stored value can never verify, so an empty password cannot yield a
-        /// usable credential.
+        /// null, empty or whitespace. Empty is returned rather than thrown for that case for two
+        /// reasons: it is the contract the existing callers of <see cref="GetMd5Hash(string)"/>
+        /// already rely on, so substituting this member for that one changes no behaviour; and it is
+        /// fail-closed, because an empty stored value can never verify, so an empty password cannot
+        /// yield a usable credential.
         /// </returns>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="password"/> is longer than <see cref="MaxPasswordLength"/>. This is
+        /// deliberately an exception rather than an empty return - see finding F25 and the comment on
+        /// the guard itself. An empty return here would blank the stored credential.
+        /// </exception>
         internal static string HashPassword(string password)
         {
             // Size before content. See MaxPasswordLength: this test precedes the whitespace scan
             // deliberately, so an oversized value never pays for a full character scan and never
-            // reaches the 600,000-iteration derivation. Empty is returned rather than thrown to
-            // keep the single documented failure contract of this member - and it is fail-closed,
-            // because an empty stored value can never verify.
+            // reaches the 600,000-iteration derivation.
+            //
+            // THREAT ADDRESSED - finding F25, CWE-521 / CWE-20. This returned string.Empty, and that
+            // silent degradation WAS the vulnerability: an oversized password produced an empty
+            // stored value, an empty stored value can never verify, so writing a 129-character
+            // password silently and irreversibly locked the account out of the platform. Fail-closed
+            // was the correct instinct and is preserved for the blank case below, but it is the wrong
+            // answer here, because the two failures are not alike: a blank password is a caller that
+            // supplied nothing, whereas an oversized one is a caller that supplied something it
+            // believes will work. Refusing loudly is the only outcome that cannot destroy a
+            // credential.
+            //
+            // Throwing is provably safe at every one of this member's three call sites:
+            //  - SecurityManager.UpgradeStoredPasswordHash cannot reach it. The plaintext it re-hashes
+            //    has just been verified by VerifyPassword, which rejects anything over this bound
+            //    before verifying, so a value arriving there is already <= MaxPasswordLength. Its
+            //    surrounding catch is therefore a backstop that this change does not arm.
+            //  - The two generic record-write collectors (Api/RecordManager.cs and
+            //    Database/DbRecordRepository.cs) run inside RecordManager's create/update handlers,
+            //    which convert an exception into an unsuccessful QueryResponse. The write fails
+            //    instead of half-succeeding, which is the entire point.
+            //  - SecurityManager.SaveUser validates through ValidatePasswordPolicy first, so it
+            //    reports a field-level error and never reaches this throw at all.
             if (password != null && password.Length > MaxPasswordLength)
             {
-                return string.Empty;
+                throw new ArgumentOutOfRangeException(nameof(password),
+                    "Password must be no longer than " + MaxPasswordLength + " characters.");
             }
 
             if (string.IsNullOrWhiteSpace(password))
@@ -241,6 +415,39 @@ namespace WebVella.Erp.Utilities
         /// and persist the result. Always false when verification fails, so a failed attempt can
         /// never trigger a write.
         /// </param>
+        /// <param name="keyDerivationPerformed">
+        /// True if and only if this call actually executed a PBKDF2 derivation. Reported as a FACT
+        /// rather than left to the caller to infer, which is the substance of finding F28.
+        /// <para>
+        /// THREAT ADDRESSED - finding F28, CWE-208 (observable timing discrepancy) and CWE-203
+        /// (observable difference in behaviour), OWASP A07:2021. A credential-resolution path that
+        /// finds no account has to spend a compensating derivation, or the absence of the account is
+        /// visible in the response time. Its caller used to decide whether that compensation was owed
+        /// by PREDICTING this member's behaviour from the stored value's shape - specifically, by
+        /// assuming that a non-legacy shape implies a derivation. That prediction is wrong in exactly
+        /// the two cases where it matters, and each wrong answer is an oracle:
+        /// </para>
+        /// <list type="bullet">
+        /// <item><description>
+        /// An over-long password returns on the size guard below without deriving anything, yet was
+        /// predicted to have derived - so the compensation was skipped and an existing account with a
+        /// modern hash answered in about a millisecond while an account that does not exist took the
+        /// full derivation. Sampling latency with one over-long password therefore enumerated accounts.
+        /// </description></item>
+        /// <item><description>
+        /// A corrupt or hand-edited modern payload is rejected by the cheap format guards in
+        /// <see cref="VerifyPbkdf2Hash(string, string, out bool, out bool)"/> before any derivation,
+        /// and was predicted the same wrong way. This is the residual that the caller previously
+        /// documented, measured at about 16 ms, and accepted as unfixable from its side. Reporting the
+        /// fact from here is what makes it fixable, and it is now fixed.
+        /// </description></item>
+        /// </list>
+        /// <para>
+        /// A legacy MD5 comparison is NOT a key derivation and deliberately reports false: it costs
+        /// microseconds, so it discharges nothing, and a caller that treated it as sufficient would
+        /// leave every legacy account distinguishable from every modern one by timing alone.
+        /// </para>
+        /// </param>
         /// <returns>True when the password matches the stored value; otherwise false.</returns>
         /// <remarks>
         /// SECURITY (C-03, CWE-916/CWE-759, OWASP A02:2021) - this is the enabling member for the
@@ -249,9 +456,11 @@ namespace WebVella.Erp.Utilities
         /// This member never throws for a bad or corrupt stored value: it returns false. A single
         /// damaged row must not become a denial of service on the login path.
         /// </remarks>
-        internal static bool VerifyPassword(string password, string storedHash, out bool needsRehash)
+        internal static bool VerifyPassword(string password, string storedHash, out bool needsRehash,
+            out bool keyDerivationPerformed)
         {
             needsRehash = false;
+            keyDerivationPerformed = false;
 
             // Size before content, and before anything else in this member. This is the entry
             // point the anonymous login endpoint reaches, so it is the one that decides whether an
@@ -288,7 +497,7 @@ namespace WebVella.Erp.Utilities
                 return true;
             }
 
-            return VerifyPbkdf2Hash(password, storedHash, out needsRehash);
+            return VerifyPbkdf2Hash(password, storedHash, out needsRehash, out keyDerivationPerformed);
         }
 
         /// <summary>
@@ -301,13 +510,21 @@ namespace WebVella.Erp.Utilities
         /// True only on success and only when the recorded iteration count is below
         /// <see cref="Pbkdf2IterationCount"/>.
         /// </param>
+        /// <param name="keyDerivationPerformed">
+        /// True if and only if control reached the derivation call. False for every cheap guard
+        /// rejection above it - see finding F28 and the remarks on
+        /// <see cref="VerifyPassword(string, string, out bool, out bool)"/>.
+        /// </param>
         /// <returns>True when the password matches; otherwise false.</returns>
         /// <remarks>
-        /// This member NEVER throws. Every field read out of the payload is range-checked before it
-        /// is used, and the Base64 decode is attempted with the non-throwing overload, so a
-        /// truncated, corrupt or deliberately malformed row returns false instead of surfacing as a
-        /// 500 on an endpoint reachable without credentials. That is a requirement, not a nicety: a
-        /// single damaged row must not become a denial of service on the login path.
+        /// This member does not throw for MALFORMED STORED INPUT. Every field read out of the payload
+        /// is range-checked before it is used, and the Base64 decode is attempted with the non-throwing
+        /// overload, so a truncated, corrupt or deliberately malformed row returns false instead of
+        /// surfacing as a 500 on an endpoint reachable without credentials. That is a requirement, not a
+        /// nicety: a single damaged row must not become a denial of service on the login path. It is NOT
+        /// a claim about every conceivable runtime failure - an allocation failure or a platform
+        /// cryptography fault still propagates, and deliberately so, because those are genuine faults
+        /// rather than hostile input and must not be reported as a failed password.
         /// SECURITY - the guards are ordered cheapest-first and every one of them runs BEFORE any
         /// key derivation is attempted, because the iteration count and salt length come out of the
         /// stored value and are therefore attacker-controlled the moment anything can write to the
@@ -323,9 +540,15 @@ namespace WebVella.Erp.Utilities
         /// identifier are rejected outright: deny by default, and no value in that shape can have
         /// been produced by this codebase.
         /// </remarks>
-        private static bool VerifyPbkdf2Hash(string password, string storedHash, out bool needsRehash)
+        private static bool VerifyPbkdf2Hash(string password, string storedHash, out bool needsRehash,
+            out bool keyDerivationPerformed)
         {
             needsRehash = false;
+
+            // Stays false through every guard below. That is the whole contract of this parameter:
+            // each of those guards is a CHEAP rejection, so a request that leaves through one of them
+            // has spent no derivation and its caller still owes a compensating one (finding F28).
+            keyDerivationPerformed = false;
 
             if (storedHash.Length > MaxAcceptedEncodedLength)
             {
@@ -388,6 +611,12 @@ namespace WebVella.Erp.Utilities
             byte[] expectedSubkey = new byte[subkeyLength];
             Buffer.BlockCopy(payload, PayloadHeaderByteLength + (int)saltLength, expectedSubkey, 0, (int)subkeyLength);
 
+            // Set immediately BEFORE the derivation rather than after it, so the flag is already true
+            // if the derivation itself throws. A caller that compensated only on a clean return would
+            // spend a second derivation on the way out of an exception path, which is the doubled cost
+            // this accounting exists to avoid.
+            keyDerivationPerformed = true;
+
             byte[] actualSubkey = Rfc2898DeriveBytes.Pbkdf2(
                 password,
                 salt,
@@ -434,11 +663,37 @@ namespace WebVella.Erp.Utilities
         /// under a millisecond while one that does would take the full derivation. Equalising the
         /// two is cheaper and far more reliable than trying to make the fast path slower by
         /// guesswork. The cost is bounded per account and per source address by
-        /// Web/Services/LoginThrottleService.cs, so this cannot be turned into an amplification
-        /// lever by an unauthenticated caller.
+        /// Web/Services/LoginThrottleService.cs, which limits the amplification an unauthenticated
+        /// caller can reach through the credential paths that consult it. That is a bound on THOSE
+        /// paths rather than a general rate limit; the per-host fixed window each Startup positions
+        /// remains the outer bound.
         /// </remarks>
         internal static void PerformDummyVerification(string password)
         {
+            // THREAT ADDRESSED - finding M-REV-10, CWE-400 (uncontrolled resource consumption) and
+            // CWE-208 (observable timing discrepancy), OWASP A04:2021.
+            //
+            // This bound is the SAME test, applied in the SAME position, as the one VerifyPassword
+            // performs as its first action. Without it this member was the one PBKDF2 entry point
+            // that accepted unbounded attacker-controlled input, and the consequence was not merely
+            // wasted CPU on an anonymous endpoint - it silently re-created, inverted, the very
+            // enumeration oracle this member exists to remove. An over-length submission against an
+            // EXISTING address returned almost immediately, because VerifyPassword refused it on
+            // length before deriving anything; the identical submission against a NON-EXISTENT
+            // address fell through to this method and paid a full 600,000-iteration derivation over
+            // the whole oversized value. The slow answer therefore meant "no such account", which is
+            // exactly the signal the dummy verification was introduced to suppress.
+            //
+            // Returning without deriving is correct rather than merely cheap: no plaintext longer
+            // than MaxPasswordLength can ever be a valid credential, so the real path can never
+            // spend work on one either, and skipping it here is what keeps the two paths
+            // indistinguishable. The decision depends only on a length the caller already knows and
+            // never on whether the account exists.
+            if (password != null && password.Length > MaxPasswordLength)
+            {
+                return;
+            }
+
             byte[] discarded = Rfc2898DeriveBytes.Pbkdf2(
                 password ?? string.Empty,
                 dummyVerificationSalt,
@@ -450,6 +705,28 @@ namespace WebVella.Erp.Utilities
             // is an observable use of the result, so no future compiler or runtime is entitled to
             // elide the derivation above as dead code.
             CryptographicOperations.ZeroMemory(discarded);
+        }
+
+
+        /// <summary>
+        /// Appends one missing-character-class phrase to a policy message, comma separated.
+        /// </summary>
+        /// <param name="target">The message being assembled. Never null.</param>
+        /// <param name="isMissing">Whether this class is absent and should therefore be named.</param>
+        /// <param name="description">The phrase naming the class, already correctly articled.</param>
+        private static void AppendMissingClass(StringBuilder target, bool isMissing, string description)
+        {
+            if (!isMissing)
+            {
+                return;
+            }
+
+            if (target.Length > 0)
+            {
+                target.Append(", ");
+            }
+
+            target.Append(description);
         }
 
         /// <summary>

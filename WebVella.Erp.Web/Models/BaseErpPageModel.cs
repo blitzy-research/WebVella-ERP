@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.Encodings.Web;
 using System.Web;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Exceptions;
@@ -182,6 +183,149 @@ namespace WebVella.Erp.Web.Models
 		/// The safe local route an unsafe return URL degrades to.
 		/// </summary>
 		private const string SafeReturnUrlFallback = "/";
+
+		/// <summary>
+		/// HTML-encodes a database-sourced value that is about to be interpolated into the
+		/// server-built navigation markup carried by <see cref="MenuItem.Content"/>.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding H-06 (CWE-79 cross-site scripting, OWASP A03:2021 Injection), stored variant.
+		/// <para>
+		/// THREAT: MenuItem.Content is a markup string composed here and emitted with Html.Raw by
+		/// Pages/Shared/NavMenu.cshtml, Pages/Shared/NavItem.cshtml and Components/SiteMenu/SiteMenu.cshtml,
+		/// which render on every page of every host. The skeleton of that string - the anchor and the icon
+		/// span - is authored by this class and must stay raw: NavItem.cshtml rewrites it AS MARKUP to inject
+		/// data-toggle='dropdown' by string-replacing the "&lt;a" tag, so encoding the finished string would
+		/// print literal HTML in the navigation and stop every dropdown in the product from toggling. What
+		/// carried the injection was never the skeleton; it was the administrator-editable database TEXT
+		/// interpolated into it. A sitemap area labelled
+		/// &lt;/a&gt;&lt;img src=x onerror=alert(document.cookie)&gt; executed for every authenticated user
+		/// who loaded any page. Encoding therefore belongs HERE, at the point of composition, where each
+		/// value's context is known - and it is applied to every one of the six database-sourced values that
+		/// reach the raw sink: area.Label, node.Label, node.Url, node.IconClass, sitePage.Name and
+		/// sitePage.Label.
+		/// </para>
+		/// <para>
+		/// HtmlEncoder.Default is the very encoder Razor's own automatic encoding uses, so an encoded value
+		/// renders the identical glyphs a plain @value expression would produce: legitimate labels are
+		/// unchanged on screen, which is what preserves user-facing behaviour.
+		/// </para>
+		/// </remarks>
+		private static string EncodeMenuText(string value)
+		{
+			if (String.IsNullOrEmpty(value))
+				return "";
+
+			return HtmlEncoder.Default.Encode(value);
+		}
+
+		/// <summary>
+		/// Validates a database-sourced menu URL against an allow-list and returns it HTML-encoded for
+		/// emission into an href attribute. Returns false when the value must not be emitted at all.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding H-06 (CWE-79, OWASP A03:2021).
+		/// <para>
+		/// An href is a URL context, and HTML encoding does not neutralise it: "javascript:alert(1)" survives
+		/// encoding completely intact, renders as a working link, and executes in the application's own
+		/// authenticated origin the moment it is clicked. Only validation closes that, which is why this
+		/// method exists in addition to <see cref="EncodeMenuText"/>.
+		/// </para>
+		/// <para>
+		/// ALLOW-LIST - accepted: an application-local path ("/", "/path", but not the protocol-relative
+		/// "//host" nor its backslash variant "/\host"), the framework's "~/path" form, a same-page fragment
+		/// ("#" or "#anchor"), and an explicit "http://" or "https://" absolute URL, because a sitemap node of
+		/// type Url legitimately links off-site. REJECTED: every other scheme - javascript:, data:, vbscript:,
+		/// file: and any future one - and any value containing a control character, because browsers ignore
+		/// TAB, CR and LF inside a scheme and would treat "java&#9;script:" as active. The rule mirrors the
+		/// local-URL test already used for return URLs in this class, extended by the two web schemes.
+		/// </para>
+		/// <para>
+		/// A rejected value degrades to the inert href="#" onclick="return false" anchor this builder already
+		/// emits for a node that has no URL at all, so the menu entry stays visible and clicking it does
+		/// nothing - an existing, safe rendering rather than an invented one.
+		/// </para>
+		/// </remarks>
+		private static bool TryEncodeMenuUrl(string value, out string encodedUrl)
+		{
+			encodedUrl = "";
+
+			if (String.IsNullOrWhiteSpace(value))
+				return false;
+
+			//Browsers ignore whitespace surrounding a URL, so a validator that does not would accept
+			//" javascript:..." and hand the browser something it treats as a scheme.
+			var candidate = value.Trim();
+
+			foreach (var character in candidate)
+			{
+				if (Char.IsControl(character))
+					return false;
+			}
+
+			var isLocal = (candidate[0] == '/' && (candidate.Length == 1 || (candidate[1] != '/' && candidate[1] != '\\')))
+				|| (candidate.Length > 1 && candidate[0] == '~' && candidate[1] == '/')
+				|| candidate[0] == '#';
+
+			var isWebScheme = candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+				|| candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+			if (!isLocal && !isWebScheme)
+				return false;
+
+			encodedUrl = HtmlEncoder.Default.Encode(candidate);
+			return true;
+		}
+
+		/// <summary>
+		/// Reduces a database-sourced icon class to the character vocabulary a CSS class list may contain,
+		/// returning an empty string when the value is anything else.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding H-06 (CWE-79, OWASP A03:2021). node.IconClass is interpolated into a class
+		/// attribute inside the raw-rendered menu markup. Encoding alone stops the attribute being closed,
+		/// but a class attribute is still no place for arbitrary stored text: the platform's own stylesheets
+		/// would honour whatever classes it named, which is a user-interface redressing primitive. An
+		/// allow-list of letters, digits, space, hyphen and underscore accepts the entire Font Awesome and
+		/// Bootstrap vocabulary these values actually use, and rejects everything else outright. A rejected
+		/// value yields an empty class, which is exactly what a sitemap node with no icon configured already
+		/// renders today, so the fallback is an existing state rather than a new one. The result is still
+		/// encoded, so a non-ASCII letter that passes the allow-list cannot alter the attribute either.
+		/// </remarks>
+		private static string EncodeMenuIconClass(string value)
+		{
+			if (String.IsNullOrWhiteSpace(value))
+				return "";
+
+			foreach (var character in value)
+			{
+				if (Char.IsLetterOrDigit(character) || character == ' ' || character == '-' || character == '_')
+					continue;
+
+				return "";
+			}
+
+			return HtmlEncoder.Default.Encode(value);
+		}
+
+		/// <summary>
+		/// Percent-encodes a database-sourced value for use as a single URL path segment and HTML-encodes the
+		/// result for emission into an href attribute.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding H-06 (CWE-79, OWASP A03:2021). sitePage.Name is interpolated into the "/s/{name}"
+		/// path of the site-menu anchor, so it needs URL-segment escaping first and attribute encoding second;
+		/// either one alone leaves a gap. Uri.EscapeDataString leaves the unreserved characters a legitimate
+		/// page name is made of (letters, digits, hyphen, underscore, period, tilde) untouched, so every
+		/// existing site-menu link resolves to exactly the URL it did before.
+		/// </remarks>
+		private static string EncodeUrlPathSegment(string value)
+		{
+			if (String.IsNullOrEmpty(value))
+				return "";
+
+			return HtmlEncoder.Default.Encode(Uri.EscapeDataString(value));
+		}
 
 		public string CurrentUrl { get; set; } = "";
 
@@ -363,8 +507,13 @@ namespace WebVella.Erp.Web.Models
 					var areaMenuItem = new MenuItem();
 					if (area.Nodes.Count > 1)
 					{
-						var areaLink = $"<a href=\"javascript: void(0)\" title=\"{area.Label}\" data-navclick-handler>";
-						areaLink += $"<span class=\"menu-label\">{area.Label}</span>";
+						//SECURITY - H-06 (CWE-79, OWASP A03): area.Label is administrator-editable database
+						//text interpolated into markup that NavMenu/NavItem emit with Html.Raw on every page
+						//of every host. The markup skeleton stays server-authored and raw; the value is
+						//encoded here, at the point of composition. See EncodeMenuText.
+						var areaLabel = EncodeMenuText(area.Label);
+						var areaLink = $"<a href=\"javascript: void(0)\" title=\"{areaLabel}\" data-navclick-handler>";
+						areaLink += $"<span class=\"menu-label\">{areaLabel}</span>";
 						areaLink += $"<span class=\"menu-nav-icon fa fa-angle-down nav-caret\"></span>";
 						areaLink += $"</a>";
 						areaMenuItem = new MenuItem()
@@ -376,13 +525,21 @@ namespace WebVella.Erp.Web.Models
 						foreach (var node in area.Nodes)
 						{
 							var nodeLink = "";
-							if (!String.IsNullOrWhiteSpace(node.Url))
+							//SECURITY - H-06 (CWE-79, OWASP A03): node.Label, node.IconClass and node.Url are
+							//database text reaching the raw menu sink. Text and attribute values are encoded;
+							//the URL is additionally allow-listed, because encoding does not neutralise a
+							//"javascript:" href - it renders as a working link and executes on click. A URL
+							//that is absent OR rejected takes the inert anchor below, which is the same
+							//rendering a node without a URL already produced.
+							var nodeLabel = EncodeMenuText(node.Label);
+							var nodeIconClass = EncodeMenuIconClass(node.IconClass);
+							if (TryEncodeMenuUrl(node.Url, out string nodeUrl))
 							{
-								nodeLink = $"<a class=\"dropdown-item\" href=\"{node.Url}\" title=\"{node.Label}\"><span class=\"{node.IconClass} icon fa-fw\"></span>{node.Label}</a>";
+								nodeLink = $"<a class=\"dropdown-item\" href=\"{nodeUrl}\" title=\"{nodeLabel}\"><span class=\"{nodeIconClass} icon fa-fw\"></span>{nodeLabel}</a>";
 							}
 							else
 							{
-								nodeLink = $"<a class=\"dropdown-item\" href=\"#\" onclick=\"return false\" title=\"{node.Label}\"><span class=\"{node.IconClass} icon fa-fw\"></span>{node.Label}</a>";
+								nodeLink = $"<a class=\"dropdown-item\" href=\"#\" onclick=\"return false\" title=\"{nodeLabel}\"><span class=\"{nodeIconClass} icon fa-fw\"></span>{nodeLabel}</a>";
 							}
 							areaMenuItem.Nodes.Add(new MenuItem()
 							{
@@ -395,8 +552,19 @@ namespace WebVella.Erp.Web.Models
 					}
 					else if (area.Nodes.Count == 1)
 					{
-						var areaLink = $"<a href=\"{area.Nodes[0].Url}\" title=\"{area.Label}\">";
-						areaLink += $"<span class=\"menu-label\">{area.Label}</span>";
+						//SECURITY - H-06 (CWE-79, OWASP A03): same treatment as the multi-node branch above.
+						//The label is encoded and the single node's URL allow-listed. An ABSENT URL keeps
+						//emitting an empty href exactly as before, so that existing rendering is untouched;
+						//only a URL that fails the allow-list degrades to the inert "#".
+						var areaLabel = EncodeMenuText(area.Label);
+						var areaNodeUrl = "";
+						if (!String.IsNullOrWhiteSpace(area.Nodes[0].Url))
+						{
+							if (!TryEncodeMenuUrl(area.Nodes[0].Url, out areaNodeUrl))
+								areaNodeUrl = "#";
+						}
+						var areaLink = $"<a href=\"{areaNodeUrl}\" title=\"{areaLabel}\">";
+						areaLink += $"<span class=\"menu-label\">{areaLabel}</span>";
 						areaLink += $"</a>";
 						areaMenuItem = new MenuItem()
 						{
@@ -443,9 +611,12 @@ namespace WebVella.Erp.Web.Models
 			{
 				if (sitePage.Weight < 1000)
 				{
+					//SECURITY - H-06 (CWE-79, OWASP A03): sitePage.Name lands in a URL path segment and
+					//sitePage.Label in element text, both inside markup SiteMenu.cshtml emits with Html.Raw.
+					//The name is percent-encoded for the path then attribute-encoded; the label is HTML-encoded.
 					SiteMenu.Add(new MenuItem()
 					{
-						Content = $"<a class=\"dropdown-item\" href=\"/s/{sitePage.Name}\">{sitePage.Label}</a>"
+						Content = $"<a class=\"dropdown-item\" href=\"/s/{EncodeUrlPathSegment(sitePage.Name)}\">{EncodeMenuText(sitePage.Label)}</a>"
 					});
 				}
 			}

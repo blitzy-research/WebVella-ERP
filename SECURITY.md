@@ -82,7 +82,7 @@ inherited by every project:
 | Dependency auditing | `NuGetAudit=true`, `NuGetAuditMode=all`, `NuGetAuditLevel=low` | Every direct **and transitive** package is checked against the advisory database, reporting advisories of every severity. |
 | Advisories fail the build | `NU1901`–`NU1904` promoted through `WarningsAsErrors` | A package with a published advisory of any severity cannot be introduced without the build failing. |
 | An audit that cannot run also fails the build | `NU1900` and `NU1905` promoted through `WarningsAsErrors` | These are *availability* diagnostics, not severities: the advisory source was unreachable, or supplied no data. Left as warnings they produce a green build that audited nothing. Six codes are promoted in total. |
-| Static analysis | `EnableNETAnalyzers=true`, `AnalysisLevel=latest-recommended` | The .NET security analyzer rules run on every compilation — hard-coded keys, disabled certificate validation, SQL injection, insecure deserialisation, weak hashing, non-random initialisation vectors, cookie security. |
+| Static analysis | `EnableNETAnalyzers=true`, `AnalysisLevel=latest-recommended`, `AnalysisLevelSecurity=latest-all` | All 94 rules the pinned SDK places in the Security category run on every compilation — hard-coded keys, disabled certificate validation, SQL and query construction, insecure deserialisation, cross-site scripting, weak hashing, non-random initialisation vectors, cookie security, disabled token-validation checks. The category is deliberately raised above the general analysis level. Diagnostics stay warnings at the project level; the CI job fails on any Security-category diagnostic outside a reviewed allow-list, and proves the analyzers are live by compiling a deliberate defect and asserting it is reported. |
 
 Analyzer diagnostics are reported as **warnings**, not errors, deliberately: enabling them across
 roughly 700 pre-existing source files surfaces a large backlog, and failing the build on it would
@@ -101,6 +101,42 @@ is closed at any given commit — this file does not duplicate them, because a d
 goes stale.
 
 Open decisions and accepted residual risk are in the [risk register](docs/security/risk-register.md).
+
+#### One decision is waiting on the repository owner
+
+**`RISK-001` — the AutoMapper licence. The advisory half is closed; one bounded item is still open,
+and it cannot be settled by an automated remediation.** It is surfaced here because it is the only item in this remediation that requires a
+human decision, and a reader who never opens the risk register would otherwise not know it exists.
+
+The security half is already closed: `AutoMapper` is pinned to `[15.1.3]`, which is the newest release
+on the lowest major that patches `GHSA-rvv3-g6hj-g44x` / `CVE-2026-32933` (uncontrolled recursion,
+High). The dependency gate is green with **nothing suppressed** to achieve that.
+
+The unresolved half is legal, not technical. Every version from `15.1.1` onwards ships under the
+**Reciprocal Public License 1.5** rather than MIT, while `WebVella.Erp` declares
+`<PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>` and is published to nuget.org for
+third-party consumption. There is no patched permissive version to retreat to — the fix begins after
+the licence changed. The remediation deliberately did **not** change the declared licence expression,
+did not substitute a licence file for it, and did not revert the upgrade, so the conflict is visible
+and undecided rather than silently absorbed in either direction.
+
+Three options, with the engineering cost of each already worked out in
+[`RISK-001`](docs/security/risk-register.md) and the full licence-by-version evidence in
+[LIBRARIES.md](LIBRARIES.md):
+
+1. **Accept the upgrade** — reconcile the product's licensing position with RPL 1.5, or obtain the
+   vendor's commercial licence. Requires no code change; the tree is already in this state.
+2. **Decline the upgrade** — revert the pin to `[14.0.0]` and apply the narrowly scoped, per-advisory
+   audit suppression together with a formal recorded risk acceptance. The reversal path is written out
+   step by step in the risk register, and the suppression seam already exists, deliberately inert, as a
+   commented `<NoWarn>` in `Directory.Build.props`. **Choosing this option knowingly returns a
+   High-severity advisory to the dependency graph**, which is why it is not the shipped default.
+3. **Replace the dependency** — not recommended: the platform declares hundreds of mappings across its
+   profiles, so removing the library means hand-writing them, far beyond a security remediation.
+
+Until the owner decides, option 1 is what ships, and the escalation stays open. The inline rationale is
+also carried at the pin itself in `WebVella.Erp/WebVella.Erp.csproj`, so it cannot be changed without
+encountering it.
 
 ### Before you run this in production
 
@@ -128,9 +164,12 @@ The [secure configuration guide](docs/security/secure-configuration.md) is the f
 [credential migration guide](docs/security/credential-migration.md) before upgrading an existing
 installation.
 
-One demo credential remains in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs`.
-It is browser-side sample code outside the scope of this remediation, and it is recorded in the risk
-register rather than silently left.
+The demo credential that used to sit in the Blazor WebAssembly **client** page
+`Client/Pages/Index.razor.cs` has been **removed**; the button now navigates to the client's own login
+page. A credential in a WebAssembly client cannot be protected by moving it into configuration,
+because the assembly and its configuration are both downloaded to every visitor's browser — so it was
+deleted rather than relocated. See `RISK-026` in the risk register for the history residual, which is
+separate and still applies.
 
 ## Security documentation
 
@@ -165,14 +204,18 @@ report merely restating one is triaged against the existing record.
 than recorded is very welcome:
 
 * Anything already recorded in the [audit report](docs/security/security-audit-report.md) or the
-  [risk register](docs/security/risk-register.md), including the open licensing decision `RISK-001`.
+  [risk register](docs/security/risk-register.md), including the accepted licensing residual `RISK-001`.
 * Secrets that appear in this repository's **history**. The tracked `Config.json` files now ship
   blank, and the two published default keys are rejected by digest comparison, so they cannot be used
   even deliberately. History cannot be rewritten retrospectively; treat those values as public and
   never reuse them. This is documented above and in the secure configuration guide rather than being a
   defect to report.
-* The demo credential in the Blazor WebAssembly client page `Client/Pages/Index.razor.cs`. Known,
-  recorded, and outside the scope of the remediation that scrubbed the server-side configuration.
+* Credential-shaped strings in this repository's **history**. The demo credential that once sat in
+  `Client/Pages/Index.razor.cs` is now removed, but it — and every other secret ever committed —
+  remains readable in earlier commits. Treat all of them as public. The seeded administrator password
+  is rotated on upgrade and the two published default keys are refused by digest comparison, so those
+  are not usable; the connection-string and mail passwords must be rotated by an operator. Recorded as
+  `RISK-026` rather than being a defect to report.
 * Components that emit author-supplied markup or script by design — the HTML-block page component and
   the generated inline-script emitters. These are raw output channels on purpose; the control is that
   authoring them requires a privileged role. Report a way to reach them *without* that role.
@@ -190,7 +233,7 @@ Before exposing an installation to untrusted networks:
 * Set the environment to `Production`. Development mode enables a developer exception page that returns stack traces.
 * Terminate TLS in front of the application. Outside Development it issues HSTS on every response; plaintext redirection additionally requires an HTTPS port to be discoverable (set `ASPNETCORE_HTTPS_PORTS`, and forward the protocol if TLS terminates at a proxy) - otherwise the redirect is silently inert.
 * Change the seeded administrator credential immediately, and confirm the old one no longer authenticates.
-* Restrict cross-origin access to origins you control. A permissive `Access-Control-Allow-Origin: *` policy is still present on two hosts and is recorded as an open finding.
+* Restrict cross-origin access to origins you control. A permissive `Access-Control-Allow-Origin: *` policy is still present on **one** host - `WebVella.Erp.Site.Project` - and is recorded as an open finding. `WebVella.Erp.Site` has been given an explicit allow-list.
 * Review the Content-Security-Policy rollout. It ships in report-only mode by design, so it reports violations without blocking them until the inline-script inventory in the secure configuration guide has been worked through.
 
 The secure configuration guide expands each of these, including the exact variable names and the reasoning behind the defaults.

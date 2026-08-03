@@ -766,6 +766,18 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 						DbFileRepository fsRepository = new DbFileRepository();
 						var file = fsRepository.Find(filepath);
+						//SECURITY - companion to finding F24 (High), CWE-269 improper privilege management, CWE-732
+						//incorrect permission assignment. Database/DbFileRepository.Find now REFUSES a staged file that
+						//belongs to another non-administrative principal, so this lookup has one more legitimate way to
+						//answer null than it had before that control existed. Skipping silently would deliver a queued
+						//message as if complete with the refused attachment missing; throwing instead is caught by this
+						//method's own handler, which records the reason in the email's server_error column and retries or
+						//aborts per the service policy - so a refusal is auditable rather than invisible. Note the
+						//deliberate contrast with the inline-image loop earlier in this method, which does continue on a
+						//missing file: a missing inline image degrades rendering, a missing attachment loses content.
+						if (file == null)
+							throw new FileNotFoundException($"Attachment file '{filepath}' not found.");
+
 						var bytes = file.GetBytes();
 
 						var extension = Path.GetExtension(filepath).ToLowerInvariant();

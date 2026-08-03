@@ -86,6 +86,17 @@ namespace WebVella.Erp.Web.Services
 		// counted against a stable, non-empty key instead of failing.
 		private const string MissingValuePlaceholder = "(unspecified)";
 
+		// Number of suppressed refusals after which another audit record is emitted for the same
+		// source address - see TryClaimRefusalAudit.
+		//
+		// Coalescing refusal audits without this would trade one defect for another. The suppressed
+		// count is carried into the NEXT audited refusal, so a flood that stops mid-window would have
+		// its volume expire with the cache entry and never be recorded at all: the amplification would
+		// be gone and so would the evidence. This interval guarantees that a sustained flood keeps
+		// producing periodic, dated records, while bounding amplification to one record per hundred
+		// refused requests rather than one per request.
+		private const int RefusalAuditSuppressionInterval = 100;
+
 		// A dedicated, size-bounded cache rather than the platform's Utils.Cache helper. That helper
 		// constructs its MemoryCache with default options and exposes no way to set a SizeLimit, so
 		// entries written through it are bounded only by their expiration - which is precisely the
@@ -201,6 +212,124 @@ namespace WebVella.Erp.Web.Services
 			}
 		}
 
+		// Decides whether a REFUSAL should be written to the audit trail, and reports how many
+		// refusals from the same source were suppressed since the last one that was.
+		//
+		// Threat addressed - CWE-778 read in the other direction, plus the audit-amplification half of
+		// OWASP A09:2021. The refusal path is reached without authenticating and costs the attacker
+		// almost nothing, so auditing every refused request let a caller who had already been locked
+		// out keep writing rows into system_log at request rate. Three consequences, all bad: the
+		// evidence of the original lockout is buried under thousands of near-identical rows, the log
+		// table grows at attacker-chosen speed, and each row is a database write the refusal path did
+		// not otherwise need - so the cheap refusal became the expensive operation.
+		//
+		// COALESCED ON THE SOURCE ADDRESS, deliberately, and this choice is the whole design:
+		//   * Not on the username. That is the dimension the attacker varies for free, so a claim per
+		//     username would restore amplification in full - one row per fabricated name.
+		//   * Not on username-and-address either, for the same reason.
+		//   * The address is the dimension that costs something to change. A genuinely new source
+		//     deserves its own record, and obtaining one requires a proxy pool rather than a different
+		//     string in a form field.
+		//
+		// Login refusals and token-route refusals share one claim per address, which is also
+		// deliberate: an attacker alternating between the two must not be able to double the audit
+		// volume. The first record identifies which route tripped, and the suppressed count aggregates
+		// everything after it - the actionable datum in every case is the source, not the route.
+		//
+		// Returns true when the caller should write an audit record, with suppressedRefusals set to the
+		// number of refusals suppressed since the previous audited one - report it in that record, then
+		// it is cleared. Returns false when the caller should write nothing.
+		//
+		// Non-throwing by construction, like every other member here: a null or blank address
+		// normalises to a stable placeholder key, and no arithmetic below can overflow.
+		public bool TryClaimRefusalAudit(string ipAddress, out int suppressedRefusals)
+		{
+			suppressedRefusals = 0;
+
+			var addressKey = BuildAddressKey(ipAddress);
+			var now = DateTime.UtcNow;
+
+			lock (lockObj)
+			{
+				var state = GetState(addressKey, now) ?? new LoginAttemptState();
+
+				// First refusal of this window from this source: audit it, and carry forward anything
+				// suppressed during the previous window so no volume is lost across the boundary.
+				if (!state.RefusalAuditClaimed)
+				{
+					state.RefusalAuditClaimed = true;
+					suppressedRefusals = state.SuppressedRefusalAudits;
+					state.SuppressedRefusalAudits = 0;
+					Store(addressKey, state, now);
+					return true;
+				}
+
+				// Saturating rather than wrapping. An increment that overflowed would make the reported
+				// volume negative, which is worse than a count that stops rising: the interval below
+				// means a saturated counter is unreachable in practice anyway.
+				if (state.SuppressedRefusalAudits < int.MaxValue)
+					state.SuppressedRefusalAudits += 1;
+
+				if (state.SuppressedRefusalAudits >= RefusalAuditSuppressionInterval)
+				{
+					suppressedRefusals = state.SuppressedRefusalAudits;
+					state.SuppressedRefusalAudits = 0;
+					Store(addressKey, state, now);
+					return true;
+				}
+
+				Store(addressKey, state, now);
+				return false;
+			}
+		}
+
+		// Refusal predicate for an entry point that has no account dimension at all - specifically the
+		// anonymous bearer-token REFRESH route, which presents a token and no username.
+		//
+		// Threat addressed - finding H-16, CWE-307, on a path the account-based lockout structurally
+		// cannot cover. The refresh route is [AllowAnonymous] and validates a caller-supplied token, so
+		// before this it accepted unlimited attempts: a token-forgery or expired-token replay campaign
+		// was bounded only by the transport rate limiter. Only the source-address budget applies here,
+		// because there is no principal to attribute an attempt to until the token validates.
+		//
+		// Read-only: this neither reserves nor records. Pair it with RegisterAddressFailure.
+		public bool IsAddressRefusing(string ipAddress)
+		{
+			var addressKey = BuildAddressKey(ipAddress);
+			var now = DateTime.UtcNow;
+
+			lock (lockObj)
+			{
+				return IsRefusing(GetState(addressKey, now), MaxFailedAttemptsPerAddress, now);
+			}
+		}
+
+		// Records one failure against the source address WITHOUT a prior reservation, for the same
+		// account-less entry point IsAddressRefusing serves.
+		//
+		// WHY THIS IS NOT RegisterFailedAttempt. That method finalises a reservation, so it decrements
+		// AttemptsInFlight. Called without a matching TryBeginAttempt it would decrement a reservation
+		// belonging to a CONCURRENT login attempt on the same address, and because IsRefusing counts
+		// reservations towards the budget, every such decrement would silently raise the effective
+		// threshold - a throttle bypass introduced by the throttle itself. The dedicated path below
+		// touches only the failure count and the lockout deadline.
+		//
+		// RESIDUAL, documented rather than hidden: this is a check-then-act protocol, not the
+		// reserve-then-finalise one the login path uses, so a concurrent burst can collectively exceed
+		// the address budget once by up to the size of the burst before the lockout takes effect. That
+		// is bounded and accepted: the reserve protocol would require a principal to reserve against,
+		// which this route does not have until after the work it is protecting, and the transport rate
+		// limiter already caps how large a burst can be.
+		public void RegisterAddressFailure(string ipAddress)
+		{
+			var now = DateTime.UtcNow;
+
+			lock (lockObj)
+			{
+				RecordUnreservedFailure(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, now);
+			}
+		}
+
 		// Refusal predicate, evaluated under the caller's lock.
 		//
 		// Outstanding reservations are added to recorded failures so that concurrent attempts cannot
@@ -265,6 +394,35 @@ namespace WebVella.Erp.Web.Services
 			Store(key, state, now);
 		}
 
+		// Records a failure against a key that was never reserved. Runs under the caller's lock.
+		//
+		// Identical to the failure half of RecordOutcome, minus the reservation release - see
+		// RegisterAddressFailure for why releasing a reservation this caller never took would be a
+		// throttle bypass. The two share no code on purpose: factoring the common half out would leave
+		// a helper whose correctness depends on the caller having got the reservation accounting right
+		// elsewhere, which is exactly the coupling that produced the hazard.
+		private void RecordUnreservedFailure(string key, int maxFailedAttempts, DateTime now)
+		{
+			var state = GetState(key, now) ?? new LoginAttemptState();
+
+			if (now < state.LockedOutUntilUtc)
+			{
+				// A lockout is already in force. The counter is not advanced and the deadline is not
+				// extended, for the same reason as in RecordOutcome: extending it on every further
+				// attempt would let an attacker pin a shared source address in lockout indefinitely.
+			}
+			else
+			{
+				// GetState has already cleared any window whose deadline has passed, so a lapsed
+				// lockout arrives zeroed and this opens a fresh window.
+				state.FailedAttempts += 1;
+				if (state.FailedAttempts >= maxFailedAttempts)
+					state.LockedOutUntilUtc = now.AddMinutes(WindowMinutes);
+			}
+
+			Store(key, state, now);
+		}
+
 		// Reads the state for a key, normalised for the current time. Returns null when nothing is
 		// tracked.
 		//
@@ -291,6 +449,15 @@ namespace WebVella.Erp.Web.Services
 			{
 				state.FailedAttempts = 0;
 				state.LockedOutUntilUtc = DateTime.MinValue;
+
+				// The refusal-audit claim is released with the window that earned it, so a source that
+				// is locked out again later is audited again rather than staying permanently silent.
+				// The suppressed count is deliberately PRESERVED across this reset: it is reported by
+				// the next audited refusal, and clearing it here would discard the very volume the
+				// coalescing exists to summarise. When the source simply stops, the entry expires and
+				// the residual count goes with it - which is why TryClaimRefusalAudit also reports on a
+				// fixed interval rather than only at window boundaries.
+				state.RefusalAuditClaimed = false;
 			}
 
 			return state;
@@ -395,6 +562,19 @@ namespace WebVella.Erp.Web.Services
 
 			// DateTime.MinValue, the default, means no lockout is in force.
 			public DateTime LockedOutUntilUtc { get; set; }
+
+			// True once a refusal from this source has been written to the audit trail for the current
+			// window. Lives in the SAME cache entry as the counters above so that a source cannot lose
+			// its counters while keeping its claim, or the reverse - the fail-safe invariant Store
+			// documents applies to this field too. Only meaningful on address-dimension entries; the
+			// account-dimension entries never set it, because coalescing on the username would restore
+			// the amplification this exists to bound.
+			public bool RefusalAuditClaimed { get; set; }
+
+			// Refusals from this source that were NOT audited because the claim above was already held.
+			// Reported by, and cleared on, the next audited refusal, so coalescing bounds the number of
+			// records without discarding the volume they would have represented.
+			public int SuppressedRefusalAudits { get; set; }
 		}
 	}
 }

@@ -11,6 +11,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- DEFECT ADDRESSED - review finding F30 (Configuration / Availability, CWE-16, OWASP A05:2021 Security Misconfiguration): the file name here is the CONTRACT the code must honour. This item copies the tracked, capital-C Config.json to the output and publish directories, while Program.cs previously asked the configuration builder for a lower-case config.json. The two names are the same file only on a case-insensitive filesystem, so on Linux the mandatory JSON provider threw during startup before environment variables could supply any scrubbed secret. Program.cs now prefers Config.json and accepts config.json only as a fallback for deployments produced by the earlier code path. Do not re-case this item, and do not add a lower-case duplicate: either would reintroduce the divergence. -->
 		<Content Include="Config.json">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>

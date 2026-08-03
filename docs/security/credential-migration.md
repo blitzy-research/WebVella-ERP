@@ -28,11 +28,11 @@ Measured against the tree rather than asserted:
 | Write paths using it | `WebVella.Erp/Database/DbRecordRepository.cs:L557` and `:L1893`; `WebVella.Erp/Api/RecordManager.cs:L2025` |
 | Verification path using it | `WebVella.Erp/Api/SecurityManager.cs` — `IsLegacyHash` at `:L158`, `VerifyPassword` at `:L161`, the legacy upgrade at `:L250` |
 | Comparison inside the SQL predicate | **Removed.** The credential query selects on an anchored exact e-mail pattern only |
-| Account-enumeration timing | Equalised — `PasswordUtil.PerformDummyVerification` at `SecurityManager.cs:L176` spends one key derivation even when no account matches |
+| Account-enumeration timing | Equalised — `PasswordUtil.PerformDummyVerification` at `SecurityManager.cs:L380` spends one key derivation even when no account matches |
 | Oversized-input bound | 128 characters, enforced at all four entry points before any scan, encode, digest or derivation |
 | Legacy MD5 acceptance | Retained deliberately, and reported by the analyzer gate as `CA5351` — accepted as `RISK-004` |
-| Seeded administrator credential | **Changed in a later pass.** `WebVella.Erp/ERPService.cs` no longer assigns the literal `"erp"`: it resolves the initial administrator password from `Settings:InitialAdministratorPassword`, or generates a 20-character password (~120 bits) with `RandomNumberGenerator.GetItems<char>` and surfaces it exactly once at provisioning. There is no change-required-on-first-login marker, because that needs a schema change the constraints forbid — `RISK-027` |
-| Password length bounds, guest-role grants and the data migration | **Landed in a later pass.** The bounds in `WebVella.Erp/ERPService.cs` are now **12–128** (finding M-13), the guest-role create grants on the user and role entities are **removed** (findings C-05 and C-02), and the **schema version 4 data migration has been added** — the core schema version head is now `4`. Sections further down that still describe these as planned are superseded by [§ Schema version 4 — as landed](#schema-version-4-as-landed). **Consequence for operators:** an **already-deployed** installation is now remediated on upgrade, not merely a freshly provisioned one. The administrator credential is invalidated automatically *only* if it still carries the previously published default; a password the operator already changed is detected and left untouched |
+| Seeded administrator credential | **Changed in a later pass.** `WebVella.Erp/ERPService.cs` no longer assigns the literal `"erp"`: it resolves the initial administrator password from `Settings:InitialAdministratorPassword`, or generates a 20-character password (~120 bits) with `RandomNumberGenerator.GetItems<char>` and surfaces it exactly once at provisioning. **Two further changes landed at the code-review checkpoint** (finding `F-05`): an operator-supplied value must now satisfy a **12–128 character policy with all four character classes** or startup fails fast, and a **change-required-on-first-login marker is now set and enforced** — carried in the existing `rec_user.preferences` column, so the earlier claim that this needed a forbidden schema change was wrong. `RISK-027` is **closed** |
+| Password length bounds, guest-role grants and the data migration | **Landed in a later pass.** The bounds in `WebVella.Erp/ERPService.cs` are now **12–128** (finding M-13), the guest-role create grants on the user and role entities are **removed** (findings C-05 and C-02), and the **schema version 4 data migration has been added** — the core schema version head is now `4`. Sections further down that still describe these as planned are superseded by [§ Schema version 4 — as landed](#schema-version-4-as-landed). **A later pass added schema version 5**, which carries no credential change at all: it revokes the Guest role’s read grant on role metadata and needs no operator action beyond one start. **Consequence for operators:** an **already-deployed** installation is now remediated on upgrade, not merely a freshly provisioned one. The administrator credential is invalidated automatically *only* if it still carries the previously published default; a password the operator already changed is detected and left untouched |
 
 ## How this guide is organised
 
@@ -110,7 +110,9 @@ engagement's other owner decisions.
 #### The performance cost is intentional
 
 Each hash and each verification costs roughly **380 ms of CPU**, measured. That is the entire point of
-a work factor: it makes offline guessing expensive. Login is measurably slower **by design**.
+a work factor: it makes offline guessing expensive. Login is measurably slower **by design**. The
+figure is a *contemporaneous observation* taken on a heavily contended shared host — see the [evidence-provenance table](remediation-log.md#evidence-provenance)
+— so the design intent it demonstrates is the durable claim, not the millisecond value.
 
 This is a pre-declared, accepted trade-off, not a regression to be investigated:
 
@@ -198,11 +200,11 @@ started:
 | --- | --- |
 | The modern primitive in `PasswordUtil` — `HashPassword`, `VerifyPassword`, `IsLegacyHash`, fixed-time `VerifyMd5Hash` | **Landed.** |
 | Removal of the shared mutable MD5 instance (M-06) and the non-constant-time comparison (M-05) | **Landed.** |
-| `SecurityManager.GetUser` — the credential lookup and the rehash-on-login persistence | **Not yet switched.** Still hashes with `GetMd5Hash` and still compares inside the SQL predicate, including the `~*` regex email match. |
-| `RecordManager` — the `PasswordField` write path where `Encrypted` is true | **Not yet switched.** Still calls `GetMd5Hash`. |
-| `DbRecordRepository` — two password write paths | **Not yet switched.** Still call `GetMd5Hash`. |
+| `SecurityManager.GetUser` — the credential lookup and the rehash-on-login persistence | **Switched in a later pass.** Verification happens in application code at `:213`, the rehash is persisted at `:224` through a parameterized compare-and-swap, and neither the digest comparison nor the `~*` regex email match. |
+| `RecordManager` — the `PasswordField` write path where `Encrypted` is true | **Switched in a later pass** — `:2359` calls `HashPassword`. |
+| `DbRecordRepository` — the password write path | **Switched in a later pass** — `:666` calls `HashPassword`. `GetMd5Hash` now has no caller outside `PasswordUtil`. |
 | Password length bounds | **Raised in a later pass** to a 12-character minimum and a 128-character maximum (finding M-13 — CWE-521), at both the provisioning seed and the version 4 migration. The low 24-character ceiling was itself an obstacle to strong passphrases. |
-| Invalidation of the seeded default administrator credential on **existing** installations | **Landed in a later pass.** The core schema version head is now `4`, and the `if (currentVersion < 4)` block carries the invalidation to deployed instances. See [§ Schema version 4 — as landed](#schema-version-4-as-landed). |
+| Invalidation of the seeded default administrator credential on **existing** installations | **Landed in a later pass.** The `if (currentVersion < 4)` block carries the invalidation to deployed instances. See [§ Schema version 4 — as landed](#schema-version-4-as-landed). (The head has since moved to `5`, which adds no credential change — see [§ Schema version 5, and why the ladder grew again](#schema-version-5-and-why-the-ladder-grew-again).) |
 
 **What this means in practice.** At this commit no credential is yet written or verified in the modern
 format, so **existing installations are unaffected and there is nothing to migrate yet**. The
@@ -249,8 +251,9 @@ as part of provisioning, not as a follow-up task.
    Rows returned are still on the legacy format. This query is also the migration-progress indicator —
    run it periodically and watch the count fall.
 4. **Change the default administrator credential** if this installation was ever provisioned with it
-   and it was never changed. Because the version-gated invalidation is not yet present (§3), an
-   upgrade does **not** do this for you.
+   and it was never changed. The version-gated invalidation described in §3 now runs on upgrade and
+   invalidates that seeded credential for you, but it cannot know whether an operator later set a
+   *different* weak password on the same account — so confirm this rather than assume it.
 
 #### Verifying the migration works
 
@@ -323,11 +326,22 @@ Stated plainly, so the confidence attached to each claim is visible:
   `WebVella.Erp/Api/RecordManager.cs` and two in `WebVella.Erp/Database/DbRecordRepository.cs` — and
   checking which member each one calls. It is not inferred from the plan. This is why the table
   reports the call-site switch as pending rather than assuming it followed the primitive.
-* **The password length bounds are quoted from the field provisioning code**, which still declares a
-  6-character minimum and a 24-character maximum.
-* **The 380 ms figure is measured**, not calculated. It is quoted here from the remarks on the hasher
-  construction in `PasswordUtil`, which is where it was recorded when the primitive landed. It is a
-  pre-declared, accepted trade-off rather than an observed regression.
+* **The password length bounds are quoted from the field provisioning code.** An earlier revision of
+  this bullet said that code "still declares a 6-character minimum and a 24-character maximum"; that
+  is **superseded**. The bounds are now a 12-character minimum and a 128-character maximum, declared
+  once, in `WebVella.Erp/Utilities/PasswordUtil.cs` as `MinPasswordLength` at `:L205` and
+  `MaxPasswordLength` at `:L179`, and surfaced to the provisioning code as `PasswordMinLength` and
+  `PasswordMaxLength` at `WebVella.Erp/ERPService.cs:L50` and `:L63`. They are applied in **both**
+  places that matter — the field provisioning at `:L302-L303` (which governs new installations) and the
+  schema-version-4 migration at `:L2711-L2712`, inside `SecurePasswordFieldMetadata4` (declared at
+  `:L2667`), which carries the change to
+  already-provisioned ones). This closes `M-13`. Reproducible with
+  `git grep -n 'PasswordM..Length' -- WebVella.Erp/ERPService.cs`.
+* **The 380 ms figure is measured**, not calculated — but it is a *contemporaneous observation* whose
+  transcript is not retained, so treat it as an order of magnitude rather than a benchmark, and do not
+  use it as a regression threshold. See the [evidence-provenance table](remediation-log.md#evidence-provenance). It is quoted here from the remarks on the
+  hasher construction in `PasswordUtil`, which is where it was recorded when the primitive landed. It
+  is a pre-declared, accepted trade-off rather than an observed regression.
 * **No credential value is reproduced anywhere in this document**, including the seeded default
   administrator password. It is described by its location so an operator knows what to change without
   this document becoming a place to read it from.
@@ -350,23 +364,26 @@ Companion pages: the [security audit report](security-audit-report.md), the
 
 ### Status of this migration
 
-The remediation is committed as one atomic commit per vulnerability class. The hashing primitive and
-its verification path are in force in the current tree; the call sites that feed it and the
-version-gated data migration land with the credential-integrity and authorization classes. The table
-states which is which, so nothing here is read as already done when it is not.
+The remediation is committed as one atomic commit per vulnerability class. **Every element of the
+credential class is now in force in the current tree.** An earlier revision of this table marked four
+elements as *Pending*; all four have since landed, and the table below is the corrected state. Each
+row was re-verified against the source rather than carried forward on trust.
 
 | Element | Status in the current tree |
 | --- | --- |
 | Salted, work-factored, fixed-time hash-and-verify primitive with a rehash signal | **In force** in `WebVella.Erp/Utilities/PasswordUtil.cs` |
 | Legacy digest verification retained for backwards compatibility | **In force**, behind a fixed-time comparison |
 | Shared mutable digest instance removed | **In force** — replaced by a stateless one-shot call |
-| Credential lookup restructured so verification happens in application code | **Pending** — `WebVella.Erp/Api/SecurityManager.cs` still compares inside the SQL predicate |
-| Record write paths routed through the new primitive | **Pending** — `WebVella.Erp/Api/RecordManager.cs` and `WebVella.Erp/Database/DbRecordRepository.cs` |
-| Version-gated data migration for existing installations | **In force** — `WebVella.Erp/ERPService.cs`, `if (currentVersion < 4)`; the schema version head is now 4 |
+| Credential lookup restructured so verification happens in application code | **In force** — `SecurityManager.GetUser` fetches by e-mail, reads the hash through the dedicated `ReadStoredPasswordHash` query, and verifies with `PasswordUtil.VerifyPassword`. No hash comparison remains in any authentication SQL predicate; the only comparison left in SQL is the compare-and-swap guard on the rehash `UPDATE` (`... WHERE id = @id AND password = @expected_password`), which is optimistic concurrency rather than credential verification |
+| Record write paths routed through the new primitive | **In force** — `RecordManager.ExtractFieldValue` and `DbRecordRepository.ExtractFieldValue` both call `PasswordUtil.HashPassword` |
+| Version-gated data migration for existing installations | **In force** — `WebVella.Erp/ERPService.cs`, `if (currentVersion < 4)` carries every credential-related change; the schema version **head is now 5**, and version 5 is authorization-only |
 | Shipped default administrator credential removed from provisioning | **In force** — resolved from configuration, else generated with a CSPRNG and surfaced once |
-| Password length bounds raised from 6–24 to 12–128 | **In force** — at the provisioning seed and in the version 4 migration |
-| Redaction of encrypted-field values from read projections | **Pending** |
-| Five-attempt login lockout consulted at the login entry point | **Pending** — the throttle service exists but is not yet wired |
+| Password length bounds raised from 6–24 to 12–128 | **In force** — bound to `PasswordUtil.MinPasswordLength`/`MaxPasswordLength` so the seed, the migration and the runtime policy cannot drift apart |
+| Password policy enforced on every write path | **In force** at four seams — `RecordManager.ExtractFieldValue`, `DbRecordRepository.ExtractFieldValue`, `SecurityManager.SaveUser` (which surfaces a per-field validation error rather than a generic one), and `ERPService.ResolveInitialAdministratorPassword` (which fails startup with a value-free message) |
+| Redaction of encrypted-field values from read projections | **In force** at five seams — `DbRecordRepository`'s two `Find` projections, `RecordManager.RedactEncryptedFieldValues` including nested relation projections, `EqlCommand`, which closes the public query-language route, and the read fall-through of `DbRecordRepository.ExtractFieldValue`, which is the deepest of the five and covers any future caller of that public static method. The first three are unconditional; the last two are deny-by-default and are opened only for credential resolution, which must satisfy BOTH of them. The write path ignores the sentinel, so a full-record round-trip can never persist the marker over a real hash |
+| Five-attempt login lockout consulted at **both** credential entry points | **In force** — `login.cshtml.cs` and the anonymous token route in `WebApiController` both call `TryBeginAttempt` and then finalise the reserved attempt through `RegisterFailedAttempt` / `RegisterSuccess` / `AbandonAttempt`; the token-refresh route additionally uses the address-only pair `IsAddressRefusing` / `RegisterAddressFailure`, because it presents no username to count against |
+| Rehash persistence made safe against concurrent logins | **In force** — the upgrade is a compare-and-swap on both the row id and the previously observed hash, and is a no-op when it matches zero rows |
+| Over-length password rejected before any expensive work | **In force** — bounded in `GetUser` ahead of the query, and mirrored inside the dummy-verification path so the two cannot diverge into a timing oracle |
 
 ### How a legacy hash is recognised, and why no schema change was needed
 
@@ -500,24 +517,35 @@ installation that had ever been provisioned from this source.
 
 **It no longer authenticates.**
 
-- On a **fresh installation**, provisioning uses an operator-supplied secret, or generates a
-  cryptographically random password and surfaces it **once**, together with a
-  change-required-on-first-login marker.
-- On an **upgraded installation**, the version-4 migration invalidates the stored value, so the old
-  password stops working the moment the migration runs.
+- On a **fresh installation**, provisioning uses the operator-supplied
+  `Settings__InitialAdministratorPassword` and nothing else. It is not optional: without it,
+  provisioning aborts.
+- On an **upgraded installation**, the version-4 migration invalidates the stored value and replaces
+  it with that same operator-supplied secret, so the old password stops working the moment the
+  migration runs.
+
+**Nothing is generated and nothing is printed.** The platform never emits a live credential to
+standard error, to a log, or into an exception message, so there is no "one-time value" to capture and
+nothing to scrub from a terminal scrollback or a captured container log afterwards (CWE-532). The only
+party who knows the administrator password is the operator who chose it.
 
 Concrete steps for operators:
 
 1. Before provisioning a fresh installation, supply `Settings__ConnectionString`,
-   `Settings__EncryptionKey` and — on the two token-issuing hosts — `Settings__Jwt__Key`. The host
-   will not start otherwise; see the [secure configuration guide](secure-configuration.md).
-2. Capture the one-time administrator password from the provisioning output **before** the process
-   exits. It is shown once and is not recoverable from the database, because only its hash is stored.
-3. Sign in with it and set a real password immediately. The policy in force is at least 12 characters.
-4. If the one-time value was not captured, do not attempt to reinstate a known default. Reset the
-   credential directly against the database using the platform's own hashing path, or re-provision
-   into an empty database.
-5. On an upgraded installation, confirm after the migration that `"erp"` no longer authenticates.
+   `Settings__EncryptionKey`, `Settings__InitialAdministratorPassword` and — on the two token-issuing
+   hosts — `Settings__Jwt__Key`. The host will not start otherwise; see the
+   [secure configuration guide](secure-configuration.md).
+2. Choose the administrator password yourself, 12–128 characters, and hold it in the same place you
+   hold the other secrets above — a secret manager, not a shell history file. It is not recoverable
+   from the database afterwards, because only its hash is stored.
+3. Sign in with it and confirm it works. The policy in force is at least 12 characters.
+4. If the value is lost, do not attempt to reinstate a known default. Reset the credential directly
+   against the database using the platform's own hashing path, or re-provision into an empty database.
+5. Before upgrading an installation that may still carry the default, supply
+   `Settings__InitialAdministratorPassword` as well: the version-4 migration needs it to replace the
+   credential it revokes, and will abort the upgrade — rolling back, without advancing the stored
+   schema version — if it is absent. Confirm after the migration that `"erp"` no longer authenticates
+   and the supplied value does.
 
 The literal `"erp"` **remains in repository history** and must be assumed known to anyone who has ever
 seen this source. It must never be reinstated as a default, in provisioning, in documentation or in a
@@ -560,7 +588,8 @@ passphrases and truncates password-manager output. A low ceiling is a password-p
 own right, so lifting it closes the finding rather than exceeding it.
 
 The related lockout control triggers after **five** failed attempts and is consulted at the platform's
-single login entry point. Its per-instance scope and fail-closed behaviour are documented in the
+two credential entry points — the interactive login page and the bearer-token route. Its per-instance
+scope and fail-closed behaviour are documented in the
 [secure configuration guide](secure-configuration.md) and the [risk register](risk-register.md).
 
 ### The login-latency increase is by design
@@ -656,7 +685,7 @@ Case-insensitive matching is preserved: `^ERP\@WebVella\.COM$` still matches the
 
 Moving verification into application code created a timing oracle. A request for a **non-existent** e-mail would return in about 0.5 ms with no hash to verify, while a request for an existing account would spend about 120 ms in PBKDF2. That difference is trivially measurable and turns the login endpoint into a user-enumeration oracle.
 
-When no user matches, the code now performs a **dummy verification** against a throwaway hash, so both paths cost the same. Measured: real verification 119.2 ms, dummy verification 118.9 ms.
+When no user matches, the code now performs a **dummy verification** against a throwaway hash, so both paths cost the same. Measured: real verification 119.2 ms, dummy verification 118.9 ms — a *contemporaneous observation* (see the [evidence-provenance table](remediation-log.md#evidence-provenance)). What is durable and re-provable from the tree is the *mechanism*: `PasswordUtil.PerformDummyVerification` is called on the no-match path at `WebVella.Erp/Api/SecurityManager.cs:380`, guarded by the `keyDerivationPerformed` flag declared at `:316` and tested at `:379` so exactly one key derivation happens per request whether or not the account exists. The near-equality of the two figures is what that mechanism is for; their absolute values are host-dependent.
 
 The generic failure message is unchanged, so nothing in the response body distinguishes the two cases either.
 
@@ -786,7 +815,11 @@ compute MD5 directly. The schema version 4 data migration described below **has 
 | `WebVella.Erp/Database/DbRecordRepository.cs` (two write paths) | Route password writes through `HashPassword`. |
 | `WebVella.Erp/ERPService.cs` | **Done.** The version 4 data migration described below was added, and the shipped default administrator password was eliminated. |
 
-Until those changes land, credentials continue to be stored as unsalted MD5 and C-03 remains open.
+**Those changes have since landed.** An earlier revision of this line said credentials "continue to be
+stored as unsalted MD5" and that C-03 "remains open"; both statements are retracted. Every call site is
+switched, C-03 is closed, and new and changed credentials are stored salted and work-factored. Legacy
+digests are still *accepted* at login - deliberately, so no user is locked out - and each one is
+rewritten to the modern format on the next successful authentication.
 Treat this document as the migration design and the operator runbook, not as a description of a
 completed migration.
 
@@ -879,12 +912,20 @@ blocks already use. Unlike the two sitemap helpers, it opens **no connection and
 works entirely through `EntityManager` and `RecordManager`, which already participate in the ambient
 transaction.
 
+The three actions execute in the order listed below, and that order is deliberate. Raising the password
+length bounds runs **first** so that the credential replacement in action 2 is written under the bounds
+this release declares (12–128) rather than the 6–24 it is in the middle of replacing. While the
+replacement was a fixed-length generated value it satisfied both bound sets by construction and the
+order genuinely could not matter; now that it is an operator-supplied passphrase of up to 128
+characters, only the new bounds accommodate it. No write path validates against these bounds today —
+they are declarative field metadata — but a security migration should not depend on the continued
+absence of a validation check, so the ordering makes the guarantee structural instead.
+
 | # | Action as landed | Finding |
 | --- | --- | --- |
-| 1 | Invalidates the seeded administrator credential for `SystemIds.FirstUserId` — **but only if it still carries the previously published default** — replacing it with a CSPRNG password written through `RecordManager.UpdateRecord`, so it is hashed by the current primitive | C-01 |
-| 2 | Removes the guest role from `CanCreate` **and** `CanRead` on the user entity, and from `CanCreate` on the role entity. The role entity's guest `CanRead` grant is **deliberately retained** | C-05, C-02 |
-| 3 | Sets `EnableSecurity = true` on the password field and assigns **administrator-only** `CanRead`/`CanUpdate`. Setting `EnableSecurity` is not optional decoration: `PcFieldBase` skips the entire field-permission evaluation when it is false, so permissions assigned without it are inert | C-02 |
-| 4 | Raises the password length bounds to **12–128** | M-13 |
+| 1 | Sets `EnableSecurity = true` on the password field, assigns **administrator-only** `CanRead`/`CanUpdate`, and raises the password length bounds to **12–128**. Setting `EnableSecurity` is not optional decoration: `PcFieldBase` skips the entire field-permission evaluation when it is false, so permissions assigned without it are inert | C-02, M-13 |
+| 2 | Invalidates the seeded administrator credential for `SystemIds.FirstUserId` — **but only if it still carries the previously published default** — replacing it with the **operator-supplied** `Settings:InitialAdministratorPassword`, written through `RecordManager.UpdateRecord` so it is hashed by the current primitive. Nothing is generated and nothing is printed | C-01 |
+| 3 | Removes the guest role from `CanCreate` **and** `CanRead` on the user entity, and from `CanCreate` on the role entity. The role entity's guest `CanRead` grant is **deliberately left in place by this version's block**, which is a statement about version 4's boundary and not about the tree's end state — it is revoked one version later under review finding `F17`, described below | C-05, C-02 |
 
 #### The guard, and why an operator's own password is safe
 
@@ -897,9 +938,10 @@ The shape test alone would be **insufficient**, and relying on it would destroy 
 chose their own password on an un-migrated installation also has a legacy-shaped hash. Both conditions
 must hold. Consequently:
 
-* An installation still on the published default — credential revoked, replacement surfaced once.
+* An installation still on the published default — credential revoked and replaced with the
+  operator-supplied `Settings:InitialAdministratorPassword`.
 * An installation whose administrator password was already changed — **left byte-for-byte untouched**,
-  while actions 2, 3 and 4 still apply in full.
+  while actions 1 and 3 still apply in full.
 * An installation already migrated — the stored value is modern, so the guard cannot fire.
 
 **No other account's credential is touched.** Ordinary users are never reset and never locked out;
@@ -907,23 +949,53 @@ they migrate individually through the rehash-on-login path described in §4.
 
 #### What the operator sees
 
-The generated password is written **once** to standard error and cannot be recovered afterwards. Two
-distinct notices exist, so the two situations are not confused:
+**No credential appears in any output stream.** Two notices exist, so the two situations are not
+confused, and neither one contains a password:
 
-* `ErpService[2]` — *provisioning*: no `Settings:InitialAdministratorPassword` was supplied, so a
-  password was generated for the first administrator account on a **new** installation.
+* `ErpService[1]` — *provisioning*: the first administrator password was taken from
+  `Settings:InitialAdministratorPassword`. Only the setting **name** is reported.
 * `ErpService[3]` — *migration*: an **existing** installation still carried the published default, so
-  it was revoked and replaced.
+  it was revoked and now accepts the value supplied in `Settings:InitialAdministratorPassword`. Only
+  the setting name and the fixed, published `SystemIds.FirstUserId` constant are reported.
 
-When an operator supplies `Settings:InitialAdministratorPassword`, that value is used and **is never
-logged**.
+An interim revision emitted a generated password on standard error under an `ErpService[2]` notice.
+**That notice no longer exists**, and neither does the generator behind it. Standard error is not a
+private channel: every substrate this platform is hosted on captures it wholesale and retains it —
+systemd's journal, the Docker log driver, IIS stdout redirection, Kubernetes container logs, CI
+transcripts — where it is readable by anyone with log or host access and is routinely forwarded off-box
+to aggregation. A "one-time" notice on such a stream is durable plaintext (CWE-532, OWASP A09:2021),
+and it was written *before* the surrounding transaction committed, so even a rolled-back upgrade left
+the value behind. Requiring the operator's own value removes the need for the channel altogether.
 
-#### Accepted limitation
+If `Settings:InitialAdministratorPassword` is absent, provisioning and this migration **abort** with a
+message naming only the setting key — never a value, never its length. See
+[§ What to do about the credential the platform used to ship](#what-to-do-about-the-credential-the-platform-used-to-ship).
 
-There is **no change-required-on-first-login marker**, because no existing column on the seeded `user`
-record can carry one and adding a column is forbidden by the no-schema-change constraint. The
-compensating control is that the replacement credential is high-entropy, shown once, and never
-persisted anywhere else. Recorded as `RISK-027` in the [risk register](risk-register.md).
+#### First-login rotation — required and enforced
+
+An earlier revision of this section recorded an accepted limitation: that there was **no**
+change-required-on-first-login marker, because no existing column could carry one and adding a column is
+forbidden by the no-schema-change constraint. **That premise was wrong, and the limitation is closed**
+(`RISK-027`, and code-review finding `F-05`).
+
+`rec_user.preferences` is an existing `text not null default '{}'` column, so a marker needed no schema
+change at all. It is carried as `ErpUserPreferences.PasswordChangeRequired`, serialised into that
+existing column — proven to emit **zero DDL** by PostgreSQL statement logging.
+
+| Behaviour | Where |
+| --- | --- |
+| Set when the bootstrap administrator is provisioned | `WebVella.Erp/ERPService.cs`, provisioning seed |
+| Set when the version-4 migration revokes a seeded credential | `RevokeSeedAdministratorCredential4`, read-modify-write so existing preferences survive |
+| **Cleared automatically** when the password is next written | `SecurityManager.SaveUser`, inside the password-write branch only, reading the *stored* preferences rather than the submitted ones |
+| **Enforced** at token issuance | `AuthService.GetTokenAsync` **and** `GetNewTokenAsync` — an unrotated bootstrap credential cannot mint a JWT, and gating the refresh path too closes the grandfathering hole |
+| Audited on interactive login | a distinct warning audit record is written on every interactive login still using the bootstrap credential |
+
+**Interactive login deliberately stays open.** Enforcement is JWT-only by design: the operator must be
+able to sign in interactively in order to *perform* the rotation. Blocking interactive login would lock
+the administrator out of the only screen that fixes the problem.
+
+The original compensating controls still apply — the credential is high-entropy, shown once, and never
+persisted anywhere else.
 
 #### Verification
 
@@ -937,10 +1009,13 @@ persisted anywhere else. Recorded as `RISK-027` in the [risk register](risk-regi
 | Ordinary users unaffected | A non-administrator holding a legacy hash authenticated normally and was transparently rehashed to the modern format. No forced reset, no lockout |
 | Credential never disclosed | The revoked account's replacement authenticates; the previously published default does not. No record projection returns a hash of either shape, and the field is hidden from non-administrators while remaining visible and editable to an administrator |
 
-#### Out-of-scope interference on *fresh* installations only
+#### Plugin interference on fresh installations — **FIXED at the code-review checkpoint**
 
-One behaviour an operator should know about, because it is **not** a defect in this migration and is
-not fixed by it. On a **freshly provisioned** installation, the SDK and Project plugin patches run
+This section previously described a behaviour as out of scope and left the operator to clean up after
+it. The code review escalated it to a **Critical** finding (`F-01`), and it is now fixed. The original
+analysis is retained below because it is accurate and explains *why* the fix has the shape it does.
+
+**The defect.** On a **freshly provisioned** installation, the SDK and Project plugin patches run
 *after* `InitializeSystemEntities` and unconditionally rebuild the `user` and `role` entities' record
 permissions, **re-adding the guest role** to `CanCreate` and `CanRead`:
 
@@ -948,13 +1023,53 @@ permissions, **re-adding the guest role** to `CanCreate` and `CanRead`:
 * `WebVella.Erp.Plugins.Project/ProjectPlugin.20211012.cs`
 
 Those patches are gated on the *plugin's own* version counter, which defaults to an early value when
-no `plugin_data` row exists — which is precisely the case on a new database. **Upgraded installations
-are unaffected**, because their `plugin_data` row already records a later version, so the patches do
-not run and the revocation stands; this was confirmed empirically across repeated startups.
+no `plugin_data` row exists — which is precisely the case on a new database. So the version-4
+revocation ran first and was then silently undone, meaning **C-05 was left open on every new
+installation** even though the migration itself was correct. Upgraded installations whose `plugin_data`
+row already records a later version were unaffected.
 
-These two files fall outside the scope of this change, so they are reported rather than modified.
-**Operator action for new installations:** after first provisioning, verify that the guest role holds
-no create or read permission on the `user` and `role` entities, and revoke it if present.
+**The fix, in two independent halves.** Either half alone would have been insufficient, which is why
+both were applied:
+
+1. **The stale grants were deleted from both plugin patches** — guest `CanCreate` on the role entity,
+   guest `CanRead` on the user entity, guest `CanCreate` on the user entity, and guest `CanRead` on the
+   role entity. That is **four** deletions per file. The fourth was initially left in place, on the
+   ground that the version-4 migration revokes exactly the other three and that removing more at this
+   boundary would be an unrequested behaviour change. The version-5 migration
+   (`MigrateSecurityDefaults5`, review finding `F17`) then revoked that grant and, in doing so,
+   disproved the premise the retention rested on: role hydration runs inside a system security scope in
+   `SecurityManager.GetUser`, so the sign-in path never consults the Guest grants. Once version 5
+   revokes the grant, a patch that re-adds it is a re-grant like any other — and because
+   `InitializeSystemEntities` runs **before** `InitializePlugins`, the patch is the *last* write, so
+   leaving it would have kept `F17` open on every freshly provisioned installation. The `revokeRead`
+   flag on `RevokeGuestRecordPermissions4` remains `false` for the `role` entity at version 4 and `true`
+   at version 5, so each migration body stays faithful to what that version claimed to do.
+2. **An idempotent reconciliation now runs after plugin initialisation on every startup.** Deleting the
+   grants from these two first-party files cannot protect against a *third-party* plugin doing the same
+   thing, and the ordering that caused the defect — system entities first, plugins second — is
+   structural. So the last thing `InitializePlugins` does is re-apply the same idempotent revocation the
+   **version-5** migration uses — guest create and read removed from both the `user` and the `role`
+   entity — inside a system security scope. It is **not** version-gated, because the whole point is that
+   it must run after any plugin that might have re-granted. It deliberately does *not* route through the
+   version-4 shape of that helper: that shape passes `revokeRead: false` for the `role` entity, so a
+   reconciliation built on it would re-assert only three of the four revocations and leave the fourth to
+   whichever plugin patch wrote last.
+
+**Why it is silent.** The reconciliation logs nothing. A plugin that re-grants on every start would
+otherwise produce a log line on every start, and a benign no-op would fill the audit trail. The
+trade-off is recorded as `RISK-036`: the condition is corrected forever, but without an operator signal
+that it keeps recurring.
+
+**Verified.** Proven across four real host startups: repair (grants present → removed), no-op
+(already-correct state → no second write, because the reconciliation skips `UpdateEntity` when nothing
+was actually removed), and durability (the revocation survives subsequent startups). Final committed
+state on the `user` entity is guest create **false** / read **false**, and on the `role` entity create
+**false** / read **false**. That `role` read column previously read **true** *by design* here; the
+reading was superseded when version 5 revoked the grant under `F17`, and a database still showing
+**true** is at a pre-version-5 state and is repaired by starting any host once.
+
+**Operator action: none.** The previous instruction to verify and manually revoke guest permissions
+after first provisioning is **withdrawn** — it is now done automatically on every startup.
 
 
 ### Operator actions
@@ -984,3 +1099,148 @@ no create or read permission on the `user` and `role` entities, and revoke it if
   Do not roll back code alone.
 * **Never** attempt to convert modern values back to the legacy format. It is not possible, and it
   would be a downgrade to the exact weakness this migration exists to remove.
+
+
+## The SMTP service credential — what the mail plugin migration does, and what you must do
+
+This section covers a **second** credential, distinct from every user password discussed above: the
+SMTP account password stored on the mail plugin's `smtp_service` records. It is not hashed and cannot
+be, because the mail transport has to present it to the server; it is protected by authorisation
+instead.
+
+### What changed
+
+* The `smtp_service` entity now permits create, read, update and delete to the **Administrator role
+  only**. Before this change the Regular role held all four.
+* The `password` field is now a secured field with Administrator-only read and update, so it is
+  withheld from every projection a non-administrator can reach.
+* The credential is excluded from JSON serialisation of the service model, so a generic projection
+  cannot carry it off.
+* The in-process cache holding the resolved service in plaintext expires after **five minutes**
+  instead of an hour.
+* A dated plugin patch applies the two permission changes to installations that already exist. New
+  installations get them from the seed.
+
+### Operator actions
+
+1. **Nothing is required for the migration to run.** It applies on the next start-up of any host that
+   loads the mail plugin, is version-gated, and is idempotent — running it again changes nothing.
+2. **Review any custom-role delegation on `smtp_service`.** The migration revokes only the Regular and
+   Guest grants; a delegation you created on a custom role is *preserved*, deliberately, because
+   revoking it would override your own decision. If a broad custom role still holds read or update on
+   `smtp_service`, every member of it can still read the SMTP password. This is `RISK-034`.
+3. **Rotate the SMTP account password if the Regular role was ever populated on a reachable
+   installation.** Any credential a non-administrator could read must be assumed disclosed; the
+   permission change stops future reads, it cannot undo past ones.
+4. **Expect no change to mail delivery.** The transport still receives the plaintext credential, and
+   the administrator edit form still shows and saves the field. If a send begins failing immediately
+   after the upgrade, the cause is transport certificate validation rather than authorisation — see
+   the mail transport row in the
+   [secure configuration guide](secure-configuration.md#what-is-in-force-at-this-commit).
+
+### What this migration does not do
+
+The credential is **not encrypted at rest**, which is a declined sub-requirement rather than an
+oversight: the confirmed exposure was a read *through the application*, which encryption would not
+have prevented, and the administrator edit form round-trips the field, so storing ciphertext would
+display and re-save it and break all mail delivery. The reasoning is recorded in full as `RISK-032`
+in the [risk register](risk-register.md). Treat direct database access, database backups and
+filesystem copies as able to read this credential in plaintext, and restrict them accordingly.
+
+### Rollback
+
+* **Before the patch has run:** redeploy the previous build. No permission has changed.
+* **After the patch has run:** the permission change is a metadata edit, not a data conversion, so
+  redeploying an older build is safe — but it does **not** restore the Regular-role grants, because the
+  plugin records the applied version. If you genuinely need them back, grant them explicitly through
+  the entity administration screens, and record why.
+
+## Password policy enforcement and the login timing profile
+
+Review findings `F25` (CWE-521 — the 12–128 policy was declared but enforced nowhere) and `F28`
+(CWE-20/CWE-208 — a caller-visible timing discrepancy that revealed account existence) changed how a
+password is *chosen* and how a failed login *feels*, without changing
+the stored format, the migration strategy or anything an operator has to do on upgrade. Both are
+recorded here because both are visible to a user.
+
+### What an operator and a user will notice
+
+| Change | Who sees it | What they see |
+| --- | --- | --- |
+| The policy is enforced server-side | Anyone setting a password | 12 to 128 characters, and all four of: an upper case letter, a lower case letter, a number, a symbol. Leading and trailing whitespace are rejected. A refusal is a field-level error keyed `password`, never a stack trace and never an echo of the value. |
+| Provisioning refuses a non-compliant `Settings:InitialAdministratorPassword` | An operator deploying a **new** database | Provisioning aborts before writing anything. Nothing to clean up. |
+| The 129-character lockout is gone | Any user | A password over 128 characters is now refused as a policy violation instead of hashing to an empty string and silently making the account unusable. |
+| Failed logins take about the same time however they fail | An attacker probing for accounts | Nothing useful. |
+
+### Why the legacy rehash path is exempt, on purpose
+
+Nothing about the enforcement touches the rehash-on-next-authentication migration. Existing users
+keep authenticating with the password they already have, however short, and it is silently upgraded to
+the modern format on their next successful login exactly as before.
+
+That exemption is deliberate and structural. The **maximum** length is a resource bound and is
+enforced everywhere, including inside the hashing primitive. The **minimum** length and the complexity
+rules are a policy floor that applies only where a human *chooses* a credential — so they are
+enforced at the four credential-choice boundaries and nowhere else. Had the floor been pushed into
+`PasswordUtil.HashPassword`, the upgrade would have thrown for precisely the accounts still carrying
+an MD5 digest, and thrown silently, because that call site logs and swallows failures so that a rehash
+problem can never turn a valid login into a failed one. The result would have been users who log in
+forever on a legacy hash with nothing reporting it. The reasoning is recorded in the source and as
+`RISK-046` in the [risk register](risk-register.md).
+
+**Consequence to be honest about:** raising the floor for an existing user is an operational decision
+— a forced-reset campaign — not something this migration does. A user who chose a
+6-character password under the old policy keeps it until they change it, at which point the new policy
+applies.
+
+### The timing profile of a failed login
+
+Verification of a submitted password now takes about the same time whether the account exists, does
+not exist, still carries a legacy digest, or carries a corrupt value. Measured medians on a live
+database: **123.0 ms**, **120.9 ms**, **121.4 ms** and **122.0 ms** respectively. A password over the
+128-character bound is refused in **0.0 ms** without a database query at all — which is safe rather
+than a new oracle, because that answer depends only on the submitted value and reveals nothing about
+any account.
+
+The cost is deliberate and is the same cost recorded for `C-03`: one 600,000-iteration derivation
+happens on **every** credential path, including the ones that fail, so a failed login is as expensive
+as a successful one. That is what removes the signal.
+
+
+## Schema version 5, and why the ladder grew again
+
+Review finding `F17`. **Nothing in this section changes a credential**, and it needs no operator action
+beyond starting any host or the console application once. It is recorded here because this guide is
+where an operator looks to understand the migration ladder, and the ladder head moved from `4` to `5`.
+
+**What version 5 does.** It removes the **Guest** role from `CanRead` on the `role` entity, and
+re-asserts the version-4 removal of Guest `CanCreate` and `CanRead` on the `user` entity. Guest is the
+role an unauthenticated caller is evaluated against, so the read grant made every role name and
+identifier — including the administrator role — anonymously enumerable. `Regular` and `Administrator`
+keep their read grants, so nothing an authenticated user can see changes.
+
+**Why it is a separate version rather than an edit to version 4.** The version-4 block deliberately
+removed only the two **create** grants, and an installation that already recorded version 4 will never
+re-enter that block. Editing it would have protected only installations still below 4 and left every
+estate that had already upgraded exposed, with the source reading as though it were fixed. A new gate is
+the only construct that reaches them, and leaving version 4 faithful to what version 4 claimed to do is
+what lets an installation at any version replay the ladder and arrive at the same state.
+
+**Why the user entity is re-asserted.** A development installation was found recording schema version 4
+while still carrying Guest create *and* read on both entities. A recorded version reaching 4 is
+therefore not proof that the version-4 body ever ran against that database. Because the revocation uses
+`RemoveAll`, it is a no-op when the grant is already absent, so re-asserting costs one metadata read per
+entity and repairs an installation in that state. The residual — that an operator who *deliberately*
+re-granted Guest access will lose it — is `RISK-050`.
+
+**Properties it shares with version 4.** It runs inside the same provisioning transaction and **before**
+the settings row is saved, so a failure rolls the whole migration back and the version is not advanced;
+the migration is then retried on the next start. It is **data only**: it changes entity metadata through
+the manager API and emits no schema definition statement, so no column or table is altered, added or
+dropped. It is idempotent.
+
+**Rollback.** There is nothing credential-related to roll back. If an installation genuinely requires
+anonymous role enumeration, re-grant `CanRead` on the `role` entity to the Guest role through the
+administration UI and set the recorded schema version to `5` so the migration does not remove it again
+on the next start — but prefer a purpose-built read endpoint, because the grant applies to the whole
+entity and to every caller with no credentials at all.

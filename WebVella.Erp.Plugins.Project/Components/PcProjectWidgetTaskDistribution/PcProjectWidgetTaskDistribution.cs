@@ -128,7 +128,16 @@ namespace WebVella.Erp.Plugins.Project.Components
 							var row = new EntityRecord();
 							var imagePath = "/_content/WebVella.Erp.Web/assets/avatar.png";
 
-							row["user"] = $"<img src=\"{imagePath}\" class=\"rounded-circle\" width=\"24\"> No owner";
+							//SECURITY - H-06 (CWE-79, OWASP A03: stored cross-site scripting): this cell used to
+							//be composed here as an HTML string and then emitted through Html.Raw by both
+							//Design.cshtml and Display.cshtml, which made every value interpolated into it
+							//executable in the browser. The avatar and the owner name are now published as
+							//separate DATA fields and the markup is authored in the views, where Razor encodes
+							//them automatically. The path in this branch is a fixed literal, but the field is
+							//still published so that both branches hand the views the same record shape -
+							//EntityRecord throws KeyNotFoundException for a field a row does not define.
+							row["user_image"] = imagePath;
+							row["user_name"] = "No owner";
 							row["overdue"] = statRecord["overdue"];
 							row["today"] = statRecord["today"];
 							row["other"] = statRecord["other"];
@@ -143,7 +152,13 @@ namespace WebVella.Erp.Plugins.Project.Components
 							if (user["image"] != null && (string)user["image"] != "")
 								imagePath = "/fs" + (string)user["image"];
 
-							row["user"] = $"<img src=\"{imagePath}\" class=\"rounded-circle\" width=\"24\"> {(string)user["username"]}";
+							//SECURITY - H-06 (CWE-79, OWASP A03: stored cross-site scripting): user["image"] and
+							//user["username"] are database text that any user with write access to the user
+							//record controls. Publishing them as data instead of as pre-built markup moves the
+							//encoding into the view, where Razor escapes both the src attribute value and the
+							//name text, so neither can close the attribute or open a new element.
+							row["user_image"] = imagePath;
+							row["user_name"] = (string)user["username"];
 							row["overdue"] = statRecord["overdue"];
 							row["today"] = statRecord["today"];
 							row["other"] = statRecord["other"];

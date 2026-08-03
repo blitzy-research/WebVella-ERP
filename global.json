@@ -2,16 +2,15 @@
   // Security: pinned SDK - NuGetAudit defaults and the analyzer rule set are
   // SDK-version dependent; an unpinned toolchain makes the dependency and SAST
   // gates non-reproducible (finding L-07). See docs/security/secure-configuration.md
-  // Security: strict roll-forward. "latestPatch" still allowed the toolchain to
-  // drift to a newer patch, and both the NuGetAudit defaults and the
-  // AnalysisLevel=latest-recommended rule set selected by Directory.Build.props
-  // are SDK-version dependent - so a drifting patch silently changes what the
-  // dependency and SAST gates check, which is exactly the non-reproducibility
-  // this pin exists to remove. "disable" freezes the toolchain to the exact
-  // version above and fails predictably, with an actionable message naming the
-  // required version, when it is not installed.
+  // "latestPatch" is the deliberate roll-forward policy: it holds the pin on the
+  // 10.0.3xx feature band - which is what keeps the gate reproducible, because
+  // the audit mode default and the analyzer rule set are selected by the feature
+  // band - while still admitting a security patch of the SDK itself. "disable"
+  // was rejected because it makes the repository unbuildable the moment this
+  // exact patch is superseded, breaking the "all existing functionality remains
+  // operational" preservation requirement for developers and for CI.
   "sdk": {
     "version": "10.0.302",
-    "rollForward": "disable"
+    "rollForward": "latestPatch"
   }
 }

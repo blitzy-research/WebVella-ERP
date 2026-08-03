@@ -62,41 +62,30 @@ namespace WebVella.Erp.Site.Crm
 			services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
 					.AddCookie(options =>
 					{
-						options.Cookie.HttpOnly = true;
 						options.Cookie.Name = "erp_auth_crm";
 						options.LoginPath = new PathString("/login");
 						options.LogoutPath = new PathString("/logout");
 						options.AccessDeniedPath = new PathString("/error?access_denied");
 						options.ReturnUrlParameter = "returnUrl";
 
-						// THREAT ADDRESSED - finding H-08 / H-15, CWE-614 (sensitive cookie without the 'Secure'
-						// attribute) and CWE-1275 (sensitive cookie with an improper SameSite attribute), OWASP A05:
-						// the authentication cookie was HttpOnly but carried neither Secure nor SameSite and had no
-						// bounded lifetime, so it could travel in cleartext, be attached to cross-site requests, and
-						// be renewed indefinitely.
+						// THREAT ADDRESSED - review finding M-REV-09 (CWE-614 sensitive cookie without the 'Secure'
+						// attribute, CWE-1275 improper SameSite attribute, CWE-613 insufficient session expiration), OWASP
+						// A02 / A05, and Agent Action Plan section 0.6.1 Class 6, which mandates "an always-secure policy, a
+						// same-site policy, an explicit expiry window and sliding expiration".
 						//
-						// SecurePolicy is Always outside Development. It relaxes to SameAsRequest in Development only,
-						// because HTTPS redirection is likewise disabled there and an unconditionally Secure cookie
-						// would make local HTTP sign-in impossible - breaking the functionality-preservation
-						// requirement. Reading ASPNETCORE_ENVIRONMENT directly is exactly equivalent to
-						// IWebHostEnvironment.EnvironmentName here, because no host calls UseEnvironment, and it fails
-						// secure: an unset variable is not "Development", so the policy becomes Always.
-						options.Cookie.SecurePolicy = string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase)
-							? CookieSecurePolicy.SameAsRequest
-							: CookieSecurePolicy.Always;
-
-						// Lax, deliberately not Strict: Strict drops the cookie on the return-URL round trip back from
-						// the login page, which would break a working flow. Lax is the framework's own default posture
-						// and still withholds the cookie from cross-site POST requests.
-						// The type is named in full because Microsoft.Net.Http.Headers and Microsoft.AspNetCore.Http
-						// both declare a SameSiteMode and this file imports both; CookieBuilder.SameSite is the latter.
-						options.Cookie.SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Lax;
-
-						// An explicit, absolute session window. SlidingExpiration is false so the window cannot be
-						// extended: with sliding enabled a stolen cookie is renewed on every request and never expires
-						// while it is being used, so the credential is never re-presented.
-						options.ExpireTimeSpan = TimeSpan.FromHours(8);
-						options.SlidingExpiration = false;
+						// This host used to carry its own copy of those four settings, as did the other six, and the copies
+						// had drifted from the frozen session contract in two ways that mattered: the secure policy
+						// downgraded itself to SameAsRequest whenever the host environment name read "Development", and
+						// sliding expiration was disabled. Seven duplicated copies is the ROOT CAUSE of that drift rather
+						// than merely where it surfaced, so the contract now lives in exactly one place - see
+						// ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie for the full rationale, including why the
+						// Development relaxation was unnecessary and why sliding expiration is safe here only because it is
+						// paired with an absolute session horizon. Six hosts can no longer desynchronise from the seventh
+						// because there is one place left to edit.
+						//
+						// Called LAST in this lambda deliberately: the platform contract must win over anything a host sets,
+						// and nothing above this line is a security attribute - only the cookie name and the sign-in paths.
+						ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie(options);
 					});
 
 			services.AddErp();
@@ -105,6 +94,25 @@ namespace WebVella.Erp.Site.Crm
 		// This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
 		public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
 		{
+			// THREAT ADDRESSED - review finding M-REV-08 (CWE-348 use of a less trusted source, CWE-290
+			// authentication bypass by spoofing, CWE-307 improper restriction of excessive authentication
+			// attempts), OWASP A05 Security Misconfiguration. No forwarded-header processing existed anywhere in
+			// the platform, so behind the reverse proxy this application is designed to run behind three separate
+			// controls degraded silently and simultaneously: the request-rate partition collapsed onto the proxy's
+			// own address so every caller shared one budget, the per-address half of the login lockout counted one
+			// attacker's failures against every other user of that proxy, and Request.IsHttps read false for
+			// requests the client had actually made over TLS - which is what HTTPS redirection and the Secure
+			// cookie policy both read.
+			//
+			// FIRST in the pipeline, and that position is load-bearing rather than stylistic: every middleware
+			// below reads either the scheme or the remote address this one corrects - UseSecurityHeaders,
+			// UseHsts, UseHttpsRedirection and UseRateLimiter among them - so anything ordered above it would see
+			// the uncorrected values. It trusts nobody until an operator names their proxies in
+			// Settings:ForwardedHeaders; until then it is not even added to the pipeline, which is the only
+			// configuration that genuinely ignores X-Forwarded-*. See UseErpForwardedHeaders for why an empty
+			// allow-list would have been the opposite of no trust.
+			app.UseErpForwardedHeaders();
+
 			app.UseRequestLocalization(new RequestLocalizationOptions
 			{
 				DefaultRequestCulture = new Microsoft.AspNetCore.Localization.RequestCulture(CultureInfo.GetCultureInfo("en-US"))
@@ -141,14 +149,27 @@ namespace WebVella.Erp.Site.Crm
 			// THREAT ADDRESSED - finding H-08 / H-15, CWE-319 (cleartext transmission of sensitive
 			// information) and CWE-614: no host enforced HTTPS or published an HSTS policy, so a session
 			// could be downgraded to plaintext and its cookie intercepted. Guarded to non-Development
-			// because local development runs over plain HTTP. HSTS precedes redirection so the policy is
-			// published on the very response that performs the redirect.
+			// because local development runs over plain HTTP. UseHsts adds the policy to HTTPS responses
+			// only - HstsMiddleware returns without writing a header when Request.IsHttps is false - so the
+			// header is published on the secured responses that FOLLOW the redirect, never on the redirect
+			// itself. Ordering HSTS first is still correct, because the two calls must not be transposed:
+			// UseHttpsRedirection short-circuits a plaintext request, so anything after it never runs for
+			// that request at all.
 			//
 			// Ordering is deliberate and load-bearing: this sits AFTER UseCors. The CORS middleware
 			// short-circuits cross-origin preflight, so an OPTIONS request is answered before it can reach
 			// the redirect. That is what avoids the documented failure where HTTPS redirection answers a
 			// preflight with a redirect the browser rejects as invalid. Moving this above UseCors would
 			// reintroduce it.
+			//
+			// THREAT ADDRESSED - finding F-06: app.UseHsts() alone does NOT publish the mandated policy. It
+			// emits whatever HstsOptions holds, and the framework defaults are thirty days with subdomains
+			// excluded - "max-age=2592000". Because HstsMiddleware assigns the header by indexer and runs
+			// after UseSecurityHeaders(), it overwrote the mandated value rather than agreeing with it. The
+			// exact one-year, subdomain-inclusive values are now configured once in AddErp through
+			// services.AddHsts(), so both writers emit the identical string. This call site must not be
+			// given per-host options, and AddErp's registration must not be removed, or this line silently
+			// reverts to the thirty-day header.
 			if (!string.Equals(env.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
 			{
 				app.UseHsts();

@@ -4,8 +4,11 @@ using NpgsqlTypes;
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Api.Models.AutoMapper;
 using WebVella.Erp.Database;
@@ -44,12 +47,87 @@ namespace WebVella.Erp.Api
 		/// </summary>
 		private const int MaxEmailLength = 500;
 
+		/// <summary>
+		/// Hard upper bound on the number of rows any address lookup in this class will fetch, and
+		/// therefore on the number of password verifications a single request can trigger.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - CWE-1050 (excessive platform resource consumption within a loop) and
+		/// CWE-770 (allocation of resources without limits or throttling), OWASP A04:2021 Insecure
+		/// Design, reached through the availability side of A07:2021.
+		/// Nothing in this platform normalises the case of a stored address, and the login lookup has
+		/// to match case-insensitively for stored mixed-case addresses to keep working, so N rows can
+		/// legitimately come back for one submitted address when the stored data contains case-fold
+		/// duplicates. Every one of those rows used to be run through a 600,000-iteration key
+		/// derivation - roughly 120 ms of server CPU each - with no bound whatsoever on N, so a single
+		/// unauthenticated login attempt cost N x 120 ms. Bounding the QUERY is what removes the
+		/// amplification: the cost of a login attempt is now a constant regardless of the stored data.
+		/// <para>
+		/// The bound is 2 rather than 1 DELIBERATELY, and the distinction matters. At 1 the query would
+		/// silently truncate a case-fold duplicate set and one of the two colliding accounts would stop
+		/// being able to log in, which the requirement that all existing functionality remain
+		/// operational forbids. At 2 both candidates are still verified - so neither account loses
+		/// access - the worst case is a constant two derivations, and a second returned row is itself
+		/// the signal that the duplicate exists, which is reported for operator cleanup by
+		/// <see cref="ReportCredentialMaintenanceFailure(string, Exception)"/>.
+		/// <see cref="IsEmailRegisteredToAnotherUser(string, Guid)"/> stops new duplicates being
+		/// created, so the set cannot grow past what is already stored.
+		/// </para>
+		/// </remarks>
+		private const int MaxCredentialCandidates = 2;
+
+		/// <summary>
+		/// Count of credential-maintenance reports that could not be persisted, carried into the next
+		/// report that succeeds.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding C-03 follow-on, CWE-778 (insufficient logging). Reporting a
+		/// maintenance failure needs the database, and the failure being reported is very often a
+		/// database failure, so the report is the single most likely thing to fail here. Without this
+		/// counter that loss would be completely invisible. Mutated only through Interlocked/Volatile,
+		/// so recording a loss can never itself throw and can never turn a successful authentication
+		/// into an error. Deliberately left uninitialised: int is already 0 and writing "= 0" would
+		/// raise CA1805.
+		/// </remarks>
+		private static int credentialMaintenanceReportFailures;
+
+		/// <summary>
+		/// Log source recorded for every credential-maintenance report.
+		/// </summary>
+		/// <remarks>
+		/// One label for both conditions reported by
+		/// <see cref="ReportCredentialMaintenanceFailure(string, Exception)"/> - a failed hash upgrade
+		/// and a duplicate stored address - so an operator can retrieve the whole class with a single
+		/// filter on system_log.source. It replaces the previous method-specific label because the
+		/// reporter is now shared; nothing reads the value programmatically.
+		/// </remarks>
+		private const string CredentialMaintenanceLogSource = "SecurityManager.CredentialMaintenance";
+
 		public ErpUser GetUser(Guid userId)
 		{
+			//THREAT ADDRESSED - finding C-02, CWE-200 (exposure of sensitive information to an
+			//unauthorized actor) and CWE-522 (insufficiently protected credentials), OWASP A01:2021
+			//Broken Access Control + A02:2021 Cryptographic Failures. Every record projection in the
+			//platform now substitutes RecordManager.EncryptedFieldRedactedValue for an encrypted
+			//password value - including the generic EQL surface behind the api/v3/en_US/eql, eql-ds
+			//and eql-ds-select2 endpoints, which authorises the ENTITY only and which an
+			//authenticated regular user could therefore use to read the stored credential hash.
+			//
+			//The credential-resolution queries in this class are the ONE internal consumer that
+			//legitimately needs the real stored value: GetUser(email, password) verifies against it,
+			//and WebVella.Erp/ERPService.cs reads it through this overload when the schema-version-4
+			//migration invalidates the credential seeded by earlier releases. The scope opened here
+			//is that narrow, deliberate exemption, and it covers exactly one query.
+			//
+			//It must NOT be opened around a controller action, a hook, a job, an import, or the bulk
+			//user listing further down this file - any of those would reopen precisely the surface
+			//C-02 describes. Note also that the value cannot reach a client through this path in any
+			//case, because WebVella.Erp/Api/Models/ErpUser.cs marks Password with [JsonIgnore].
 			using (var ctx = SecurityContext.OpenSystemScope())
+			using (RecordManager.OpenCredentialReadScope())
 			{
 				var result = new EqlCommand("SELECT *, $user_role.* FROM user WHERE id = @id",
-				new List<EqlParameter> { new EqlParameter("id", userId) }).Execute();
+				new List<EqlParameter> { new EqlParameter("id", userId) }) { IncludeEncryptedFieldValues = true }.Execute();
 				if (result.Count != 1)
 					return null;
 
@@ -59,7 +137,11 @@ namespace WebVella.Erp.Api
 
 		public ErpUser GetUser(string email)
 		{
+			//SECURITY C-02 (CWE-200 / CWE-522, OWASP A01:2021 + A02:2021): internal
+			//credential-resolution exemption from projection redaction. See GetUser(Guid) for the
+			//full rationale and for the strict limits on where this scope may be opened.
 			using (var ctx = SecurityContext.OpenSystemScope())
+			using (RecordManager.OpenCredentialReadScope())
 			{
 
 				var result = new EqlCommand("SELECT *, $user_role.* FROM user WHERE email = @email",
@@ -73,7 +155,11 @@ namespace WebVella.Erp.Api
 
 		public ErpUser GetUserByUsername(string username)
 		{
+			//SECURITY C-02 (CWE-200 / CWE-522, OWASP A01:2021 + A02:2021): internal
+			//credential-resolution exemption from projection redaction. See GetUser(Guid) for the
+			//full rationale and for the strict limits on where this scope may be opened.
 			using (var ctx = SecurityContext.OpenSystemScope())
+			using (RecordManager.OpenCredentialReadScope())
 			{
 
 				var result = new EqlCommand("SELECT *, $user_role.* FROM user WHERE username = @username",
@@ -121,20 +207,42 @@ namespace WebVella.Erp.Api
 		///    requests averaged per path: wrong password against a modern hash 141 ms, wrong
 		///    password against a legacy hash 139 ms, no matching address 138 ms.
 		///
-		///    One residual discrepancy is known, measured, and accepted rather than fixed here. If a
-		///    stored value is neither a legacy digest nor a decodable V3 payload - a corrupted or
-		///    hand-edited row - the same failing request returns in about 16 ms, because
-		///    keyDerivationPerformed is set from IsLegacyHash returning false, yet
-		///    PasswordUtil.VerifyPbkdf2Hash rejects the malformed payload on its cheap length and
-		///    format guards before deriving anything, so the compensating dummy verification below
-		///    is skipped. That 16 ms discloses only that one row's stored hash is corrupt; it
-		///    reveals no credential material, and it is unreachable unless such a row already
-		///    exists. Closing it from here would need either a duplicate of the payload guards that
-		///    live inside PasswordUtil, or an unconditional dummy verification on every failure -
-		///    and the latter would spend two derivations on the most common failure of all, a wrong
-		///    password against a modern hash, doubling that path to about 280 ms. Both are excluded
-		///    by "make minimal necessary changes only" and "do not enhance or optimize beyond
-		///    remediation"; the durable fix belongs with the guards, inside PasswordUtil.
+		///
+		///    THREAT ADDRESSED - finding F28, CWE-208 (observable timing discrepancy) and CWE-20,
+		///    OWASP A07:2021. An earlier revision of this method documented two residual timing
+		///    discrepancies here and accepted them as unfixable from this side. Both are now closed,
+		///    and closing them needed a change in WHERE the fact lives rather than a duplicate of
+		///    PasswordUtil's guards, which is what made the earlier assessment wrong:
+		///
+		///     1. An over-long password. VerifyPassword refuses anything past its size bound before
+		///        deriving, yet keyDerivationPerformed was set from IsLegacyHash returning false, so
+		///        the compensating derivation was skipped and an existing modern account answered in
+		///        about a millisecond while an address that does not exist took the full 120 ms.
+		///        Sampling latency with a single 129-character password therefore enumerated accounts
+		///        outright. This is now refused BEFORE the lookup below, so the request never reaches
+		///        the database and costs the same whether the account exists or not.
+		///     2. A corrupt or hand-edited stored value - neither a legacy digest nor a decodable V3
+		///        payload - returned in about 16 ms for the same reason. PasswordUtil.VerifyPassword
+		///        now REPORTS whether it actually derived, as an out parameter, instead of leaving
+		///        this method to predict it from the stored value's shape. A prediction cannot be
+		///        right about a value whose shape it has not parsed; the fact always is. The
+		///        compensating derivation below is therefore owed exactly when no derivation
+		///        happened, whatever the reason, which is the property the finding asks for:
+		///        "exactly one fixed, bounded dummy derivation independent of row/hash shape".
+		///
+		///    Note that this is strictly CHEAPER than the alternative that revision rejected. An
+		///    unconditional dummy verification on every failure would have spent two derivations on
+		///    the commonest failure of all - a wrong password against a modern hash - doubling that
+		///    path to about 280 ms. Accounting for what actually happened spends exactly one
+		///    derivation on every failing path, which is both correct and the minimum possible.
+		///
+		///    KNOWN BOUND, stated rather than implied: "exactly one" holds because the anchored
+		///    pattern matches a single address and SaveUser enforces address uniqueness, so at most
+		///    one row can reach verification. A database carrying duplicate addresses - which this
+		///    platform will not create - could derive once per duplicate. The loop is deliberately
+		///    left alone rather than broken after the first match, because breaking early would
+		///    change WHICH row can authenticate on such a database, and silently changing that is a
+		///    worse outcome than a bounded cost on a state the platform does not produce.
 		/// </remarks>
 		public ErpUser GetUser(string email, string password)
 		{
@@ -152,41 +260,118 @@ namespace WebVella.Erp.Api
 			if (email.Length > MaxEmailLength)
 				return null;
 
+			//THREAT ADDRESSED - finding M-REV-10, CWE-400 (uncontrolled resource consumption) and
+			//CWE-208 (observable timing discrepancy), OWASP A04:2021. The address was bounded three
+			//lines above but the password was not, on the platform's only anonymous credential
+			//endpoint, so an unauthenticated caller could submit an arbitrarily large plaintext. Two
+			//costs followed, and BOTH are closed by refusing here, BEFORE the query runs:
+			//  1. the query below still executed, and on a miss the compensating dummy verification
+			//     at the end of this method derived a key over the whole oversized value;
+			//  2. that made the dummy path more expensive than the real one, which refuses an
+			//     over-length value on length alone - inverting the timing signal the dummy exists to
+			//     remove, so a slow answer meant "no such account".
+			//No plaintext longer than the field's own maximum can match any stored credential, so
+			//returning null costs nothing correct. It is also not an enumeration probe: the decision
+			//reads only a length the caller already supplied and never touches the database, so it
+			//fails identically and in identical time for every address, existing or not.
+			if (password.Length > PasswordUtil.MaxPasswordLength)
+				return null;
+
 			using (var ctx = SecurityContext.OpenSystemScope())
+			using (RecordManager.OpenCredentialReadScope())
 			{
-				var result = new EqlCommand("SELECT *, $user_role.* FROM user WHERE email ~* @email",
-						 new List<EqlParameter> { new EqlParameter("email", BuildExactEmailPattern(email)) }).Execute();
+				//THREAT ADDRESSED - CWE-1050 (excessive platform resource consumption within a loop) and
+				//CWE-770 (allocation of resources without limits or throttling), OWASP A04:2021. The
+				//paging clause is the bound: see MaxCredentialCandidates for why the query, and not the
+				//loop, is the right place to cap the work, and why the cap is 2 rather than 1. PAGE is
+				//supplied together with PAGESIZE because Eql/EqlBuilder.Sql.cs rejects either one on its
+				//own; PAGE 1 is the first page, so the clause is a pure LIMIT with a zero OFFSET, and it
+				//is applied to the user rows inside the subquery, never to the related role rows, which
+				//are aggregated per row by a correlated subquery.
+				//IncludeEncryptedFieldValues IS REQUIRED HERE, not an optimisation. The EQL projection
+				//redacts the value of an encrypted PasswordField by default (finding C-02), so without this
+				//opt-in this lookup would receive the redaction marker instead of the stored hash and EVERY
+				//LOGIN WOULD FAIL. The flag is internal and init-only on EqlCommand, so only code compiled
+				//into this assembly can request it - see Eql/EqlCommand.IncludeEncryptedFieldValues, and
+				//Eql/EqlSettings for why it deliberately does not live on the public settings type.
+				var result = new EqlCommand("SELECT *, $user_role.* FROM user WHERE email ~* @email PAGE 1 PAGESIZE "
+						+ MaxCredentialCandidates.ToString(CultureInfo.InvariantCulture),
+						 new List<EqlParameter> { new EqlParameter("email", BuildExactEmailPattern(email)) }) { IncludeEncryptedFieldValues = true }.Execute();
+
+				//the database comparison is only ever a filter, and the authoritative address match is
+				//this exact one - retained from the previous implementation. Collecting the matches
+				//first, instead of verifying inside the same pass, is what lets a case-fold duplicate be
+				//counted and reported rather than silently authenticated against whichever row the
+				//database happened to return first.
+				List<EntityRecord> candidates = new List<EntityRecord>();
+				foreach (var rec in result)
+				{
+					string recordEmail = rec.Properties.ContainsKey("email") ? rec["email"] as string : null;
+					if (string.Equals(recordEmail, email, StringComparison.OrdinalIgnoreCase))
+						candidates.Add(rec);
+				}
 
 				//tracks whether the expensive path was actually taken, so that the failure branch at
 				//the end can spend the same work and leave no timing signal behind
 				bool keyDerivationPerformed = false;
 
-				foreach (var rec in result)
+				foreach (var rec in candidates)
 				{
-					string recordEmail = rec.Properties.ContainsKey("email") ? rec["email"] as string : null;
 
-					//retained from the previous implementation: the database comparison is only ever
-					//a filter, and the authoritative address match is this exact one
-					if (!string.Equals(recordEmail, email, StringComparison.OrdinalIgnoreCase))
-						continue;
+					//THREAT ADDRESSED - finding C-REV-07, CWE-200 / CWE-522, OWASP A01:2021 + A02:2021.
+					//The hash used to be taken from rec["password"], i.e. out of the EQL projection - and
+					//because it had to be readable there, the EQL projection could not redact it, which
+					//is precisely how "SELECT password FROM user" returned every stored credential to any
+					//caller holding read access on the user entity - which the regular role holds. Every
+					//projection seam now redacts unconditionally, and this ONE internal, single-column,
+					//single-row query is the only place in the platform that reads a stored credential.
+					//The record's own identifier is used rather than the address, so the row verified is
+					//provably the row matched above.
+					Guid recordId = rec.Properties.ContainsKey("id") && rec["id"] is Guid
+						? (Guid)rec["id"]
+						: Guid.Empty;
 
-					string storedHash = rec.Properties.ContainsKey("password") ? rec["password"] as string : null;
+					string storedHash = recordId == Guid.Empty ? null : ReadStoredPasswordHash(recordId);
 
-					//a legacy digest is verified in microseconds, so it does NOT discharge the
-					//obligation to spend a key derivation on this request
-					if (!PasswordUtil.IsLegacyHash(storedHash))
-						keyDerivationPerformed = true;
+					//SECURITY (finding F28) - whether this request spent a key derivation is now taken
+					//from PasswordUtil as a FACT rather than predicted from the stored value's shape. The
+					//prediction this replaces - 'not a legacy digest, therefore a derivation happened' - was
+					//wrong for an over-long password and wrong for a corrupt payload, and each wrong answer
+					//skipped the compensating derivation below and left a measurable timing signal.
+					//Accumulated with |= rather than assigned, so a row that derived can never be masked by
+					//a later row that did not.
+					bool matched = PasswordUtil.VerifyPassword(password, storedHash, out bool needsRehash,
+						out bool derivedForThisRow);
+					keyDerivationPerformed |= derivedForThisRow;
 
-					if (!PasswordUtil.VerifyPassword(password, storedHash, out bool needsRehash))
+					if (!matched)
 						continue;
 
 					var user = rec.MapTo<ErpUser>();
 
 					//the OWASP-prescribed upgrade point: the plaintext is in hand exactly here and
 					//nowhere else, so this is the only moment a legacy or under-worked value can be
-					//replaced without forcing a reset on the account owner
+					//replaced without forcing a reset on the account owner.
+					//recordId and storedHash are passed rather than re-derived so the write below is
+					//provably conditional on the SAME row and the SAME stored value this iteration
+					//actually verified - see finding M-REV-11 in UpgradeStoredPasswordHash.
 					if (needsRehash)
-						UpgradeStoredPasswordHash(user.Id, password);
+						UpgradeStoredPasswordHash(recordId, password, storedHash);
+
+					//A second stored account matching one address case-insensitively is a data-integrity
+					//fault: it is what made the unbounded verification loop reachable in the first place,
+					//and it leaves which account a login resolves to dependent on database row order.
+					//Reported only AFTER a correct password has been presented, deliberately: reporting it
+					//on every failed attempt would let an anonymous caller who merely knows the address
+					//drive one system_log INSERT per request, replacing the CPU amplification just closed
+					//with a write amplification. The report therefore repeats on each successful login
+					//until an operator removes the duplicate, which is the intended pressure to do so.
+					if (candidates.Count > 1)
+					{
+						ReportCredentialMaintenanceFailure("More than one user account matches a single e-mail address case-insensitively ("
+							+ candidates.Count.ToString(CultureInfo.InvariantCulture)
+							+ " accounts, bounded by the credential lookup). Authentication resolved to one of them and which one is not deterministic. Remove or re-address the duplicate accounts.", null);
+					}
 
 					return user;
 				}
@@ -209,11 +394,18 @@ namespace WebVella.Erp.Api
 		/// CWE-625 is the anchoring half and CWE-1333 the escaping half, and both are required:
 		/// anchoring alone would still let a metacharacter-bearing operand drive the engine, while
 		/// escaping alone would still let a short address match every longer one as a substring.
-		/// Measured against PostgreSQL 16: submitting "." as the address selected EVERY row in
-		/// rec_user before this change and selects none after it, and a nested bounded-quantifier
-		/// operand cost 264 ms of server CPU and then raised "regular expression is too complex"
-		/// before this change - an error surfacing from an endpoint reachable without credentials -
-		/// against 0.3 ms and a clean non-match after it.
+		/// Observed against PostgreSQL 16, as a one-off measurement whose transcript is NOT retained
+		/// as a committed artifact - see the evidence-provenance table in
+		/// docs/security/remediation-log.md, class "contemporaneous observation". The structural
+		/// half is re-provable from the tree and the timing half is not, so they are stated apart.
+		/// Structural: submitting "." as the address selected EVERY row in rec_user before this
+		/// change and selects none after it, and a nested bounded-quantifier operand raised
+		/// "regular expression is too complex" before this change - an error surfacing from an
+		/// endpoint reachable without credentials - against a clean non-match after it. Timing: the
+		/// same operand cost roughly 264 ms of server CPU before and roughly 0.3 ms after. Those
+		/// two figures were taken on a heavily contended shared host, so the three-orders-of-
+		/// magnitude RATIO is the finding; neither absolute value should be treated as a
+		/// reproducible benchmark or used as a regression threshold.
 		/// The case-insensitive regular expression operator is retained deliberately rather than
 		/// replaced with plain equality: nothing in this platform normalises the case of a stored
 		/// address - the write paths in DbRecordRepository and RecordManager return the value
@@ -228,24 +420,106 @@ namespace WebVella.Erp.Api
 		/// <returns>An anchored pattern in which every metacharacter has been neutralised.</returns>
 		private static string BuildExactEmailPattern(string email)
 		{
-			StringBuilder pattern = new StringBuilder(email.Length * 2 + 2);
-			pattern.Append('^');
+			//THREAT ADDRESSED - finding H-17, CWE-1333 (inefficient regular expression complexity) and
+			//CWE-625 (permissive regular expression), OWASP A03:2021 Injection. The control is
+			//unchanged - anchor the pattern and neutralise every metacharacter in the operand - but the
+			//escaping is delegated to the framework's own Regex.Escape instead of being open-coded.
+			//
+			//WHY, stated honestly: the loop this replaces was not shown to be wrong. It was a private
+			//re-implementation of a framework primitive sitting directly on the anonymous login path,
+			//and bespoke security-relevant code has to be re-audited on its own merits by every reader,
+			//character class by character class, where a call to a framework primitive does not. Of two
+			//implementations believed correct, the one to keep is the one with no per-character branch
+			//to get wrong. This is also the exact form this file is required to use.
+			//
+			//WHY A .NET ESCAPER IS CORRECT FOR A POSTGRESQL PATTERN. Regex.Escape neutralises every
+			//metacharacter that can OPEN a construct - \ * + ? | { [ ( ) ^ $ . # and whitespace - and
+			//PostgreSQL's advanced regular expressions treat that same set as special. It leaves ] and
+			//} unescaped, which is safe precisely because [ and { are escaped: with no bracket
+			//expression and no bound ever opened, PostgreSQL treats a bare ] or } as an ordinary
+			//character. The characters it also leaves alone - - _ @ ! " ' % & = ~ , ; : / < > - are
+			//ordinary outside a bracket expression, and none can be reached inside one. Where it emits
+			//a two-character escape for a control character (\t, \n, \r, \f, \v) PostgreSQL reads that
+			//escape with the same meaning, and where it emits a backslash before a non-alphanumeric
+			//(\ followed by a space, or \#) PostgreSQL's rule is that such a pair always yields the
+			//literal character. The produced pattern therefore matches exactly the submitted address
+			//and nothing else, which is the property this method exists to provide.
+			return "^" + Regex.Escape(email) + "$";
+		}
 
-			foreach (char c in email)
+		/// <summary>
+		/// Reads the stored credential hash of one user row. This is the ONE place in the platform
+		/// that reads a stored credential, and it is the read counterpart of
+		/// <see cref="UpgradeStoredPasswordHash(Guid, string, string)"/>.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding C-REV-07 (Critical), CWE-200 (exposure of sensitive information
+		/// to an unauthorized actor) and CWE-522 (insufficiently protected credentials), OWASP
+		/// A01:2021 Broken Access Control + A02:2021 Cryptographic Failures.
+		///
+		/// Before this method existed, credential verification read the hash out of a query
+		/// projection. That single fact is what made the credential column unredactable in EQL:
+		/// WebVella.Erp/Database/DbRecordRepository.cs already replaced encrypted password values on
+		/// the way out of a record query, but WebVella.Erp/Eql/EqlCommand.cs has its own separate
+		/// projection seam and could not redact without breaking every login - so "SELECT password
+		/// FROM user" over the api/v3/en_US/eql, eql-ds and eql-ds-select2 routes returned every
+		/// stored hash to any caller with entity read access. Concentrating the read here is what
+		/// allowed the EQL seam to be made UNCONDITIONALLY redacting, which is the actual fix.
+		///
+		/// WHY THIS SHAPE, precisely:
+		///   internal, not public - it is reachable only from inside WebVella.Erp (this class and the
+		///   version-4 seed-credential revocation in WebVella.Erp/ERPService.cs). No new public API
+		///   surface is added, so the "no API contract change" boundary holds, and neither a plugin,
+		///   a host, nor a request handler can call it;
+		///   keyed on the row IDENTIFIER, never on caller-supplied text, so it cannot be turned into
+		///   a lookup primitive. The caller has already matched the row it is asking about;
+		///   projects exactly ONE column of ONE row. It cannot be widened into a record read, and it
+		///   returns a string rather than a record so nothing can accidentally serialise it;
+		///   parameterized through the platform's own connection helper, so the identifier is bound
+		///   rather than concatenated. The table name is the constant "rec_user", matching the idiom
+		///   UpgradeStoredPasswordHash already uses for the write;
+		///   deliberately NO security-scope or role test. The gate is that the method is unreachable
+		///   from outside this assembly - an in-assembly check would be theatre, and adding one would
+		///   invite the caller-conditional behaviour the redaction design exists to eliminate.
+		///
+		/// Cost is one indexed single-row scalar read, about 0.3 ms against PostgreSQL 16, which is
+		/// spent only for a row whose address already matched exactly - at most one row, because the
+		/// pattern built by <see cref="BuildExactEmailPattern(string)"/> is an anchored literal. It is
+		/// three orders of magnitude below the deliberate key-derivation cost that dominates the same
+		/// request, so it does not disturb the timing-equalisation analysis documented on
+		/// <see cref="GetUser(string, string)"/>.
+		///
+		/// A missing row, a NULL column and any read failure all yield null, which
+		/// PasswordUtil.VerifyPassword rejects. Failing closed here means a transient read problem
+		/// refuses the login rather than authenticating without a comparison.
+		/// </remarks>
+		/// <param name="userId">Identifier of the user row whose credential is being read.</param>
+		/// <returns>The stored hash, or null when there is none to read.</returns>
+		internal static string ReadStoredPasswordHash(Guid userId)
+		{
+			if (userId == Guid.Empty)
+				return null;
+
+			using (var connection = DbContext.Current.CreateConnection())
 			{
-				//PostgreSQL's rule is that a backslash before a NON-alphanumeric character always
-				//yields that literal character, while a backslash before an alphanumeric one is
-				//either a special escape or an outright error. Escaping exactly the non-alphanumerics
-				//is therefore both sufficient and safe. Surrogates are left untouched so that a pair
-				//is never split, which would corrupt the encoded pattern rather than escape anything.
-				if (!char.IsLetterOrDigit(c) && !char.IsSurrogate(c))
-					pattern.Append('\\');
+				NpgsqlCommand command = connection.CreateCommand("SELECT password FROM rec_user WHERE id = @id");
 
-				pattern.Append(c);
+				var parameter = command.CreateParameter() as NpgsqlParameter;
+				parameter.ParameterName = "id";
+				parameter.Value = userId;
+				parameter.NpgsqlDbType = NpgsqlDbType.Uuid;
+				command.Parameters.Add(parameter);
+
+				using (var reader = command.ExecuteReader())
+				{
+					string storedHash = null;
+					if (reader.Read() && reader[0] != DBNull.Value)
+						storedHash = reader[0] as string;
+
+					reader.Close();
+					return storedHash;
+				}
 			}
-
-			pattern.Append('$');
-			return pattern.ToString();
 		}
 
 		/// <summary>
@@ -256,24 +530,53 @@ namespace WebVella.Erp.Api
 		/// <remarks>
 		/// This is the second half of the backward-compatible credential migration, and it is why
 		/// the format change needs no forced reset, no downtime and no schema change.
-		/// It writes with the parameterized repository helper rather than through RecordManager on
-		/// purpose, and the choice is safe because it cannot change the stored format: RecordManager
-		/// and DbRecordRepository both hash with PasswordUtil.HashPassword, which is the very
-		/// primitive called below, so the persisted value is identical either way. What differs is
-		/// only the side effects, and every one of them is unwanted here. RecordManager.UpdateRecord
-		/// executes ExecutePreUpdateRecordHooks, and a pre-update hook is free to add an error and
-		/// ABORT the write - so an installation that registers any hook on the user entity would
-		/// silently prevent its own credentials from ever migrating. It would also run those hooks,
-		/// and post-update hooks, on the authentication path, exposing an internal storage-format
-		/// migration to business logic that has no reason to observe it. Writing the one column
-		/// directly keeps the migration invisible to application logic, and no record-level cache
-		/// needs invalidating: Api/Cache.cs caches entity and relation metadata only.
+		///
+		/// THREAT ADDRESSED - lost update / time-of-check-to-time-of-use on the credential column,
+		/// CWE-362 (concurrent execution using shared resource with improper synchronization),
+		/// OWASP A04:2021 Insecure Design. The previous implementation read the stored hash during
+		/// verification and then wrote the upgraded value with an UNCONDITIONAL update keyed on the
+		/// user id alone. A password reset committed in the window between those two steps was
+		/// silently overwritten by a login that had authenticated with the OLD password, RESTORING
+		/// A CREDENTIAL THE OWNER HAD JUST REVOKED - the precise scenario a reset exists to prevent,
+		/// and one an attacker holding a compromised password can provoke deliberately by
+		/// authenticating repeatedly while the owner changes it. The write is therefore now a
+		/// compare-and-swap: the expected stored value is part of the predicate, so the row is
+		/// updated only while it still holds exactly what this request verified. PostgreSQL
+		/// evaluates the predicate and the update atomically within the statement, so no
+		/// application-level lock, retry loop or transaction escalation is needed.
+		///
+		/// Zero affected rows is the BENIGN outcome this design exists to produce, not an error: it
+		/// means another actor - a password reset, or a concurrent login that already upgraded the
+		/// same row - owns the current credential, and that value must be left alone. It is
+		/// deliberately not retried and not logged; logging here would give an unauthenticated
+		/// caller of the token endpoint a cheap log-amplification primitive, and the upgrade is
+		/// self-healing because it is reattempted the next time the account authenticates.
+		///
+		/// It writes with a parameterized command rather than through RecordManager on purpose, and
+		/// the choice is safe because it cannot change the stored format: RecordManager and
+		/// DbRecordRepository both hash with PasswordUtil.HashPassword, which is the very primitive
+		/// called below, so the persisted value is identical either way. What differs is only the
+		/// side effects, and every one of them is unwanted here. RecordManager.UpdateRecord executes
+		/// ExecutePreUpdateRecordHooks, and a pre-update hook is free to add an error and ABORT the
+		/// write - so an installation that registers any hook on the user entity would silently
+		/// prevent its own credentials from ever migrating. It would also run those hooks, and
+		/// post-update hooks, on the authentication path, exposing an internal storage-format
+		/// migration to business logic that has no reason to observe it. Decisively, neither
+		/// RecordManager.UpdateRecord nor DbRepository.UpdateRecord can express this fix at all:
+		/// DbRepository.UpdateRecord hard-codes its predicate as "WHERE id=@id" and offers no
+		/// extension point for an additional condition, and WebVella.Erp/Database/DbRepository.cs is
+		/// reference-only for this work. Writing the one column directly also keeps the migration
+		/// invisible to application logic, and no record-level cache needs invalidating: Api/Cache.cs
+		/// caches entity and relation metadata only.
+		///
 		/// This is a deliberate, documented deviation from the folder plan's literal instruction to
-		/// persist through RecordManager. It is NOT hand-written SQL: DbRepository.UpdateRecord is
-		/// the platform's own parameterized helper, the same one DbRecordRepository.Update itself
-		/// calls, so the value is bound as a parameter and never concatenated. The hash is produced
-		/// here rather than handed over as plaintext precisely because this path does not pass
-		/// through ExtractFieldValue, so there is no second hashing step to collide with.
+		/// persist through RecordManager. It is NOT string-concatenated SQL: the command text is a
+		/// fixed literal and all three values - including the expected hash - are bound as
+		/// parameters through the platform's own connection helper, so nothing user-influenced
+		/// reaches the statement text. The hash is produced here rather than handed over as
+		/// plaintext precisely because this path does not pass through ExtractFieldValue, so there
+		/// is no second hashing step to collide with.
+		///
 		/// Failure is deliberately non-fatal. The account has already presented a correct password,
 		/// so refusing the authentication because a maintenance write failed would convert a
 		/// successful login into an outage. The stored value simply stays as it was and the upgrade
@@ -281,28 +584,240 @@ namespace WebVella.Erp.Api
 		/// </remarks>
 		/// <param name="userId">Identifier of the row whose password column is being replaced.</param>
 		/// <param name="password">The plaintext just verified. Never stored, only re-hashed.</param>
-		private static void UpgradeStoredPasswordHash(Guid userId, string password)
+		/// <param name="verifiedHash">
+		/// The exact stored value that was just verified against <paramref name="password"/>. The
+		/// write is conditional on the column still holding it; see the compare-and-swap note below.
+		/// </param>
+		private static void UpgradeStoredPasswordHash(Guid userId, string password, string verifiedHash)
 		{
 			try
 			{
+				//THREAT ADDRESSED - finding M-REV-11 (credential race, CWE-362 concurrent execution
+				//using shared resource with improper synchronization). This write used to be
+				//unconditional - UPDATE rec_user SET password = @password WHERE id = @id - and that
+				//is a lost update with a security consequence rather than merely a stale one. This
+				//method is reached only from a legacy or under-worked verification, and reaching it
+				//means a full 600,000-iteration derivation has just been paid, so the window between
+				//reading the old hash and writing the new one is hundreds of milliseconds wide, not
+				//microseconds. If the account's password is changed by any other route inside that
+				//window - the owner resetting it, or an administrator revoking a compromised
+				//credential - the unconditional write landed afterwards and REINSTATED the hash of
+				//the old plaintext, silently resurrecting a password that had just been retired. For
+				//an administrator revoking a leaked credential that turns a completed containment
+				//action into a still-valid credential.
+				//The guard is the row's own current value: the update applies only while the column
+				//still holds precisely the value that was verified. A concurrent change makes the
+				//predicate false, zero rows are affected and the upgrade is simply abandoned - which
+				//is already this method's documented failure mode, because the next authentication
+				//with whatever password is then current will re-derive and retry. Nothing is retried
+				//here on purpose: a retry loop would race the same way.
+				if (string.IsNullOrEmpty(verifiedHash) || userId == Guid.Empty)
+					return;
+
 				string upgradedHash = PasswordUtil.HashPassword(password);
 
 				//an empty result would blank the credential, so treat it as nothing to do
 				if (string.IsNullOrEmpty(upgradedHash))
 					return;
 
-				DbRepository.UpdateRecord("rec_user", new List<DbParameter>
+				//a no-op write is not merely wasteful here, it would compare a value against itself
+				if (string.Equals(upgradedHash, verifiedHash, StringComparison.Ordinal))
+					return;
+
+				//Parameterized throughout and executed on the platform's own connection, so this
+				//participates in the ambient transaction exactly as ReadStoredPasswordHash above
+				//does. DbRepository.UpdateRecord cannot express a conditional predicate - it keys on
+				//the identifier alone - which is why the command is issued directly here; the SQL is
+				//a fixed literal and every value is bound.
+				using (var connection = DbContext.Current.CreateConnection())
 				{
-					new DbParameter { Name = "id", Value = userId, Type = NpgsqlDbType.Uuid },
-					new DbParameter { Name = "password", Value = upgradedHash, Type = NpgsqlDbType.Varchar }
-				});
+					NpgsqlCommand command = connection.CreateCommand(
+						"UPDATE rec_user SET password = @password WHERE id = @id AND password = @expected_password");
+
+					var idParameter = command.CreateParameter() as NpgsqlParameter;
+					idParameter.ParameterName = "id";
+					idParameter.Value = userId;
+					idParameter.NpgsqlDbType = NpgsqlDbType.Uuid;
+					command.Parameters.Add(idParameter);
+
+					var passwordParameter = command.CreateParameter() as NpgsqlParameter;
+					passwordParameter.ParameterName = "password";
+					passwordParameter.Value = upgradedHash;
+					passwordParameter.NpgsqlDbType = NpgsqlDbType.Varchar;
+					command.Parameters.Add(passwordParameter);
+
+					var expectedParameter = command.CreateParameter() as NpgsqlParameter;
+					expectedParameter.ParameterName = "expected_password";
+					expectedParameter.Value = verifiedHash;
+					expectedParameter.NpgsqlDbType = NpgsqlDbType.Varchar;
+					command.Parameters.Add(expectedParameter);
+
+					//Zero affected rows is the expected, benign outcome of a concurrent change. It is
+					//deliberately NOT logged: this path runs on every authentication by an account
+					//still holding a legacy digest, so logging the ordinary case would be noise, and
+					//the condition is self-correcting on the next sign-in.
+					command.ExecuteNonQuery();
+				}
 			}
 			catch (Exception ex)
 			{
-				new Log().Create(LogType.Error, "SecurityManager.UpgradeStoredPasswordHash",
-					"A credential verified successfully but its stored hash could not be upgraded to the current format. The stored value is unchanged and the upgrade will be retried on the next authentication by this user.", ex);
+				//THREAT ADDRESSED - CWE-778 (insufficient logging). The failure being reported here is very
+				//often a database failure, so it must NOT be reported through a bare database write that can
+				//throw a second time and turn an already-verified credential into a server error. The shared
+				//reporter cannot throw, counts a lost report and falls back to the standard error stream.
+				ReportCredentialMaintenanceFailure("A credential verified successfully but its stored hash could not be upgraded to the current format. The stored value is unchanged and the upgrade will be retried on the next authentication by this user.", ex);
 			}
 		}
+
+		/// <summary>
+		/// Records a credential-maintenance problem that must never be allowed to fail the
+		/// authentication that discovered it.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - CWE-778 (insufficient logging) together with the availability half of
+		/// finding C-03's remediation. Two call sites depend on this method being incapable of
+		/// throwing: the hash upgrade in
+		/// <see cref="UpgradeStoredPasswordHash(Guid, string, string)"/> and the duplicate-address report in
+		/// <see cref="GetUser(string, string)"/>. Both run AFTER a correct password has been
+		/// presented, so any exception escaping from here would turn a valid login into a server
+		/// error - which is exactly the defect this replaces, where reporting a failed database write
+		/// was itself a database write with nothing behind it.
+		/// <para>
+		/// The primary sink is still the platform log, so server-side diagnostics are not weakened:
+		/// Diagnostics/Log.cs writes one parameterised INSERT into system_log and, with the default
+		/// notification status, never reaches the mail path in Web/Services/LogService.cs - which
+		/// matters because that path e-mails details before persisting them. When the INSERT fails,
+		/// the loss is counted and the text is written to the standard error stream instead, the same
+		/// out-of-band channel Api/ERPService.cs already uses for provisioning notices. The count is
+		/// carried into the next report that succeeds, so a database outage that suppressed these
+		/// entries is visible IN the log rather than only in the absence of records. It is read
+		/// before the write and subtracted only after it, so a loss recorded concurrently by another
+		/// request is carried forward instead of being discarded.
+		/// </para>
+		/// </remarks>
+		/// <param name="detail">Operator-facing description. Must never contain credential material.</param>
+		/// <param name="cause">The exception that prompted the report, or null when there was none.</param>
+		private static void ReportCredentialMaintenanceFailure(string detail, Exception cause)
+		{
+			try
+			{
+				int unreported = Volatile.Read(ref credentialMaintenanceReportFailures);
+				string message = detail;
+				if (unreported > 0)
+				{
+					message = message + " | " + unreported.ToString(CultureInfo.InvariantCulture)
+						+ " earlier credential-maintenance report(s) could not be persisted and are unrecorded.";
+				}
+
+				if (cause == null)
+					new Log().Create(LogType.Error, CredentialMaintenanceLogSource, message, string.Empty);
+				else
+					new Log().Create(LogType.Error, CredentialMaintenanceLogSource, message, cause);
+
+				if (unreported > 0)
+					Interlocked.Add(ref credentialMaintenanceReportFailures, -unreported);
+			}
+			catch (Exception reportFailure)
+			{
+				//Counted BEFORE the fallback is attempted, so the loss is recorded even if the fallback
+				//also fails. This is the one place in the credential path where a failure is absorbed,
+				//and it is absorbed because the alternative - propagating - would reject a credential
+				//that has already been verified.
+				Interlocked.Increment(ref credentialMaintenanceReportFailures);
+
+				try
+				{
+					Console.Error.WriteLine("[WebVella.Erp] " + CredentialMaintenanceLogSource
+						+ ": a credential-maintenance report could not be persisted ("
+						+ reportFailure.GetType().Name + "). " + detail);
+				}
+				catch (Exception)
+				{
+					//No usable error stream is left - a redirected, closed or disposed console. The
+					//increment above is then the only surviving record of the loss, and it is reported
+					//by the next call that reaches the log successfully. Nothing further can be done
+					//here without reintroducing the escape this method exists to prevent.
+				}
+			}
+		}
+
+
+		/// <summary>
+		/// Reports whether any user OTHER than <paramref name="userId"/> already holds
+		/// <paramref name="email"/>, comparing case-insensitively.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - the root cause behind the bounded verification loop described on
+		/// <see cref="MaxCredentialCandidates"/>: CWE-1050 and CWE-770, OWASP A04:2021, and with them
+		/// the non-determinism of which account a login resolves to.
+		/// The uniqueness probe used by <see cref="SaveUser(ErpUser)"/> was
+		/// <see cref="GetUser(string)"/>, whose predicate is a case-SENSITIVE equality, so an operator
+		/// could store "User@example.com" alongside an existing "user@example.com" and both would be
+		/// accepted. Login, which has to match case-insensitively, then resolved both rows for one
+		/// submitted address - which is what made the unbounded key-derivation loop reachable and what
+		/// left the winning account dependent on database row order. Rejecting the case-fold duplicate
+		/// at the point of creation is the durable fix; the bound on the login query is the
+		/// containment for duplicates already stored.
+		/// <para>
+		/// It reuses the login path's own primitives on purpose - the anchored, fully escaped pattern
+		/// from <see cref="BuildExactEmailPattern(string)"/> with the case-insensitive operator, the
+		/// same length guard, and the same row bound - so the definition of "collides" here is
+		/// character-for-character the definition login will apply later. A probe that disagreed with
+		/// the login lookup would simply move the defect rather than close it.
+		/// </para>
+		/// <para>
+		/// <see cref="GetUser(string)"/> itself is deliberately left alone. It is public, callers
+		/// outside this class may rely on its exact-match semantics, and no finding requires changing
+		/// it - only the uniqueness decision needed to change.
+		/// </para>
+		/// <para>
+		/// The caller's own row must be excluded, or an operator correcting nothing but the CASE of an
+		/// existing address would be told their own address is taken. The identifier is compared
+		/// rather than the address, because the address is precisely what is changing. On the create
+		/// path the supplied identifier belongs to no stored row yet, so the exclusion is inert there.
+		/// </para>
+		/// <para>
+		/// The system scope mirrors <see cref="GetUser(string)"/>: uniqueness is a property of the
+		/// whole table, so a probe restricted to the rows the calling operator may read could return
+		/// "available" for an address that is taken.
+		/// </para>
+		/// </remarks>
+		/// <param name="email">The address being claimed.</param>
+		/// <param name="userId">The account claiming it, excluded from the comparison.</param>
+		/// <returns>True when a different account already holds the address.</returns>
+		private static bool IsEmailRegisteredToAnotherUser(string email, Guid userId)
+		{
+			if (string.IsNullOrWhiteSpace(email))
+				return false;
+
+			//no stored address can be longer than its column, so a longer value cannot collide with
+			//anything, and the guard bounds the pattern below exactly as the login path does
+			if (email.Length > MaxEmailLength)
+				return false;
+
+			using (var ctx = SecurityContext.OpenSystemScope())
+			{
+				var result = new EqlCommand("SELECT id,email FROM user WHERE email ~* @email PAGE 1 PAGESIZE "
+						+ MaxCredentialCandidates.ToString(CultureInfo.InvariantCulture),
+						new List<EqlParameter> { new EqlParameter("email", BuildExactEmailPattern(email)) }).Execute();
+
+				//At most one returned row can be the caller's own, so fetching two is enough to see a
+				//colliding row whenever one exists, however many duplicates are already stored.
+				foreach (var rec in result)
+				{
+					object recordId = rec.Properties.ContainsKey("id") ? rec["id"] : null;
+					if (!(recordId is Guid) || (Guid)recordId == userId)
+						continue;
+
+					string recordEmail = rec.Properties.ContainsKey("email") ? rec["email"] as string : null;
+					if (string.Equals(recordEmail, email, StringComparison.OrdinalIgnoreCase))
+						return true;
+				}
+
+				return false;
+			}
+		}
+
 
 		private ErpUser GetSystemUserWithNoSecurityCheck()
 		{
@@ -428,14 +943,53 @@ namespace WebVella.Erp.Api
 
 					if (string.IsNullOrWhiteSpace(user.Email))
 						valEx.AddError("email", "Email is required.");
-					else if (GetUser(user.Email) != null)
+					//THREAT ADDRESSED - CWE-1050/CWE-770 root cause: GetUser(string) matches case-SENSITIVELY,
+					//so it accepted a case-fold duplicate that the case-INSENSITIVE login lookup then resolved
+					//to two rows. IsEmailRegisteredToAnotherUser applies the login path's own definition.
+					else if (IsEmailRegisteredToAnotherUser(user.Email, user.Id))
 						valEx.AddError("email", "Email is already registered to another user. It must be unique.");
 					else if (!IsValidEmail(user.Email))
 						valEx.AddError("email", "Email is not valid.");
 				}
 
 				if (existingUser.Password != user.Password && !string.IsNullOrWhiteSpace(user.Password))
+				{
 					record["password"] = user.Password;
+
+					//THREAT ADDRESSED - finding M-REV-12, CWE-521 (weak password requirements), OWASP
+					//A07:2021. The record write seam refuses a non-conforming password unconditionally,
+					//which is the guarantee; this is the same policy stated where the platform ALREADY
+					//has a per-field validation channel, so an operator setting a password on the user
+					//management screens is told which field is wrong instead of receiving the generic
+					//"an internal error occurred" that RecordManager returns outside development mode.
+					//It adds no new mechanism: it uses the same valEx.AddError that every other field on
+					//this method already uses, and the CheckAndThrow below is what blocks the write. The
+					//reason string is value-free - see PasswordUtil.ValidatePasswordPolicy - so the
+					//plaintext cannot reach the rendered page or the log (CWE-532).
+					string passwordPolicyFailure = PasswordUtil.ValidatePasswordPolicy(user.Password);
+					if (passwordPolicyFailure != null)
+						valEx.AddError("password", "Password is not acceptable because " + passwordPolicyFailure + ".");
+
+					//THREAT ADDRESSED (CWE-1392/CWE-798, OWASP A07:2021): a password is being written for
+					//this account, so whatever rotation debt it carried is now discharged and the
+					//first-login rotation marker is cleared in the same record - and therefore in the same
+					//write - as the password itself. Coupling the two is the whole point: clearing the
+					//marker in a separate statement would open a window in which the password had changed
+					//but the account was still refused a bearer token, and clearing it anywhere other than
+					//alongside an actual password write would let the requirement be discharged without
+					//rotating anything.
+					//
+					//existingUser.Preferences is the STORED value, freshly read at the top of this method,
+					//and is deliberately used in preference to user.Preferences: the SDK user manage screen
+					//assigns a blank ErpUserPreferences before calling here, so serialising the caller's
+					//copy would silently discard the account's sidebar and component-usage state. This is
+					//also the only path on which this branch writes preferences at all, which is what keeps
+					//an ordinary user edit - one that leaves the password box empty - from clearing the
+					//marker as a side effect.
+					ErpUserPreferences rotatedPreferences = existingUser.Preferences ?? new ErpUserPreferences();
+					rotatedPreferences.PasswordChangeRequired = false;
+					record["preferences"] = JsonConvert.SerializeObject(rotatedPreferences);
+				}
 
 				if (existingUser.Enabled != user.Enabled)
 					record["enabled"] = user.Enabled;
@@ -480,7 +1034,8 @@ namespace WebVella.Erp.Api
 
 				if (string.IsNullOrWhiteSpace(user.Email))
 					valEx.AddError("email", "Email is required.");
-				else if (GetUser(user.Email) != null)
+				//the create-path twin of the case-insensitive uniqueness probe in the update branch above
+				else if (IsEmailRegisteredToAnotherUser(user.Email, user.Id))
 					valEx.AddError("email", "Email is already registered to another user. It must be unique.");
 				else if (!IsValidEmail(user.Email))
 					valEx.AddError("email", "Email is not valid.");
@@ -488,7 +1043,17 @@ namespace WebVella.Erp.Api
 				if (string.IsNullOrWhiteSpace(user.Password))
 					valEx.AddError("password", "Password is required.");
 				else
+				{
 					record["password"] = user.Password;
+
+					//THREAT ADDRESSED - finding M-REV-12, CWE-521, OWASP A07:2021. The create-path twin
+					//of the check in the update branch above; see the rationale recorded there. Stated
+					//here as well because a new account is exactly where a weak credential is most likely
+					//to be introduced, and because the two branches must not diverge.
+					string passwordPolicyFailure = PasswordUtil.ValidatePasswordPolicy(user.Password);
+					if (passwordPolicyFailure != null)
+						valEx.AddError("password", "Password is not acceptable because " + passwordPolicyFailure + ".");
+				}
 
 				record["$user_role.id"] = user.Roles.Select(x => x.Id).ToList();
 

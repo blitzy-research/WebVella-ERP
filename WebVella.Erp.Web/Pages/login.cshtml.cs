@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System;
+using System.Globalization;
 using System.Threading.Tasks;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Diagnostics;
@@ -8,6 +9,11 @@ using WebVella.Erp.Hooks;
 using WebVella.Erp.Web.Hooks;
 using WebVella.Erp.Web.Models;
 using WebVella.Erp.Web.Services;
+// SECURITY (CWE-117 improper output neutralisation for logs, CWE-778 insufficient logging): supplies
+// SecurityAuditLog, the single neutralisation-and-writing boundary shared by this page, the file-mutation
+// authorization check and the anonymous token routes, so the escaping, the narrow catch list and the
+// lost-write accounting have exactly one audited implementation rather than one per call site.
+using WebVella.Erp.Web.Utils;
 
 namespace WebVella.Erp.Web.Pages
 {
@@ -121,7 +127,25 @@ namespace WebVella.Erp.Web.Pages
 				// threshold has actually been reached, which is the strongest brute-force indicator this
 				// endpoint can emit. Recording it server-side leaks nothing to the caller - see the
 				// deliberately generic response below.
-				WriteAuthenticationAuditRecord(LogType.Error, "Authentication refused - account temporarily locked", remoteAddress);
+				//
+				// THREAT ADDRESSED - CWE-779 (logging of excessive data), OWASP A09: this previously wrote
+				// one row per request against an ALREADY-locked account, which inverted the control. A
+				// refusal costs the attacker nothing and the response is identical either way, so a caller
+				// that simply keeps hammering a locked account generated unbounded audit volume - the
+				// throttle protecting the credential check became an amplifier against the audit trail it
+				// feeds, and the lockout signal itself was buried under its own repetitions.
+				//
+				// The claim below emits the lockout TRANSITION once per window and carries the number of
+				// refusals it suppressed into that record, so the volume of the attack stays visible while
+				// the row count no longer scales with it. The claim is keyed on the address alone - the one
+				// dimension an attacker cannot vary for free, whereas the username is chosen freely and
+				// would let a spray buy a fresh audit row per fabricated account - which also means every
+				// route consulting this throttle shares one claim per window, so alternating between this
+				// page and the anonymous token routes cannot double the volume either.
+				if (loginThrottle.TryClaimRefusalAudit(remoteAddress, out var suppressedRefusals))
+				{
+					WriteAuthenticationAuditRecord(LogType.Error, "Authentication refused - account temporarily locked", remoteAddress, suppressedRefusals);
+				}
 
 				Error = "Invalid username or password";
 				BeforeRender();
@@ -157,7 +181,39 @@ namespace WebVella.Erp.Web.Pages
 			else
 			{
 				loginThrottle.RegisterSuccess(Username, remoteAddress);
-				WriteAuthenticationAuditRecord(LogType.Info, "Authentication succeeded", remoteAddress);
+
+				// THREAT ADDRESSED - finding C-01 (CWE-1392 use of a default credential), OWASP A07:2021.
+				// Provisioning and the schema version 4 migration both mark the first administrator account
+				// with ErpUserPreferences.PasswordChangeRequired when the credential was not chosen by the
+				// operator. AuthService refuses to mint or refresh a bearer token for such an account, which
+				// keeps a credential the operator never chose out of automation; this makes its continued
+				// INTERACTIVE use observable to whoever reviews the trail, rather than silent.
+				//
+				// Interactive login itself stays open on purpose - it is the only route to the screen that
+				// changes the password, so refusing it would lock the operator out of the very action being
+				// demanded of them and turn a hardening measure into a denial of service against a brand-new
+				// installation.
+				//
+				// FOLDED INTO THE SINGLE RECORD THIS BLOCK ALREADY WRITES, not added as a second one, so the
+				// "exactly one record per evaluated attempt" property stated above stays true - two rows per
+				// attempt would quietly make the trail's own counts unreliable.
+				//
+				// The severity stays Info because authentication genuinely SUCCEEDED; the distinction is
+				// carried by the message text. LogType offers only Error and Info, and Error would both
+				// misreport a successful sign-in and pollute the error view, while extending that public enum
+				// for a posture signal is a public API change this remediation is not permitted to make. The
+				// message is a fixed literal for the same reason the source is: Log.GetLogs filters with
+				// ILIKE, so a stable string is what makes this queryable.
+				if (user.Preferences?.PasswordChangeRequired == true)
+				{
+					WriteAuthenticationAuditRecord(LogType.Info,
+						"Authentication succeeded using a bootstrap credential that still requires rotation",
+						remoteAddress);
+				}
+				else
+				{
+					WriteAuthenticationAuditRecord(LogType.Info, "Authentication succeeded", remoteAddress);
+				}
 			}
 
 			foreach (ILoginPageHook inst in hookInstances)
@@ -180,6 +236,16 @@ namespace WebVella.Erp.Web.Pages
 
 		}
 
+		// Bound applied to each caller-supplied audit field. The username is unvalidated input on an
+		// anonymous endpoint and the address is caller-influenced through the connection, so both are
+		// bounded to stop the audit trail itself becoming a storage-amplification vector: without a bound,
+		// an attacker able to post a megabyte username could spend one request to write a megabyte row.
+		// 100 characters is retained from the original bound on the username and is comfortably above any
+		// legitimate value of either field - the longest possible textual IP address, an IPv4-mapped IPv6
+		// literal, is 45 characters. Note the address was previously not bounded at all; only the username
+		// was, so a caller-influenced value could still be written at whatever length it arrived with.
+		private const int MaxAuditedFieldLength = 100;
+
 		// THREAT ADDRESSED - finding M-12, CWE-778 (Insufficient Logging), and the Authorization
 		// Enforcement standard's "log authorization failures" clause: the platform recorded nothing
 		// whatsoever about authentication outcomes. The only code that ever did is commented out at
@@ -188,46 +254,59 @@ namespace WebVella.Erp.Web.Pages
 		// an operator could not distinguish an attack from ordinary traffic, and a later forensic
 		// reader could not establish which account had been compromised or from where.
 		//
-		// THE SINK CHOICE IS LOAD-BEARING. This writes through the core WebVella.Erp.Diagnostics.Log
-		// writer, which performs a parameterized INSERT into system_log and does nothing else. It must
-		// NOT use WebVella.Erp.Web.Services.LogService: that wrapper calls MailService.SendLogMessage
-		// BEFORE persisting whenever the notification status is NotNotified, so routing a per-attempt
-		// audit record through it would turn this anonymous endpoint into an attacker-triggered mail
-		// bomb and amplify finding M-17. LogNotificationStatus.DoNotNotify is consequently passed
-		// EXPLICITLY rather than left to the parameter default of NotNotified, which would leave every
-		// row eligible for that same notification path.
-		private void WriteAuthenticationAuditRecord(LogType type, string message, string remoteAddress)
+		// THE SINK CHOICE IS LOAD-BEARING, and is now enforced inside SecurityAuditLog rather than
+		// restated here: that writer uses the core WebVella.Erp.Diagnostics.Log writer, which performs a
+		// parameterized INSERT into system_log and does nothing else, and passes
+		// LogNotificationStatus.DoNotNotify EXPLICITLY. It must NOT use
+		// WebVella.Erp.Web.Services.LogService: that wrapper calls MailService.SendLogMessage BEFORE
+		// persisting whenever the notification status is NotNotified - its parameter default - so routing a
+		// per-attempt audit record through it would turn this anonymous endpoint into an attacker-triggered
+		// mail bomb and amplify finding M-17. Moving that guarantee into the shared writer is what stops it
+		// depending on this and every future call site remembering it.
+		private void WriteAuthenticationAuditRecord(LogType type, string message, string remoteAddress, int suppressedRefusals = 0)
 		{
-			// An audit write must never be able to fail a login. This runs on the authentication happy
-			// path, so without the guard a transient datastore fault during the INSERT would surface as
-			// a total authentication outage - a functional regression introduced BY the remediation,
-			// which the preservation requirements forbid.
-			try
-			{
-				// The username is unvalidated input on an anonymous endpoint, so it is bounded here to
-				// stop the audit trail itself becoming a storage-amplification vector. Only the
-				// submitted identity and its source address are recorded: never the password, the
-				// request body, headers, cookies or the antiforgery token. That keeps the trail useful
-				// for attributing an attack without creating a fresh disclosure of its own.
-				var auditedUsername = Username ?? string.Empty;
-				if (auditedUsername.Length > 100)
-				{
-					auditedUsername = auditedUsername.Substring(0, 100);
-				}
+			// Only the submitted identity and its source address are recorded: never the password, the
+			// request body, headers, cookies or the antiforgery token. That keeps the trail useful for
+			// attributing an attack without creating a fresh disclosure of its own.
+			//
+			// THREAT ADDRESSED - CWE-117 (improper output neutralisation for logs), OWASP A09: these
+			// details are "name: value; name: value" text and BOTH values are attacker-influenced, so the
+			// previous bound-and-interpolate was not sufficient. The delimiters here are PRINTABLE, so no
+			// control character was even needed: a username of "alice; ip: 10.0.0.1" read back as two
+			// well-formed fields and let the attacker choose the address the record blamed - the party the
+			// audit trail exists to incriminate was writing half of it. Field() bounds each value, wraps it
+			// in quotes and escapes the quote and the escape character, so a delimiter inside a value is
+			// unmistakably part of that value and cannot forge a field, and it neutralises control
+			// characters in the same call, so neither can it forge an additional record.
+			var details = "username: " + SecurityAuditLog.Field(Username, MaxAuditedFieldLength)
+				+ "; ip: " + SecurityAuditLog.Field(remoteAddress, MaxAuditedFieldLength);
 
-				// The source is a fixed literal, not a derived string, because Log.GetLogs filters on
-				// source with ILIKE - a stable value is what makes this audit trail queryable in the
-				// log viewer that already ships with the platform.
-				new Log().Create(type, "LoginModel.OnPost", message,
-					$"username: {auditedUsername}; ip: {remoteAddress ?? string.Empty}",
-					LogNotificationStatus.DoNotNotify);
-			}
-			catch (Exception)
+			// Refusals deliberately left unaudited by the coalescing claim at the refusal branch above,
+			// carried into the one record that is written so the suppressed volume stays visible. Composed
+			// by the platform from an int, so it carries no caller data and needs no neutralisation.
+			if (suppressedRefusals > 0)
 			{
-				// Swallowed deliberately, following the exception handling already present in this file.
-				// Rethrowing would hand an attacker a way to deny authentication to every user by
-				// provoking the audit write rather than by attacking the credential check itself.
+				details = details + "; refusals_not_audited: " + suppressedRefusals.ToString(CultureInfo.InvariantCulture);
 			}
+
+			// THREAT ADDRESSED - finding M-12, CWE-778 continued: this write previously sat inside a
+			// catch (Exception) that discarded the failure entirely, so a datastore fault silently erased
+			// authentication audit records and left the failure mode indistinguishable from "nothing
+			// happened" - precisely the condition a credential-stuffing flood creates, which is when the
+			// trail matters most. The shared writer counts every write it loses and carries the count into
+			// the next record that does succeed, so a gap in the trail is visible IN the trail rather than
+			// only as an absence of rows.
+			//
+			// It also cannot throw for any storage failure, which preserves the one property the old
+			// catch-all was there to provide: an audit write must never be able to fail a login, and this
+			// runs on the authentication happy path. What it deliberately no longer suppresses is an
+			// exception OUTSIDE that storage set - such an exception is a defect in this code rather than an
+			// environmental condition, and hiding those is exactly what the catch-all was wrong for.
+			//
+			// The source is a fixed literal, not a derived string, because Log.GetLogs filters on source
+			// with ILIKE - a stable value is what makes this audit trail queryable in the log viewer that
+			// already ships with the platform.
+			SecurityAuditLog.Write(type, "LoginModel.OnPost", message, details);
 		}
 
 

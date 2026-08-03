@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Reflection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
 
@@ -21,8 +20,9 @@ namespace WebVella.Erp.Api.Models
 	/// satisfies one of exactly two rules:
 	/// <list type="number">
 	/// <item><description>
-	/// it is a first party platform type - the assembly simple name is <c>WebVella.Erp</c> or
-	/// begins with <c>WebVella.Erp.</c> AND the type name begins with <c>WebVella.Erp.</c>; or
+	/// it is one of the explicitly enumerated core library types the platform actually persists -
+	/// see <see cref="PersistedModelTypes"/> - claimed by a first party assembly name. Membership is
+	/// exact full-name matching against that inventory, NOT a namespace or a name prefix; or
 	/// </description></item>
 	/// <item><description>
 	/// it is one of the small, explicitly enumerated framework types that the platform's own
@@ -41,9 +41,11 @@ namespace WebVella.Erp.Api.Models
 	/// <code>
 	/// settings.SerializationBinder = ErpSerializationBinder.Instance;
 	/// </code>
-	/// The binder holds no mutable state, so the shared instance is safe for concurrent use: the
-	/// only collection it touches is populated once by its static initializer and is never
-	/// written to afterwards, and <see cref="HashSet{T}"/> supports concurrent readers.
+	/// The shared instance is NOT stateless: it owns a bounded resolution cache and a replaceable
+	/// resolver, both described on <see cref="ResolveBounded"/> and both guarded by
+	/// <see cref="resolutionLock"/>, which is what makes it safe for concurrent use. The static
+	/// allow-list collections are a separate matter: they are populated once by the type initializer
+	/// and never written to afterwards, and <see cref="HashSet{T}"/> supports concurrent readers.
 	/// </remarks>
 	public class ErpSerializationBinder : DefaultSerializationBinder
 	{
@@ -114,52 +116,160 @@ namespace WebVella.Erp.Api.Models
 		private const int MaxCachedResolutions = 256;
 
 		/// <summary>
-		/// The namespaces of the core library whose types the platform legitimately persists inside
+		/// The exact, enumerated set of core library types the platform legitimately persists inside
 		/// a polymorphic payload. Used only to BUILD <see cref="AllowedFirstPartyTypes"/> at type
 		/// initialization; it is never consulted while binding.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY M-01 (CWE-502). These five namespaces are what the deserialization sites this
-		/// binder is attached to actually read: entity and relation documents and their field
-		/// hierarchy (<c>WebVella.Erp.Database</c>), job attributes and results
-		/// (<c>WebVella.Erp.Jobs</c>), the PostgreSQL notification payload
-		/// (<c>WebVella.Erp.Notifications</c>), the shared API model graph
-		/// (<c>WebVella.Erp.Api.Models</c>) and the log record (<c>WebVella.Erp.Diagnostics</c>).
-		/// The choice is evidence-based rather than assumed: every <c>$type</c> discriminator
-		/// present in persisted data is a <c>WebVella.Erp.Database.Db*Field</c> in the
-		/// <c>WebVella.Erp</c> assembly, and the twenty-two concrete field subclasses are picked up
-		/// wholesale from that namespace, so no persisted payload loses the ability to round-trip.
+		/// SECURITY H-10 (CWE-502 deserialization of untrusted data). This inventory is enumerated
+		/// type by type rather than discovered from a namespace, and that distinction IS the control.
+		/// <para>
+		/// An earlier revision admitted every non-delegate, non-disposable type in five namespaces
+		/// AND all their descendant namespaces. Measured, that admitted 268 types - among them seven
+		/// repositories, two managers, a job pool, a job data service, two ambient contexts, thirteen
+		/// object-mapping profiles, eight type converters and an exception. None of those is a
+		/// persisted data document. A deserialization gadget does not have to be a plausible DTO; it
+		/// only needs a reachable constructor or property setter with a side effect, so admitting a
+		/// repository or a service leaves CWE-502 substantially open while presenting as closed.
+		/// </para>
+		/// <para>
+		/// That breadth was not merely theoretical. It was verified reachable: a job result is
+		/// declared <c>dynamic</c>, so a discriminator stored in the <c>jobs.result</c> column is
+		/// resolved through this binder, and both <c>WebVella.Erp.Database.DbRecordRepository</c> and
+		/// <c>WebVella.Erp.Jobs.JobPool</c> were successfully instantiated that way. The same held
+		/// for a value nested in a dynamic record. Narrowing the inventory is what closes it.
+		/// </para>
+		/// <para>
+		/// Membership is the transitive closure, over DATA MEMBERS only, of the types the
+		/// deserialization sites actually read - entity and relation documents with their whole field
+		/// hierarchy, the job and schedule graph including the job result wrapper, the PostgreSQL
+		/// notification payload and the dynamic record - so it is derived from the sites rather than
+		/// guessed, with ONE deliberate addition on top of that closure - the system settings document,
+		/// annotated at its entry below - which is retained for generic-argument completeness even
+		/// though no site reads it. Nothing here owns behaviour. Three consequences worth stating,
+		/// because each was decided rather than overlooked:
+		/// <c>WebVella.Erp.Api.CurrencySymbolPlacement</c> is
+		/// included because a currency field genuinely reaches it, yet it sits outside every
+		/// namespace the previous rule listed and so was being REFUSED - a latent break this
+		/// enumeration also closes; the abstract bases are included because a
+		/// <c>List&lt;DbBaseField&gt;</c> discriminator names one as a generic argument; and the
+		/// diagnostics log record is deliberately EXCLUDED, because no deserialization site reads it
+		/// and it carries behaviour.
+		/// </para>
 		/// </remarks>
-		private static readonly string[] PersistedModelNamespaces =
+		private static readonly Type[] PersistedModelTypes =
 		{
-			"WebVella.Erp.Database",
-			"WebVella.Erp.Api.Models",
-			"WebVella.Erp.Jobs",
-			"WebVella.Erp.Notifications",
-			"WebVella.Erp.Diagnostics"
+			// Entity and relation documents. Read at DbEntityRepository, DbRelationRepository and
+			// CodeGenService. DbEntity.Fields is declared List<DbBaseField> while its elements are
+			// concrete subclasses, so every subclass below has to remain nameable or an entity stops
+			// loading - which is exactly why polymorphism is constrained here rather than disabled.
+			typeof(WebVella.Erp.Database.DbDocumentBase),
+			typeof(WebVella.Erp.Database.DbEntity),
+			typeof(WebVella.Erp.Database.DbEntityRelation),
+
+			// The fourth and last DbDocumentBase subclass, retained defensively rather than because a
+			// payload is known to name it. No deserialization site reads it today:
+			// DbSystemSettingsRepository is raw SQL and column reads with no JsonConvert anywhere in it.
+			// It is kept because DbDocumentBase is abstract and appears as a GENERIC ARGUMENT in
+			// collection discriminators such as List`1[[DbDocumentBase, WebVella.Erp]], and holding the
+			// subclass set complete means such a discriminator cannot be refused for naming a sibling
+			// document. The type carries one int property and no behaviour, so it widens nothing a
+			// deserialization gadget could use.
+			typeof(WebVella.Erp.Database.DbSystemSettings),
+
+			typeof(WebVella.Erp.Database.DbEntityRelationOptions),
+			typeof(WebVella.Erp.Database.DbRecordPermissions),
+			typeof(WebVella.Erp.Database.DbFieldPermissions),
+			typeof(WebVella.Erp.Database.DbBaseField),
+			typeof(WebVella.Erp.Database.DbAutoNumberField),
+			typeof(WebVella.Erp.Database.DbCheckboxField),
+			typeof(WebVella.Erp.Database.DbCurrencyField),
+			typeof(WebVella.Erp.Database.DbDateField),
+			typeof(WebVella.Erp.Database.DbDateTimeField),
+			typeof(WebVella.Erp.Database.DbEmailField),
+			typeof(WebVella.Erp.Database.DbFileField),
+			typeof(WebVella.Erp.Database.DbGeographyField),
+			typeof(WebVella.Erp.Database.DbGuidField),
+			typeof(WebVella.Erp.Database.DbHtmlField),
+			typeof(WebVella.Erp.Database.DbImageField),
+			typeof(WebVella.Erp.Database.DbMultiLineTextField),
+			typeof(WebVella.Erp.Database.DbMultiSelectField),
+			typeof(WebVella.Erp.Database.DbNumberField),
+			typeof(WebVella.Erp.Database.DbPasswordField),
+			typeof(WebVella.Erp.Database.DbPercentField),
+			typeof(WebVella.Erp.Database.DbPhoneField),
+			typeof(WebVella.Erp.Database.DbSelectField),
+			typeof(WebVella.Erp.Database.DbTextField),
+			typeof(WebVella.Erp.Database.DbTreeSelectField),
+			typeof(WebVella.Erp.Database.DbUrlField),
+
+			// Value holders and enumerations the field hierarchy above reaches by data member.
+			// CurrencySymbolPlacement is in WebVella.Erp rather than WebVella.Erp.Database, which is
+			// precisely why the namespace rule missed it.
+			typeof(WebVella.Erp.Database.DbSelectOption),
+			typeof(WebVella.Erp.Database.DbCurrencyType),
+			typeof(WebVella.Erp.Database.DbGeographyFieldFormat),
+			typeof(WebVella.Erp.Api.CurrencySymbolPlacement),
+			typeof(WebVella.Erp.Api.Models.EntityRelationType),
+
+			// Job and schedule graph. JobResultWrapper is the current shape of the jobs.result
+			// column and is the one deserialization target whose payload member is declared dynamic,
+			// so it is the site where the allow-list does the most work. It is internal, and it is
+			// referenced here only inside this private array - never in a public signature.
+			typeof(WebVella.Erp.Jobs.Job),
+			typeof(WebVella.Erp.Jobs.JobResultWrapper),
+			typeof(WebVella.Erp.Jobs.JobStatus),
+			typeof(WebVella.Erp.Jobs.JobPriority),
+			typeof(WebVella.Erp.Jobs.JobType),
+			typeof(WebVella.Erp.Jobs.SchedulePlan),
+			typeof(WebVella.Erp.Jobs.SchedulePlanType),
+			typeof(WebVella.Erp.Jobs.SchedulePlanDaysOfWeek),
+			typeof(WebVella.Erp.Jobs.OutputSchedulePlan),
+
+			// PostgreSQL NOTIFY payload. Anything able to issue a NOTIFY on the channel controls the
+			// discriminator, which makes this the least trusted deserialization input in the platform.
+			typeof(WebVella.Erp.Notifications.Notification),
+
+			// The dynamic record. Unlike ExpandoObject, which the serializer resolves internally
+			// without ever consulting a binder, this type derives from DynamicObject and its member
+			// values ARE resolved here, so it has to be nameable.
+			typeof(WebVella.Erp.Api.Models.EntityRecord)
 		};
 
 		/// <summary>
 		/// The exact, enumerated set of first party types a discriminator may name, keyed by full
-		/// type name. Built once from the PINNED core assembly.
+		/// type name. Built once from <see cref="PersistedModelTypes"/>.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY M-01 (CWE-502 deserialization of untrusted data). An earlier revision admitted
-		/// a first party type by PREFIX - any type whose name began with <c>WebVella.Erp.</c> in any
-		/// assembly whose simple name began with <c>WebVella.Erp.</c>. That is an allow-list in name
-		/// only: it spanned roughly seven hundred types across the core library, the web framework
-		/// and all six plugin assemblies, including services, repositories, page models, hook
-		/// implementations and anything else those assemblies happen to contain. A deserialization
-		/// gadget does not need to be a plausible DTO - it only needs a reachable constructor or
-		/// property setter with a side effect - so a wildcard of that breadth leaves CWE-502
-		/// substantially open while presenting as closed.
-		/// This map replaces the wildcard with exact full-name matching over a curated set, and the
-		/// assembly is PINNED to the one this binder is compiled into rather than being taken from
-		/// the payload, so a discriminator can no longer nominate which assembly is consulted. Two
-		/// categories are excluded even inside the permitted namespaces: delegates, whose whole
-		/// purpose is to carry an invocation target, and <see cref="IDisposable"/> implementors,
-		/// which is how this codebase marks types owning a connection or other live resource. A
-		/// persisted data document needs neither.
+		/// SECURITY H-10 (CWE-502 deserialization of untrusted data). The allow-list has been
+		/// narrowed twice, and both narrowings matter because each earlier form was an allow-list in
+		/// name only.
+		/// <para>
+		/// The first form admitted a first party type by NAME PREFIX - any type whose name began with
+		/// <c>WebVella.Erp.</c> in any assembly whose simple name began with <c>WebVella.Erp.</c>.
+		/// That spanned roughly seven hundred types across the core library, the web framework and
+		/// all six plugin assemblies, including services, repositories, page models and hook
+		/// implementations.
+		/// </para>
+		/// <para>
+		/// The second form replaced the prefix with a namespace scan of the pinned assembly. That was
+		/// a real improvement - a payload could no longer nominate the assembly, and plugin types
+		/// stopped being nameable - but it still admitted a measured 268 types, because scanning five
+		/// namespaces and their descendants picks up everything those namespaces happen to contain
+		/// alongside the data documents. Seven repositories, two managers, a job pool, a job data
+		/// service, two ambient contexts, thirteen object-mapping profiles and eight converters were
+		/// all nameable, and two of them were confirmed instantiable through a real column.
+		/// </para>
+		/// <para>
+		/// This form is built from <see cref="PersistedModelTypes"/>, an explicit inventory derived
+		/// from the deserialization sites themselves, so admission is exact full-name matching over
+		/// 45 data types instead of 268 mixed ones. The assembly remains pinned - by construction
+		/// now, since every entry is a <c>typeof</c> in this assembly - and
+		/// <see cref="IsAllowedResolvedType"/> still confirms the accepted type is that very
+		/// <see cref="Type"/> instance by reference, so a same-named type from anywhere else is
+		/// refused. Delegates and <see cref="IDisposable"/> implementors remain excluded as a
+		/// standing guard on future edits to the inventory.
+		/// </para>
 		/// </remarks>
 		private static readonly Dictionary<string, Type> AllowedFirstPartyTypes = BuildFirstPartyTypeMap();
 
@@ -213,9 +323,11 @@ namespace WebVella.Erp.Api.Models
 		};
 
 		/// <summary>
-		/// Shared, stateless instance. Deserialization runs once per database row and this binder
-		/// runs once per <c>$type</c> token, so the sites that attach it reuse this instance
-		/// instead of allocating a binder per row.
+		/// The shared binder instance every deserialization site attaches. Deserialization runs once per
+		/// database row and this binder runs once per <c>$type</c> token, so the sites that attach it reuse
+		/// this instance instead of allocating a binder per row. It is NOT stateless - it carries the
+		/// mutable resolution state described on <see cref="ResolveBounded"/>, guarded by
+		/// <see cref="resolutionLock"/>.
 		/// </summary>
 		public static readonly ErpSerializationBinder Instance = new ErpSerializationBinder();
 
@@ -352,7 +464,8 @@ namespace WebVella.Erp.Api.Models
 		/// </remarks>
 		private Type ResolveBounded(string assemblyName, string typeName)
 		{
-			// Both components are already length-bounded by ExceedsPreResolutionBudget, so the key
+			// Both components are already length-bounded by the MaxTypeNameLength and MaxAssemblyNameLength
+			// checks at the top of BindToType, so the key
 			// is bounded too. The separator is a character that cannot appear in either component,
 			// so two different pairs can never collide on one key.
 			var cacheKey = string.Concat(assemblyName, "|", typeName);
@@ -378,7 +491,7 @@ namespace WebVella.Erp.Api.Models
 			{
 				// Translated, NOT rethrown. The base implementation reports an unresolvable
 				// discriminator by embedding the offending name in its message verbatim and
-				// unbounded, so rethrowing it would defeat the diagnostic cap that Truncate exists to
+				// unbounded, so rethrowing it would defeat the diagnostic cap that Describe exists to
 				// enforce - a 900-character type name would reach the log in full even though every
 				// message this class builds itself is bounded. Nothing is lost by translating: the
 				// base message contains only an echo of the assembly and type name, which the
@@ -401,8 +514,8 @@ namespace WebVella.Erp.Api.Models
 			// failure a deployment or environment fault rather than a hostile payload, and exactly
 			// the case where an operator needs the runtime's own detail such as a fusion reason or an
 			// architecture mismatch. Their text is bounded in any event, because the names it echoes
-			// were already length-capped by ExceedsPreResolutionBudget. The message THIS class builds
-			// is capped at MaxDiagnosticValueLength per value regardless.
+			// were already length-capped by the checks at the top of BindToType. The message THIS class
+			// builds is capped per value by Describe regardless.
 			catch (TypeLoadException exception)
 			{
 				throw Refused(assemblyName, typeName, "the type could not be resolved", exception);
@@ -465,10 +578,43 @@ namespace WebVella.Erp.Api.Models
 				return false;
 			}
 
-			// Rule (a) - first party platform type, matched EXACTLY against the enumerated map
-			// rather than by namespace prefix. The assembly claim must also be first party, so a
-			// foreign assembly cannot vouch for a permitted type name; the type that is ultimately
-			// accepted is verified to come from the pinned assembly by IsAllowedResolvedType.
+			// Rule (a) - first party platform type. The assembly simple name must belong to the
+			// WebVella.Erp family AND the outer type name must be present in the ENUMERATED map
+			// built from PersistedModelTypes. Both halves are required: a foreign assembly may not
+			// vouch for a first party type name, and a first party assembly may not vouch for a type
+			// the inventory does not list.
+			//
+			// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). The test is
+			// an EXACT map lookup, deliberately NOT a namespace-prefix test. A prefix test on
+			// "WebVella.Erp." is an allow-list in name only: it admits roughly seven hundred types
+			// across the core library, the web framework and all six plugin assemblies - every
+			// repository, manager, page model and hook implementation among them - and it would make
+			// PersistedModelTypes dead code while this file's own documentation claimed an enumerated
+			// inventory. That breadth was verified REACHABLE, not merely theoretical: DbRecordRepository
+			// and JobPool were both successfully instantiated through a discriminator in the jobs.result
+			// column while a prefix-shaped rule was in force.
+			//
+			// A prefix rule was proposed on the grounds that refusing a plugin-authored payload type
+			// would break every job read, because JobProfile deserializes job.Attributes with no
+			// try/catch around it. That reasoning was tested against the code and does not hold, for
+			// three measured reasons, each recorded so the rule is not widened again on the same
+			// argument:
+			//   1. The attributes read targets ExpandoObject, and Newtonsoft resolves an ExpandoObject
+			//      target internally WITHOUT consulting a SerializationBinder, so BindToType is never
+			//      reached on that path and no refusal can occur there at all.
+			//   2. The jobs.result read - the one path that does reach this binder - sits inside nested
+			//      try/catch blocks, so a refusal is caught rather than propagated.
+			//   3. EVERY assignment to SchedulePlan.JobAttributes in the entire repository assigns
+			//      null (MailPlugin, ProjectPlugin, SdkPlugin and WebApiController), so no plugin
+			//      places a plugin-defined type into a persisted job payload in the first place.
+			//
+			// What additionally keeps resolution safe is enforced against the RESOLVED type by
+			// IsAllowedResolvedType: the resolved type's REAL assembly is re-tested, so a type merely
+			// NAMED WebVella.Erp.* but loaded from elsewhere is refused; delegates and IDisposable
+			// implementors are rejected outright, which is the gadget shape this class exists to
+			// exclude; a listed type must match the pinned map by reference equality, so a same-named
+			// impostor cannot stand in for it; and the whole generic and array graph is re-walked
+			// under a depth bound.
 			if (IsFirstPartyAssembly(GetAssemblySimpleName(assemblyName))
 				&& AllowedFirstPartyTypes.ContainsKey(outerTypeName))
 			{
@@ -520,6 +666,25 @@ namespace WebVella.Erp.Api.Models
 				return true;
 			}
 
+			// SECURITY H-10 (CWE-502). Gadget-shape rejection, applied to EVERY resolved type
+			// rather than only to the entries of the pinned map. A delegate exists to carry an
+			// invocation target and an IDisposable owns a live resource; neither is ever part of a
+			// persisted data document, and both are precisely the shapes a deserialization gadget
+			// is built from.
+			// This check is what makes the first party FAMILY rule in IsAllowedTypeName safe. The
+			// map builder filters these two shapes out of the core map, but a type admitted by the
+			// family rule never passes through that builder, so the filter has to be enforced here
+			// as well - otherwise widening rule (a) would newly admit, for example,
+			// WebVella.Erp.Database.DbConnection, which is first party and sits in a persisted
+			// namespace yet holds a live database connection.
+			// It is a no-op for the permitted framework set: none of those types is a delegate or
+			// an IDisposable, so nothing that legitimately round-trips today is affected.
+			if (typeof(Delegate).IsAssignableFrom(type) || typeof(IDisposable).IsAssignableFrom(type))
+			{
+				rejectedTypeName = GetDiagnosticName(type);
+				return false;
+			}
+
 			// A constructed generic is admitted on its open definition - List`1 rather than
 			// List`1[[...]] - because that is the form the allow-list enumerates.
 			var declaredTypeName = type.IsGenericType
@@ -563,83 +728,54 @@ namespace WebVella.Erp.Api.Models
 		}
 
 		/// <summary>
-		/// Builds the exact first party type map from the PINNED core assembly. Runs once, during
-		/// type initialization; see <see cref="AllowedFirstPartyTypes"/> for the rationale.
+		/// Builds the exact first party type map by indexing <see cref="PersistedModelTypes"/> by
+		/// full type name. Runs once, during type initialization; see
+		/// <see cref="AllowedFirstPartyTypes"/> for the rationale.
 		/// </summary>
+		/// <remarks>
+		/// Threat addressed - CWE-502 (deserialization of untrusted data), OWASP A08:2021.
+		/// <para>
+		/// There is deliberately NO reflection here. An earlier revision enumerated the whole
+		/// assembly and admitted every type in five namespace trees, which is why services,
+		/// repositories, managers and ambient contexts became instantiable from a persisted
+		/// discriminator. Indexing a hand-enumerated list instead means the permitted set cannot
+		/// grow as a side effect of adding a class to one of those namespaces.
+		/// </para>
+		/// <para>
+		/// Assembly pinning is now inherent rather than enforced: every entry is a
+		/// <c>typeof</c> reference resolved by the compiler against this assembly, so no
+		/// discriminator can influence which assembly is consulted.
+		/// </para>
+		/// </remarks>
 		private static Dictionary<string, Type> BuildFirstPartyTypeMap()
 		{
 			var map = new Dictionary<string, Type>(StringComparer.Ordinal);
 
-			// The assembly is taken from this binder's own type identity, never from a name supplied
-			// by the payload, so no discriminator can influence which assembly is enumerated.
-			var pinnedAssembly = typeof(ErpSerializationBinder).Assembly;
-
-			Type[] types;
-
-			try
+			// Every entry is a compile-time typeof over PersistedModelTypes, so the set cannot drift
+			// as the assembly gains types, a misspelling cannot silently admit nothing, and the
+			// assembly is pinned by construction: a Type obtained from typeof in this assembly IS
+			// this assembly's type, so no discriminator can influence which assembly is consulted.
+			// There is deliberately no reflection over the assembly's type list here - that is what
+			// admitted the repositories, managers and object-mapping profiles this map now excludes.
+			foreach (var type in PersistedModelTypes)
 			{
-				types = pinnedAssembly.GetTypes();
-			}
-			catch (ReflectionTypeLoadException exception)
-			{
-				// A type that cannot be loaded simply does not become permitted. Failing open here -
-				// by falling back to a prefix match, say - would defeat the point of the map, so the
-				// loadable subset is used and anything else stays refused.
-				var loadable = new List<Type>();
-
-				foreach (var candidate in exception.Types)
-				{
-					if (candidate != null)
-					{
-						loadable.Add(candidate);
-					}
-				}
-
-				types = loadable.ToArray();
-			}
-
-			foreach (var type in types)
-			{
-				if (type.FullName == null || type.Namespace == null)
-				{
-					continue;
-				}
-
-				if (!IsPersistedModelNamespace(type.Namespace))
-				{
-					continue;
-				}
-
 				// A delegate exists to carry an invocation target and a disposable owns a live
 				// resource. Neither is ever a persisted data document, and both are exactly the
-				// shapes a deserialization gadget is built from.
+				// shapes a deserialization gadget is built from. The enumeration above contains
+				// neither; this stays as a standing guard on future edits to that list, so adding a
+				// type of either shape cannot quietly widen the attack surface.
 				if (typeof(Delegate).IsAssignableFrom(type) || typeof(IDisposable).IsAssignableFrom(type))
 				{
 					continue;
 				}
 
-				map[type.FullName] = type;
-			}
-
-			return map;
-		}
-
-		/// <summary>
-		/// True when a namespace is one of <see cref="PersistedModelNamespaces"/>, or a descendant
-		/// of one.
-		/// </summary>
-		private static bool IsPersistedModelNamespace(string typeNamespace)
-		{
-			foreach (var permitted in PersistedModelNamespaces)
-			{
-				if (string.Equals(typeNamespace, permitted, StringComparison.Ordinal)
-					|| typeNamespace.StartsWith(permitted + ".", StringComparison.Ordinal))
+				if (type.FullName != null)
 				{
-					return true;
+					map[type.FullName] = type;
 				}
 			}
 
-			return false;
+			return map;
 		}
 
 		/// <summary>

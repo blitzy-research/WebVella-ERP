@@ -86,7 +86,14 @@ namespace WebVella.Erp.Plugins.SDK.Controllers
 			}
 			catch (Exception ex)
 			{
-				response.Message = ex.Message;
+				// THREAT ADDRESSED - finding F26, CWE-209 (generation of an error message containing
+				// sensitive information), OWASP A05. Seven action catch blocks in this controller returned the
+				// raw exception message to the browser. The guard is the one this codebase already applies at
+				// twenty-six other sites and at ApiControllerBase.DoBadRequestResponse, so the whole API
+				// surface answers a fault identically. No log call is added: this file has no logging idiom to
+				// follow, and inventing one here would exceed the remediation - the residual is recorded in the
+				// risk register instead.
+				response.Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!";
 				response.Success = false;
 				return Json(response);
 			}
@@ -138,7 +145,8 @@ namespace WebVella.Erp.Plugins.SDK.Controllers
 			}
 			catch (Exception ex)
 			{
-				response.Message = ex.Message;
+				// THREAT ADDRESSED - finding F26, CWE-209. Same guard as the first site in this file.
+				response.Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!";
 				response.Success = false;
 				return Json(response);
 			}
@@ -183,7 +191,8 @@ namespace WebVella.Erp.Plugins.SDK.Controllers
 			}
 			catch (Exception ex)
 			{
-				response.Message = ex.Message;
+				// THREAT ADDRESSED - finding F26, CWE-209. Same guard as the first site in this file.
+				response.Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!";
 				response.Success = false;
 				return Json(response);
 			}
@@ -256,7 +265,8 @@ namespace WebVella.Erp.Plugins.SDK.Controllers
 			}
 			catch (Exception ex)
 			{
-				response.Message = ex.Message;
+				// THREAT ADDRESSED - finding F26, CWE-209. Same guard as the first site in this file.
+				response.Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!";
 				response.Success = false;
 				return Json(response);
 			}
@@ -360,7 +370,8 @@ namespace WebVella.Erp.Plugins.SDK.Controllers
 			}
 			catch (Exception ex)
 			{
-				response.Message = ex.Message;
+				// THREAT ADDRESSED - finding F26, CWE-209. Same guard as the first site in this file.
+				response.Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!";
 				response.Success = false;
 				return Json(response);
 			}
@@ -405,7 +416,8 @@ namespace WebVella.Erp.Plugins.SDK.Controllers
 			}
 			catch (Exception ex)
 			{
-				response.Message = ex.Message;
+				// THREAT ADDRESSED - finding F26, CWE-209. Same guard as the first site in this file.
+				response.Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!";
 				response.Success = false;
 				return Json(response);
 			}
@@ -506,7 +518,8 @@ namespace WebVella.Erp.Plugins.SDK.Controllers
 			}
 			catch (Exception ex)
 			{
-				response.Message = ex.Message;
+				// THREAT ADDRESSED - finding F26, CWE-209. Same guard as the first site in this file.
+				response.Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!";
 				response.Success = false;
 				return Json(response);
 			}

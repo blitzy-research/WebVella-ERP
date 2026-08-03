@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Dynamic;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Database;
 using WebVella.Erp.Exceptions;
@@ -39,6 +40,103 @@ namespace WebVella.Erp.Api
 		// above predate that convention and are left untouched. Do not "correct" this to
 		// SCREAMING_SNAKE to match them.
 		internal const string EncryptedFieldRedactedValue = "__WV_REDACTED_a7f3c1e9__";
+
+		// SECURITY C-02 (CWE-200 exposure of sensitive information to an unauthorized actor,
+		// CWE-522 insufficiently protected credentials / OWASP A01:2021 Broken Access Control +
+		// A02:2021 Cryptographic Failures): the ambient opt-in that separates the platform's one
+		// internal credential-resolution path from every other record projection.
+		//
+		// THREAT ADDRESSED: redaction was applied at the manager and repository projection seams
+		// only, because WebVella.Erp.Database.DbRecordRepository.ExtractFieldValue is ALSO reached
+		// from WebVella.Erp/Eql/EqlCommand.cs, which WebVella.Erp/Api/SecurityManager.cs uses to
+		// resolve a credential - and that path needs the REAL stored hash in order to verify a
+		// login. The generic EQL surface was therefore left projecting the hash verbatim: it gates
+		// on the ENTITY read permission only, the Regular role retains read access to the user
+		// entity, and the surface is reachable over HTTP. An authenticated regular user could
+		// consequently project user.password.
+		//
+		// Gating the repository's own read fall-through on this scope closes that surface while
+		// leaving credential verification working, which is exactly what the acceptance criterion
+		// "no API response and no query projection returns a password hash, for any role"
+		// requires. It is the enabling change: without it, redaction inside the shared
+		// ExtractFieldValue would hand SecurityManager the marker instead of the hash and every
+		// login would fail.
+		//
+		// DELIBERATE DESIGN DECISIONS, each of which must survive future edits:
+		//
+		// 1. DENY BY DEFAULT. The flag is false unless a caller has explicitly opened the scope, so
+		//    a read path added in future is redacted automatically instead of having to opt in.
+		//    Never invert this.
+		//
+		// 2. AsyncLocal, not [ThreadStatic] and not an instance field. The value must flow across
+		//    the awaits of one request without leaking into an unrelated request, and the consumer
+		//    (ExtractFieldValue) is static so it has no instance to read from. The same primitive
+		//    is already used for ambient security state in WebVella.Erp/Api/SecurityContext.cs, so
+		//    no new pattern is introduced.
+		//
+		// 3. The scope is opened at the CREDENTIAL-RESOLUTION call sites in
+		//    WebVella.Erp/Api/SecurityManager.cs and nowhere else. It must never be opened around
+		//    a controller action, a hook, a job, a bulk user listing or an import: doing so would
+		//    reopen exactly the surface this closes.
+		//
+		// 4. internal, not public. The only consumers are
+		//    WebVella.Erp.Database.DbRecordRepository and WebVella.Erp.Api.SecurityManager, both in
+		//    this assembly, so no public API surface is added and the "API contracts and interfaces
+		//    are unchanged" preservation requirement holds.
+		private static readonly AsyncLocal<bool> credentialReadScope = new AsyncLocal<bool>();
+
+		/// <summary>
+		/// True only while a scope opened by <see cref="OpenCredentialReadScope"/> is active on the
+		/// current asynchronous flow, meaning the caller is the platform's internal
+		/// credential-resolution path and needs the real stored hash rather than
+		/// <see cref="EncryptedFieldRedactedValue"/>.
+		/// </summary>
+		internal static bool IsCredentialReadScopeOpen
+		{
+			get { return credentialReadScope.Value; }
+		}
+
+		/// <summary>
+		/// Opens the internal credential-read scope for the current asynchronous flow. Disposing the
+		/// returned value restores the previous state, so scopes nest safely and a repeated dispose
+		/// is a no-op.
+		/// </summary>
+		/// <returns>A scope handle that must be disposed, normally through a <c>using</c>.</returns>
+		internal static IDisposable OpenCredentialReadScope()
+		{
+			return new CredentialReadScope();
+		}
+
+		/// <summary>
+		/// Scope handle for <see cref="OpenCredentialReadScope"/>. Restores the captured previous
+		/// value rather than assigning false, so a nested scope cannot close an outer one.
+		/// </summary>
+		private sealed class CredentialReadScope : IDisposable
+		{
+			private readonly bool previousValue;
+			private bool disposed;
+
+			internal CredentialReadScope()
+			{
+				previousValue = credentialReadScope.Value;
+				credentialReadScope.Value = true;
+			}
+
+			public void Dispose()
+			{
+				Dispose(true);
+				GC.SuppressFinalize(this);
+			}
+
+			private void Dispose(bool disposing)
+			{
+				if (disposing && !disposed)
+				{
+					disposed = true;
+					credentialReadScope.Value = previousValue;
+				}
+			}
+		}
 
 		private EntityManager entityManager;
 		private EntityRelationManager entityRelationManager;
@@ -226,6 +324,81 @@ namespace WebVella.Erp.Api
 			}
 		}
 
+		// THREAT ADDRESSED - insecure direct object reference on a file, OWASP A01:2021 Broken Access Control,
+		// CWE-639 (authorization bypass through a user-controlled key) with CWE-367 (time-of-check to
+		// time-of-use) on the mutation that follows. Both the create and the update paths take the value of a
+		// file or image field STRAIGHT FROM THE REQUEST and, when it points into the temporary staging
+		// namespace, MOVE the file named by it into the record's folder - the update path with overwrite
+		// enabled. Nothing established that the staged file belonged to the caller, so an authenticated caller
+		// could name another user's pending upload and have it relocated under a record of their own: the
+		// victim's file leaves the path their own client is waiting on, and its bytes become readable through
+		// the attacker's record.
+		//
+		// Both halves of the required control live here so the two call sites cannot drift apart:
+		//   NAMESPACE. The source must be inside the staging namespace, tested with the trailing separator.
+		//   The previous test omitted it, so "/tmpfoo/..." satisfied a check meant to mean "/tmp/...".
+		//   OWNERSHIP. The staged file must be the caller's own. Deny-by-default at every uncertain edge: a
+		//   missing file, an unresolvable principal and a staged file with no recorded owner all refuse for a
+		//   non-administrator, matching the rule the file move, delete and publication paths apply.
+		//
+		// The DESTINATION needs no ownership test of its own, and that is a structural guarantee rather than an
+		// omission: the caller never supplies it. It is composed here from the entity name and the record's own
+		// identifier, and the only caller-influenced part is the trailing file name, which is the LAST segment
+		// of the source path and therefore cannot contain a separator or a relative segment. The destination is
+		// consequently always inside the folder of the record whose create or update permission has already
+		// been checked, so it can never name another record's - or another user's - file.
+		//
+		// The returned identifier is what makes the authorization atomic with the write: the caller passes it to
+		// DbFileRepository.Move as the expected source row, and the repository applies the move only while that
+		// row is still the one at that path. A concurrent request that substitutes a different file behind the
+		// authorized path is refused by the database rather than moved under an authorization never granted for
+		// it.
+		//
+		// ignoreSecurity is honoured because it is this platform's own marker for a trusted system operation -
+		// background jobs, provisioning and internal hooks construct RecordManager with it - so an internal
+		// write is not made to fail an ownership test that has no meaning outside a request.
+		private Guid AuthorizeStagedFilePromotion(Field field, string sourcePath, DbFileRepository fsRepository)
+		{
+			var stagedFile = fsRepository.Find(sourcePath);
+
+			if (!ignoreSecurity)
+			{
+				var currentUser = SecurityContext.CurrentUser;
+				var isAuthorized = stagedFile != null
+					&& currentUser != null
+					&& (currentUser.IsAdmin || (stagedFile.CreatedBy.HasValue && stagedFile.CreatedBy.Value == currentUser.Id));
+
+				if (!isAuthorized)
+				{
+					//ValidationException is this platform's caller-safe channel for a refused field value: the
+					//Razor pages and the API actions surface its message and its per-field errors WITHOUT a
+					//stack trace, and it is rethrown rather than swallowed by the record managers' own
+					//handlers. The message names the field but never echoes the submitted path, so a refusal
+					//cannot be used to confirm which staged paths exist.
+					var validationException = new ValidationException();
+					validationException.AddError(field.Name, "The file referenced by this field cannot be used.");
+					throw validationException;
+				}
+			}
+			else if (stagedFile == null)
+			{
+				//a trusted internal write still cannot move a file that is not there; failing here rather than
+				//inside the repository keeps the error attributable to the field
+				var validationException = new ValidationException();
+				validationException.AddError(field.Name, "The file referenced by this field cannot be used.");
+				throw validationException;
+			}
+
+			return stagedFile.Id;
+		}
+
+		//Staging namespace prefix, WITH the trailing separator - see AuthorizeStagedFilePromotion for why the
+		//separator matters. Kept as a single expression so both file-field call sites test the same thing.
+		private static string StagedFileNamespacePrefix
+		{
+			get { return DbFileRepository.FOLDER_SEPARATOR + DbFileRepository.TMP_FOLDER_NAME + DbFileRepository.FOLDER_SEPARATOR; }
+		}
+
 		public QueryResponse CreateRecord(string entityName, EntityRecord record)
 		{
 			if (string.IsNullOrWhiteSpace(entityName))
@@ -293,6 +466,11 @@ namespace WebVella.Erp.Api
 
 					if (record == null)
 						response.Errors.Add(new ErrorModel { Message = "Invalid record. Cannot be null." });
+
+					//SECURITY - finding F25, CWE-521. First of the two write boundaries at which a
+					//password can be CHOSEN; see ValidatePasswordFieldPolicy. Placed here so the existing
+					//early-return below reports it, before any permission check, hook or connection work.
+					ValidatePasswordFieldPolicy(entity, record, response);
 
 					if (response.Errors.Count > 0)
 					{
@@ -753,7 +931,18 @@ namespace WebVella.Erp.Api
 								if( field == null )
 									throw new Exception("Error during processing value for field: '" + pair.Key + "'. Field not found.");
 								else
-									throw new Exception("Error during processing value for field: '" + pair.Key + "'. Invalid value: '" + pair.Value + "'", ex);
+									//CWE-532 / CWE-209: a credential value must never be interpolated into a
+									//message that is returned to the caller and written to system_log. See
+									//DescribeRejectedFieldValue.
+									//ArgumentException rather than the bare Exception this statement used to
+									//raise: the value supplied for a field could not be processed, which is
+									//precisely an invalid-argument condition, and the reserved base type carried
+									//a CA2201 diagnostic onto a line this fix has to touch. Behaviour is
+									//identical - the only handlers between here and the method's outer boundary
+									//are catch (ValidationException) at :L1014 and catch (Exception e) at :L1021,
+									//so this still lands in the same place with the same message. The sibling
+									//throw above is deliberately left alone; it is not part of this fix.
+									throw new ArgumentException("Error during processing value for field: '" + pair.Key + "'. Invalid value: '" + DescribeRejectedFieldValue(field, pair.Value) + "'", ex);
 							}
 						}
 					}
@@ -778,12 +967,25 @@ namespace WebVella.Erp.Api
 							storageRecordData.Add(new KeyValuePair<string, object>(field.Name, field.GetFieldDefaultValue()));
 						else
 						{
-							if (!string.IsNullOrWhiteSpace(path) && path.StartsWith(DbFileRepository.FOLDER_SEPARATOR + DbFileRepository.TMP_FOLDER_NAME))
+							if (!string.IsNullOrWhiteSpace(path) && path.StartsWith(StagedFileNamespacePrefix, StringComparison.Ordinal))
 							{
 								var fileName = path.Split(new[] { '/' }).Last();
 								string source = path;
 								string target = $"/{field.EntityName}/{record["id"]}/{fileName}";
-								var movedFile = fsRepository.Move(source, target, false);
+
+								//see AuthorizeStagedFilePromotion - the staged file must be the caller's own,
+								//and the identifier it returns pins the move to the row that was authorized
+								var authorizedSourceId = AuthorizeStagedFilePromotion(field, source, fsRepository);
+								var movedFile = fsRepository.Move(source, target, false, authorizedSourceId);
+								if (movedFile == null)
+								{
+									//the authorized row is no longer the row at this path - a concurrent
+									//request substituted it. Refuse rather than record a path whose content
+									//was never authorized.
+									var raceValidationException = new ValidationException();
+									raceValidationException.AddError(field.Name, "The file referenced by this field cannot be used.");
+									throw raceValidationException;
+								}
 
 								storageRecordData.Add(new KeyValuePair<string, object>(field.Name, target));
 							}
@@ -1015,6 +1217,11 @@ namespace WebVella.Erp.Api
 						response.Errors.Add(new ErrorModel { Message = "Invalid record. Cannot be null." });
 					else if (!record.Properties.ContainsKey("id"))
 						response.Errors.Add(new ErrorModel { Message = "Invalid record. Missing ID field." });
+
+					//SECURITY - finding F25, CWE-521. Second and last write boundary at which a password
+					//can be CHOSEN; see ValidatePasswordFieldPolicy. Placed here so the existing
+					//early-return below reports it, before any permission check, hook or connection work.
+					ValidatePasswordFieldPolicy(entity, record, response);
 
 					if (response.Errors.Count > 0)
 					{
@@ -1441,7 +1648,17 @@ namespace WebVella.Erp.Api
 						catch (Exception ex)
 						{
 							if (pair.Key != null)
-								throw new Exception("Error during processing value for field: '" + pair.Key + "'. Invalid value: '" + pair.Value + "'", ex);
+								//CWE-532 / CWE-209: a credential value must never be interpolated into a
+								//message that is returned to the caller and written to system_log. The field
+								//is resolved here solely to make that decision; an unresolved name yields a
+								//null field, which DescribeRejectedFieldValue treats as "not a password" and
+								//so renders exactly as before.
+								//ArgumentException rather than the bare Exception this statement used to raise,
+								//for the reason given at the create-path twin above. The only handlers between
+								//here and the method's outer boundary are catch (ValidationException) at :L1721
+								//and catch (Exception e) at :L1728, so behaviour and message are unchanged.
+								throw new ArgumentException("Error during processing value for field: '" + pair.Key + "'. Invalid value: '"
+									+ DescribeRejectedFieldValue(entity.Fields.SingleOrDefault(x => x.Name == pair.Key), pair.Value) + "'", ex);
 						}
 					}
 
@@ -1475,12 +1692,23 @@ namespace WebVella.Erp.Api
 							if (path.StartsWith("fs/"))
 								path = path.Substring(2);
 
-							if (path.StartsWith(DbFileRepository.FOLDER_SEPARATOR + DbFileRepository.TMP_FOLDER_NAME))
+							if (path.StartsWith(StagedFileNamespacePrefix, StringComparison.Ordinal))
 							{
 								var fileName = path.Split(new[] { '/' }).Last();
 								string source = path;
 								string target = $"/{field.EntityName}/{record["id"]}/{fileName}";
-								var movedFile = fsRepository.Move(source, target, true);
+
+								//see AuthorizeStagedFilePromotion. This is the more dangerous of the two call
+								//sites, because the move below overwrites - so an unauthorized source would
+								//both steal the staged file and destroy whatever already sat at the target.
+								var authorizedSourceId = AuthorizeStagedFilePromotion(field, source, fsRepository);
+								var movedFile = fsRepository.Move(source, target, true, authorizedSourceId);
+								if (movedFile == null)
+								{
+									var raceValidationException = new ValidationException();
+									raceValidationException.AddError(field.Name, "The file referenced by this field cannot be used.");
+									throw raceValidationException;
+								}
 
 								storageRecordData.Add(new KeyValuePair<string, object>(field.Name, target));
 							}
@@ -1868,7 +2096,15 @@ namespace WebVella.Erp.Api
 				response.Success = false;
 				response.Message = "The query is incorrect and cannot be executed";
 				response.Object = null;
-				response.Errors.Add(new ErrorModel { Message = ex.Message });
+				// THREAT ADDRESSED - finding F26, CWE-209 (generation of an error message containing
+				// sensitive information), OWASP A05. The error entry beside the fixed message above copied the
+				// raw exception message, so an authenticated caller able to provoke a fault here still received
+				// internal detail - which is the same disclosure the API-surface remediation closed one layer
+				// up, reached by a path that never enters the controller's own catch. Guarded exactly as this
+				// file's own write paths already are, so a developer keeps the detail and a caller does not.
+				// Deliberately NOT logged here: this method runs on every list and count render, so a log
+				// write on its failure path would be the unbounded-logging vector finding F9 exists to close.
+				response.Errors.Add(new ErrorModel { Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!" });
 				response.Timestamp = DateTime.UtcNow;
 				return response;
 			}
@@ -1921,7 +2157,8 @@ namespace WebVella.Erp.Api
 				response.Success = false;
 				response.Message = "The query is incorrect and cannot be executed";
 				response.Object = 0;
-				response.Errors.Add(new ErrorModel { Message = ex.Message });
+				// THREAT ADDRESSED - finding F26, CWE-209. Same guard and same reasoning as Find above.
+				response.Errors.Add(new ErrorModel { Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!" });
 				response.Timestamp = DateTime.UtcNow;
 				return response;
 			}
@@ -1957,15 +2194,28 @@ namespace WebVella.Erp.Api
 		//   empty read permission as denial it would hide fields wholesale. The residual general
 		//   gap is recorded in docs/security/risk-register.md rather than fixed.
 		//
-		//4. Applied at the MANAGER seam, after the repository has produced the records. It is NOT
-		//   pushed down into DbRecordRepository.ExtractFieldValue, which is public static and is
-		//   also the path WebVella.Erp/Eql/EqlCommand.cs uses when
-		//   WebVella.Erp/Api/SecurityManager.cs resolves a credential: that path needs the REAL
-		//   stored hash to verify a login, and redacting it would make EVERY LOGIN FAIL. The
-		//   repository carries its own companion redaction at its two record-projection seams, so
-		//   this is defence in depth at a second, independent layer - which is what closes C-02
-		//   even if one layer is later bypassed. Redaction is idempotent, so a value the repository
-		//   already replaced is simply replaced again with the same constant.
+		//4. Applied at the MANAGER seam, after the repository has produced the records, and
+		//   UNCONDITIONALLY - this call is deliberately not subject to the credential-read scope.
+		//   The repository carries its own companion redaction at its two record-projection
+		//   seams, also unconditionally, so this is defence in depth at a second, independent
+		//   layer - which is what closes C-02 even if one layer is later bypassed. Redaction is
+		//   idempotent, so a value the repository already replaced is simply replaced again with
+		//   the same constant.
+		//
+		//   The generic EQL surface is a separate path that bypasses this manager and both
+		//   repository Find seams entirely - which is how the credential hash remained
+		//   projectable over the api/v3/en_US/eql, eql-ds and eql-ds-select2 endpoints after the
+		//   first pass at C-02 - and it is gated TWICE, both times deny-by-default:
+		//     DbRecordRepository.ExtractFieldValue guards its read fall-through, suppressed only
+		//     inside RecordManager.OpenCredentialReadScope;
+		//     EqlCommand.ConvertJObjectToEntityRecord redacts unless the internal, init-only
+		//     EqlCommand.IncludeEncryptedFieldValues flag is set on the command (the opt-in lives
+		//     on the COMMAND, never on the public EqlSettings built from stored data sources).
+		//   Both gates must be satisfied before a real hash is projected, and the only place in
+		//   the platform that satisfies both is SecurityManager's credential resolution:
+		//   GetUser(Guid), which SaveUser and the schema-version-4 migration read through, and
+		//   GetUser(email, password). That is what lets a login verify while the EQL and
+		//   data-source endpoints keep disclosing nothing.
 		//
 		//5. A null value stays null. Inventing a marker where there was no value would change
 		//   observable behaviour, and the write-side guards in the create and update collectors key
@@ -2072,6 +2322,124 @@ namespace WebVella.Erp.Api
 			}
 
 			return false;
+		}
+
+		/// <summary>
+		/// Renders a rejected field value for inclusion in a record-write error message, replacing
+		/// the value of a credential field with a fixed placeholder.
+		/// </summary>
+		/// <param name="field">
+		/// The field the value belongs to, or <c>null</c> when it could not be resolved.
+		/// </param>
+		/// <param name="value">The value the write was rejected for.</param>
+		/// <returns>The value's text, or a fixed placeholder for a password field.</returns>
+		/// <remarks>
+		/// Threat addressed - CWE-532 (insertion of sensitive information into log file), CWE-209
+		/// (generation of error message containing sensitive information), OWASP A09:2021.
+		/// <para>
+		/// The record-write collectors report a rejected value by interpolating it into an exception
+		/// message. That message is returned to the caller AND persisted to the system_log table, so
+		/// for a password field it published the submitted PLAINTEXT into durable storage readable by
+		/// every account holding log access - a worse disclosure than the stored-hash exposure this
+		/// engagement set out to close, because a hash is one-way and this is not.
+		/// </para>
+		/// <para>
+		/// The exposure is pre-existing rather than introduced: any failure while processing a
+		/// password value already reached those messages. It becomes reachable far more easily once
+		/// the password policy of finding M-REV-12 is enforced at the write seam, because a refused
+		/// password is now an ORDINARY, user-triggered outcome rather than an internal fault - which
+		/// is exactly why the two changes belong in one commit. Redacting unconditionally, rather
+		/// than only for the policy failure, means no other exception on that path can leak the value
+		/// either.
+		/// </para>
+		/// <para>
+		/// A fixed placeholder is returned rather than the length, a prefix, or a digest: each of
+		/// those is a usable oracle against a credential, and none of them helps diagnose a write.
+		/// The field NAME is still reported by the callers, which is what an operator needs.
+		/// </para>
+		/// </remarks>
+		private static string DescribeRejectedFieldValue(Field field, object value)
+		{
+			if (field is PasswordField)
+				return RedactedFieldValueForErrorMessage;
+
+			return value?.ToString();
+		}
+
+		/// <summary>
+		/// The fixed text substituted for a credential value in a record-write error message. It is
+		/// intentionally distinct from <see cref="EncryptedFieldRedactedValue"/>, which is a wire
+		/// sentinel the write path must recognise and refuse; this one is human-facing message text
+		/// and must never be treated as a value.
+		/// </summary>
+		private const string RedactedFieldValueForErrorMessage = "[redacted]";
+
+		/// Applies the platform password policy to every encrypted password field a record carries
+		/// on its way into storage, adding one field-level error per offending value.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding F25 / M-13, CWE-521 (weak password requirements) and CWE-20
+		/// (improper input validation), OWASP A07:2021 Identification and Authentication Failures.
+		/// The 12-128 range is published as user-entity field metadata and was enforced nowhere:
+		/// every read of MinLength and MaxLength in Api/EntityManager.cs is commented out. Closing
+		/// Api/SecurityManager.SaveUser and provisioning alone would have left this door wide open,
+		/// because CreateRecord and UpdateRecord below are reached directly from
+		/// POST api/v3/en_US/record/{entityName} and from the SDK generic data-create and
+		/// data-manage forms, so a principal holding create or update permission on the entity that
+		/// owns a credential could still store a one-character administrator password. This is the
+		/// same single validator SaveUser uses - PasswordUtil.ValidatePasswordPolicy is the one gate
+		/// for that policy platform-wide - applied at the second and last write boundary.
+		///
+		/// It reports through response.Errors rather than by throwing, deliberately. The per-field
+		/// catch inside both collectors re-wraps any exception as "Invalid value: '<value>'", which
+		/// for a password field would put the plaintext credential into an API message and into the
+		/// server log - a CWE-532 disclosure created by the very fix meant to strengthen the
+		/// credential. Running as a pre-pass, before any connection work, avoids that entirely,
+		/// uses these methods' own established error mechanism, and leaves nothing half-written.
+		/// ErrorModel.Value is left unset for the same reason: it serialises into the response.
+		///
+		/// Two values are deliberately exempt, and both exemptions are load-bearing:
+		/// blank, because both collectors already read it as "leave the stored value alone" or "use
+		/// the declared default" rather than as a chosen password; and the redaction marker, because
+		/// it is a read artefact being round-tripped by a client that never saw the real hash, and
+		/// refusing it would break every record update that simply carries a previously read record
+		/// back. Both are dropped by the collectors before hashing, so neither can become a stored
+		/// credential in any case.
+		///
+		/// The legacy rehash-on-login migration cannot reach this method:
+		/// SecurityManager.UpgradeStoredPasswordHash hashes in place and writes the one column
+		/// through DbRepository.UpdateRecord, never through RecordManager. That is what allows an
+		/// account whose password predates this policy to keep authenticating and still be upgraded.
+		/// </remarks>
+		private static void ValidatePasswordFieldPolicy(Entity entity, EntityRecord record, QueryResponse response)
+		{
+			if (entity == null || entity.Fields == null || record == null)
+				return;
+
+			foreach (var field in entity.Fields)
+			{
+				//only an encrypted password field is a credential: that is the exact condition under
+				//which ExtractFieldValue below one-way hashes the value
+				if (!(field is PasswordField) || ((PasswordField)field).Encrypted != true)
+					continue;
+
+				if (!record.Properties.ContainsKey(field.Name))
+					continue;
+
+				string candidate = record[field.Name] as string;
+
+				if (string.IsNullOrWhiteSpace(candidate))
+					continue;
+
+				//Ordinal only - never culture-sensitive, never case-insensitive. A missed match here
+				//would refuse a legitimate round-trip update.
+				if (string.Equals(candidate, EncryptedFieldRedactedValue, StringComparison.Ordinal))
+					continue;
+
+				string policyError = PasswordUtil.ValidatePasswordPolicy(candidate);
+				if (policyError != null)
+					response.Errors.Add(new ErrorModel { Key = field.Name, Message = policyError });
+			}
 		}
 
 		private object ExtractFieldValue(KeyValuePair<string, object>? fieldValue, Field field, bool encryptPasswordFields = false)
@@ -2242,6 +2610,29 @@ namespace WebVella.Erp.Api
 							//never culture-sensitive, never case-insensitive.
 							if (string.Equals(pair.Value as string, EncryptedFieldRedactedValue, StringComparison.Ordinal))
 								return null;
+
+							//THREAT ADDRESSED - finding M-REV-12, CWE-521 (weak password requirements),
+							//OWASP A07:2021, and the mandated Authentication Hardening standard
+							//"minimum password complexity: 12+ characters".
+							//This is the platform's ONE plaintext-to-hash write seam for records, so it
+							//is the only place a length policy can actually be enforced. The 12-to-128
+							//bound previously existed solely as field METADATA on the password field,
+							//which this platform treats as presentation state and never consults on the
+							//write path - so any API caller, import, or provisioning value could store a
+							//two-character password while the user interface advertised a twelve
+							//character minimum. Enforcing it here also removes a silent data-loss edge:
+							//HashPassword answers an over-length value with string.Empty by design
+							//(fail-closed), which persisted as an empty credential and left the account
+							//unable to authenticate at all, with no error raised to say so. Refusing the
+							//write is strictly better than silently storing a value that cannot verify.
+							//The reason text is deliberately value-free - never the plaintext, never its
+							//length - because it travels into an exception message that is both returned
+							//to the caller and persisted to the system log (CWE-532). ArgumentException
+							//rather than Exception so the refusal is a typed validation failure.
+							string passwordPolicyFailure = PasswordUtil.ValidatePasswordPolicy(pair.Value as string);
+							if (passwordPolicyFailure != null)
+								throw new ArgumentException("The supplied password does not meet the password policy: "
+									+ passwordPolicyFailure + ".");
 
 							//THREAT ADDRESSED - finding C-03, CWE-916 (password hash with insufficient
 							//computational effort) and CWE-759 (one-way hash without a salt), OWASP

@@ -25,6 +25,16 @@
 	     it reaches all 19 projects - including WebVella.Erp.WebAssembly/Server
 	     and /Shared, which are not members of WebVella.ERP3.sln.
 
+	     COMPANION FILE - the gate is two files, not one. MSBuild properties can
+	     switch the analyzers ON, but they cannot set the severity of an
+	     individual rule, and the security rules that matter most here ship
+	     disabled by default. Per-rule severities therefore live in the
+	     .globalconfig beside this file, which the SDK discovers by the same
+	     walk-up-the-tree mechanism and which is likewise immune to
+	     .editorconfig "root = true" scoping. Neither file is sufficient alone:
+	     delete or empty .globalconfig and ten security rules silently stop
+	     being errors.
+
 	     REPRODUCIBILITY: the SDK is pinned in global.json. Several properties
 	     below already match the current SDK defaults; they are stated
 	     explicitly anyway so the gate is defined by this file rather than by an
@@ -88,26 +98,38 @@
 	           air-gapped runner or a blocked egress proxy all land here.
 	         - NU1905, "audit source provided no vulnerability database" - a
 	           NuGetAuditSource is configured but serves no advisory data.
-	     Both configurations were reproduced against this very file, using a probe
-	     that references a package with a published High advisory, and they do NOT
-	     behave the same - stated precisely, because overstating what this
-	     property group achieves would itself be a fail-open:
-	         - Advisory endpoint unreachable (a dead egress proxy). Before the
-	           promotion: restore exit 0 with nothing but `warning NU1900`. After:
-	           restore exit 1, `error NU1900: Warning As Error: Error occurred
-	           while getting package vulnerability data`. CLOSED HERE.
-	         - Package source supplying no vulnerability database at all (a local
-	           folder source or an internal mirror). Restore exits 0 with ZERO
-	           NuGet diagnostics of ANY kind - there is no code to promote, so
-	           this property group cannot close it, and honesty requires saying so
-	           rather than implying blanket coverage. It is closed instead by the
-	           workflow's advisory negative control, which restores a knowingly
-	           vulnerable probe and fails the job when that restore SUCCEEDS. That
-	           control was verified to fire in exactly this configuration.
-	     The principle behind both is the audit's own premise for elevating H-19:
-	     a "clean" scan obtained from an incomplete graph is worthless, and a
-	     clean scan obtained from an absent advisory database is worthless for the
-	     same reason.
+	     THREE configurations were reproduced against this very file, each with a probe
+	     referencing a package that carries a published High advisory. They do NOT behave
+	     alike, and the differences are recorded here rather than summarised, because
+	     overstating what this property group achieves would itself be a fail-open. Each
+	     row below is observed output, not expectation; each is reproduced by restoring a
+	     single-PackageReference probe under this file with the stated nuget.config:
+	         1. Audit endpoint unreachable - auditSources names a host that does not
+	           resolve, the shape a dead egress proxy or a blocked mirror takes.
+	           Observed: restore exit 1, with BOTH
+	           `error NU1900: Warning As Error: Error occurred while getting package
+	           vulnerability data` and `error NU1905: Warning As Error: Audit source ...`.
+	           CLOSED BY THIS PROPERTY GROUP.
+	         2. Audit source reachable but serving no advisory data - auditSources names a
+	           local folder, the shape an internal mirror without advisory endpoints takes.
+	           Observed: restore exit 1, `error NU1905: Warning As Error: Audit source ...`.
+	           CLOSED BY THIS PROPERTY GROUP. An earlier revision of this comment asserted
+	           the opposite - that this configuration emits nothing and so could not be
+	           closed here. That assertion was wrong; it is corrected rather than removed,
+	           because it was published, and because a gate's documentation understating its
+	           own coverage is a defect of the same kind as overstating it.
+	         3. No audit source resolvable at all - packageSources cleared to a single local
+	           folder holding the vulnerable package, no auditSources element. Observed:
+	           restore exit 0, the vulnerable package resolved, and ZERO NuGet diagnostics
+	           of ANY severity. This is the real fail-open: there is no code to promote, so
+	           this property group cannot close it, and saying so is the point of listing it.
+	           It is closed instead by the workflow's advisory negative control, which
+	           restores a knowingly vulnerable probe and fails the job when that restore
+	           SUCCEEDS - the only mechanism that detects an advisory database which is
+	           absent rather than merely unreachable.
+	     The principle behind all three is the audit's own premise for elevating H-19: a
+	     "clean" scan taken from an incomplete graph is worthless, and a clean scan taken
+	     from an absent advisory database is worthless for the same reason.
 
 	     DISCLOSED TRADE-OFF, accepted deliberately: a transient nuget.org
 	     interruption now fails the build instead of passing it quietly. That is
@@ -118,8 +140,8 @@
 	     codes to make a flaky network quiet; re-run the job instead.
 
 	     Belt-and-braces, and NECESSARILY so rather than as a nicety: as recorded
-	     above, one of the two fail-open configurations emits no diagnostic for
-	     this property group to promote. The workflow's advisory negative control
+	     above, the third of the three fail-open configurations emits no diagnostic
+	     for this property group to promote. The workflow's advisory negative control
 	     is what covers it, and neither mechanism is redundant with the other.
 	     Removing either reopens a configuration in which every gate in this
 	     repository reports green on a package with a known High advisory. -->
@@ -140,56 +162,169 @@
 	     recorded in docs/security/security-audit-report.md.
 
 	     "latest-recommended" widens the rule set beyond the SDK default mode.
-	     The security families it ACTUALLY enforces, each verified by building a
-	     probe containing a deliberate violation, are:
+	     The security families it enforces on its own, each verified by building
+	     a probe containing a deliberate violation, are:
 	         - weak and broken hashing algorithms   CA5350 / CA5351
 	         - disabled certificate validation      CA5359
+	         - deprecated transport protocols       CA5364
 
-	     KNOWN COVERAGE GAP - stated plainly rather than assumed away. The other
-	     security families bearing on this audit's findings did NOT fire against
-	     deliberate violations, because the analyzer package ships them disabled
-	     by default and an analysis-level change alone does not turn them on:
+	     THAT IS NOT SUFFICIENT ON ITS OWN, and the rest of the coverage comes
+	     from the companion .globalconfig at the repository root. The remaining
+	     security families bearing on this audit's findings ship DISABLED by
+	     default, and an analysis-level change alone does not turn them on -
+	     verified by probe, they stayed silent against deliberate violations:
+	         - query construction                   CA2100
+	         - unrestricted type-name handling      CA2326 / CA2327 / CA2328
+	         - ASP.NET Core cookie security         CA5382 / CA5383
 	         - hard-coded encryption key            CA5390
 	         - non-random initialisation vector     CA5401 / CA5402
 	         - disabled token-validation checks     CA5404
-	         - unrestricted type-name handling      CA2326 / CA2327
-	         - query construction                   CA2100
-	         - ASP.NET Core cookie security         CA5382 / CA5383
-	         - cross-site scripting, file path and regular-expression injection
-	           CA3002 / CA3003 / CA3012 (dataflow rules, off by default)
 	     Activating them needs a per-rule severity entry of the form
-	     dotnet_diagnostic.[rule-id].severity in .editorconfig - which for the
-	     "root = true" reason above cannot be delivered from the repository root,
-	     and would have to be added inside each of the four subtrees. That is a
-	     larger change than this remediation's scope allows, so it is recorded as
-	     a residual limitation of the substitute gate in
+	     dotnet_diagnostic.[rule-id].severity. An earlier revision of this file
+	     recorded that as an unclosable coverage gap, on the grounds that such
+	     entries can only live in .editorconfig and so could not be delivered
+	     from the repository root past the four "root = true" files. THAT
+	     REASONING WAS WRONG and the gap is closed. A GLOBAL analyzer config is
+	     not subject to .editorconfig root scoping at all: the SDK discovers
+	     .globalconfig by walking every directory above each project, exactly the
+	     way this file is discovered. See Roslyn/Microsoft.Managed.Core.targets in
+	     the SDK, which includes '.globalconfig' from @(_AllDirectoriesAbove)
+	     unless DiscoverGlobalAnalyzerConfigFiles is false - which is why that
+	     property is now set explicitly below rather than left to a default.
+	     All ten of the rules above that measured zero violations are therefore
+	     ERRORS today; the five with pre-existing violations are warnings against
+	     an enumerated baseline. .globalconfig carries the per-rule rationale and
+	     the measured counts.
+
+	     THE INTERPROCEDURAL TAINT-DATAFLOW FAMILY CA3001-CA3012 IS ENABLED, but
+	     only because its cost is bounded. Left at its default it is unaffordable
+	     here: enabling it repository-wide took the solution build from 102
+	     seconds to over 110 minutes without completing, and the Roslyn compiler
+	     server began failing under the memory load - WebVella.Erp.Web compiles
+	     395 Razor views into one compilation, which makes its call graph
+	     pathologically large. It is therefore switched on by
+	     AnalysisLevelSecurity below and made affordable by a per-rule
+	     interprocedural_analysis_kind = None option in .globalconfig, which
+	     restricts each of the twelve rules to intraprocedural tracking without
+	     disabling it, changing its severity or excluding any file. Verified
+	     against a probe: CA3001, CA3003 and CA3012 fire identically with and
+	     without the tuning. The residual - a taint flow that crosses a method
+	     boundary is not followed - is recorded in
 	     docs/security/risk-register.md rather than silently implied to be
-	     covered here. Findings in those families were established by manual
-	     review, and each remains traceable in the audit report.
+	     covered; those findings were established by manual review and each
+	     remains traceable in the audit report.
 
-	     PASS CRITERION: zero diagnostics in the two enforced families across the
-	     files touched by this remediation - deliberately NOT zero
-	     repository-wide, because roughly 700 pre-existing files are in scope of
-	     the analyzers but not of this remediation. Two accepted residuals are
-	     expected to persist and must not be "fixed" by weakening this file:
-	     CA5351 on the legacy password-verification path, which exists precisely
-	     so already-stored credentials keep working, and CA5351 on the
-	     general-purpose digest helpers, which are outside the remediated key
-	     handling.
+	     AnalysisLevelSecurity raises the SECURITY CATEGORY ALONE to "all" while
+	     AnalysisLevel stays "latest-recommended" for every other category,
+	     because roughly 700 pre-existing files carry a large legacy diagnostic
+	     backlog and widening the general rule set would bury the security
+	     signal. The category level is the more specific of the two, so the SDK
+	     resolves Security from it and everything else from AnalysisLevel; the
+	     two are complementary, not in conflict. Under "latest-recommended"
+	     alone the package enables only 24 security rules; with the category
+	     level set, all 94 execute. The property NAME matters: AnalysisModeSecurity
+	     is silently IGNORED whenever AnalysisLevel carries a compound suffix
+	     such as "-recommended", so AnalysisLevelSecurity is the form that takes
+	     effect. Note that the category level enables the additional rules at
+	     their DEFAULT severity, which is warning - it does not promote anything
+	     to an error. The ten error-severity promotions are per-rule and
+	     evidence-based, and they live in .globalconfig beside their measured
+	     violation counts.
 
-	     DIAGNOSTICS REMAIN WARNINGS, NEVER ERRORS. Enabling analyzers across
-	     roughly 700 pre-existing source files surfaces a large legacy backlog;
-	     promoting it to errors would force exactly the repository-wide refactor
-	     the remediation scope forbids, and would leave the build permanently
-	     red. Only the NuGet audit diagnostics above are errors. Consequently no
-	     blanket warnings-as-errors switch is set, no CA identifier is added to
-	     the promotion list above, and build-time code-style enforcement is left
-	     off. The analysis mode is not set separately either: it is already
-	     carried by the suffix of AnalysisLevel below, and setting both invites a
-	     silent conflict. -->
+	     PASS CRITERION: zero diagnostics in any of the ten error-severity
+	     security rules, repository-wide - that one is absolute, and it is
+	     achievable because all ten measured zero before being promoted. For the
+	     five warning-severity families the criterion is no INCREASE over the
+	     baseline enumerated in .globalconfig, deliberately not zero, because
+	     roughly 700 pre-existing files are in scope of the analyzers but not of
+	     this remediation. Those baselines must not be "fixed" by weakening
+	     either file: notably CA5351 on the legacy password-verification path,
+	     which exists precisely so already-stored credentials keep working, and
+	     CA5351 on the general-purpose digest helpers, which are outside the
+	     remediated key handling.
+
+	     NO BLANKET WARNINGS-AS-ERRORS SWITCH IS SET, and none may be added.
+	     Enabling analyzers across roughly 700 pre-existing source files surfaces
+	     a large legacy backlog of general code-quality diagnostics; promoting
+	     THAT wholesale would force exactly the repository-wide refactor the
+	     remediation scope forbids and would leave the build permanently red.
+	     Escalation is therefore per-rule and evidence-based, and it lives in
+	     .globalconfig where each decision sits next to its measured violation
+	     count - not here as a broad sweep. For the same reason no CA identifier
+	     is added to the WarningsAsErrors promotion above, and build-time
+	     code-style enforcement is left off. The analysis mode is not set
+	     separately either: it is already carried by the suffix of AnalysisLevel
+	     below, and setting both invites a silent conflict.
+
+	     DiscoverGlobalAnalyzerConfigFiles is stated explicitly because the whole
+	     security rule set depends on it. It already defaults to true, but if a
+	     future toolchain flipped that default, or a developer set it to false to
+	     quieten something, every severity in .globalconfig would vanish and the
+	     build would go green while enforcing nothing. Never set it to false. -->
 	<PropertyGroup>
 		<EnableNETAnalyzers>true</EnableNETAnalyzers>
 		<AnalysisLevel>latest-recommended</AnalysisLevel>
+		<AnalysisLevelSecurity>latest-all</AnalysisLevelSecurity>
+		<DiscoverGlobalAnalyzerConfigFiles>true</DiscoverGlobalAnalyzerConfigFiles>
+	</PropertyGroup>
+
+	<!-- NO ITEM GROUP IS NEEDED TO SUPPLY .globalconfig, and adding one would be
+	     actively wrong. The SDK already discovers it: Roslyn's
+	     Microsoft.Managed.Core.targets combines '.globalconfig' with every
+	     directory above the compiled sources and adds each existing one to
+	     EditorConfigFiles unless DiscoverGlobalAnalyzerConfigFiles is false. The
+	     repository root is above the sources of all 19 projects, so the root
+	     .globalconfig reaches every one of them - verified per project with
+	     `dotnet msbuild <csproj> -getItem:EditorConfigFiles`. An explicit
+	     EditorConfigFiles item here would therefore contribute the same absolute
+	     path a second time, which is why none is declared. Do not add one, and
+	     do not set DiscoverGlobalAnalyzerConfigFiles to false anywhere: either
+	     change silently removes the taint-analysis cost tuning and the security
+	     gate stops terminating. The workflow asserts the file's presence
+	     independently, so deleting it fails the gate rather than quietly
+	     reducing coverage.
+
+	     NOR MAY A SECOND GLOBAL ANALYZER CONFIG BE ADDED ALONGSIDE IT. Two files
+	     that both declare is_global = true and both carry a
+	     dotnet_diagnostic.[rule-id].severity entry for the SAME rule at the same
+	     global_level do not merge and do not let the stricter one win: the
+	     compiler reports the key as conflicting and leaves it UNSET, so the rule
+	     silently reverts to its default severity. That default is 'warning' for
+	     a rule the security category enabled and 'none' for one it did not -
+	     either way every error-severity promotion in .globalconfig would
+	     evaporate while the build went green, which is the precise failure this
+	     gate exists to prevent. The single root .globalconfig is therefore the
+	     only place a per-rule severity may be set. Coverage does not need a
+	     second file: AnalysisLevelSecurity above already activates the whole
+	     94-rule security catalogue, so a companion config could only restate
+	     severities that are already set here - and collide with them. -->
+
+	<!-- MACHINE-READABLE ANALYZER EVIDENCE - opt-in, and inert unless asked for.
+	     Threat addressed: a gate whose verdict cannot be inspected after the
+	     fact. Supplying a directory in SecurityAnalyzerSarifDirectory makes each
+	     project emit its own SARIF 2.1 log named after itself, so an analyzer
+	     verdict can be diffed, filtered or fed to another tool instead of being
+	     re-derived by eye from build text. Verified working against this
+	     toolchain: one file per compiled project, build exit code unchanged.
+
+	     THIS IS OPERATOR-INVOKED, NOT WIRED INTO CI, and that is deliberate. The
+	     security scan workflow publishes only the DERIVED evidence Gate 1
+	     extracts - the rule-id list, the diagnostic sets, the allow-list and the
+	     unreviewed remainder - because the raw analyzer output runs to megabytes
+	     and roughly 3,100 warnings, the overwhelming majority of them the
+	     pre-existing backlog the remediation scope declines to refactor.
+	     Publishing SARIF for every project would bury the security signal in
+	     exactly the noise that policy exists to exclude. So the capability is
+	     available on demand and inert by default.
+
+	     Two details are deliberate. The path is PER PROJECT: a single shared
+	     ErrorLog file would have the projects overwrite one another and the
+	     surviving report would describe only whichever finished last - a gate
+	     reporting on a fraction of the solution while appearing complete. And
+	     the group is conditional on the property being supplied, so an ordinary
+	     local or IDE build writes no SARIF and behaves exactly as before. -->
+	<PropertyGroup Condition="'$(SecurityAnalyzerSarifDirectory)' != ''">
+		<ErrorLog>$(SecurityAnalyzerSarifDirectory)/$(MSBuildProjectName).sarif,version=2.1</ErrorLog>
 	</PropertyGroup>
 
 	<!-- SUPPRESSION SEAM - INTENTIONALLY INERT. Nothing is suppressed today,

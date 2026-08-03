@@ -23,7 +23,12 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				cache.Dispose();
 
 			var cacheOptions = new MemoryCacheOptions();
-			cacheOptions.ExpirationScanFrequency = TimeSpan.FromHours(1);
+			//SECURITY - finding F31 (High), CWE-522 insufficiently protected credentials.
+			//THREAT ADDRESSED: entries in this cache are SmtpService instances holding the relay credential
+			//in plaintext, so this scan frequency is how long an already-expired entry can still be resident
+			//in process memory after its last legitimate use. An hour was an hour of needless exposure for a
+			//cache that holds a handful of records; one minute bounds it without measurable cost.
+			cacheOptions.ExpirationScanFrequency = TimeSpan.FromMinutes(1);
 			cache = new MemoryCache(cacheOptions);
 		}
 
@@ -35,7 +40,13 @@ namespace WebVella.Erp.Plugins.Mail.Api
 		private static void AddObjectToCache(string key, object obj)
 		{
 			var options = new MemoryCacheEntryOptions();
-			options.SetAbsoluteExpiration(TimeSpan.FromHours(1));
+			//SECURITY - finding F31 (High), CWE-522. The cached value carries the plaintext SMTP relay
+			//credential, so this is the lifetime of that secret in process memory. Narrowed from one hour.
+			//SAFE, not merely cheap: a miss is already an ordinary path, because GetSmtpService falls back
+			//to a database read and Hooks/Api/SmtpServiceRecordHook clears this cache on every create,
+			//update and delete of an smtp_service record. Five minutes therefore changes only how often the
+			//value is re-read, never whether it resolves.
+			options.SetAbsoluteExpiration(TimeSpan.FromMinutes(5));
 			cache.Set(key, obj, options);
 		}
 

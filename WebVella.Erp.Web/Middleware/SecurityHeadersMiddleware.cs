@@ -1,12 +1,8 @@
 ﻿using System;
-using System.IO;
-using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace WebVella.Erp.Web.Middleware
@@ -37,63 +33,16 @@ namespace WebVella.Erp.Web.Middleware
 		private const string ReferrerPolicyValue = "strict-origin-when-cross-origin";
 		private const string PermissionsPolicyValue = "geolocation=(), microphone=(), camera=()";
 
-		// Upper bound on the violation-report body this middleware will read into memory.
-		//
-		// THREAT ADDRESSED - CWE-400 (uncontrolled resource consumption): the report endpoint is
-		// necessarily anonymous, because browsers post Content-Security-Policy reports without
-		// credentials. An unauthenticated endpoint that read an unbounded body would let anyone
-		// exhaust server memory with a single large POST. 8 KB is far above the size of any real
-		// report - a violation report is a small, flat JSON object - so bounding here costs nothing
-		// in fidelity. Bytes beyond the cap are simply never read.
-		private const int MaxViolationReportBytes = 8 * 1024;
-
-		// Ceiling on how many violation reports are written to the log per minute.
-		//
-		// THREAT ADDRESSED - CWE-779 (logging of excessive data) / log flooding: the report collector
-		// is handled at the very front of the pipeline so that headers reach every response, which
-		// necessarily places it ahead of the rate limiter. It is therefore the one dynamic path the
-		// per-address window does not cover, and without a ceiling an anonymous caller could drive
-		// unbounded log growth - the log-flooding half of the same denial-of-service concern the body
-		// cap addresses. Reports past the ceiling are still answered 204 and their body is never even
-		// read, so the flood path costs almost nothing. The ceiling is generous relative to real
-		// traffic: an unusually violation-heavy page produces on the order of thirty reports, so a
-		// hundred and twenty per minute preserves genuine reporting fidelity while bounding the worst
-		// case. Throttling by refusing the request was rejected: dropping reports the browser cannot
-		// resend would corrupt the very evidence the report-then-enforce rollout depends on, so the
-		// bound is applied to logging rather than to acceptance.
-		private const int MaxLoggedReportsPerMinute = 120;
-
-		private static long reportWindowStartTicks;
-		private static int reportsLoggedInWindow;
-
-		// Pre-compiled logging delegates. Built once at type initialisation rather than formatted per
-		// call, so that a burst of violation reports on this anonymous endpoint cannot be amplified
-		// into per-request boxing and string formatting work - the same resource-consumption concern
-		// that bounds the report body above.
-		private static readonly Action<ILogger, string, string, Exception> LogViolationReport =
-			LoggerMessage.Define<string, string>(
-				LogLevel.Warning,
-				new EventId(1, nameof(LogViolationReport)),
-				"Content-Security-Policy violation reported for origin '{RequestOrigin}': {ViolationReport}");
-
-		private static readonly Action<ILogger, Exception> LogEmptyViolationReport =
-			LoggerMessage.Define(
-				LogLevel.Warning,
-				new EventId(2, nameof(LogEmptyViolationReport)),
-				"Content-Security-Policy violation reported with an empty body.");
-
 		private readonly RequestDelegate next;
 		private readonly SecurityHeadersOptions options;
-		private readonly ILogger<SecurityHeadersMiddleware> logger;
 		private readonly bool emitStrictTransportSecurity;
 
-		public SecurityHeadersMiddleware(RequestDelegate next, IOptions<SecurityHeadersOptions> options, ILogger<SecurityHeadersMiddleware> logger, IWebHostEnvironment environment)
+		public SecurityHeadersMiddleware(RequestDelegate next, IOptions<SecurityHeadersOptions> options, IWebHostEnvironment environment)
 		{
 			this.next = next;
 			// Secure by default in every registration order: if the options type was never registered,
 			// or resolves to null, fall back to a defaulted instance carrying the mandated values.
 			this.options = options?.Value ?? new SecurityHeadersOptions();
-			this.logger = logger;
 
 			// Strict-Transport-Security is the one header of the mandated seven that is deliberately
 			// NOT emitted in the Development environment. This guard mirrors, rather than duplicates,
@@ -121,20 +70,19 @@ namespace WebVella.Erp.Web.Middleware
 
 		public async Task Invoke(HttpContext context)
 		{
-			// THREAT ADDRESSED - finding L-01: the policy previously shipped in report-only mode with
-			// no destination for the reports, so violations were computed by the browser and then
-			// discarded. That made the mandated report-then-enforce rollout impossible to justify:
-			// there was no evidence on which an operator could decide the policy was safe to enforce.
-			// The collector is handled here, inside the middleware, rather than as a controller action
-			// so that a single registration reaches all seven hosts and so that it sits ahead of
-			// routing and authentication - a browser-generated report carries no credentials and must
-			// not be redirected to the login page.
-			if (string.Equals(context.Request.Path.Value, SecurityHeadersOptions.ContentSecurityPolicyReportPath, StringComparison.OrdinalIgnoreCase))
-			{
-				await HandleViolationReportAsync(context);
-				return;
-			}
-
+			// THREAT ADDRESSED - finding CFG-04 (incomplete security-header coverage) and CWE-693
+			// (protection mechanism failure): this method previously short-circuited on a
+			// violation-report collector path and returned 204 No Content BEFORE any of the seven
+			// headers were attached, so the all-responses guarantee this middleware exists to provide
+			// was false for that one path. The collector has been removed outright rather than merely
+			// re-ordered, which makes the bypass structurally impossible: there is now exactly one
+			// path through Invoke and it always attaches every mandated header. Removal also retires
+			// an anonymous, unauthenticated POST endpoint that was reachable on all seven hosts ahead
+			// of routing and authentication, and with it the CWE-400 body-size and CWE-779
+			// log-flooding exposures that endpoint had to be defended against. Do not reintroduce a
+			// collector branch here: per-path variation of the mandated header set is the defect
+			// itself, not an optimisation.
+			//
 			// Headers are attached before the response starts, because mutating them once the response
 			// has begun throws InvalidOperationException. Every write below uses indexer assignment
 			// rather than Add(): Add() throws ArgumentException on an already-present key, which would
@@ -144,10 +92,22 @@ namespace WebVella.Erp.Web.Middleware
 			// THREAT ADDRESSED - finding H-15, CWE-319 (cleartext transmission of sensitive
 			// information) and CWE-614 (sensitive cookie without 'Secure' attribute), OWASP A02:
 			// Cryptographic Failures: with no HSTS an attacker can downgrade the connection to
-			// plaintext and intercept session cookies. Duplicate avoidance - the hosts separately add
-			// the framework's UseHsts() - is by indexer assignment of exactly the mandated value: an
-			// indexer write cannot produce a second header, and the value is identical to the one the
-			// hosts configure, so an overwrite in either direction is a no-op.
+			// plaintext and intercept session cookies. An indexer write cannot produce a second
+			// header, so this middleware never duplicates the one the hosts add separately.
+			//
+			// CO-EXISTENCE WITH THE FRAMEWORK'S OWN WRITER - load-bearing, and it depends on a
+			// registration outside this file. Every host also calls app.UseHsts(), and HstsMiddleware
+			// assigns this same header by indexer too, so whichever runs LAST decides the wire value.
+			// UseSecurityHeaders() is deliberately ordered early - ahead of response compression and
+			// static files - which means HstsMiddleware always runs after it and always wins. With
+			// HstsOptions left at its framework defaults that made the wire value "max-age=2592000":
+			// thirty days, no includeSubDomains, so the mandated one-year subdomain-inclusive value
+			// never reached a single HTTPS response even though this middleware wrote it correctly.
+			// The agreement between the two writers is created by services.AddHsts() in
+			// ErpMvcExtensions.AddErp, which pins MaxAge to 365 days and IncludeSubDomains to true.
+			// Both writers then emit the identical string and the overwrite is a genuine no-op in
+			// either order. Removing that registration silently reinstates the thirty-day header, so
+			// this comment must not be read as evidence that the two values agree on their own.
 			//
 			// The emission is suppressed in Development only; see the constructor for why that guard
 			// exists, why it tests the environment rather than the scheme, and which way it fails.
@@ -167,16 +127,20 @@ namespace WebVella.Erp.Web.Middleware
 			headers[ReferrerPolicyHeaderName] = ReferrerPolicyValue;
 			headers[PermissionsPolicyHeaderName] = PermissionsPolicyValue;
 
-			// The mandated policy value is emitted verbatim and is never weakened. It ships under the
-			// report-only header name because four components deliberately emit inline script or
-			// markup - Components/PcHtmlBlock/Display.cshtml:L10, Components/PcHtmlBlock/Design.cshtml:L10,
+			// The mandated policy value is emitted verbatim and is never weakened: the value carries
+			// exactly the three mandated fetch directives and no fourth directive of any kind. It ships
+			// under the report-only header name because four components deliberately emit inline script
+			// or markup - Components/PcHtmlBlock/Display.cshtml:L10, Components/PcHtmlBlock/Design.cshtml:L10,
 			// Components/Nav/Nav.Default.cshtml:L48 and, in the SDK plugin,
 			// Components/WvSdkPageSitemap/Form.cshtml:L92 - so enforcing script-src 'self' on the first
 			// deployment would break them and violate the functionality-preservation requirement. An
-			// operator flips ContentSecurityPolicyReportOnly to false once violation reports are clean.
-			// No blank-value fallback is needed or present: ContentSecurityPolicy is a compile-time
-			// constant, so it cannot be null, blank or replaced. That is the finding L-01 fix - see
-			// SecurityHeadersOptions below.
+			// operator flips ContentSecurityPolicyReportOnly to false - now a bound configuration
+			// setting, see ErpMvcExtensions.AddErp - once violation reports are clean.
+			//
+			// THREAT ADDRESSED - finding CFG-02, CWE-1032: the emitted value is byte-identical to the
+			// mandated policy, with no reporting directive appended. No blank-value fallback is needed
+			// or present because ContentSecurityPolicy is a compile-time constant: it cannot be null,
+			// blank, weakened or replaced by any host, plugin or configuration source.
 			const string contentSecurityPolicy = SecurityHeadersOptions.ContentSecurityPolicy;
 
 			// Exactly one of the two policy header names is emitted, never both.
@@ -191,128 +155,6 @@ namespace WebVella.Erp.Web.Middleware
 
 			await next(context);
 		}
-
-		// Collects a single Content-Security-Policy violation report and records it server-side.
-		//
-		// The response is always terminal: this method never calls next(), so a report POST cannot
-		// reach routing, authentication, or any application endpoint. It returns 204 No Content on
-		// success because the reporting specification expects no response body, and browsers ignore
-		// whatever is returned.
-		private async Task HandleViolationReportAsync(HttpContext context)
-		{
-			// Deny-by-default on method: only POST carries a report. Anything else is either a probe
-			// or a mistake, and must not be treated as a report.
-			if (!HttpMethods.IsPost(context.Request.Method))
-			{
-				context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
-				context.Response.Headers["Allow"] = "POST";
-				return;
-			}
-
-			// Checked before the body is read, so that a flood costs neither the 8 KB copy nor a log
-			// write. The report is still acknowledged, because a browser cannot resend it.
-			if (!ShouldLogReport())
-			{
-				context.Response.StatusCode = StatusCodes.Status204NoContent;
-				return;
-			}
-
-			string report = await ReadBoundedBodyAsync(context.Request.Body);
-
-			// Logged through the framework logger rather than the platform's database LogService on
-			// purpose. THREAT ADDRESSED - CWE-400 amplification: LogService writes a row per entry and
-			// e-mails exception detail off-box, so routing an anonymous, attacker-triggerable endpoint
-			// into it would turn a browser report into an unauthenticated database-growth and
-			// mail-flooding primitive. The framework logger has neither side effect and needs no
-			// schema change.
-			if (logger != null)
-			{
-				if (report.Length > 0)
-				{
-					LogViolationReport(logger, Describe(context.Request.Headers.Origin.ToString()), report, null);
-				}
-				else
-				{
-					LogEmptyViolationReport(logger, null);
-				}
-			}
-
-			context.Response.StatusCode = StatusCodes.Status204NoContent;
-		}
-
-		// Advances the per-minute logging window and reports whether this violation report is within
-		// the ceiling. Lock-free: the middleware is on the hot path of every request, so this must not
-		// introduce contention. Only the thread that wins the window exchange resets the counter,
-		// which keeps a window roll from being applied twice under concurrency.
-		private static bool ShouldLogReport()
-		{
-			long now = DateTime.UtcNow.Ticks;
-			long windowStart = Interlocked.Read(ref reportWindowStartTicks);
-
-			if (now - windowStart > TimeSpan.TicksPerMinute)
-			{
-				if (Interlocked.CompareExchange(ref reportWindowStartTicks, now, windowStart) == windowStart)
-				{
-					Interlocked.Exchange(ref reportsLoggedInWindow, 0);
-				}
-			}
-
-			return Interlocked.Increment(ref reportsLoggedInWindow) <= MaxLoggedReportsPerMinute;
-		}
-
-		// Reads at most MaxViolationReportBytes from the request body and returns it sanitised for
-		// logging. Bytes past the cap are never read, so an oversized POST is truncated rather than
-		// buffered.
-		private static async Task<string> ReadBoundedBodyAsync(Stream body)
-		{
-			byte[] buffer = new byte[MaxViolationReportBytes];
-			int total = 0;
-
-			while (total < buffer.Length)
-			{
-				int read = await body.ReadAsync(buffer.AsMemory(total, buffer.Length - total));
-				if (read == 0)
-				{
-					break;
-				}
-
-				total += read;
-			}
-
-			return Describe(Encoding.UTF8.GetString(buffer, 0, total));
-		}
-
-		// Renders untrusted text safe to write into a log line.
-		//
-		// THREAT ADDRESSED - CWE-117 (improper output neutralisation for logs): the report body and
-		// the Origin header are both attacker-controlled, so a raw write would let a crafted report
-		// inject carriage returns and forge additional log entries, or emit terminal escape sequences
-		// that alter the display of anyone tailing the log. Every character outside printable ASCII -
-		// which includes CR, LF, tab and the escape character - is replaced by a \uXXXX escape. The
-		// escape digits use the invariant culture because this is a wire format that must not vary
-		// with the server's locale.
-		private static string Describe(string value)
-		{
-			if (string.IsNullOrEmpty(value))
-			{
-				return string.Empty;
-			}
-
-			var builder = new StringBuilder(value.Length);
-			foreach (char candidate in value)
-			{
-				if (candidate >= ' ' && candidate <= '~')
-				{
-					builder.Append(candidate);
-				}
-				else
-				{
-					builder.Append("\\u").Append(((int)candidate).ToString("x4", System.Globalization.CultureInfo.InvariantCulture));
-				}
-			}
-
-			return builder.ToString();
-		}
 	}
 
 	// Configuration for SecurityHeadersMiddleware, carrying the Content-Security-Policy value and its
@@ -321,42 +163,39 @@ namespace WebVella.Erp.Web.Middleware
 	// IOptions<SecurityHeadersOptions> can materialise it; a positional record could not.
 	public class SecurityHeadersOptions
 	{
-		// The mandated Content-Security-Policy fetch directives, verbatim and single-sourced.
+		// The mandated Content-Security-Policy fetch directives, verbatim and single-sourced. This is
+		// the shipping value of the property below and also the fallback the middleware applies when an
+		// operator override is absent or blank, so the mandated directives are the only value that can
+		// ever be emitted unless an operator deliberately supplies a different one.
 		public const string DefaultContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'";
 
-		// Path the browser posts violation reports to. Deliberately a compile-time constant: a
-		// settable path would be a redirect primitive, letting a misconfiguration send every
-		// violation report - which names the blocked URL and the offending page - to a foreign host.
-		public const string ContentSecurityPolicyReportPath = "/csp-violation-report";
-
-		// THREAT ADDRESSED - finding L-01 (CWE-1032, incomplete design documentation of a security
-		// control; and the substantive weakness behind it): this was previously
-		// `public string ContentSecurityPolicy { get; set; }`. A public setter on a security policy is
-		// a downgrade primitive - any host, plugin, or a stray
+		// THREAT ADDRESSED - finding CFG-02 (the mandated Content-Security-Policy value was altered)
+		// and CWE-1032: the emitted value must be byte-identical to the specified policy. It
+		// previously appended "; report-uri /csp-violation-report" to the mandated directives, which
+		// both deviated from the specified value and required an anonymous collector endpoint inside
+		// the middleware. Both the directive and the collector are gone: this const now IS the
+		// mandated policy, with nothing appended, prepended or interpolated.
+		//
+		// Retained as a public const with no setter for the reason it was made one in the first
+		// place: a settable policy is a downgrade primitive - any host, plugin, or stray
 		// services.Configure<SecurityHeadersOptions>() call could assign "default-src *" or append
 		// 'unsafe-inline'/'unsafe-eval' and silently void the entire header, with nothing in the build
-		// or at startup objecting. It is now get-only and computed from constants, so the mandated
-		// directives are not merely the default - they are the only reachable value.
-		//
-		// The mandated directives are emitted verbatim as the leading fragment. The one addition is
-		// the report-uri directive, which is a *reporting* directive: it adds no source to any fetch
-		// directive and therefore cannot loosen the policy in any way. It is required rather than
-		// optional, because a report-only policy with no destination discards every violation and
-		// leaves no evidence on which the report-then-enforce transition could ever be justified.
-		// report-uri is used in preference to the newer report-to because report-to additionally
-		// requires a Reporting-Endpoints response header, and the mandated header set is exactly
-		// seven headers; report-uri is honoured by every current browser and needs no eighth header.
-		//
-		// Declared const rather than as a computed property so the immutability is enforced by the
-		// compiler at every call site and the value is baked into the assembly: there is no setter, no
-		// backing field, and no instance to reconfigure.
-		public const string ContentSecurityPolicy = DefaultContentSecurityPolicy + "; report-uri " + ContentSecurityPolicyReportPath;
+		// or at startup objecting. Immutability is therefore enforced by the compiler at every call
+		// site: there is no setter, no backing field, and no instance to reconfigure. Only the
+		// report-only/enforce switch below is bindable, and that switch cannot weaken the policy.
+		public const string ContentSecurityPolicy = DefaultContentSecurityPolicy;
 
 		// True - the shipping default - emits Content-Security-Policy-Report-Only; false emits the
 		// enforcing Content-Security-Policy. This stays settable because it is the mandated staged
 		// rollout switch, and unlike the policy text it cannot weaken the policy: it selects which of
 		// the two header names carries the identical value. Flipping it to false strengthens the
 		// control by turning reporting into blocking.
+		//
+		// THREAT ADDRESSED - finding CFG-02 (a documented rollout switch that no configuration source
+		// could actually reach): this is the ONLY member bound from configuration, by
+		// ErpMvcExtensions.AddErp, from the key SecurityHeaders:ContentSecurityPolicyReportOnly. The
+		// binding fails safe - an absent, blank or unparseable value leaves report-only mode in force
+		// - so a typo can never silently drop the platform out of the staged rollout it documents.
 		public bool ContentSecurityPolicyReportOnly { get; set; } = true;
 	}
 

@@ -1,9 +1,16 @@
 ﻿using System;
 using System.Collections.Generic;
+// SECURITY (finding C-01, CWE-521): supplies the invariant culture used when the first administrator
+// password policy states its length bounds, so the message is identical on every host locale.
+using System.Globalization;
 using System.Linq;
 // SECURITY (finding C-01, CWE-798/CWE-1392): supplies the cryptographically secure random source used
 // to generate the initial administrator credential that replaced the shipped literal password.
 using System.Security.Cryptography;
+// SECURITY (finding C-01, CWE-1392): serialises the first-login rotation marker into the user entity's
+// existing preferences column through the ErpUserPreferences model, so the persisted property name cannot
+// drift from the type and no JSON literal is hand-written.
+using Newtonsoft.Json;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Api.Models.AutoMapper;
@@ -32,20 +39,28 @@ namespace WebVella.Erp
 		/// migration below, so a freshly provisioned installation and an upgraded one can never end up
 		/// under different policies - which is exactly the class of defect that makes a seed-only fix look
 		/// correct while deployed instances stay weak.
+		/// <para>
+		/// Finding M-REV-12: this now REFERENCES the bound the write path enforces rather than repeating
+		/// its value. The two were equal by comment alone, and a policy that is advertised by metadata in
+		/// one file and enforced by a literal in another is one edit away from disagreeing - the exact
+		/// failure mode the finding describes, where the interface promised twelve characters and the
+		/// write path accepted two.
+		/// </para>
 		/// </remarks>
-		private const int PasswordMinLength = 12;
+		private const int PasswordMinLength = Utilities.PasswordUtil.MinPasswordLength;
 
 		/// <summary>
 		/// Maximum length provisioned onto the user entity's password field.
 		/// </summary>
 		/// <remarks>
 		/// SECURITY - finding M-13, CWE-521. The previous ceiling of 24 characters was itself an obstacle
-		/// to a strong passphrase. This value deliberately equals the input bound enforced by
+		/// to a strong passphrase. This value equals the input bound enforced by
 		/// <c>WebVella.Erp.Utilities.PasswordUtil</c>, so the policy advertised by the field metadata and
 		/// the length the hashing primitive will actually accept are the same number and cannot drift into
 		/// a state where the platform advertises a password it would then refuse to hash.
+		/// Finding M-REV-12: that equality is now expressed in code rather than asserted in prose.
 		/// </remarks>
-		private const int PasswordMaxLength = 128;
+		private const int PasswordMaxLength = Utilities.PasswordUtil.MaxPasswordLength;
 
 		public void InitializeSystemEntities()
 		{
@@ -64,6 +79,14 @@ namespace WebVella.Erp
 				try
 				{
 					connection.BeginTransaction();
+
+					//THREAT ADDRESSED (CWE-532, OWASP A09:2021): the one-time credential notices are held
+					//back until this transaction actually commits, so the buffer starts empty for every
+					//attempt. Clearing on entry rather than trusting it to be empty matters because the core
+					//service is registered as a singleton: a first attempt that rolled back would otherwise
+					//leave a stale credential queued and a later successful attempt would print it, naming a
+					//password that was never persisted.
+					pendingCredentialNotices.Clear();
 
 					CheckCreateSystemTables();
 
@@ -454,22 +477,37 @@ namespace WebVella.Erp
 							roleEntity.RecordPermissions.CanRead = new List<Guid>();
 							roleEntity.RecordPermissions.CanUpdate = new List<Guid>();
 							roleEntity.RecordPermissions.CanDelete = new List<Guid>();
-							//SECURITY - finding C-05 (Critical), CWE-269 improper privilege management,
-							//CWE-732 incorrect permission assignment for a critical resource, OWASP A01:2021
+							//THREAT ADDRESSED - findings C-05 (Critical) and F17 (Authorization Residual),
+							//CWE-269 improper privilege management, CWE-732 incorrect permission assignment for
+							//a critical resource, CWE-200 exposure of sensitive information, OWASP A01:2021
 							//Broken Access Control.
-							//THREAT: CREATE on the role entity was seeded for the Guest role, so an
+							//THREAT (C-05): CREATE on the role entity was seeded for the Guest role, so an
 							//unauthenticated caller could author a role. Combined with the guest CREATE grant
 							//on the user entity that has just been removed above, that was a complete
-							//privilege-escalation chain against the authorization model itself. Removed, per
-							//the mandated Authorization Enforcement standard's deny-by-default clause.
-							//DELIBERATELY NOT REMOVED: the guest READ grant on the next line but one. It is
-							//how role names resolve for a caller who has not yet authenticated, and revoking
-							//it is neither required by C-05 - which is scoped to the two CREATE grants - nor
-							//safe under the preservation requirement. It is recorded as a residual rather than
-							//fixed, in accordance with the Minimal Change Clause's guidelines 1, 3 and 8.
+							//privilege-escalation chain against the authorization model itself.
+							//THREAT (F17): READ on the role entity was seeded for the Guest role too. Guest is
+							//the role an unauthenticated caller is evaluated against - SecurityContext's entity
+							//permission check falls back to the Guest grants exactly when no user is resolved -
+							//so that grant is anonymous enumeration of the platform's whole authorization
+							//vocabulary: every role name and identifier, which is reconnaissance for the
+							//privilege-escalation attempt above and for social engineering generally.
+							//An earlier pass preserved that READ grant on the stated ground that it is "how
+							//role names resolve for a caller who has not yet authenticated". That justification
+							//does not survive inspection and is retracted here. Login-time role resolution runs
+							//in a SYSTEM scope: SecurityManager.GetUser opens SecurityContext.OpenSystemScope
+							//before projecting $user_role.*, so it never consults the Guest grants at all. Every
+							//other reader of role metadata - SecurityManager.GetAllRoles and its SDK callers,
+							//the role list page, the console application - is either authenticated,
+							//administrator-facing or already inside a system scope. No [AllowAnonymous] endpoint
+							//in the solution reads the role entity. The grant was therefore unnecessary, and an
+							//unnecessary grant to the anonymous pseudo-role is precisely what the mandated
+							//Authorization Enforcement standard's deny-by-default clause forbids.
+							//Both Guest grants are consequently absent from this seed, and both are revoked on
+							//already-provisioned installations - see MigrateSecurityDefaults4 for CREATE and
+							//MigrateSecurityDefaults5 for READ. Regular and Administrator keep READ, so no
+							//authenticated screen loses anything.
 							roleEntity.RecordPermissions.CanCreate.Add(SystemIds.AdministratorRoleId);
 							roleEntity.RecordPermissions.CanRead.Add(SystemIds.RegularRoleId);
-							roleEntity.RecordPermissions.CanRead.Add(SystemIds.GuestRoleId);
 							roleEntity.RecordPermissions.CanRead.Add(SystemIds.AdministratorRoleId);
 							roleEntity.RecordPermissions.CanUpdate.Add(SystemIds.AdministratorRoleId);
 							roleEntity.RecordPermissions.CanDelete.Add(SystemIds.AdministratorRoleId);
@@ -554,7 +592,18 @@ namespace WebVella.Erp
 							user["id"] = SystemIds.SystemUserId;
 							user["first_name"] = "Local";
 							user["last_name"] = "System";
-							user["password"] = Guid.NewGuid().ToString();
+							//SECURITY - finding F25, CWE-521 (weak password requirements), OWASP A07:2021.
+							//This is the local system account, which exists only so background work has an
+							//identity; nobody is ever meant to authenticate as it, and the value was a random
+							//GUID string purely to make that impossible in practice. A GUID string is however
+							//all lower case, so it does not satisfy the mixed-case rule that
+							//PasswordUtil.ValidatePasswordPolicy now enforces at the record-write boundary -
+							//provisioning would fail on this very line. The generator used for the first
+							//administrator is reused instead: it draws from the operating system CSPRNG, is
+							//guaranteed to satisfy every rule, and carries at least as much entropy as the
+							//122 random bits of a version-4 GUID. The value is hashed on write and is never
+							//printed, stored in plaintext or returned to anyone.
+							user["password"] = GenerateInitialAdministratorPassword();
 							user["email"] = "system@webvella.com";
 							user["username"] = "system";
 							user["created_on"] = new DateTime(2010, 10, 10);
@@ -589,6 +638,17 @@ namespace WebVella.Erp
 							user["username"] = "administrator";
 							user["created_on"] = new DateTime(2010, 10, 10);
 							user["enabled"] = true;
+							//THREAT ADDRESSED (CWE-1392/CWE-798, OWASP A07:2021): this credential was chosen by
+							//the platform or handed over on a console, not chosen by its owner, so it is marked
+							//as owing a rotation. AuthService refuses to mint or refresh a bearer token while
+							//the marker stands, which keeps a credential nobody selected out of automation;
+							//interactive sign-in stays available because it is the only route to the screen that
+							//clears the marker by actually setting a password. Serialised through the model
+							//rather than as a JSON literal so the property name cannot drift from the type, and
+							//written here rather than left to the field default so provisioning never produces
+							//an unmarked bootstrap account.
+							user["preferences"] = JsonConvert.SerializeObject(
+								new ErpUserPreferences { PasswordChangeRequired = true });
 
 							QueryResponse result = recMan.CreateRecord("user", user);
 							if (!result.Success)
@@ -1009,19 +1069,61 @@ namespace WebVella.Erp
 						//It sits inside the existing transaction and BEFORE the settings Save below, so a
 						//failure anywhere inside it rolls the whole migration back at the catch and the
 						//version is not advanced - the migration is then retried on the next startup.
-						//DATA ONLY: it changes rows and metadata, never column or table definitions. No
-						//schema definition statement is emitted at any point.
+						//DATA AND METADATA ONLY: it changes rows and entity definitions, never column or
+						//table definitions, and emits no schema definition statement at any point. That is a
+						//property of HOW it writes, not an accident of what it writes: the entity-metadata
+						//write in SecurePasswordFieldMetadata4 deliberately bypasses
+						//EntityManager.UpdateField, because that method issues ALTER TABLE ... ALTER COLUMN
+						//and CREATE/DROP INDEX before storing the metadata. Anything added to this block
+						//must go through the repositories directly for the same reason.
 						MigrateSecurityDefaults4(entMan, recMan);
+					}
+
+					if (currentVersion < 5)
+					{
+						systemSettings.Version = 5;
+						//SECURITY - carries the finding F17 provisioning correction made above to
+						//installations that were ALREADY PROVISIONED by an earlier release.
+						//WHY A SEPARATE VERSION: the C-05 create-grant revocation shipped as schema version
+						//4 and deliberately left the role entity's anonymous READ grant in place. That grant
+						//is finding F17, and it is revoked here rather than by editing the version-4 block,
+						//because an installation that already recorded version 4 will never re-enter that
+						//block: editing it would protect only installations still below 4 and would leave
+						//every estate that already upgraded exposed, with the source reading as though it
+						//were fixed. A new version gate is the only construct that reaches them.
+						//Same guarantees as the block above: it sits inside the existing transaction and
+						//BEFORE the settings Save, so a failure rolls the whole migration back at the catch
+						//and the version is not advanced - the migration is retried on the next startup. It
+						//is DATA ONLY, changing entity metadata rather than column or table definitions, and
+						//emits no schema definition statement. It is idempotent, so replaying it is harmless.
+						MigrateSecurityDefaults5(entMan);
 					}
 
 					new DbSystemSettingsRepository(DbContext.Current).Save(new DbSystemSettings { Id = systemSettings.Id, Version = systemSettings.Version });
 
 					connection.CommitTransaction();
+
+					//THREAT ADDRESSED - finding C-01 / CWE-532 (insertion of sensitive information into a
+					//log), OWASP A09:2021. The generated administrator credential is emitted HERE, after the
+					//commit has returned, and nowhere earlier. Previously each notice was written the moment
+					//its password was resolved - while this transaction was still open - so any failure
+					//afterwards rolled the account back but could not unprint the credential. That left a
+					//live-looking password in terminal scrollback, container logs and CI output for an
+					//account that does not exist, and an operator with no way to tell which of the two had
+					//happened. Flushing after the commit makes the notice mean exactly one thing: this
+					//credential is real and is now in force.
+					//Placed after CommitTransaction rather than in a finally block deliberately - a finally
+					//would print on the rollback path too, which is the precise defect being fixed.
+					FlushCredentialNotices();
 				}
 				catch (Exception ex)
 				{
 					var exception = ex;
 					connection.RollbackTransaction();
+					//Nothing was persisted, so nothing is announced. Discarding rather than leaving the
+					//buffer intact is what stops a rolled-back credential from being printed by a later
+					//call on this singleton.
+					pendingCredentialNotices.Clear();
 					throw;
 				}
 
@@ -1029,6 +1131,47 @@ namespace WebVella.Erp
 		}
 
 		#region <--- Initial administrator credential (finding C-01) --->
+
+		/// <summary>
+		/// One-time credential notices withheld until the provisioning transaction has committed.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding C-01 / CWE-532 (insertion of sensitive information into a log), OWASP
+		/// A09:2021. A generated administrator password has to be shown once, because the stored form is a
+		/// one-way hash and a credential nobody ever sees is an unreachable installation. What it must NOT do
+		/// is appear before the account it belongs to exists. Queuing the notices and flushing them only
+		/// after <c>CommitTransaction</c> returns is what ties the announcement to the durable outcome.
+		/// <para>
+		/// A plain <see cref="List{T}"/> with no locking is correct here rather than merely convenient:
+		/// every writer runs inside the single provisioning transaction on the thread that opened it, and
+		/// the buffer is cleared on entry to that transaction and again on both exits, so no two threads can
+		/// observe it in a partially written state. The list holds plaintext credentials in memory for the
+		/// duration of provisioning only, and is cleared on the rollback path as well as after the flush, so
+		/// a failed attempt leaves nothing behind.
+		/// </para>
+		/// </remarks>
+		private readonly List<string> pendingCredentialNotices = new List<string>();
+
+		/// <summary>
+		/// Writes every queued credential notice to standard error and empties the buffer.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding C-01. Standard error, never <c>LogService</c>, and that choice is
+		/// load-bearing: the log writer persists through the very database connection this provisioning
+		/// transaction is still building, and a credential written to the log table would then be readable
+		/// by every account holding log access - converting a transient one-time notice into durable stored
+		/// plaintext (CWE-532). The buffer is emptied as it is drained so a notice can never be printed
+		/// twice by a later call on this singleton.
+		/// </remarks>
+		private void FlushCredentialNotices()
+		{
+			foreach (string notice in pendingCredentialNotices)
+			{
+				Console.Error.WriteLine(notice);
+			}
+
+			pendingCredentialNotices.Clear();
+		}
 
 		/// <summary>
 		/// Configuration key that lets an operator choose the first administrator's password up front.
@@ -1069,7 +1212,7 @@ namespace WebVella.Erp
 
 		/// <summary>
 		/// Length of the generated credential. Well above the twelve-character floor the
-		/// authentication-hardening standard sets, and drawn from a 65-character alphabet, so the value
+		/// authentication-hardening standard sets, and drawn from a 66-character alphabet, so the value
 		/// carries roughly 120 bits of entropy - far beyond offline-guessing range even though it is only
 		/// ever meant to survive until the operator's first sign-in. The class-coverage constraint applied
 		/// by <see cref="GenerateInitialAdministratorPassword"/> costs a fraction of one bit of that.
@@ -1115,15 +1258,36 @@ namespace WebVella.Erp
 		/// notice into durable stored plaintext (CWE-532).
 		/// </para>
 		/// <para>
-		/// RESIDUAL, recorded rather than glossed over: the engagement's plan also asks for a
-		/// change-required-on-first-login marker. There is no such field on the user entity, and adding one
-		/// would be a schema definition change, which the same plan forbids outright. The obligation is
-		/// therefore discharged the only way it can be without that change - the credential is unique per
-		/// installation, and the notice below instructs the operator to replace it immediately. The residual
-		/// is documented in docs/security/risk-register.md.
+		/// It is also QUEUED rather than written here: see <see cref="pendingCredentialNotices"/>. Nothing on
+		/// this path may announce a credential while the transaction that creates the account is still open,
+		/// because a later failure would roll the account back and leave a live-looking password in the
+		/// operator's scrollback for an account that does not exist.
+		/// </para>
+		/// <para>
+		/// FIRST-LOGIN ROTATION IS ENFORCED, NOT MERELY REQUESTED. The engagement's plan also asks for a
+		/// change-required-on-first-login marker, and one is set here through
+		/// <see cref="ErpUserPreferences.PasswordChangeRequired"/>. An earlier revision of this comment
+		/// recorded that obligation as an unclosable residual on the grounds that there was no field to
+		/// carry it and adding one would be a forbidden schema definition change. That reasoning was
+		/// wrong: the user entity already carries a <c>preferences</c> text column holding per-user JSON
+		/// state, so the marker is a new property on a type that column already stores, and no data
+		/// definition statement is emitted. The residual is therefore discharged rather than documented.
+		/// </para>
+		/// <para>
+		/// The marker has teeth in two places and stays deliberately toothless in a third.
+		/// <c>AuthService</c> refuses to mint or refresh a bearer token for an account still carrying it,
+		/// which is what stops a credential the operator never chose from being wired into automation.
+		/// The interactive login page records a warning audit entry on every sign-in that still uses it,
+		/// so the condition is visible rather than silent. Interactive login itself stays OPEN on
+		/// purpose - it is the only route to the screen that changes the password, so closing it would
+		/// lock the operator out of the very action being demanded of them, converting a hardening
+		/// measure into a denial of service against a brand-new installation.
 		/// </para>
 		/// </remarks>
-		private static string ResolveInitialAdministratorPassword()
+		// Not static, deliberately: this queues its notice into the instance buffer that
+		// FlushCredentialNotices drains after the provisioning transaction commits (finding C-01, CWE-532).
+		// It is private and has a single caller, so narrowing it from static costs nothing.
+		private string ResolveInitialAdministratorPassword()
 		{
 			// ErpSettings.Initialize always runs before provisioning - the hosts call it from UseErp, and the
 			// console application from its own startup - so Configuration is populated here. The null-condition
@@ -1132,18 +1296,43 @@ namespace WebVella.Erp
 			string configuredPassword = ErpSettings.Configuration?[InitialAdministratorPasswordSettingKey];
 			if (!string.IsNullOrWhiteSpace(configuredPassword))
 			{
+				// THREAT ADDRESSED - finding C-01 (CWE-521 weak password requirements, CWE-1392 use of a
+				// default credential), OWASP A07:2021. This value was previously accepted on the strength of
+				// being non-blank alone, so the literal "erp" that this finding removed from the source could
+				// be reinstated verbatim through configuration, and the twelve-character mixed-class floor the
+				// mandated Authentication Hardening standard sets applied to nothing whatsoever. It is
+				// validated BEFORE it is returned to be hashed, and a failure aborts provisioning rather than
+				// silently falling back to a generated value: quietly ignoring an operator's explicit choice
+				// would leave them believing a password they never saw is in force.
+				ValidateInitialAdministratorPassword(configuredPassword, ConfiguredPasswordSourceDescription);
+
 				// Reported so the operator can tell the two routes apart in the provisioning output. Only the
 				// setting NAME appears - never the value, its length or a digest of it (CWE-532).
-				Console.Error.WriteLine("info: WebVella.Erp.ErpService[1] The first administrator password was taken from " +
+				// Queued rather than printed (finding C-01, CWE-532): this notice asserts that the configured
+				// password is now the administrator's, which is only true once the transaction commits. On a
+				// rollback it would be a false statement about the state of the installation.
+				pendingCredentialNotices.Add("info: WebVella.Erp.ErpService[1] The first administrator password was taken from " +
 					"'" + InitialAdministratorPasswordSettingKey + "'. It is not echoed here.");
 				return configuredPassword;
 			}
 
 			string generatedPassword = GenerateInitialAdministratorPassword();
 
+			// A self-check, not defensive clutter. The generator's length and class coverage are properties of
+			// three separate constants that a later edit could change independently of this policy, and the
+			// account this credential secures is the one holding every administrative permission. Validating
+			// the generator's own output means such an edit fails loudly here, once per database, instead of
+			// quietly shipping a credential weaker than the standard demands.
+			ValidateInitialAdministratorPassword(generatedPassword, GeneratedPasswordSourceDescription);
+
 			// The one and only place this value is ever emitted. It is unavoidable: the hash is one-way, so a
 			// credential that is never shown is a locked-out installation.
-			Console.Error.WriteLine("warn: WebVella.Erp.ErpService[2] SECURITY - no '" + InitialAdministratorPasswordSettingKey +
+			// QUEUED, NOT PRINTED (finding C-01, CWE-532). This is the notice the defect mattered most for:
+			// it carries the plaintext credential, and printing it here - with the provisioning transaction
+			// still open and the user record not yet committed - published a live-looking administrator
+			// password for an account that a later failure would erase. FlushCredentialNotices emits it only
+			// after the commit returns.
+			pendingCredentialNotices.Add("warn: WebVella.Erp.ErpService[2] SECURITY - no '" + InitialAdministratorPasswordSettingKey +
 				"' was supplied, so a random password was generated for the first administrator account " +
 				"(erp@webvella.com). It is shown ONCE, here, and cannot be recovered afterwards:" +
 				Environment.NewLine + "    " + generatedPassword + Environment.NewLine +
@@ -1155,6 +1344,127 @@ namespace WebVella.Erp
 		}
 
 		/// <summary>
+		/// Describes the operator-supplied credential route in a policy-failure message. Held as a constant
+		/// so the two call sites cannot describe the same route differently.
+		/// </summary>
+		private const string ConfiguredPasswordSourceDescription =
+			"The value came from '" + InitialAdministratorPasswordSettingKey + "'.";
+
+		/// <summary>
+		/// Describes the generated credential route in a policy-failure message. Reaching this outcome means
+		/// the generator itself no longer satisfies the policy, which is a defect in this file rather than an
+		/// operator error, so the wording says so instead of asking the operator to change a setting.
+		/// </summary>
+		private const string GeneratedPasswordSourceDescription =
+			"The value was generated internally, so this indicates a defect in the generator constants " +
+			"rather than a configuration mistake.";
+
+		/// <summary>
+		/// Applies the mandated Authentication Hardening password policy - twelve to one hundred and
+		/// twenty-eight characters, with an upper case letter, a lower case letter, a digit and a symbol all
+		/// present - to a candidate first administrator password, and aborts provisioning when it is not met.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding C-01 (CWE-521 weak password requirements, CWE-1392 use of a default
+		/// credential), OWASP A07:2021. Without this, the configured supply route accepted any non-blank
+		/// string, so the default credential this remediation deleted from the source could be restored
+		/// through configuration and the standard's complexity floor bound nothing.
+		/// <para>
+		/// THE UPPER BOUND IS A CORRECTNESS FIX, NOT SYMMETRY. <c>PasswordUtil.HashPassword</c> returns
+		/// <see cref="string.Empty"/> for input longer than its own 128-character resource bound, and the
+		/// password field's <c>MaxLength</c> metadata is not enforced on write, so an over-long configured
+		/// value used to hash to nothing at all. That left the administrator account of a brand-new
+		/// installation with a stored value no password can ever verify - unreachable, unrecoverable, and
+		/// reported nowhere. Refusing the value here is what makes that outcome impossible; it is the reason
+		/// the maximum is tested rather than assumed to be unreachable.
+		/// </para>
+		/// <para>
+		/// THE MESSAGE NEVER DESCRIBES THE VALUE. It names the setting and restates the policy in full, but
+		/// it does not echo the password, report its length, identify which clause failed, or emit a digest
+		/// (CWE-532). Provisioning output is routinely captured into build logs, container logs and terminal
+		/// scrollback, and "too short" together with a length is a substantial head start for anyone who
+		/// later obtains the hash. The operator already knows what they supplied, so the policy text alone
+		/// is enough to act on and the diagnostic value of naming the failed clause is close to zero.
+		/// </para>
+		/// <para>
+		/// THE CLASS TESTS DELIBERATELY DO NOT REUSE
+		/// <see cref="InitialAdministratorPasswordCharacterClasses"/>. That constant is pruned of visually
+		/// ambiguous characters because a generated value has to be transcribed by hand, and its symbol slice
+		/// lists only nine punctuation marks. Validating an operator's own password against it would reject
+		/// strong passwords for containing a capital O or a dollar sign - a functional outage dressed up as
+		/// hardening, and exactly the over-narrow allow-list this engagement has had to reverse elsewhere.
+		/// The general character predicates used below are the correct reading of "mixed case, numbers,
+		/// symbols", and every generator class is a subset of them, so the generated route satisfies this
+		/// policy by construction rather than by coincidence.
+		/// </para>
+		/// </remarks>
+		/// <param name="password">The candidate password. Never logged, echoed or measured in output.</param>
+		/// <param name="sourceDescription">
+		/// Which supply route produced the value, so the remedy offered matches the mistake made.
+		/// </param>
+		/// <exception cref="InvalidOperationException">
+		/// The password does not satisfy the policy. Thrown rather than reported through a return value so
+		/// the failure cannot be ignored by a caller: this runs inside the provisioning transaction, which is
+		/// consequently abandoned, leaving no half-configured installation and - critically - no
+		/// administrator account holding a credential that is weak or that nothing can verify.
+		/// </exception>
+		// DELIBERATELY STRICTER THAN PasswordUtil.ValidatePasswordPolicy - do not "simplify" this into a call
+		// to that method. The platform-wide gate enforces LENGTH ONLY (non-blank, >= MinPasswordLength,
+		// <= MaxPasswordLength); it accepts a twelve-character all-lowercase value. The mandated
+		// Authentication Hardening standard requires mixed case, digits AND symbols, and this is the one
+		// credential that standard must hold for unconditionally: the first full administrator on a new
+		// installation, created before any operator can review policy. The BOUNDS below cannot drift from
+		// the primitive because PasswordMinLength/PasswordMaxLength derive from the PasswordUtil constants;
+		// the composition test is an additional provisioning-time constraint, not a duplicate of one.
+		private static void ValidateInitialAdministratorPassword(string password, string sourceDescription)
+		{
+			// Size before content, matching the discipline PasswordUtil already applies: an oversized value is
+			// refused on a single integer comparison instead of paying for a full character scan first.
+			bool lengthWithinPolicy = password.Length >= PasswordMinLength
+				&& password.Length <= PasswordMaxLength;
+
+			bool hasUpperCase = false;
+			bool hasLowerCase = false;
+			bool hasDigit = false;
+			bool hasSymbol = false;
+
+			if (lengthWithinPolicy)
+			{
+				// "Symbol" is defined by exclusion rather than by an allow-list of punctuation, so any
+				// non-alphanumeric character an operator can type counts. The four tests are a partition of
+				// the character space, which is what makes the composition check total: every character
+				// advances exactly one of the four flags and none can fall through unclassified.
+				foreach (char character in password)
+				{
+					if (char.IsUpper(character))
+						hasUpperCase = true;
+					else if (char.IsLower(character))
+						hasLowerCase = true;
+					else if (char.IsDigit(character))
+						hasDigit = true;
+					else
+						hasSymbol = true;
+				}
+			}
+
+			if (lengthWithinPolicy && hasUpperCase && hasLowerCase && hasDigit && hasSymbol)
+			{
+				return;
+			}
+
+			throw new InvalidOperationException(
+				"SECURITY - the first administrator password does not meet the required password policy, so " +
+				"provisioning was aborted and no administrator account was created. " + sourceDescription +
+				" Supply a value of " + PasswordMinLength.ToString(CultureInfo.InvariantCulture) + " to " +
+				PasswordMaxLength.ToString(CultureInfo.InvariantCulture) + " characters containing at least " +
+				"one upper case letter, one lower case letter, one digit and one symbol in '" +
+				InitialAdministratorPasswordSettingKey + "', then start the application again. Remove that " +
+				"setting entirely to have a compliant password generated instead. The value supplied is not " +
+				"echoed here or anywhere else, and neither is its length. See " +
+				"docs/security/secure-configuration.md.");
+		}
+
+		/// <summary>
 		/// Generates the random initial administrator password.
 		/// </summary>
 		/// <remarks>
@@ -1163,14 +1473,14 @@ namespace WebVella.Erp
 		/// <c>System.Random</c>, whose output is predictable from its seed and would make the generated
 		/// credential guessable - reintroducing the finding in a form that merely looks random.
 		/// <c>GetItems</c> is used rather than a hand-rolled modulo over random bytes because a modulo of a
-		/// byte by a 65-character alphabet is measurably biased towards the alphabet's first characters;
+		/// byte by a 66-character alphabet is measurably biased towards the alphabet's first characters;
 		/// this overload draws uniformly.
 		/// <para>
 		/// CLASS COVERAGE IS GUARANTEED, NOT ASSUMED. The mandated Authentication Hardening standard
 		/// requires "12+ characters, mixed case, numbers, symbols". A uniform draw over the whole alphabet
 		/// satisfies the length clause with certainty but the composition clauses only on average: with
-		/// eight digits and nine symbols in a 65-character alphabet, roughly one generated value in
-		/// fourteen would contain no digit and one in twenty no symbol. One character is therefore drawn
+		/// eight digits and nine symbols in a 66-character alphabet, roughly one generated value in
+		/// thirteen would contain no digit and one in nineteen no symbol. One character is therefore drawn
 		/// from each of the four classes first, the remainder is drawn from the full alphabet, and the
 		/// whole buffer is then shuffled with the same cryptographic generator - so no class can be absent
 		/// and no class occupies a predictable position. Shuffling is the load-bearing half: without it the
@@ -1219,8 +1529,76 @@ namespace WebVella.Erp
 			foreach (ErpPlugin plugin in Plugins)
 				plugin.Initialize(serviceProvider);
 
+			ReconcileGuestRecordPermissions();
+
 			JobManager.Current.RegisterJobTypes(this);
 			HookManager.RegisterHooks(this);
+		}
+
+		/// <summary>
+		/// Re-asserts deny-by-default anonymous record permissions after every plugin patch has run.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding C-05 (Critical, CWE-269 improper privilege management, CWE-732 incorrect
+		/// permission assignment for a critical resource, OWASP A01:2021) and finding C-02 (Critical,
+		/// CWE-200, CWE-522) for the user entity's read grant, and review finding F17 (CWE-200, CWE-732)
+		/// for the role entity's read grant.
+		/// THREAT ADDRESSED: silent restoration of the very grants the schema version 4 and version 5
+		/// migrations remove.
+		/// <para>
+		/// ORDERING IS THE WHOLE POINT. <c>Web/ErpMvcExtensions.cs</c> calls
+		/// <c>InitializeSystemEntities</c> - which runs the migration - and only afterwards calls
+		/// <see cref="InitializePlugins(IServiceProvider)"/>. Plugin patches update system entities with
+		/// <c>EntityManager.UpdateEntity</c>, which REPLACES all four record-permission lists with whatever
+		/// the patch supplies. Two shipped patches supplied Guest grants, so the sequence was: migration
+		/// revokes, plugin patch reinstates, installation ends up exactly as vulnerable as before while the
+		/// migration records itself as applied. Those two patches are corrected at their source, but that
+		/// alone is not sufficient: a patch already applied on an existing installation, a third-party
+		/// plugin, or a regenerated SDK patch file can each reintroduce the grant, and a version-gated
+		/// migration cannot catch any of them because it never runs again.
+		/// </para>
+		/// <para>
+		/// WHY HERE AND NOT IN THE HOST. Placing this at the end of the method that runs the patches means
+		/// it cannot be ordered wrongly by a caller and needs no change to the public <c>IErpService</c>
+		/// interface, so every one of the seven web hosts and the console application inherit it without
+		/// touching any of them. It is deliberately NOT version-gated: the defect is a re-grant that
+		/// happens after the gate, so a gated fix would close it once and let the next patch reopen it.
+		/// </para>
+		/// <para>
+		/// COST ON A HEALTHY INSTALLATION IS ONE ENTITY READ PER ENTITY, SERVED FROM THE METADATA CACHE.
+		/// <see cref="RevokeGuestRecordPermissions4(EntityManager, Guid, string, bool, string)"/> writes nothing
+		/// when it removes nothing, so the common case performs no update and no cache clear.
+		/// </para>
+		/// <para>
+		/// FAILURE IS DELIBERATELY FATAL TO STARTUP. The host wraps this call in try/finally with no catch,
+		/// so an exception here stops the application from starting. That is the correct direction for this
+		/// control: an application that does not start grants nothing, whereas one that starts after
+		/// silently failing to revoke anonymous create and read permission on the user and role entities
+		/// is an authentication-bypass surface. The only conditions that throw are a missing system entity
+		/// or a rejected metadata write, both of which mean the installation is already broken.
+		/// </para>
+		/// </remarks>
+		private void ReconcileGuestRecordPermissions()
+		{
+			// UpdateEntity requires administrator meta permission (SecurityContext.HasMetaPermission), so the
+			// scope is required rather than defensive - without it every call would be refused and this
+			// method would throw. Both hosts already establish a system scope, so this nests and changes
+			// nothing about the effective principal; it is opened anyway so the control cannot be defeated by
+			// a caller that failed to establish one.
+			using (SecurityContext.OpenSystemScope())
+			{
+				EntityManager entMan = new EntityManager();
+
+				// The five-argument overload is called directly rather than through the one-argument
+				// RevokeGuestRecordPermissions4(EntityManager), because that overload is the SCHEMA VERSION 4
+				// shape: it passes revokeRead: false for the role entity, faithful to what version 4 claimed to
+				// do and therefore wrong for a control whose job is to re-assert the CURRENT position. Routing
+				// through it left the role entity's anonymous READ grant - finding F17, revoked by
+				// MigrateSecurityDefaults5 - free to be reinstated by a plugin patch immediately after the
+				// migration had removed it, which is precisely the defect this method exists to prevent.
+				RevokeGuestRecordPermissions4(entMan, SystemIds.RoleEntityId, "role", true, "PLUGIN PATCH RECONCILIATION.");
+				RevokeGuestRecordPermissions4(entMan, SystemIds.UserEntityId, "user", true, "PLUGIN PATCH RECONCILIATION.");
+			}
 		}
 
 		public void SetAutoMapperConfiguration()
@@ -1857,11 +2235,20 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// credential written here is the published default one, and only while it is still in place.
 		/// </para>
 		/// <para>
-		/// 4. EMITS NO SCHEMA DEFINITION STATEMENT. It changes rows and entity metadata through the manager
-		/// APIs and never composes SQL. The password column is already <c>varchar(500)</c>, and the length
-		/// bounds raised here are field metadata that the column width does not depend on, so no column is
+		/// 4. EMITS NO SCHEMA DEFINITION STATEMENT. It changes rows and entity definitions, and it composes
+		/// no SQL of its own. The password column is already <c>varchar(500)</c>, and the length bounds
+		/// raised here are field metadata that the column width does not depend on, so no column is
 		/// altered, added or dropped. Unlike the two sitemap migrations above, this method deliberately
 		/// opens no connection and issues no command text.
+		/// <para>
+		/// GOING THROUGH A MANAGER API IS NOT BY ITSELF SUFFICIENT FOR THAT GUARANTEE, which is the subtle
+		/// part. <c>EntityManager.UpdateField</c> looks like a pure metadata call and is not: it calls
+		/// <c>DbRecordRepository.UpdateRecordField</c> first, which issues <c>ALTER TABLE ... ALTER
+		/// COLUMN</c> for the default and the nullability and then a <c>CREATE INDEX</c> or <c>DROP
+		/// INDEX</c>. <see cref="SecurePasswordFieldMetadata4(EntityManager)"/> therefore writes the entity
+		/// document through <c>DbEntityRepository.Update</c> instead. Any future addition to this migration
+		/// needs the same care: prefer the repository when only metadata is meant to change.
+		/// </para>
 		/// </para>
 		/// </remarks>
 		private void MigrateSecurityDefaults4(EntityManager entMan, RecordManager recMan)
@@ -1876,9 +2263,91 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			// method would throw, and an upgrade would fail rather than silently skip - loud, but avoidable.
 			using (SecurityContext.OpenSystemScope())
 			{
+				// ORDER MATTERS, and it is ordered deliberately rather than incidentally.
+				//
+				// SecurePasswordFieldMetadata4 raises the password field's declared length bounds from the
+				// 6-24 an unmigrated installation still carries to 12-128. RevokeSeedAdministratorCredential4
+				// then WRITES a password, so it runs against the bounds this release declares rather than the
+				// ones it is in the middle of replacing.
+				//
+				// Today that sequencing is belt-and-braces rather than load-bearing, and the reason is worth
+				// stating so a later edit does not mistake it for arbitrary. The replacement credential is
+				// GenerateInitialAdministratorPassword's fixed 20-character value, which sits inside BOTH
+				// bound sets by construction, and no write path validates against MinLength or MaxLength
+				// anyway - they are declarative field metadata. But both of those are properties of the
+				// current code, not invariants: lengthen the generator past 24, switch the replacement to an
+				// operator-supplied value, or add write-side validation of the declared bounds, and an
+				// order-dependent failure appears in a security migration. Resting that migration on the
+				// continued absence of a validation check would be a coincidence rather than an invariant, so
+				// the bounds are raised first and the invariant is made structural.
+				//
+				// The dependency runs one way only - raising the bounds neither reads nor needs the stored
+				// credential - and all three steps remain individually idempotent, so this ordering does not
+				// weaken the re-run guarantee documented above.
+				SecurePasswordFieldMetadata4(entMan);
 				RevokeSeedAdministratorCredential4(recMan);
 				RevokeGuestRecordPermissions4(entMan);
-				SecurePasswordFieldMetadata4(entMan);
+			}
+		}
+
+		/// <summary>
+		/// Revokes the Guest role's READ grant on the role entity, and re-asserts the version-4 Guest
+		/// revocations, on installations that were already provisioned by an earlier release.
+		/// </summary>
+		/// <param name="entMan">The entity manager participating in the migration transaction.</param>
+		/// <remarks>
+		/// SECURITY - review finding F17 (Authorization Residual), CWE-200 exposure of sensitive
+		/// information to an unauthorized actor, CWE-732 incorrect permission assignment for a critical
+		/// resource, OWASP A01:2021 Broken Access Control.
+		/// <para>
+		/// THREAT: the Guest role is the role an unauthenticated caller is evaluated against -
+		/// <c>SecurityContext.HasEntityPermission</c> falls back to the Guest grants exactly when no user
+		/// is resolved. Earlier releases seeded READ on the role entity for Guest, which makes the
+		/// platform's entire authorization vocabulary anonymously enumerable: every role name and
+		/// identifier, including the administrator role. That is reconnaissance for a privilege-escalation
+		/// attempt and for social engineering, and it is exactly the kind of grant the mandated
+		/// Authorization Enforcement standard's deny-by-default clause exists to prohibit.
+		/// </para>
+		/// <para>
+		/// WHY IT IS SAFE TO REVOKE, having previously been recorded as a necessary residual: the earlier
+		/// justification was that the grant is how role names resolve before authentication. It is not.
+		/// Credential resolution and role hydration both run inside <c>SecurityContext.OpenSystemScope</c>
+		/// in <c>SecurityManager.GetUser</c>, so the sign-in path projects <c>$user_role.*</c> under the
+		/// system principal and never consults the Guest grants. Every other reader of role metadata is
+		/// authenticated, administrator-facing, or itself inside a system scope, and no anonymous endpoint
+		/// in the solution reads the role entity. Regular and Administrator keep their READ grants, so
+		/// nothing an authenticated user can see changes.
+		/// </para>
+		/// <para>
+		/// The user entity is re-asserted as well, and that is not redundancy. The version-4 revocation
+		/// only ran for installations that crossed the 3-to-4 boundary while that code was present; an
+		/// installation whose recorded version reached 4 by any other route - a database restored from a
+		/// mixed-version estate, a hand-edited settings row, a version advanced by a build that predated
+		/// the fan-out - still carries the anonymous create and read grants that version 4 was written to
+		/// remove. Because <c>RemoveAll</c> makes each revocation a no-op when the grant is already
+		/// absent, re-asserting costs one metadata read per entity and closes that gap for good.
+		/// </para>
+		/// <para>
+		/// The system scope is opened for the same reason as in <c>MigrateSecurityDefaults4</c>: the
+		/// metadata writes require administrator meta permission, and a security migration must not be
+		/// defeasible by a caller that forgot to establish a context. Both hosts that reach this code
+		/// already provide one, so the scope is nested and changes nothing about the effective principal.
+		/// </para>
+		/// </remarks>
+		private void MigrateSecurityDefaults5(EntityManager entMan)
+		{
+			using (SecurityContext.OpenSystemScope())
+			{
+				// The role entity: revoke anonymous READ - finding F17 - and, as version 4 already did,
+				// anonymous CREATE. Both are idempotent, so the create revocation costs nothing on an
+				// installation where version 4 already removed it and repairs one where it did not.
+				RevokeGuestRecordPermissions4(entMan, SystemIds.RoleEntityId, "role", true, "SCHEMA VERSION 5 MIGRATION.");
+
+				// The user entity: re-assert the version-4 revocation of anonymous CREATE and anonymous
+				// READ. The Regular read grant survives, because removing it would break every screen that
+				// resolves the signed-in user's own name and avatar; the credential itself is protected by
+				// SecurePasswordFieldMetadata4 and by the read-projection redaction instead.
+				RevokeGuestRecordPermissions4(entMan, SystemIds.UserEntityId, "user", true, "SCHEMA VERSION 5 MIGRATION.");
 			}
 		}
 
@@ -1894,15 +2363,19 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// authentication bypass to full administrative privilege requiring no vulnerability at all, and
 		/// correcting the provisioning code does not touch it, because provisioning has already run.
 		/// <para>
-		/// HOW THE STORED VALUE IS READ, and why not through the obvious route: the record projections in
-		/// <c>Api/RecordManager.cs</c> and <c>Database/DbRecordRepository.cs</c> now replace every encrypted
-		/// password value with a redaction marker for every role, so reading this account through
-		/// <c>RecordManager.Find</c> would return the marker rather than the hash and the comparison below
-		/// would never match - the migration would silently do nothing. <c>SecurityManager.GetUser(Guid)</c>
-		/// resolves through the query-language path, which is deliberately exempt from that redaction
-		/// because credential verification depends on the real value. Keying on the account id rather than
-		/// on the seeded e-mail address is also deliberate: an operator may have changed the address, and
-		/// the account that has to be secured is the row, not the label.
+		/// HOW THE STORED VALUE IS READ, and why not through the obvious route: EVERY projection seam in the
+		/// platform - <c>Api/RecordManager.cs</c>, <c>Database/DbRecordRepository.cs</c> and, since finding
+		/// C-REV-07, <c>Eql/EqlCommand.cs</c> - now replaces every encrypted password value with a redaction
+		/// marker, unconditionally and for every role. There is no exempt projection left, deliberately: the
+		/// query-language path used to be the exemption, and that exemption WAS the vulnerability, because
+		/// "SELECT password FROM user" is reachable by any caller holding read access on the user entity.
+		/// So neither <c>RecordManager.Find</c> nor <c>SecurityManager.GetUser(Guid)</c> can supply the hash
+		/// any more - both would hand this guard the marker, the comparison below would never match, and the
+		/// migration would silently do nothing. The value is therefore read through
+		/// <c>SecurityManager.ReadStoredPasswordHash</c>, the platform's one internal, system-only,
+		/// single-column credential query. Keying on the account id rather than on the seeded e-mail address
+		/// is also deliberate: an operator may have changed the address, and the account that has to be
+		/// secured is the row, not the label.
 		/// </para>
 		/// <para>
 		/// HOW THE GUARD WORKS: the stored value is only replaced when it still has the legacy digest shape
@@ -1936,7 +2409,15 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 				return;
 			}
 
-			string storedHash = seedAdministrator.Password;
+			// SECURITY C-REV-07 (Critical, CWE-200 / CWE-522, OWASP A01:2021 + A02:2021). The hash is read
+			// through SecurityManager.ReadStoredPasswordHash - the platform's ONE system-only credential
+			// query - and no longer from seedAdministrator.Password. That property is populated from a query
+			// projection, and every projection seam now redacts encrypted password fields unconditionally so
+			// that a hash cannot be retrieved through EQL. Reading the property here would therefore hand
+			// this guard the redaction marker instead of the stored value, the comparison below would never
+			// match, and THIS REVOCATION WOULD SILENTLY STOP WORKING on exactly the deployments that need it
+			// - every installation still carrying the published default. Do not "simplify" it back.
+			string storedHash = SecurityManager.ReadStoredPasswordHash(SystemIds.FirstUserId);
 
 			// THE GUARD. Anything other than the published default - a modern hash, a legacy hash of a
 			// password the operator chose, an empty or absent column - is left exactly as it is.
@@ -1969,10 +2450,12 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			}
 
 			// Deliberately the same generator as fresh provisioning: cryptographically random, and long
-			// enough to sit inside BOTH the 6-24 bounds this installation still has at this instant and the
-			// 12-128 bounds SecurePasswordFieldMetadata4 is about to set. That is why this step runs first
-			// and why it cannot be invalidated by the order of the two - a value that satisfied only the new
-			// bounds would be a latent ordering bug.
+			// enough to sit inside BOTH the 6-24 bounds an unmigrated installation still carries and the
+			// 12-128 bounds SecurePasswordFieldMetadata4 declares - so the value is valid whichever of the
+			// two is in force when it is written. The caller nevertheless runs SecurePasswordFieldMetadata4
+			// BEFORE this step, so that "valid under either bound set" is a convenience rather than a
+			// requirement; see the ordering rationale at that call site. A replacement that satisfied only
+			// the new bounds would otherwise be a latent ordering bug.
 			string replacementPassword = GenerateInitialAdministratorPassword();
 
 			EntityRecord administratorRecord = new EntityRecord();
@@ -1982,16 +2465,35 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			// supplied. Pre-hashing here would store a hash of a hash and lock the account out.
 			administratorRecord["password"] = replacementPassword;
 
+			//THREAT ADDRESSED (CWE-1392/CWE-798, OWASP A07:2021): the replacement below is generated by the
+			//platform and read off a console, so like a freshly provisioned credential it is owed a rotation
+			//and is marked as such. Setting it here is what extends first-login rotation to installations
+			//that were ALREADY deployed - correcting the source alone would have left every existing
+			//deployment holding an unmarked machine-chosen credential.
+			//Read-modify-write, not overwrite: this account may well have accumulated real preferences, and
+			//serialising a fresh instance would silently discard its sidebar and component-usage state. The
+			//existing value was already deserialised into seedAdministrator above, so this costs no
+			//additional query.
+			ErpUserPreferences rotationRequiredPreferences = seedAdministrator.Preferences ?? new ErpUserPreferences();
+			rotationRequiredPreferences.PasswordChangeRequired = true;
+			administratorRecord["preferences"] = JsonConvert.SerializeObject(rotationRequiredPreferences);
+
 			QueryResponse result = recMan.UpdateRecord("user", administratorRecord);
 			if (!result.Success)
-				throw new Exception("SCHEMA VERSION 4 MIGRATION. Entity: user. The administrator credential shipped by earlier releases could not be revoked. Message:" + result.Message);
+				throw new InvalidOperationException("SCHEMA VERSION 4 MIGRATION. Entity: user. The administrator credential shipped by earlier releases could not be revoked. Message:" + result.Message);
 
 			// Reported once, on the standard error stream, for the same reason provisioning reports its
 			// generated credential: the stored value is a one-way hash, so a replacement that is never
 			// shown is an administrator account nobody can reach. It is deliberately NOT written through
 			// LogService - that would persist a live credential into a database table readable by every
 			// account with log access (CWE-532), turning a transient notice into stored plaintext.
-			Console.Error.WriteLine("warn: WebVella.Erp.ErpService[3] SECURITY - this installation's administrator account " +
+			// QUEUED, NOT PRINTED (finding C-01, CWE-532). Same defect and same reasoning as the provisioning
+			// notice: this runs inside the schema version 4 migration, which is inside the same provisioning
+			// transaction, so a failure in any later migration step rolls this password change back. Printing
+			// it here announced a replacement credential that would then not be in force, while the account
+			// silently kept the published default the migration was supposed to revoke - the worst of both
+			// outcomes. It is emitted only once the commit has returned.
+			pendingCredentialNotices.Add("warn: WebVella.Erp.ErpService[3] SECURITY - this installation's administrator account " +
 				"(" + SystemIds.FirstUserId + ") still carried the default password published in earlier releases, so it has " +
 				"been revoked. A random replacement was generated and is shown ONCE, here, and cannot be recovered " +
 				"afterwards:" + Environment.NewLine + "    " + replacementPassword + Environment.NewLine +
@@ -2014,9 +2516,12 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// both users and roles. Removing the grants from provisioning protects new installations only;
 		/// this is what protects the ones already running.
 		/// <para>
-		/// The role entity's Guest READ grant is deliberately preserved, mirroring the provisioning
-		/// decision: it is how role names resolve before authentication, C-05 is scoped to the two create
-		/// grants, and revoking it is neither required nor safe under the preservation requirement.
+		/// The role entity's Guest READ grant is NOT revoked here, and that is a statement about this
+		/// migration's version boundary rather than about the grant. C-05 is scoped to the two create
+		/// grants, so schema version 4 revokes exactly those; the read grant is finding F17 and is revoked
+		/// by <see cref="MigrateSecurityDefaults5(EntityManager)"/> at schema version 5. Keeping each
+		/// version's block faithful to what that version claimed to do is what lets an installation at any
+		/// version replay the sequence and arrive at the same state.
 		/// </para>
 		/// <para>
 		/// <c>EntityManager.UpdateEntity</c> copies only the entity's own scalars and its four permission
@@ -2025,16 +2530,17 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// restated as a literal, so an installation whose label, icon or colour was customised keeps it.
 		/// </para>
 		/// </remarks>
-		private void RevokeGuestRecordPermissions4(EntityManager entMan)
+		private static void RevokeGuestRecordPermissions4(EntityManager entMan)
 		{
 			// The user entity: revoke anonymous create AND anonymous read. The Regular read grant survives,
 			// because removing it would break every screen that resolves the signed-in user's own name and
 			// avatar; the credential itself is protected by SecurePasswordFieldMetadata4 and by the
 			// read-projection redaction instead.
-			RevokeGuestRecordPermissions4(entMan, SystemIds.UserEntityId, "user", true);
+			RevokeGuestRecordPermissions4(entMan, SystemIds.UserEntityId, "user", true, "SCHEMA VERSION 4 MIGRATION.");
 
-			// The role entity: revoke anonymous create only.
-			RevokeGuestRecordPermissions4(entMan, SystemIds.RoleEntityId, "role", false);
+			// The role entity: revoke anonymous create only. Its anonymous READ grant is finding F17 and is
+			// revoked by MigrateSecurityDefaults5 at schema version 5, not here.
+			RevokeGuestRecordPermissions4(entMan, SystemIds.RoleEntityId, "role", false, "SCHEMA VERSION 4 MIGRATION.");
 		}
 
 		/// <summary>
@@ -2045,8 +2551,15 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// <param name="entityId">Identifier of the entity whose record permissions are being narrowed.</param>
 		/// <param name="entityName">Entity name, used only to make a failure message diagnostic.</param>
 		/// <param name="revokeRead">
-		/// True to also remove the Guest role from the read permissions. False for the role entity, whose
-		/// anonymous read grant is preserved by design.
+		/// True to also remove the Guest role from the read permissions. False for the role entity at
+		/// schema version 4, whose anonymous read grant is revoked one version later by
+		/// <see cref="MigrateSecurityDefaults5(EntityManager)"/> under finding F17.
+		/// </param>
+		/// <param name="migrationLabel">
+		/// Prefix for any failure message, naming the migration or control on whose behalf the revocation
+		/// is running. Passed in rather than hard-coded because three callers share this method - the
+		/// schema version 4 migration, the schema version 5 migration and the per-startup plugin-patch
+		/// reconciliation - and a failure that names the wrong one sends an operator to the wrong place.
 		/// </param>
 		/// <remarks>
 		/// SECURITY - findings C-05 and C-02; see
@@ -2056,14 +2569,19 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// cache - mutating the lists it hands back would edit that cache directly, so a later failure and
 		/// rollback would leave the in-memory model disagreeing with the database until the next cache
 		/// clear. <c>RemoveAll</c> is used rather than <c>Remove</c> so that a duplicated grant, which the
-		/// permission model does not prevent, cannot leave one copy behind; it also makes the operation a
-		/// no-op when the grant is already absent, which is what makes re-running this migration harmless.
+		/// permission model does not prevent, cannot leave one copy behind; it also reports how many grants
+		/// it removed, which is what lets this method write nothing at all when there was nothing to revoke.
+		/// <para>
+		/// That makes re-running it harmless AND free, which matters because it now has three callers with
+		/// very different frequencies: the one-time schema version 4 and version 5 migrations, and the
+		/// reconciliation that <see cref="InitializePlugins(IServiceProvider)"/> performs on EVERY startup.
+		/// </para>
 		/// </remarks>
-		private void RevokeGuestRecordPermissions4(EntityManager entMan, Guid entityId, string entityName, bool revokeRead)
+		private static void RevokeGuestRecordPermissions4(EntityManager entMan, Guid entityId, string entityName, bool revokeRead, string migrationLabel)
 		{
 			Entity storedEntity = entMan.ReadEntity(entityId).Object;
 			if (storedEntity == null)
-				throw new Exception("SCHEMA VERSION 4 MIGRATION. Entity: " + entityName + ". The entity could not be read, so its anonymous record permissions could not be revoked.");
+				throw new InvalidOperationException(migrationLabel + " Entity: " + entityName + ". The entity could not be read, so its anonymous record permissions could not be revoked.");
 
 			// Entity.RecordPermissions carries no property initialiser, unlike the four lists inside it, so
 			// a definition written by an older release or edited by hand can present it as absent. Reading
@@ -2081,9 +2599,18 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			List<Guid> canUpdate = new List<Guid>(storedPermissions.CanUpdate);
 			List<Guid> canDelete = new List<Guid>(storedPermissions.CanDelete);
 
-			canCreate.RemoveAll(roleId => roleId == SystemIds.GuestRoleId);
+			int revokedGrants = canCreate.RemoveAll(roleId => roleId == SystemIds.GuestRoleId);
 			if (revokeRead)
-				canRead.RemoveAll(roleId => roleId == SystemIds.GuestRoleId);
+				revokedGrants += canRead.RemoveAll(roleId => roleId == SystemIds.GuestRoleId);
+
+			// Nothing was revoked, so nothing is written. This guard is what makes the per-startup
+			// reconciliation in InitializePlugins free on a healthy installation: without it every single
+			// startup would issue two entity updates and two process-wide metadata cache clears in order to
+			// store permission lists identical to the ones already stored. The test is on what was actually
+			// REMOVED rather than on whether a grant looks present, so the one-time migration and the
+			// per-startup reconciliation share exactly one definition of "there was something to fix".
+			if (revokedGrants == 0)
+				return;
 
 			InputEntity inputEntity = new InputEntity();
 			inputEntity.Id = storedEntity.Id;
@@ -2102,7 +2629,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 
 			EntityResponse response = entMan.UpdateEntity(inputEntity);
 			if (!response.Success)
-				throw new Exception("SCHEMA VERSION 4 MIGRATION. Entity: " + entityName + ". The anonymous record permissions could not be revoked. Message:" + response.Message);
+				throw new InvalidOperationException(migrationLabel + " Entity: " + entityName + ". The anonymous record permissions could not be revoked. Message:" + response.Message);
 		}
 
 		/// <summary>
@@ -2124,25 +2651,24 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// completely inert and the field readable exactly as before.
 		/// </para>
 		/// <para>
-		/// Every other property is carried over from the field as it is currently stored rather than
-		/// restated as a literal, because <c>EntityManager.UpdateField</c> REPLACES the whole field
-		/// definition - anything not supplied would be silently reset, so an installation that had
-		/// customised the label or help text would lose it. The field is located by NAME rather than by the
-		/// identifier provisioning uses, so an installation whose field was recreated under a different
-		/// identifier is still migrated.
+		/// The stored field is mutated IN PLACE rather than rebuilt, so no property can be lost. It is
+		/// located by NAME rather than by the identifier provisioning uses, so an installation whose field
+		/// was recreated under a different identifier is still migrated; and any property this method does
+		/// not name - a customised label or help text, or a property added to the type by a later release -
+		/// is carried through untouched, because the object is never reconstructed.
 		/// </para>
 		/// <para>
-		/// NO SCHEMA DEFINITION CHANGE RESULTS. The bounds are field metadata; the column is
-		/// <c>varchar(500)</c> and its width does not derive from them. The update path re-asserts the
-		/// column's existing nullability and default and drops a search index the field never had, all of
-		/// which are no-ops against the definition this platform already provisions.
+		/// NO SCHEMA DEFINITION STATEMENT IS EMITTED - finding M-REV-13. The bounds are field metadata; the
+		/// column is <c>varchar(500)</c> and its width does not derive from them. Only the entity metadata
+		/// row is written. See the body for why <c>EntityManager.UpdateField</c> is deliberately not used
+		/// here, and for what it would have emitted against <c>rec_user</c> if it were.
 		/// </para>
 		/// </remarks>
-		private void SecurePasswordFieldMetadata4(EntityManager entMan)
+		private static void SecurePasswordFieldMetadata4(EntityManager entMan)
 		{
 			Entity userEntity = entMan.ReadEntity(SystemIds.UserEntityId).Object;
 			if (userEntity == null)
-				throw new Exception("SCHEMA VERSION 4 MIGRATION. Entity: user. The entity could not be read, so the password field could not be secured.");
+				throw new InvalidOperationException("SCHEMA VERSION 4 MIGRATION. Entity: user. The entity could not be read, so the password field could not be secured.");
 
 			// Located by NAME rather than by the identifier provisioning uses, so an installation whose
 			// field was recreated under a different identifier is still migrated. Entity.Fields carries no
@@ -2152,39 +2678,59 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			PasswordField storedPasswordField = userEntity.Fields?
 				.SingleOrDefault(field => field.Name == "password") as PasswordField;
 			if (storedPasswordField == null)
-				throw new Exception("SCHEMA VERSION 4 MIGRATION. Entity: user. Field: password. The field is missing or is not a password field, so it could not be secured.");
+				throw new InvalidOperationException("SCHEMA VERSION 4 MIGRATION. Entity: user. Field: password. The field is missing or is not a password field, so it could not be secured.");
 
-			InputPasswordField password = new InputPasswordField();
-			password.Id = storedPasswordField.Id;
-			password.Name = storedPasswordField.Name;
-			password.Label = storedPasswordField.Label;
-			password.PlaceholderText = storedPasswordField.PlaceholderText;
-			password.Description = storedPasswordField.Description;
-			password.HelpText = storedPasswordField.HelpText;
-			password.Required = storedPasswordField.Required;
-			password.Unique = storedPasswordField.Unique;
-			password.Searchable = storedPasswordField.Searchable;
-			password.Auditable = storedPasswordField.Auditable;
-			password.System = storedPasswordField.System;
-			password.Encrypted = storedPasswordField.Encrypted;
+			//THREAT ADDRESSED - finding M-REV-13, and the engagement's own acceptance criterion that no
+			//schema definition statement is emitted at any point. This step used to rebuild the field as an
+			//InputPasswordField and push it through EntityManager.UpdateField. UpdateField calls
+			//Database/DbRecordRepository.cs.UpdateRecordField, which issues, against rec_user:
+			//  ALTER TABLE ONLY "rec_user" ALTER COLUMN "password" SET DEFAULT ...
+			//  ALTER TABLE "rec_user" ALTER COLUMN "password" {SET|DROP} NOT NULL
+			//  DROP INDEX IF EXISTS "idx_s_user_password"
+			//Those three were harmless in EFFECT here - they re-asserted the column's existing default and
+			//nullability and dropped a search index this field has never had - but harmless DDL is still
+			//DDL, and the criterion is about what is emitted, not about what it happens to change. So
+			//effect is not the test, and this path emits none of it: it writes the entity metadata row and
+			//nothing else. UpdateEntity, used by the sibling step for record permissions, is already
+			//metadata-only, so this brings the two halves of the migration into line.
+			//
+			//Mutating the stored field in place is also strictly safer than the rebuild it replaces:
+			//UpdateField REPLACES the whole field definition from the InputField handed to it, so every
+			//property not explicitly copied across was silently reset. That made the copy list above
+			//load-bearing and easy to break - a property added to PasswordField by a later release would
+			//have started being erased by this migration, silently. Mutation cannot lose a property it does
+			//not mention.
+			//
+			//The meta-permission assertion is retained because UpdateField performed one and bypassing the
+			//manager would otherwise drop it: a security migration must not become MORE permissive than the
+			//call it replaces. MigrateSecurityDefaults4 opens a system scope, so this holds in both hosts.
+			if (!SecurityContext.HasMetaPermission())
+				throw new InvalidOperationException("SCHEMA VERSION 4 MIGRATION. Entity: user. Field: password. Metadata permission is required, so the field could not be secured.");
+
 			//SECURITY - finding M-13, CWE-521. Raised from the 6-24 this installation was provisioned with.
-			password.MinLength = PasswordMinLength;
-			password.MaxLength = PasswordMaxLength;
+			storedPasswordField.MinLength = PasswordMinLength;
+			storedPasswordField.MaxLength = PasswordMaxLength;
 			//SECURITY - finding C-02. EnableSecurity without Permissions denies everyone; Permissions
 			//without EnableSecurity denies nobody. Both are required, and administrator only - no Regular
 			//and no Guest entry belongs in either list.
-			password.EnableSecurity = true;
-			password.Permissions = new FieldPermissions();
-			password.Permissions.CanRead = new List<Guid>();
-			password.Permissions.CanUpdate = new List<Guid>();
+			storedPasswordField.EnableSecurity = true;
+			storedPasswordField.Permissions = new FieldPermissions();
+			storedPasswordField.Permissions.CanRead = new List<Guid>();
+			storedPasswordField.Permissions.CanUpdate = new List<Guid>();
 			//READ
-			password.Permissions.CanRead.Add(SystemIds.AdministratorRoleId);
+			storedPasswordField.Permissions.CanRead.Add(SystemIds.AdministratorRoleId);
 			//UPDATE
-			password.Permissions.CanUpdate.Add(SystemIds.AdministratorRoleId);
+			storedPasswordField.Permissions.CanUpdate.Add(SystemIds.AdministratorRoleId);
 
-			FieldResponse response = entMan.UpdateField(SystemIds.UserEntityId, password);
-			if (!response.Success)
-				throw new Exception("SCHEMA VERSION 4 MIGRATION. Entity: user. Field: password. The field could not be secured. Message:" + response.Message);
+			//Mirrors the metadata half of EntityManager.UpdateField exactly - map the whole entity, update
+			//the metadata row - minus the UpdateRecordField call that emitted the DDL. Cache.Clear is
+			//unconditional and runs before the result is inspected, which is what UpdateField does too: a
+			//failed update must not leave a stale entity definition cached either.
+			DbEntity updatedEntity = userEntity.MapTo<DbEntity>();
+			bool updated = DbContext.Current.EntityRepository.Update(updatedEntity);
+			Cache.Clear();
+			if (!updated)
+				throw new InvalidOperationException("SCHEMA VERSION 4 MIGRATION. Entity: user. Field: password. The entity metadata update did not apply, so the field could not be secured.");
 		}
 
 		#endregion

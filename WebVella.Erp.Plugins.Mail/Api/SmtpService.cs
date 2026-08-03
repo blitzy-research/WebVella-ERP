@@ -33,7 +33,18 @@ namespace WebVella.Erp.Plugins.Mail.Api
 		[JsonProperty(PropertyName = "username")]
 		public string Username { get; internal set; }
 
-		[JsonProperty(PropertyName = "password")]
+		//SECURITY - finding F31 (High), CWE-200 exposure of sensitive information, CWE-522
+		//insufficiently protected credentials, OWASP A01:2021 + A02:2021.
+		//THREAT ADDRESSED: the SMTP relay password was an ordinary serializable member, so any object
+		//graph that reached a JSON writer - a page data model, an API response envelope, a diagnostic
+		//dump of a cached service - carried the plaintext credential out of the process. JsonIgnore
+		//REPLACES the property mapping rather than joining it, so there is exactly one serialization
+		//instruction on this member and no question of which one wins.
+		//NO WRITE PATH LOSES THE VALUE: nothing in the repository serializes or deserializes this type.
+		//Its only producer is the record-to-model mapping in Api/AutoMapper/SmtpServiceProfile.cs, which
+		//reads the entity record's "password" value directly, and its only consumers are the four send
+		//paths below, which pass it to SmtpClient.Authenticate. Neither goes through JSON.
+		[JsonIgnore]
 		public string Password { get; internal set; }
 
 		[JsonProperty(PropertyName = "default_sender_name")]
@@ -85,9 +96,99 @@ namespace WebVella.Erp.Plugins.Mail.Api
 		/// unparseable values, and a settings layer not yet initialised (<c>Configuration</c> is null
 		/// until <c>ErpSettings.Initialize</c> runs), all resolve to false. Please do not "correct" this
 		/// back to the throwing form for consistency with its neighbours.
+		/// <para>
+		/// SECURITY - finding F6 (High), CWE-295 Improper Certificate Validation, OWASP A02:2021.
+		/// THREAT ADDRESSED: the opt-out was honoured in EVERY posture, so a single environment variable -
+		/// <c>Settings__EmailSMTPAllowInvalidCertificates=true</c> - silently restored, in production and on
+		/// all five send paths, exactly the accept-any-certificate behaviour that H-11 exists to remove. An
+		/// active man-in-the-middle could then present any certificate, harvest the SMTP credentials that
+		/// every one of those paths authenticates two lines after connecting, and read or rewrite every
+		/// outbound message. A development convenience that is reachable in production is not a
+		/// convenience: it is the original vulnerability behind a flag.
+		/// </para>
+		/// <para>
+		/// THE GATE: the opt-out is honoured ONLY in development posture and is INERT in production, which is
+		/// the finding's own required remediation - refuse the setting when it is enabled outside Development.
+		/// Refusing to START was considered and rejected as the more invasive of the two permitted answers:
+		/// it converts one subsystem's misconfiguration into a total outage of an application whose other
+		/// subsystems are unaffected, and the preservation requirement asks for the least invasive control
+		/// that closes the vulnerability. Being inert closes it completely rather than partially, because
+		/// with this policy false no callback is installed at all and MailKit's own validation applies -
+		/// which is also why the five call sites need no change: each already tests this member before
+		/// installing a callback, and the callback itself yields this member rather than a literal true.
+		/// </para>
+		/// <para>
+		/// WHY <c>ErpSettings.DevelopmentMode</c> IS THE DISCRIMINATOR: it is the platform's single existing
+		/// source of truth for posture - already what decides whether internal detail may be disclosed in
+		/// <c>Api/RecordManager.cs</c> and <c>Web/Controllers/ApiControllerBase.cs</c> - so this needs no new
+		/// configuration key, no new dependency, no new package and no signature change anywhere. It also
+		/// FAILS CLOSED by construction: it is <c>false</c> until <c>ErpSettings.Initialize</c> assigns it,
+		/// so a host that never initialised the settings layer refuses the opt-out rather than granting it.
+		/// The staged shape - honour in development, refuse and report in production - is the same one
+		/// <c>ErpSettings</c> itself already uses for a weak encryption key.
+		/// </para>
 		/// </remarks>
-		internal static bool AllowInvalidRemoteCertificates =>
-			bool.TryParse(ErpSettings.Configuration?["Settings:EmailSMTPAllowInvalidCertificates"], out var allowInvalid) && allowInvalid;
+		internal static bool AllowInvalidRemoteCertificates
+		{
+			get
+			{
+				//Nothing was asked for. The overwhelmingly common case and the cheapest test, so it comes
+				//first: an installation that never requested the opt-out consults no posture and reports
+				//nothing. Fail-safe parsing per the remarks above - absent, blank, malformed and
+				//not-yet-initialised all resolve here.
+				if (!bool.TryParse(ErpSettings.Configuration?["Settings:EmailSMTPAllowInvalidCertificates"], out var allowInvalid) || !allowInvalid)
+					return false;
+
+				//Asked for AND development posture: honoured, which is the entire legitimate purpose of the
+				//setting - a self-signed or internal-CA relay stays usable on a developer machine.
+				if (ErpSettings.DevelopmentMode)
+					return true;
+
+				//Asked for in production posture: REFUSED. Reported once, then treated for the rest of the
+				//process lifetime exactly as if it had never been set, so certificates are validated.
+				ReportProductionCertificateOptOutRefusal();
+				return false;
+			}
+		}
+
+		/// <summary>
+		/// Latch for the production refusal notice. Zero until the notice has been emitted.
+		/// </summary>
+		private static int productionCertificateOptOutRefusalReported;
+
+		/// <summary>
+		/// Reports, exactly once per process, that an accept-any-certificate opt-out was refused because
+		/// this installation is not in development posture.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - finding F6. ONCE PER PROCESS, and the reason that matters: the policy above is
+		/// evaluated at least twice per outbound message - once to decide whether to install the callback
+		/// and once inside the callback - so a notice emitted without this latch would grow with mail volume
+		/// and bury the single signal it exists to raise.
+		/// <para>
+		/// WRITTEN TO STANDARD ERROR rather than through <c>Diagnostics.Log</c>, for two reasons specific to
+		/// this subsystem. First, it mirrors the precedent <c>ErpSettings</c> already sets for a refused
+		/// security setting and needs no database context, no ambient transaction and no logging stack, so it
+		/// reports correctly even when the surrounding transaction is about to roll back. Second and
+		/// decisively, the platform log can raise an e-mail notification and the subsystem being reported on
+		/// HERE IS THE MAILER: routing this through the log risks a refusal notice about SMTP trying to send
+		/// itself by SMTP. Only the setting NAME is named - never a credential, a server or a port.
+		/// </para>
+		/// </remarks>
+		private static void ReportProductionCertificateOptOutRefusal()
+		{
+			//CompareExchange rather than a plain assignment because send paths overlap - the background
+			//queue job and an interactive test send are independent callers - so the notice is emitted once
+			//in total rather than once per racing caller.
+			if (System.Threading.Interlocked.CompareExchange(ref productionCertificateOptOutRefusalReported, 1, 0) != 0)
+				return;
+
+			Console.Error.WriteLine("warn: WebVella.Erp.Plugins.Mail.Api.SmtpService[1] SECURITY - " +
+				"'Settings:EmailSMTPAllowInvalidCertificates' is enabled but this installation is not in " +
+				"development posture, so it has been REFUSED and SMTP server certificates WILL be validated. " +
+				"Remove the setting, or set 'Settings:DevelopmentMode' if this really is a development " +
+				"installation; see docs/security/secure-configuration.md.");
+		}
 
 		internal SmtpService() { }
 
@@ -146,6 +247,23 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 					DbFileRepository fsRepository = new DbFileRepository();
 					var file = fsRepository.Find(filepath);
+					//SECURITY - companion to finding F24 (High), CWE-269 improper privilege management, CWE-732
+					//incorrect permission assignment. Database/DbFileRepository.Find now REFUSES a staged file that
+					//belongs to another non-administrative principal, so this lookup has one more legitimate way to
+					//answer null than it had before that control existed.
+					//FAILING LOUDLY IS THE POINT: before the refusal existed, an attachment path naming somebody
+					//else's staged upload was read and mailed to an arbitrary recipient. Skipping silently here
+					//would turn that closed exfiltration into a quiet partial success - a message delivered as if
+					//complete, with the refused attachment missing and nothing recorded anywhere. The throw
+					//surfaces on the caller for an interactive send, and Services/SmtpInternalService records it in
+					//the queued email's server_error column, so a refusal is always visible.
+					//FileNotFoundException rather than the bare Exception the sibling overloads of this method use:
+					//identical behaviour and identical message, but it is the framework type for precisely this
+					//condition and it does not add a CA2201 diagnostic. Every existing handler catches Exception, so
+					//nothing observes the difference.
+					if (file == null)
+						throw new FileNotFoundException($"Attachment file '{filepath}' not found.");
+
 					var bytes = file.GetBytes();
 
 					var extension = Path.GetExtension(filepath).ToLowerInvariant();
@@ -295,6 +413,11 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 					DbFileRepository fsRepository = new DbFileRepository();
 					var file = fsRepository.Find(filepath);
+					//SECURITY - companion to finding F24; see the first SendEmail overload in this file for why a
+					//refused staged file must fail loudly here instead of being skipped.
+					if (file == null)
+						throw new FileNotFoundException($"Attachment file '{filepath}' not found.");
+
 					var bytes = file.GetBytes();
 
 					var extension = Path.GetExtension(filepath).ToLowerInvariant();
@@ -431,6 +554,11 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 					DbFileRepository fsRepository = new DbFileRepository();
 					var file = fsRepository.Find(filepath);
+					//SECURITY - companion to finding F24; see the first SendEmail overload in this file for why a
+					//refused staged file must fail loudly here instead of being skipped.
+					if (file == null)
+						throw new FileNotFoundException($"Attachment file '{filepath}' not found.");
+
 					var bytes = file.GetBytes();
 
 					var extension = Path.GetExtension(filepath).ToLowerInvariant();
@@ -579,6 +707,11 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 					DbFileRepository fsRepository = new DbFileRepository();
 					var file = fsRepository.Find(filepath);
+					//SECURITY - companion to finding F24; see the first SendEmail overload in this file for why a
+					//refused staged file must fail loudly here instead of being skipped.
+					if (file == null)
+						throw new FileNotFoundException($"Attachment file '{filepath}' not found.");
+
 					var bytes = file.GetBytes();
 
 					var extension = Path.GetExtension(filepath).ToLowerInvariant();

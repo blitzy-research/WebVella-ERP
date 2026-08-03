@@ -597,17 +597,33 @@ namespace WebVella.Erp.Plugins.Mail
 					entity.RecordPermissions.CanRead = new List<Guid>();
 					entity.RecordPermissions.CanUpdate = new List<Guid>();
 					entity.RecordPermissions.CanDelete = new List<Guid>();
+					//SECURITY - finding F31 (High), CWE-200 exposure of sensitive information to an unauthorized
+					//actor, CWE-522 insufficiently protected credentials, CWE-732 incorrect permission assignment,
+					//OWASP A01:2021 + A02:2021.
+					//THREAT ADDRESSED: this entity stores the SMTP relay credential, and every verb below used to
+					//grant the Regular role as well as Administrator. Because entity record permissions are enforced
+					//in the DATA layer - Api/RecordManager, Eql/EqlCommand, Api/ImportExportManager - any
+					//authenticated non-administrator could read the relay username and password through the record
+					//API, the query language or the AllSmtpSevices data source, and could also UPDATE the server
+					//address: redirect the relay to an attacker-controlled host with a valid certificate and every
+					//subsequent outbound message and its credentials go there instead.
+					//THE FIX IS REMOVAL, not addition: the Regular grants are gone and only Administrator remains, so
+					//this is deny-by-default for every other role, enforced below the presentation layer as the
+					//mandated Authorization Enforcement standard requires.
+					//NOTHING LEGITIMATE LOSES ACCESS, which was verified rather than assumed. The mail application's
+					//own sitemap access list is already Administrator-only - set in MailPlugin.20190419 and
+					//reasserted by MailPlugin.20200610 - and Web/Models/BaseErpPageModel enforces that list
+					//deny-by-default, so every mail screen, including the test-send and send-now page hooks, was
+					//already unreachable for a Regular user. The background queue processor runs in a system scope,
+					//whose principal holds the Administrator role. Existing installations are migrated by
+					//Patch20260802.
 					//Create
-					entity.RecordPermissions.CanCreate.Add(new Guid("f16ec6db-626d-4c27-8de0-3e7ce542c55f"));
 					entity.RecordPermissions.CanCreate.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 					//READ
-					entity.RecordPermissions.CanRead.Add(new Guid("f16ec6db-626d-4c27-8de0-3e7ce542c55f"));
 					entity.RecordPermissions.CanRead.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 					//UPDATE
-					entity.RecordPermissions.CanUpdate.Add(new Guid("f16ec6db-626d-4c27-8de0-3e7ce542c55f"));
 					entity.RecordPermissions.CanUpdate.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 					//DELETE
-					entity.RecordPermissions.CanDelete.Add(new Guid("f16ec6db-626d-4c27-8de0-3e7ce542c55f"));
 					entity.RecordPermissions.CanDelete.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 					{
 						var response = entMan.CreateEntity(entity, systemFieldIdDictionary);
@@ -848,12 +864,28 @@ namespace WebVella.Erp.Plugins.Mail
 				textboxField.System = true;
 				textboxField.DefaultValue = null;
 				textboxField.MaxLength = null;
-				textboxField.EnableSecurity = false;
+				//SECURITY - finding F31 (High), CWE-200, CWE-522, CWE-732, OWASP A01:2021 + A02:2021.
+				//THREAT ADDRESSED: the field that holds the SMTP relay credential was provisioned with field
+				//security OFF and no permissions at all, so nothing distinguished it from the server address or
+				//the port. Defence in depth behind the entity-level revocation above: that stops a
+				//non-administrator reaching these records at all, and this stops the credential being rendered
+				//into an editing surface for anyone who does reach them by another route.
+				//BOTH LINES ARE REQUIRED and the first is the one easily lost in a later edit:
+				//Web/Components/PcFieldBase gates the whole field-permission evaluation behind EnableSecurity,
+				//which defaults to false, so permissions without it are completely inert - while EnableSecurity
+				//without permissions denies everyone. Administrator only; no Regular and no Guest entry belongs
+				//in either list. This mirrors what ERPService already does for the user entity's password field.
+				//NOT CONVERTED TO A PASSWORD FIELD, deliberately: that is a field-type change, and the password
+				//field type routes writes through the one-way credential hash, which would destroy a secret the
+				//SMTP client must be able to present in plaintext and break all mail delivery.
+				textboxField.EnableSecurity = true;
 				textboxField.Permissions = new FieldPermissions();
 				textboxField.Permissions.CanRead = new List<Guid>();
 				textboxField.Permissions.CanUpdate = new List<Guid>();
 				//READ
+				textboxField.Permissions.CanRead.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 				//UPDATE
+				textboxField.Permissions.CanUpdate.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 				{
 					var response = entMan.CreateField(new Guid("17698b9f-e533-4f8d-a651-a00f7de2989e"), textboxField, false);
 					if (!response.Success)

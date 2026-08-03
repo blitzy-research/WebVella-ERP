@@ -25,6 +25,14 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- Security H-20 (CWE-74 improper neutralization, CWE-93 CRLF injection, OWASP A06:2021
+		     Vulnerable and Outdated Components): keep this at or above 4.16.0. Earlier versions accept
+		     an injected STARTTLS response through an unflushed stream buffer, which downgrades the
+		     authentication mechanism, and this plugin also disabled transport certificate validation
+		     until that was remediated - an injection flaw compounding with an absent certificate check.
+		     This single pin additionally carries the patched MimeKit transitively (MailKit 4.17.0
+		     depends on MimeKit 4.17.0), which closes the companion CRLF-injection advisory without a
+		     second manifest entry. Do not add a direct MimeKit reference to do the same job. -->
 		<PackageReference Include="MailKit" Version="4.17.0" />
 	</ItemGroup>
 

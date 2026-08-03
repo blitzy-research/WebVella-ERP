@@ -51,8 +51,47 @@ namespace WebVella.Erp.ConsoleApp
 			// placed after the others would overwrite an operator-supplied value with an empty string and abort
 			// startup on ErpSettings' fail-fast validation. Non-optional so an absent file still fails loudly
 			// rather than yielding a silently empty configuration. Nothing is defaulted or logged here.
+			//
+			// SECURITY - CWE-178 improper handling of case sensitivity and CWE-706 use of an incorrectly
+			// resolved name, OWASP A05 Security Misconfiguration. Two defects in one expression, both of
+			// which decided WHICH file supplies the connection string and the data-at-rest encryption key:
+			//  - The tracked and published file is named "Config.json". The lowercase spelling this replaced
+			//    does not resolve on a case-sensitive filesystem, so this non-optional source aborted every
+			//    Linux and container run, and the obvious field workaround - hand-placing a lowercase copy
+			//    beside the binaries - silently substitutes an unreviewed, unscrubbed file for the audited one.
+			//  - ToApplicationPath matched the executable directory against a Windows drive-letter pattern
+			//    ("[A-Za-z]:\\...") and returned an EMPTY application root whenever that pattern did not
+			//    match, which is always on Linux and also on Windows once the application is published
+			//    outside a "\bin\" tree. An empty root degrades to a path relative to the process working
+			//    directory, so the launcher - or anyone able to write to the directory the process is started
+			//    from - chose the platform's secrets. AppContext.BaseDirectory is the directory the entry
+			//    assembly was loaded from, and this project copies Config.json to both the build output and
+			//    the publish output (see the Content item in WebVella.Erp.ConsoleApp.csproj), so the audited
+			//    file is found deterministically no matter where the process is launched from.
+			//
+			// THE LOWERCASE NAME IS ACCEPTED AS A FALLBACK, AND ONLY AS A FALLBACK. The correctly cased file
+			// is probed first and wins whenever it exists, so the audited file is still the one that loads;
+			// the lowercase name is consulted only when it is the sole candidate. That case is real rather
+			// than hypothetical - deployments produced by the earlier lowercase code path, and the publish
+			// tooling that emitted a lowercase copy to satisfy it, carry only config.json - so refusing it
+			// would trade one startup failure for another and break existing installations. Both candidates
+			// are resolved against AppContext.BaseDirectory, NOT through ToApplicationPath, so the fallback
+			// inherits the deterministic root above and cannot reintroduce the working-directory defect:
+			// tolerating the legacy NAME must not also tolerate an attacker-chosen LOCATION. Existence is
+			// tested here rather than inside the provider so that when neither name is present the
+			// provider's own message names the file the deployment is supposed to hold.
+			// System.IO is fully qualified rather than imported, matching this repository's existing idiom for
+			// a single path call (see ErpMvcExtensions.UseErp).
+			string configPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Config.json");
+			if (!System.IO.File.Exists(configPath))
+			{
+				string lowerCaseConfigPath = System.IO.Path.Combine(AppContext.BaseDirectory, "config.json");
+				if (System.IO.File.Exists(lowerCaseConfigPath))
+					configPath = lowerCaseConfigPath;
+			}
+
 			var configurationBuilder = new ConfigurationBuilder()
-				.AddJsonFile("config.json".ToApplicationPath())
+				.AddJsonFile(configPath)
 				.AddEnvironmentVariables();
 
 			// User secrets come LAST, and only in development, so a developer's own store outranks an ambient

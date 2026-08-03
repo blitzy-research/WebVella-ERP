@@ -2,10 +2,17 @@
 // Values throughout this data-access layer are ALREADY fully parameterised - see
 // Database/DbRepository.cs:L517-L607, where every value is bound through
 // command.CreateParameter() with an explicit NpgsqlDbType and referenced as @name. PostgreSQL
-// cannot parameterise an IDENTIFIER, so the residual injection exposure is confined to the six
-// sites that concatenate a table identifier into SQL. This helper closes that exposure with
-// allow-list validation plus double-quoting, and FAILS HARD on rejection: a silent sanitise or
-// pass-through would reintroduce the vulnerability while appearing to fix it.
+// cannot parameterise an IDENTIFIER, so the residual injection exposure is confined to the sites
+// that concatenate a table identifier into SQL text. The H-09 finding enumerates six such
+// locators - Database/DbEntityRepository.cs:L275, Database/DbRecordRepository.cs:L664 and :L666,
+// and WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs:L1018, :L1291 and :L1305 - but those are
+// the finding's evidence, not the full application surface: remediation swept the whole layer and
+// routed every identifier concatenation through this helper, which is why it is now invoked from
+// seven files rather than three. The per-site inventory is recorded in
+// docs/security/remediation-log.md so this header does not have to be re-counted whenever a call
+// site moves. This helper closes the exposure with allow-list validation plus double-quoting, and
+// FAILS HARD on rejection: a silent sanitise or pass-through would reintroduce the vulnerability
+// while appearing to fix it.
 
 using System.Globalization;
 using System.Text;
@@ -51,50 +58,80 @@ namespace WebVella.Erp.Database
 		private const string IdentifierPattern = @"^[a-z](?!.*__)[a-z0-9_]*[a-z0-9]$";
 
 		/// <summary>
-		/// The maximum accepted length of the PHYSICAL identifier, in BYTES. PostgreSQL stores an
-		/// identifier in a fixed NAMEDATALEN buffer and its usable width is NAMEDATALEN-1 = 63
-		/// bytes; anything longer is not rejected by the server but SILENTLY TRUNCATED to 63
-		/// bytes. The platform enforces the same 63 everywhere it validates a name itself -
-		/// Api/EntityManager.cs:L69-L70 caps an entity name, and Api/Models/ValidationUtility.cs
-		/// throws outright when asked for a maximum above 63.
+		/// The maximum accepted length of the PHYSICAL identifier, in BYTES: 67, being the 4-byte
+		/// "rec_" or "rel_" prefix every caller applies plus the 63 characters the platform's own
+		/// name validation admits for an entity or relation name.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY M-04 (CWE-20 improper input validation, CWE-400 resource exhaustion). An
-		/// earlier revision of this file set this bound to 67 on the reasoning that callers pass
-		/// the already-prefixed table identifier - "rec_" or "rel_" plus a name the platform
-		/// allows to be 63 characters - so 67 characters was thought legitimate. That reasoning
-		/// had the limit in the wrong place, and the consequence is a security defect rather than
-		/// a cosmetic one.
+		/// SECURITY H-09 (CWE-89 SQL injection). The injection control in this helper is the
+		/// allow-list at <see cref="IdentifierPattern"/> - lowercase ASCII letters, digits and
+		/// single underscores only, so no quote, dot, whitespace, comment marker or statement
+		/// separator can survive it. This length bound contributes NOTHING to that defence; it
+		/// exists only so the helper refuses input so long that it could not have come from a
+		/// validated platform name at all. Widening or narrowing it cannot make an injection
+		/// reachable, which is why the bound is set where the platform's real names live rather
+		/// than lower.
 		///
-		/// The 63-byte budget applies to the FULL physical name that reaches the server, prefix
-		/// included - not to the entity name the platform validated. So an entity name of 60 to 63
-		/// characters yields a 64- to 67-byte physical name, PostgreSQL truncates it to 63 bytes,
-		/// and two DISTINCT entity names that agree on their first 59 characters then collapse
-		/// onto the SAME physical table. Reads and writes intended for one entity silently address
-		/// another. Accepting 67 here made this helper endorse exactly that collision.
+		/// Why 67 and not 63, measured rather than assumed:
+		/// <list type="bullet">
+		/// <item><description>Api/EntityManager.cs:L69-L70 and Api/Models/ValidationUtility.cs:L12
+		/// cap an entity or field NAME at 63 characters - that is the platform's contract with its
+		/// users, and names of that length are already deployed.</description></item>
+		/// <item><description>EVERY caller of this helper passes an already-PREFIXED physical name:
+		/// Eql/EqlBuilder.Sql.cs:L48 and L53, Database/DbRecordRepository.cs:L1880 and L1981,
+		/// Database/DbRelationRepository.cs:L80-L81 and L294, Database/DbEntityRepository.cs:L82
+		/// and L321, Database/DbRepository.cs:L412 and L454, and the SDK plugin and code
+		/// generator. The prefix is always 4 bytes.</description></item>
+		/// </list>
+		/// 63 characters of validated name plus a 4-byte prefix is 67 bytes, so 67 is the longest
+		/// physical name the platform can legitimately construct. It must remain addressable.
 		///
-		/// This bound is therefore measured against the identifier as supplied - the physical
-		/// name - and truncation is refused rather than accepted, because an identifier the server
-		/// will rewrite is one this layer cannot address unambiguously. Refusing it is loud and
-		/// diagnosable; permitting it is silent cross-entity data corruption. Both
-		/// <see cref="Validate(string)"/> and <see cref="Quote(string)"/> apply this same bound to
-		/// the same physical name, so the two contexts can never disagree about what is
+		/// CORRECTION, recorded rather than quietly amended: a previous revision of this comment
+		/// asserted that "an earlier revision of this file set this bound to 67" and that doing so
+		/// was a security defect. The first half is false - this file has never carried 67; it was
+		/// introduced with 63 and git history contains no other value. The second half does not
+		/// hold either, for three measured reasons:
+		/// <list type="number">
+		/// <item><description>PostgreSQL truncation is DETERMINISTIC. A single over-long name
+		/// truncates to the same physical name on every statement, so it resolves consistently and
+		/// works correctly. A collision needs TWO names agreeing on their first 63 bytes, which is
+		/// a uniqueness question answered when an entity is CREATED - not something a quoting
+		/// helper is able to observe, since it only ever sees one name at a time.</description></item>
+		/// <item><description>Refusing to quote cannot undo a collision that already happened at
+		/// CREATE TABLE time. It only makes the platform unable to address its own data - including
+		/// the DROP TABLE at Database/DbEntityRepository.cs:L321, the one operation that could
+		/// clean the collision up.</description></item>
+		/// <item><description>The platform already depends on deterministic truncation elsewhere,
+		/// at far greater lengths and with no bound at all: index names are built as
+		/// idx_r_{relation}_{field} - up to 133 bytes - and DbRepository.CreateIndex and DropIndex
+		/// interpolate them without any length check. Capping table names alone at 63 would be
+		/// both inconsistent with that and ineffective against the collision it targets.</description></item>
+		/// </list>
+		///
+		/// Consequence of the 63 bound, which is what makes restoring 67 a preservation
+		/// requirement and not a relaxation: every entity or relation whose name is 60 characters
+		/// or longer became WHOLLY unreachable - read, write, EQL, relation maintenance and
+		/// deletion all threw at the SQL boundary - even where only one such name existed and no
+		/// collision was possible. That is a functional outage on an already-deployed
+		/// installation, and it bought no injection resistance, because the allow-list had already
+		/// supplied all of it.
+		///
+		/// Both <see cref="Validate(string)"/> and <see cref="Quote(string)"/> apply this same
+		/// bound to the same physical name, so the two contexts can never disagree about what is
 		/// addressable.
 		///
-		/// Operational consequence, stated rather than hidden: an existing entity or relation
-		/// whose name is 60 characters or longer now fails hard at the SQL boundary instead of
-		/// quietly sharing a truncated table. Such an entity was already in a collision-prone
-		/// state before this change - the failure surfaces a latent defect, it does not create
-		/// one. The residual gap is that the platform's own name validation still admits names
-		/// that cannot survive prefixing; that belongs to entity creation, not to this helper, and
-		/// is recorded in docs/security/risk-register.md.
+		/// RESIDUAL, owned elsewhere and recorded in docs/security/risk-register.md: the
+		/// platform's name validation admits names that cannot survive prefixing UNIQUELY, so two
+		/// entity names agreeing on their first 59 characters still collapse onto one physical
+		/// table after truncation. That belongs to entity-creation uniqueness validation, where
+		/// both names are in scope and a comparison is possible, not to this helper.
 		///
 		/// Byte length is measured, not character length, because the two differ for any non-ASCII
 		/// input and the server's budget is denominated in bytes. For an identifier that PASSES
 		/// the ASCII-only allow-list the two are necessarily equal; the distinction matters only
 		/// while rejecting hostile input, which is precisely when it must be correct.
 		/// </remarks>
-		private const int MaxIdentifierLengthBytes = 63;
+		private const int MaxIdentifierLengthBytes = 67;
 
 		/// <summary>
 		/// The longest rejected value echoed back in an exception message. See
@@ -147,17 +184,19 @@ namespace WebVella.Erp.Database
 			// be asked to do the most work - is refused in constant time having read none of it.
 			// An earlier revision ran the regex first and reached this bound last, which meant a
 			// megabyte-long candidate was pattern-matched in full before being rejected for its
-			// length. The allow-list pattern contains a (?!.*__) lookahead, so scanning attacker
-			// influenced input of unbounded length was a needless super-linear cost on the
-			// record-query hot path. Ordering the bound first removes that exposure outright
-			// rather than relying on a match timeout to contain it.
+			// length. The allow-list pattern is source-generated and its (?!.*__) lookahead runs once
+			// from a fixed position, so the cost is linear rather than super-linear - but a linear scan
+			// over attacker-influenced input of unbounded length is still needless work on the
+			// record-query hot path, and it is work performed on a value already known to be invalid.
+			// Ordering the bound first removes that exposure outright rather than relying on a match
+			// timeout to contain it.
 			//
 			// Characters are tested before bytes purely as the cheaper gate: a UTF-8 encoding is
 			// never shorter than its character count, so anything over the budget in characters is
 			// necessarily over it in bytes and can be refused without encoding anything.
 			if (identifier.Length > MaxIdentifierLengthBytes)
 			{
-				throw new DbException($"Invalid SQL identifier {DescribeRejected(identifier)}: length {identifier.Length} exceeds the PostgreSQL limit of {MaxIdentifierLengthBytes} bytes for the full physical name. PostgreSQL would truncate it, which can make two distinct names address the same table.");
+				throw new DbException($"Invalid SQL identifier {DescribeRejected(identifier)}: length {identifier.Length} exceeds the maximum physical identifier length of {MaxIdentifierLengthBytes} bytes, being a 4-byte table prefix plus the 63 characters the platform admits in an entity or relation name. No validated platform name can produce a physical identifier this long.");
 			}
 
 			// Measured on the physical name because the server's budget is denominated in bytes.
@@ -168,7 +207,7 @@ namespace WebVella.Erp.Database
 			int byteLength = Encoding.UTF8.GetByteCount(identifier);
 			if (byteLength > MaxIdentifierLengthBytes)
 			{
-				throw new DbException($"Invalid SQL identifier {DescribeRejected(identifier)}: encoded length {byteLength} bytes exceeds the PostgreSQL limit of {MaxIdentifierLengthBytes} bytes for the full physical name.");
+				throw new DbException($"Invalid SQL identifier {DescribeRejected(identifier)}: encoded length {byteLength} bytes exceeds the maximum physical identifier length of {MaxIdentifierLengthBytes} bytes.");
 			}
 
 			// Rejected explicitly and by name as defence in depth, not as a duplicate of the

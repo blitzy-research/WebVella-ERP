@@ -20,7 +20,7 @@ the platform.** Three secrets must be supplied before it will start, and several
 only outside the Development environment.
 
 The vulnerability disclosure policy is in
-[`SECURITY.md`](https://github.com/WebVella/WebVella-ERP/blob/master/SECURITY.md), and the
+[`SECURITY.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/SECURITY.md), and the
 third-party dependency inventory — including licences, advisory state and the recorded licensing
 decision — is in
-[`LIBRARIES.md`](https://github.com/WebVella/WebVella-ERP/blob/master/LIBRARIES.md).
+[`LIBRARIES.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/LIBRARIES.md).

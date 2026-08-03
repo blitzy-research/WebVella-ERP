@@ -45,12 +45,27 @@ namespace WebVella.Erp.Web.Controllers
 		// generic failure in this controller reads identically to every other one in the API surface.
 		private const string INTERNAL_ERROR_MESSAGE = "An internal error occurred!";
 
+		// THREAT ADDRESSED - CWE-89 SQL injection reached through the quick-search sort argument. The
+		// refusal wording used when a requested sort field does not resolve against the requested entity's
+		// metadata. It names neither the entity nor the field, and it is identical whether the entity or the
+		// field is the part that did not resolve, so a caller cannot use it to enumerate the schema.
+		private const string UNRESOLVED_SORT_FIELD_MESSAGE = "The requested sort field is not available.";
+
 		// THREAT ADDRESSED - insecure direct object reference, OWASP A01 Broken Access Control. One single
 		// refusal for the file-mutation actions, used whether the file is absent, owned by somebody else, or
 		// the caller cannot be resolved. Deliberately identical in all three cases: a message that
 		// distinguished "not found" from "not yours" would confirm which paths hold real files and hand an
 		// attacker a file-enumeration oracle for free.
 		private const string FILE_ACCESS_DENIED_MESSAGE = "You are not allowed to modify this file.";
+
+		// THREAT ADDRESSED - remote code execution through the authenticated code-compile endpoint
+		// (CWE-94 improper control of generated code, reached through CWE-862 missing authorization,
+		// OWASP A01 Broken Access Control feeding A03 Injection) and the same weakness one step further
+		// round through page-node authoring. One single refusal for both, worded so it states the required
+		// privilege without confirming whether the named page, node or component actually exists - a message
+		// that distinguished "no such page" from "not permitted" would hand an unprivileged caller a
+		// page-enumeration oracle for free, exactly as FILE_ACCESS_DENIED_MESSAGE above avoids doing.
+		private const string CODE_AUTHORING_ACCESS_DENIED_MESSAGE = "You are not allowed to author page code on this server.";
 
 		// Returned by the editor upload route when the callback index on the query string is not an integer.
 		// It carries no script and does not echo the offending value - see BuildCKEditorCallback.
@@ -63,6 +78,13 @@ namespace WebVella.Erp.Web.Controllers
 		// Upper bound on the request path recorded with an authorization failure, so a deliberately long
 		// request cannot inflate the log store one refusal at a time.
 		private const int MAX_LOGGED_PATH_LENGTH = 400;
+
+		// Upper bound on each caller-supplied field recorded with a bearer-token audit record. Both token
+		// routes are [AllowAnonymous], so the submitted e-mail address and the source address arrive
+		// unvalidated and are bounded for the same reason as the path above: without a bound a single request
+		// could write an arbitrarily large row. Matches the bound the login page applies to the same two
+		// fields, so one attack spread across both surfaces produces uniformly sized records.
+		private const int MAX_AUDITED_FIELD_LENGTH = 100;
 
 		// The generic binary content type browsers fall back to when they cannot classify a file. It asserts
 		// nothing about the content, so there is nothing for the consistency check below to contradict.
@@ -121,15 +143,76 @@ namespace WebVella.Erp.Web.Controllers
 		//
 		// It MUST be an inline allow-list and never a blanket attachment. PcFieldImage and PcFieldFile render
 		// stored images with src-prefix="/fs", i.e. <img src="/fs/...">, so forcing every response to
-		// download would break image display across the whole platform. The set is therefore the download
-		// action's own isImage set, extended only to the other raster formats the upload allow-list above
-		// admits - keeping the two lists coherent, so every image that can be stored can still be shown -
-		// plus .pdf, which browsers render in a sandboxed viewer rather than as same-origin script.
-		// .html, .htm, .svg, .xhtml, .xml and .js are all absent, which is what breaks the chain.
+		// download would break image display across the whole platform.
+		//
+		// NARROWED to exactly the four extensions this action's own isImage test names, and no wider. An
+		// earlier revision also admitted .bmp, .webp, .ico, .tif, .tiff and .pdf on the reasoning that the
+		// upload allow-list accepts them, and that reasoning was wrong in both directions:
+		//   an inline allow-list must be derived from what the platform PROVES it renders inline, which is
+		//   the raster set the isImage test and the image field components consume - nothing in this
+		//   repository ever emits a <img src="/fs/...">, a preview or an <embed> for the other five raster
+		//   types, so admitting them widened the inline surface for no functional gain;
+		//   .pdf is the sharper error. A PDF served inline is rendered by the browser's own PDF engine,
+		//   which historically has been a source of same-origin script execution and which honours embedded
+		//   JavaScript actions. It is a document format with an execution surface, not an image, so it now
+		//   downloads like every other non-raster type.
+		// Everything not named here - including .html, .htm, .svg, .xhtml, .xml, .js and every extension
+		// with no known media type - is forced to an attachment, which is what breaks the stored-scripting
+		// chain. Widening this set is an owner decision; see docs/security/risk-register.md.
 		private static readonly HashSet<string> INLINE_DOWNLOAD_EXTENSIONS = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 		{
-			".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".ico", ".tif", ".tiff", ".pdf"
+			".jpg", ".jpeg", ".png", ".gif"
 		};
+
+		// THREAT ADDRESSED - finding H-08, CWE-434 (unrestricted upload of file with dangerous type), OWASP
+		// A04 + A03, and specifically the review finding that "content verification" compared attacker
+		// metadata only. The declared content type is supplied BY the caller, so agreeing with it proves
+		// nothing about the bytes. This table pairs an admitted extension with the leading bytes its format
+		// is specified to begin with, so a payload whose content contradicts its extension is refused before
+		// it is ever stored - which is what stops an .html or .svg body from being parked behind a .png name
+		// and later served from this origin.
+		//
+		// SCOPE IS DELIBERATELY BOUNDED, and the bound is the point rather than an omission:
+		//   only formats with a FIXED, SHORT, UNAMBIGUOUS leading signature are listed. Text-based and
+		//   container-negotiated formats (.txt, .csv, .rtf, .doc, .xls, .ppt, .odt/.ods/.odp, .docx/.xlsx/
+		//   .pptx, .mp3 without an ID3 tag, .mov, .avi, .mkv, .mpg, .m4v, .aac, .flac) have no such
+		//   signature, or several, so a signature test on them would reject legitimate files. Those keep the
+		//   extension allow-list as their only gate, exactly as before this change;
+		//   only the FIRST few bytes are examined - at most MAX_SIGNATURE_PROBE_BYTES - so this is a bounded
+		//   constant-cost check and never deep content parsing, which the minimal-change constraint forbids
+		//   and which would add real per-request cost.
+		// The extension allow-list remains the authoritative control because the stored extension is what
+		// decides how the file is later served; this check is a consistency test layered on top of it.
+		private static readonly Dictionary<string, byte[][]> UPLOAD_CONTENT_SIGNATURES = new Dictionary<string, byte[][]>(StringComparer.OrdinalIgnoreCase)
+		{
+			//image
+			[".jpg"] = new[] { new byte[] { 0xFF, 0xD8, 0xFF } },
+			[".jpeg"] = new[] { new byte[] { 0xFF, 0xD8, 0xFF } },
+			[".png"] = new[] { new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A } },
+			//GIF87a and GIF89a
+			[".gif"] = new[] { new byte[] { 0x47, 0x49, 0x46, 0x38, 0x37, 0x61 }, new byte[] { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61 } },
+			[".bmp"] = new[] { new byte[] { 0x42, 0x4D } },
+			//"RIFF" - the WEBP fourcc sits at offset 8, which this leading-bytes test deliberately does not reach
+			[".webp"] = new[] { new byte[] { 0x52, 0x49, 0x46, 0x46 } },
+			[".ico"] = new[] { new byte[] { 0x00, 0x00, 0x01, 0x00 } },
+			//little- and big-endian TIFF
+			[".tif"] = new[] { new byte[] { 0x49, 0x49, 0x2A, 0x00 }, new byte[] { 0x4D, 0x4D, 0x00, 0x2A } },
+			[".tiff"] = new[] { new byte[] { 0x49, 0x49, 0x2A, 0x00 }, new byte[] { 0x4D, 0x4D, 0x00, 0x2A } },
+			//document
+			[".pdf"] = new[] { new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D } },
+			//video and audio with fixed signatures. "ftyp" at offset 4 is not reachable by a leading-bytes
+			//test, so .mp4 is intentionally absent and stays on the extension gate alone.
+			[".webm"] = new[] { new byte[] { 0x1A, 0x45, 0xDF, 0xA3 } },
+			[".ogv"] = new[] { new byte[] { 0x4F, 0x67, 0x67, 0x53 } },
+			[".ogg"] = new[] { new byte[] { 0x4F, 0x67, 0x67, 0x53 } },
+			[".oga"] = new[] { new byte[] { 0x4F, 0x67, 0x67, 0x53 } },
+			[".wav"] = new[] { new byte[] { 0x52, 0x49, 0x46, 0x46 } }
+		};
+
+		// Upper bound on how many leading bytes the signature test reads. It is the length of the longest
+		// signature above, so the probe can never be grown into content parsing by adding a longer entry
+		// without also revisiting this constant deliberately.
+		private const int MAX_SIGNATURE_PROBE_BYTES = 8;
 
 		RecordManager recMan;
 		EntityManager entMan;
@@ -151,6 +234,114 @@ namespace WebVella.Erp.Web.Controllers
 			this.erpRequestContext = requestContext;
 			this._detection = detection;
 		}
+
+		#region << Code authoring authorization >>
+
+		// THREAT ADDRESSED - CWE-94 (improper control of generation of code) reached through CWE-862
+		// (missing authorization), OWASP A01 Broken Access Control feeding A03 Injection. Two findings share
+		// this one control: the authenticated code-compile endpoint, and the five page-node mutation actions
+		// that are the same weakness at one remove.
+		//
+		// WHAT WAS WRONG: this controller carries a class-level [Authorize], so every action required *a*
+		// session and nothing more. api/v3.0/datasource/code-compile handed the request body straight to
+		// CodeEvalService.Compile, which calls CSScript.Evaluator.LoadCode with
+		// ReferenceDomainAssemblies = true - so ANY authenticated principal, including the lowest-privileged
+		// Regular-role account, could compile and load arbitrary C# into this process with this process's
+		// database credentials. The api/v3.0/page/{pageId}/node/... actions reach the same evaluator by a
+		// second route: a page node carries an Options payload whose DataSourceVariable entries may be of
+		// type CODE or SNIPPET, and PageDataModel.GetPropertyValueByDataSource evaluates exactly those
+		// through the very same CodeEvalService when the page renders. Authoring a node is therefore
+		// authoring code, and it was guarded no more strongly than reading a record.
+		//
+		// WHY A HELPER RATHER THAN [Authorize(Roles = "administrator")]: the authorization standard this
+		// audit applies has four clauses, and "log authorization failures" is one of them. An attribute
+		// short-circuits the pipeline before the action body runs, so it cannot record anything. This helper
+		// is modelled on IsFileMutationAuthorized further down this file - the pattern this controller
+		// already uses for object-level refusals - so enforcement and the audit record are one mechanism
+		// rather than two that can drift apart.
+		//
+		// DENY BY DEFAULT: the only path that returns true is an explicitly resolved administrator. An
+		// unresolvable principal returns false and so does every non-administrator, so a future refactor
+		// that loses a role can only fail closed. ErpUser.IsAdmin is the platform's own role test - it
+		// compares against SystemIds.AdministratorRoleId - rather than a hand-rolled string comparison.
+		//
+		// NOTHING LEGITIMATE IS BROKEN: repository-wide, code-compile is called only from
+		// TagHelpers/WvFieldDatasource/form.js, the data-source authoring form, and the five page-node routes
+		// only from the SDK page-builder bundles under Plugins.SDK/wwwroot/js/wv-pb-manager. Both are
+		// developer authoring surfaces reached from the SDK, and no end-user runtime screen calls either.
+		private bool IsCodeAuthoringAuthorized(string operation, string subject)
+		{
+			//AuthService.GetUser returns null for a principal this build cannot use, so it is null-guarded
+			//before the allow branch rather than trusted.
+			var currentUser = AuthService.GetUser(User);
+			if (currentUser != null && currentUser.IsAdmin)
+			{
+				return true;
+			}
+
+			//The string-and-details overload is chosen deliberately: LogService's Exception overload sends an
+			//outbound SMTP message BEFORE it persists, so routing a refusal through it would let a caller
+			//probing these routes generate one e-mail per attempt. DoNotNotify is passed explicitly because
+			//the parameter's default is NotNotified, which is the mailing path. Only the acting identity, the
+			//length-bounded subject and the reason are recorded - never the submitted source code, which is
+			//attacker-chosen and unbounded.
+			var loggedSubject = subject ?? string.Empty;
+			if (loggedSubject.Length > MAX_LOGGED_PATH_LENGTH)
+			{
+				loggedSubject = loggedSubject.Substring(0, MAX_LOGGED_PATH_LENGTH);
+			}
+
+			var actingIdentity = currentUser == null
+				? "anonymous"
+				: currentUser.Id.ToString("D", CultureInfo.InvariantCulture);
+
+			new LogService().Create(Diagnostics.LogType.Error, "WebApiController:" + operation,
+				"Authorization failure: page code authoring refused.",
+				"user_id=" + actingIdentity
+					+ "; subject=" + loggedSubject
+					+ "; reason=" + (currentUser == null ? "unresolved principal" : "caller is not an administrator"),
+				Diagnostics.LogNotificationStatus.DoNotNotify);
+
+			return false;
+		}
+
+		// The single refusal every code-authoring action returns. text/plain with status 403 matches the
+		// shape the five page-node actions already use on their error path, so the SDK page-builder client
+		// surfaces it without any client change.
+		private static ContentResult CodeAuthoringForbidden()
+		{
+			return new ContentResult
+			{
+				Content = CODE_AUTHORING_ACCESS_DENIED_MESSAGE,
+				ContentType = "text/plain",
+				StatusCode = 403
+			};
+		}
+
+		// THREAT ADDRESSED - finding F26, CWE-209 (generation of an error message containing sensitive
+		// information), OWASP A05 Security Misconfiguration. Thirty-six error paths in this controller
+		// copied an exception message - ten of them the complete stack trace as well - straight into the
+		// response body, handing framework versions, internal type and namespace names, data-layer text
+		// and the call path to any caller able to provoke a fault. NOT ONE of those sites was guarded by a
+		// development-mode check, so changing ASPNETCORE_ENVIRONMENT would NOT have closed them - the code
+		// had to change. Every one of them now takes its message from here, so the decision is made once
+		// and cannot drift back one site at a time.
+		//
+		// The guard mirrors ApiControllerBase.DoBadRequestResponse (lines 49-58), which was already
+		// correct, so the whole API surface answers a fault identically. ex.ToString() supplies the
+		// development-mode detail rather than ex.Message because it renders the type, the message, every
+		// inner exception AND the stack trace - a superset of what any of these sites emitted before, so a
+		// developer working locally loses nothing. The full detail is still captured server-side in every
+		// posture by SecurityAuditLog.RecordApiFault, which means this is a change of audience, not a loss
+		// of diagnostic capability.
+		private static string SafeErrorMessage(Exception ex)
+		{
+			return ErpSettings.DevelopmentMode
+				? (ex == null ? INTERNAL_ERROR_MESSAGE : ex.ToString())
+				: INTERNAL_ERROR_MESSAGE;
+		}
+
+		#endregion
 
 		[Route("api/v3/en_US/eql")]
 		[HttpPost]
@@ -179,7 +370,7 @@ namespace WebVella.Erp.Web.Controllers
 			catch (Exception ex)
 			{
 				response.Success = false;
-				response.Message = ex.Message;
+				response.Message = SafeErrorMessage(ex);
 				return Json(response);
 			}
 
@@ -272,7 +463,7 @@ namespace WebVella.Erp.Web.Controllers
 			catch (Exception ex)
 			{
 				response.Success = false;
-				response.Message = ex.Message;
+				response.Message = SafeErrorMessage(ex);
 				return Json(response);
 			}
 
@@ -460,7 +651,7 @@ namespace WebVella.Erp.Web.Controllers
 			catch (Exception ex)
 			{
 				response.Success = false;
-				response.Message = ex.Message;
+				response.Message = SafeErrorMessage(ex);
 				new Log().Create(LogType.Error, "ToggleSidebarSize API Method Error", ex);
 				return Json(response);
 			}
@@ -577,7 +768,7 @@ namespace WebVella.Erp.Web.Controllers
 			catch (Exception ex)
 			{
 				response.Success = false;
-				response.Message = ex.Message;
+				response.Message = SafeErrorMessage(ex);
 				new Log().Create(LogType.Error, "ToggleSidebarSize API Method Error", ex);
 				return Json(response);
 			}
@@ -587,6 +778,18 @@ namespace WebVella.Erp.Web.Controllers
 		[HttpPost]
 		public ActionResult DataSourceAction([FromBody] DataSourceCodeTestModel model)
 		{
+			//THREAT ADDRESSED - CWE-94 (improper control of generation of code) reached through CWE-862
+			//(missing authorization), OWASP A01 feeding A03. CodeEvalService.Compile below calls
+			//CSScript.Evaluator.LoadCode with ReferenceDomainAssemblies = true on the request body, which is
+			//arbitrary code execution inside this process. Before this gate the class-level [Authorize] was
+			//the only control, so every authenticated account reached it. The check runs FIRST, before the
+			//body is read at all, so an unprivileged submission is never compiled and never cached by
+			//CodeEvalService. See IsCodeAuthoringAuthorized.
+			if (!IsCodeAuthoringAuthorized("DataSourceCodeCompile", "api/v3.0/datasource/code-compile"))
+			{
+				return CodeAuthoringForbidden();
+			}
+
 			try
 			{
 				CodeEvalService.Compile(model.CsCode);
@@ -594,7 +797,7 @@ namespace WebVella.Erp.Web.Controllers
 			catch (Exception ex)
 			{
 				new Log().Create(LogType.Error, "DataSourceAction Code compile API Method Error", ex);
-				return Json(new { success = false, message = ex.Message });
+				return Json(new { success = false, message = SafeErrorMessage(ex) });
 			}
 
 			return Json(new { success = true, message = "" });
@@ -625,7 +828,7 @@ namespace WebVella.Erp.Web.Controllers
 			catch (Exception ex)
 			{
 				new Log().Create(LogType.Error, "DataSourceAction test API Method Error", ex);
-				errors.Add(new EqlError { Message = ex.Message });
+				errors.Add(new EqlError { Message = SafeErrorMessage(ex) });
 			}
 
 			return Json(new { sql, data, errors });
@@ -685,7 +888,7 @@ namespace WebVella.Erp.Web.Controllers
 			catch (Exception ex)
 			{
 				new Log().Create(LogType.Error, "DataSourceAction Id test API Method Error", ex);
-				errors.Add(new EqlError { Message = ex.Message });
+				errors.Add(new EqlError { Message = SafeErrorMessage(ex) });
 			}
 
 			return Json(new { sql, data, errors });
@@ -696,6 +899,15 @@ namespace WebVella.Erp.Web.Controllers
 		[HttpPost]
 		public ActionResult CreatePageBodyNode(Guid pageId, [FromBody] PageBodyNode newNode)
 		{
+			//THREAT ADDRESSED - CWE-94 reached through CWE-862, OWASP A01 feeding A03. The Options payload
+			//this action persists may carry DataSourceVariable entries of type CODE, which
+			//PageDataModel.GetPropertyValueByDataSource evaluates through CodeEvalService when the page
+			//renders - so creating a node is code authoring. See IsCodeAuthoringAuthorized.
+			if (!IsCodeAuthoringAuthorized("CreatePageBodyNode", "page_id=" + pageId))
+			{
+				return CodeAuthoringForbidden();
+			}
+
 			try
 			{
 				var pageSrv = new PageService();
@@ -731,7 +943,7 @@ namespace WebVella.Erp.Web.Controllers
 				new Log().Create(LogType.Error, "CreatePageBodyNode API Method Error", exception);
 				return new ContentResult
 				{
-					Content = $"Error: {exception.Message}",
+					Content = "Error: " + SafeErrorMessage(exception),
 					ContentType = "text/plain",
 					// change to whatever status code you want to send out
 					StatusCode = 500
@@ -744,6 +956,15 @@ namespace WebVella.Erp.Web.Controllers
 		[HttpPost]
 		public ActionResult UpdatePageBodyNode(Guid pageId, Guid nodeId, [FromBody] PageBodyNode node)
 		{
+			//THREAT ADDRESSED - CWE-94 reached through CWE-862, OWASP A01 feeding A03. This action rewrites a
+			//node's Options, the code-bearing payload described on IsCodeAuthoringAuthorized. Its
+			//object-level check - that the node belongs to {pageId} - was already present below and is left
+			//exactly as it was; only the missing privilege check is added.
+			if (!IsCodeAuthoringAuthorized("UpdatePageBodyNode", "page_id=" + pageId + "; node_id=" + nodeId))
+			{
+				return CodeAuthoringForbidden();
+			}
+
 			try
 			{
 				var pageSrv = new PageService();
@@ -776,7 +997,7 @@ namespace WebVella.Erp.Web.Controllers
 				new Log().Create(LogType.Error, "UpdatePageBodyNode API Method Error", exception);
 				return new ContentResult
 				{
-					Content = $"Error: {exception.Message}",
+					Content = "Error: " + SafeErrorMessage(exception),
 					ContentType = "text/plain",
 					// change to whatever status code you want to send out
 					StatusCode = 500
@@ -789,6 +1010,14 @@ namespace WebVella.Erp.Web.Controllers
 		[HttpPost]
 		public ActionResult MovePageBodyNode(Guid pageId, Guid nodeId, [FromBody] MovedNodeInfo moveInfo)
 		{
+			//THREAT ADDRESSED - CWE-94 reached through CWE-862, OWASP A01 feeding A03. Re-parenting a node
+			//re-parents its code-bearing Options with it, and the loop below rewrites every sibling node in
+			//the container through UpdatePageBodyNode. See IsCodeAuthoringAuthorized.
+			if (!IsCodeAuthoringAuthorized("MovePageBodyNode", "page_id=" + pageId + "; node_id=" + nodeId))
+			{
+				return CodeAuthoringForbidden();
+			}
+
 			try
 			{
 				var pageSrv = new PageService();
@@ -805,7 +1034,17 @@ namespace WebVella.Erp.Web.Controllers
 
 				var pageNodes = pageSrv.GetPageNodes(pageId);
 
-				var movedNode = pageNodes.First(x => x.Id == nodeId);
+				//THREAT ADDRESSED - CWE-639 (authorization bypass through a user-controlled key), OWASP A01.
+				//The node identifier arrives on the route independently of the page identifier, so it has to
+				//be proved to belong to THIS page before anything is moved. First() raised an unhandled
+				//InvalidOperationException for a foreign or absent node, which the catch below then reported
+				//as a 500 carrying exception text; SingleOrDefault plus an explicit NotFound states the
+				//object-level refusal instead, and matches what UpdatePageBodyNode and DeletePageBodyNode
+				//already do a few lines above and below.
+				var movedNode = pageNodes.SingleOrDefault(x => x.Id == nodeId);
+				if (movedNode == null)
+					return NotFound();
+
 				movedNode.ParentId = moveInfo.NewParentNodeId;
 				movedNode.ContainerId = moveInfo.NewContainerId;
 				movedNode.Weight = moveInfo.NewIndex + 1; //Convert index to weight
@@ -834,7 +1073,7 @@ namespace WebVella.Erp.Web.Controllers
 				new Log().Create(LogType.Error, "MovePageBodyNode API Method Error", exception);
 				return new ContentResult
 				{
-					Content = $"Error: {exception.Message}",
+					Content = "Error: " + SafeErrorMessage(exception),
 					ContentType = "text/plain",
 					// change to whatever status code you want to send out
 					StatusCode = 500
@@ -847,6 +1086,15 @@ namespace WebVella.Erp.Web.Controllers
 		[HttpPost]
 		public ActionResult DeletePageBodyNode(Guid pageId, Guid nodeId)
 		{
+			//THREAT ADDRESSED - CWE-862 (missing authorization), OWASP A01. Deleting a node cascades to its
+			//children, so an unprivileged caller could dismantle any page in the platform. The object-level
+			//check - that the node belongs to {pageId} - was already present below and is left exactly as it
+			//was; only the missing privilege check is added. See IsCodeAuthoringAuthorized.
+			if (!IsCodeAuthoringAuthorized("DeletePageBodyNode", "page_id=" + pageId + "; node_id=" + nodeId))
+			{
+				return CodeAuthoringForbidden();
+			}
+
 			try
 			{
 				var pageSrv = new PageService();
@@ -868,7 +1116,7 @@ namespace WebVella.Erp.Web.Controllers
 				new Log().Create(LogType.Error, "DeletePageBodyNode API Method Error", exception);
 				return new ContentResult
 				{
-					Content = $"Error: {exception.Message}",
+					Content = "Error: " + SafeErrorMessage(exception),
 					ContentType = "text/plain",
 					// change to whatever status code you want to send out
 					StatusCode = 500
@@ -881,6 +1129,15 @@ namespace WebVella.Erp.Web.Controllers
 		[HttpPost]
 		public ActionResult UpdatePageBodyNodeOptions(Guid pageId, Guid nodeId, [FromBody] JObject options)
 		{
+			//THREAT ADDRESSED - CWE-94 reached through CWE-862, OWASP A01 feeding A03. Of the five page-node
+			//actions this is THE one that writes the code-bearing payload: the options blob it persists is
+			//exactly what PageDataModel.GetPropertyValueByDataSource later hands to CodeEvalService for any
+			//DataSourceVariable of type CODE or SNIPPET. See IsCodeAuthoringAuthorized.
+			if (!IsCodeAuthoringAuthorized("UpdatePageBodyNodeOptions", "page_id=" + pageId + "; node_id=" + nodeId))
+			{
+				return CodeAuthoringForbidden();
+			}
+
 			try
 			{
 				if (options == null)
@@ -892,10 +1149,22 @@ namespace WebVella.Erp.Web.Controllers
 				if (page == null) //page not found
 					return NotFound();
 
+				//THREAT ADDRESSED - CWE-639 (authorization bypass through a user-controlled key), OWASP A01.
+				//This action wrote the supplied options onto whatever node the route named WITHOUT ever
+				//proving that node belongs to {pageId}: the page identifier was used only to test that some
+				//page exists, and the node was then re-read AFTER the write purely to find its page. It was
+				//the one action of the five with no object-level check at all, and it is also the one that
+				//writes code. The node is therefore resolved from THIS page's own node list before the write
+				//- the same SingleOrDefault test UpdatePageBodyNode and DeletePageBodyNode already use, which
+				//also avoids GetPageNodeById, whose contract is to THROW rather than return null for an
+				//unknown identifier.
+				var targetNode = pageSrv.GetPageNodes(pageId).SingleOrDefault(x => x.Id == nodeId);
+				if (targetNode == null)
+					return NotFound();
+
 				pageSrv.UpdatePageBodyNodeOptions(nodeId, options.ToString());
 
-				var updatedNode = pageSrv.GetPageNodeById(nodeId);
-				var pageNodes = pageSrv.GetPageNodes(updatedNode.PageId);
+				var pageNodes = pageSrv.GetPageNodes(pageId);
 				return Json(pageNodes);
 			}
 			catch (Exception exception)
@@ -903,7 +1172,7 @@ namespace WebVella.Erp.Web.Controllers
 				new Log().Create(LogType.Error, "UpdatePageBodyNodeOptions API Method Error", exception);
 				return new ContentResult
 				{
-					Content = $"Error: {exception.Message}",
+					Content = "Error: " + SafeErrorMessage(exception),
 					ContentType = "text/plain",
 					// change to whatever status code you want to send out
 					StatusCode = 500
@@ -1077,7 +1346,7 @@ namespace WebVella.Erp.Web.Controllers
 				new Log().Create(LogType.Error, "PageComponentRenderViews API Method Error", exception);
 				return new ContentResult
 				{
-					Content = $"Error: {exception.Message}",
+					Content = "Error: " + SafeErrorMessage(exception),
 					ContentType = "text/plain",
 					// change to whatever status code you want to send out
 					StatusCode = 500
@@ -1119,7 +1388,7 @@ namespace WebVella.Erp.Web.Controllers
 				new Log().Create(LogType.Error, "PageComponentServiceJs API Method Error", exception);
 				return new ContentResult
 				{
-					Content = $"Error: {exception.Message}",
+					Content = "Error: " + SafeErrorMessage(exception),
 					ContentType = "text/plain",
 					// change to whatever status code you want to send out
 					StatusCode = 500
@@ -1422,7 +1691,7 @@ namespace WebVella.Erp.Web.Controllers
 			{
 				new Log().Create(LogType.Error, "RelatedFieldMultiSelect API Method Error", ex);
 				response.Success = false;
-				response.Message = ex.Message;
+				response.Message = SafeErrorMessage(ex);
 			}
 			return new JsonResult(response);
 		}
@@ -1645,7 +1914,7 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:PatchEntity", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:PatchEntity", e);
 				return DoBadRequestResponse(response, "Input object is not in valid format! It cannot be converted.", e);
 			}
 
@@ -1701,7 +1970,7 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:CreateField", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:CreateField", e);
 				return DoBadRequestResponse(response, "Input object is not in valid format! It cannot be converted.", e);
 			}
 
@@ -1757,7 +2026,7 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UpdateField", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:UpdateField", e);
 				return DoBadRequestResponse(response, "Input object is not in valid format! It cannot be converted.", e);
 			}
 
@@ -2063,7 +2332,7 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:PatchField", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:PatchField", e);
 				return DoBadRequestResponse(response, "Input object is not in valid format! It cannot be converted.", e);
 			}
 
@@ -2138,7 +2407,7 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:CreateEntityRelation", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:CreateEntityRelation", e);
 				return DoBadRequestResponse(new EntityRelationResponse(), null, e);
 			}
 		}
@@ -2165,7 +2434,7 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UpdateEntityRelation", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:UpdateEntityRelation", e);
 				return DoBadRequestResponse(new EntityRelationResponse(), null, e);
 			}
 		}
@@ -2381,9 +2650,9 @@ namespace WebVella.Erp.Web.Controllers
 				catch (Exception ex)
 				{
 					connection.RollbackTransaction();
-					new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UpdateEntityRelationRecord", ex);
+					SecurityAuditLog.RecordApiFault("TErpApi:UpdateEntityRelationRecord", ex);
 					response.Success = false;
-					response.Message = ex.Message;
+					response.Message = SafeErrorMessage(ex);
 					return DoResponse(response);
 				}
 			}
@@ -2580,9 +2849,9 @@ namespace WebVella.Erp.Web.Controllers
 				catch (Exception ex)
 				{
 					connection.RollbackTransaction();
-					new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UpdateEntityRelationRecordReverse", ex);
+					SecurityAuditLog.RecordApiFault("TErpApi:UpdateEntityRelationRecordReverse", ex);
 					response.Success = false;
-					response.Message = ex.Message;
+					response.Message = SafeErrorMessage(ex);
 					return DoResponse(response);
 				}
 			}
@@ -2627,12 +2896,12 @@ namespace WebVella.Erp.Web.Controllers
 				catch (Exception ex)
 				{
 					connection.RollbackTransaction();
-					new LogService().Create(Diagnostics.LogType.Error, "TErpApi:DeleteRecord", ex);
+					SecurityAuditLog.RecordApiFault("TErpApi:DeleteRecord", ex);
 					var response = new ResponseModel
 					{
 						Success = false,
 						Timestamp = DateTime.UtcNow,
-						Message = "Error while delete the record: " + ex.Message,
+						Message = "Error while delete the record: " + SafeErrorMessage(ex),
 						Object = null
 					};
 					return Json(response);
@@ -2688,12 +2957,12 @@ namespace WebVella.Erp.Web.Controllers
 				catch (Exception ex)
 				{
 					connection.RollbackTransaction();
-					new LogService().Create(Diagnostics.LogType.Error, "TErpApi:CreateEntityRecord", ex);
+					SecurityAuditLog.RecordApiFault("TErpApi:CreateEntityRecord", ex);
 					var response = new ResponseModel
 					{
 						Success = false,
 						Timestamp = DateTime.UtcNow,
-						Message = "Error while saving the record: " + ex.Message,
+						Message = "Error while saving the record: " + SafeErrorMessage(ex),
 						Object = null
 					};
 					return Json(response);
@@ -2859,12 +3128,12 @@ namespace WebVella.Erp.Web.Controllers
 				catch (Exception ex)
 				{
 					connection.RollbackTransaction();
-					new LogService().Create(Diagnostics.LogType.Error, "TErpApi:CreateEntityRecordWithRelation", ex);
+					SecurityAuditLog.RecordApiFault("TErpApi:CreateEntityRecordWithRelation", ex);
 					var response = new ResponseModel
 					{
 						Success = false,
 						Timestamp = DateTime.UtcNow,
-						Message = "Error while saving the record: " + ex.Message,
+						Message = "Error while saving the record: " + SafeErrorMessage(ex),
 						Object = null
 					};
 					return Json(response);
@@ -2909,12 +3178,12 @@ namespace WebVella.Erp.Web.Controllers
 				catch (Exception ex)
 				{
 					connection.RollbackTransaction();
-					new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UpdateEntityRecord", ex);
+					SecurityAuditLog.RecordApiFault("TErpApi:UpdateEntityRecord", ex);
 					var response = new ResponseModel
 					{
 						Success = false,
 						Timestamp = DateTime.UtcNow,
-						Message = "Error while saving the record: " + ex.Message,
+						Message = "Error while saving the record: " + SafeErrorMessage(ex),
 						Object = null
 					};
 					return Json(response);
@@ -2951,12 +3220,12 @@ namespace WebVella.Erp.Web.Controllers
 				catch (Exception ex)
 				{
 					connection.RollbackTransaction();
-					new LogService().Create(Diagnostics.LogType.Error, "TErpApi:PatchEntityRecord", ex);
+					SecurityAuditLog.RecordApiFault("TErpApi:PatchEntityRecord", ex);
 					var response = new ResponseModel
 					{
 						Success = false,
 						Timestamp = DateTime.UtcNow,
-						Message = "Error while saving the record: " + ex.Message,
+						Message = "Error while saving the record: " + SafeErrorMessage(ex),
 						Object = null
 					};
 					return Json(response);
@@ -3288,13 +3557,40 @@ namespace WebVella.Erp.Web.Controllers
 				#region << Generate Sorts >>
 				if (!String.IsNullOrWhiteSpace(sortField))
 				{
+					//THREAT ADDRESSED - CWE-89 (improper neutralization of special elements used in an SQL
+					//command), OWASP A03 Injection. sortField arrives here straight off the query string and
+					//used to be handed to the query layer verbatim, where the ORDER BY emission concatenated
+					//it into the statement - so a name carrying a double quote could terminate the quoting
+					//and continue the SQL, including as a pg_sleep timing channel. DbRecordRepository now
+					//emits only an identifier it has itself resolved against the entity's metadata; this is
+					//the matching entry-point half of that fix, so the name is validated where it enters the
+					//platform as well as where it is emitted. What travels onward is the METADATA field's
+					//own name, never the caller's string.
+					//
+					//Deny by default: an entity that does not resolve, or a field that is not one of that
+					//entity's own fields, refuses the request instead of falling through. The refusal is
+					//returned directly rather than thrown, because this action's catch block logs through
+					//the LogService exception overload, which sends an outbound SMTP message before it
+					//persists - throwing here would let a caller probing sort names generate one e-mail per
+					//attempt. The response envelope is unchanged: the same ResponseModel this action already
+					//returns for a rejected request.
+					var sortEntityMeta = entMan.ReadEntity(entityName).Object;
+					var resolvedSortField = sortEntityMeta?.Fields?.FirstOrDefault(x => x.Name == sortField);
+					if (resolvedSortField == null)
+					{
+						response.Success = false;
+						response.Message = UNRESOLVED_SORT_FIELD_MESSAGE;
+						response.Object = null;
+						return Json(response);
+					}
+
 					if (sortType.ToLowerInvariant() == "desc")
 					{
-						sortsList.Add(new QuerySortObject(sortField, QuerySortType.Descending));
+						sortsList.Add(new QuerySortObject(resolvedSortField.Name, QuerySortType.Descending));
 					}
 					else
 					{
-						sortsList.Add(new QuerySortObject(sortField, QuerySortType.Ascending));
+						sortsList.Add(new QuerySortObject(resolvedSortField.Name, QuerySortType.Ascending));
 					}
 				}
 
@@ -3329,9 +3625,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception ex)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:GetQuickSearch", ex);
+				SecurityAuditLog.RecordApiFault("TErpApi:GetQuickSearch", ex);
 				response.Success = false;
-				response.Message = ex.Message;
+				response.Message = SafeErrorMessage(ex);
 				response.Object = null;
 				return Json(response);
 			}
@@ -3372,13 +3668,47 @@ namespace WebVella.Erp.Web.Controllers
 			{
 				return DoPageNotFoundResponse();
 			}
+
+			//THREAT ADDRESSED - insecure direct object reference, OWASP A01 Broken Access Control. These five
+			//routes read stored file CONTENT and carried no object-level authorization at all, so any caller
+			//who could guess or harvest a path could read another user's uploaded document - the mutation
+			//actions further down were guarded while the read that discloses the bytes was not. The refusal
+			//is deliberately the same not-found response the missing-file branch above returns, so the
+			//endpoint cannot be used to tell "exists but not yours" from "does not exist". The check reuses
+			//the DbFile already retrieved, so it adds no query and no latency.
+			if (!IsFileReadAuthorized(file))
+			{
+				return DoPageNotFoundResponse();
+			}
+
 			//check for modification
 			string headerModifiedSince = Request.Headers["If-Modified-Since"];
 			if (headerModifiedSince != null)
 			{
-				if (DateTime.TryParse(headerModifiedSince, out DateTime isModifiedSince))
+				//THREAT ADDRESSED - none; this is a correctness defect the H-08 remediation exposed and must
+				//not leave behind. The comparison was inverted: "isModifiedSince <= LastModificationDate"
+				//answered 304 Not Modified precisely when the stored file WAS newer than the client's copy,
+				//so a stale cache was told to keep serving stale bytes while a fresh one was sent the body.
+				//A security fix that changes what a file may contain is worthless if the browser keeps
+				//serving the previous content, so the direction is corrected here.
+				//RFC 9110 defines the comparison the other way round: respond 304 only when the resource has
+				//NOT been modified since the supplied date. Both operands are normalised to UTC first,
+				//because DateTime.TryParse yields Local for an offset-bearing HTTP-date while
+				//LastModificationDate is read from a timestamp column, and comparing across kinds silently
+				//shifts the answer by the server's offset. The truncation to whole seconds matches the
+				//one-second resolution of the RFC 1123 date this action emits in Last-Modified: without it a
+				//sub-second component in the stored value makes the resource look newer than the value the
+				//client was told, and every conditional request re-downloads the body.
+				if (DateTime.TryParse(headerModifiedSince, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AllowWhiteSpaces, out DateTime isModifiedSince))
 				{
-					if (isModifiedSince <= file.LastModificationDate)
+					var storedModifiedUtc = file.LastModificationDate.Kind == DateTimeKind.Utc
+						? file.LastModificationDate
+						: file.LastModificationDate.ToUniversalTime();
+
+					var storedModifiedSecond = new DateTime(storedModifiedUtc.Ticks - (storedModifiedUtc.Ticks % TimeSpan.TicksPerSecond), DateTimeKind.Utc);
+					var requestedSecond = new DateTime(isModifiedSince.Ticks - (isModifiedSince.Ticks % TimeSpan.TicksPerSecond), DateTimeKind.Utc);
+
+					if (storedModifiedSecond <= requestedSecond)
 					{
 						Response.StatusCode = 304;
 						return new EmptyResult();
@@ -3452,7 +3782,14 @@ namespace WebVella.Erp.Web.Controllers
 				HttpContext.Response.Headers[HeaderNames.ContentDisposition] = contentDisposition.ToString();
 			}
 
-			return File(file.GetBytes(), mimeType);
+			//An extension with no known media type leaves mimeType null, and FileContentResult with a null
+			//content type throws ArgumentNullException - so the hardened path above would have answered 500
+			//for exactly the files it was added to force to an attachment, which is the response class most
+			//likely to carry an attacker-supplied extension. The generic binary type asserts nothing about
+			//the content, is the correct declaration for bytes the platform cannot classify, and pairs with
+			//the attachment disposition just set and with the X-Content-Type-Options: nosniff header that
+			//SecurityHeadersMiddleware emits on every response.
+			return File(file.GetBytes(), mimeType ?? GENERIC_BINARY_CONTENT_TYPE);
 		}
 
 
@@ -3460,17 +3797,64 @@ namespace WebVella.Erp.Web.Controllers
 		[ResponseCache(NoStore = true, Duration = 0)]
 		public IActionResult UploadFile([FromForm] IFormFile file)
 		{
-			//var fileName = ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.Trim('"').ToLowerInvariant();
-			//Trim('"') was removed from Core2
-			var fileName = ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.ToString().Trim().ToLowerInvariant();
-			if (fileName.StartsWith("\"", StringComparison.InvariantCulture))
-				fileName = fileName.Substring(1);
+			// THREAT ADDRESSED - finding H-08, CWE-434 (unrestricted upload of file with dangerous type),
+			// CWE-400 (uncontrolled resource consumption) and CWE-20 (improper input validation), OWASP A04
+			// Insecure Design + A03 Injection. This is the endpoint PcFieldImage and PcFieldFile post to
+			// (file-upload-api="/fs/upload"), and it was the ONE upload action in this controller left
+			// completely unvalidated while the other four were constrained - so it was a straight bypass of
+			// the whole H-08 remediation. Every defect is closed in the order that makes the cheapest refusal
+			// happen first:
+			//   a null file dereferenced file.ContentDisposition and answered 500 out of the pipeline;
+			//   the body was read into memory by ReadFully with NO size cap, so a single POST could exhaust
+			//   the process - and the read happened before anything about the file was known;
+			//   no extension allow-list, so .html and .svg were storable and were then served inline from
+			//   this origin by the Download action above, which is the stored-scripting chain;
+			//   the caller-supplied name was concatenated into the storage path and echoed back verbatim;
+			//   the stored file was created with NO owner, which the ownership checks on the move, delete,
+			//   promotion and record-update paths then have to treat as unowned.
+			// Validation is shared with the other four actions rather than restated here, so all five agree
+			// on one set of rules, and it runs BEFORE the stream is read so an oversized body is never
+			// buffered. The FSResponse envelope, the route and the success shape are unchanged; a refusal
+			// uses the platform's own FSResponse failure shape.
+			if (file == null)
+			{
+				return DoResponse(new FSResponse { Success = false, Message = "No file was supplied." });
+			}
 
-			if (fileName.EndsWith("\"", StringComparison.InvariantCulture))
-				fileName = fileName.Substring(0, fileName.Length - 1);
+			var postedFileName = GetPostedFileName(file);
+			var rejectionReason = GetUploadRejectionReason(postedFileName, file.ContentType, file.Length, out string fileName);
+			if (rejectionReason != null)
+			{
+				return DoResponse(new FSResponse { Success = false, Message = rejectionReason });
+			}
 
+			var fileBuffer = ReadFully(file.OpenReadStream());
+
+			//the content half of the check, on the bytes actually submitted rather than on the metadata that
+			//accompanied them - see GetUploadContentRejectionReason
+			var contentRejectionReason = GetUploadContentRejectionReason(fileName, fileBuffer);
+			if (contentRejectionReason != null)
+			{
+				return DoResponse(new FSResponse { Success = false, Message = contentRejectionReason });
+			}
+
+			//THREAT ADDRESSED - finding F-05, insecure direct object reference (OWASP A01:2021 - Broken
+			//Access Control). IsFileMutationAuthorized denies by default on a file whose created_by is
+			//null, and every temporary file was created ownerless - so the caller who uploaded a file
+			//could not afterwards move or delete it unless they were an administrator. Recording the
+			//authenticated principal here is what supplies the ownership proof that guard tests, and it
+			//survives promotion to a permanent path because Move updates only the filepath column.
+			//AuthService.GetUser returns null for a principal this build cannot resolve, so the
+			//null-conditional keeps the previous null in exactly the case where no owner can be established.
 			DbFileRepository fsRepository = new DbFileRepository();
-			var createdFile = fsRepository.CreateTempFile(fileName, ReadFully(file.OpenReadStream()));
+
+			//The uploader is recorded as the owner of the temporary file. This is required rather than
+			//cosmetic: an unowned temp file cannot be authorized by the ownership checks that guard the move,
+			//delete, promotion and record-update paths, so leaving it null would either deny the uploader
+			//their own file moments later or force those checks to accept unowned files from anyone. A null
+			//identity is still permitted - only an authenticated caller reaches this action, but a principal
+			//this build cannot resolve must not become a hard failure on an upload path.
+			var createdFile = fsRepository.CreateTempFile(fileName, fileBuffer, null, AuthService.GetUser(User)?.Id);
 
 			return DoResponse(new FSResponse(new FSResult { Url = createdFile.FilePath, Filename = fileName }));
 
@@ -3507,7 +3891,32 @@ namespace WebVella.Erp.Web.Controllers
 				return DoResponse(new FSResponse { Success = false, Message = FILE_ACCESS_DENIED_MESSAGE });
 			}
 
-			var movedFile = fsRepository.Move(source, target, overwrite);
+			//THREAT ADDRESSED - destructive insecure direct object reference, OWASP A01 Broken Access
+			//Control. Authorizing the SOURCE alone was only half the control: DbFileRepository.Move DELETES
+			//the destination row and its stored bytes when overwrite is set, so a caller who legitimately
+			//owned one file could name ANOTHER user's file as the target and destroy it - replacing its
+			//content with their own under the victim's own path. The destination is therefore authorized on
+			//exactly the same terms as the source, and only when it already exists: a target that does not
+			//exist yet has no owner to protect. The refusal text is the same generic message, so this cannot
+			//be used to discover which target paths hold real files.
+			var targetFile = fsRepository.Find(target);
+			if (targetFile != null && !IsFileMutationAuthorized(targetFile, target, "MoveFile"))
+			{
+				return DoResponse(new FSResponse { Success = false, Message = FILE_ACCESS_DENIED_MESSAGE });
+			}
+
+			//THREAT ADDRESSED - time-of-check to time-of-use, CWE-367. The authorization above tested rows
+			//read on an earlier connection, so a concurrent move could substitute a different file behind the
+			//authorized path between the check and the write. expectedSourceId pins the mutation to the exact
+			//row that was authorized: the repository applies its UPDATE only when the row still carries that
+			//identifier at that path, and returns null when it does not, so a raced request is refused rather
+			//than applied to a file nobody authorized.
+			var movedFile = fsRepository.Move(source, target, overwrite, sourceFile.Id);
+			if (movedFile == null)
+			{
+				return DoResponse(new FSResponse { Success = false, Message = FILE_ACCESS_DENIED_MESSAGE });
+			}
+
 			return DoResponse(new FSResponse(new FSResult { Url = movedFile.FilePath, Filename = fileName }));
 
 		}
@@ -3536,7 +3945,12 @@ namespace WebVella.Erp.Web.Controllers
 				return DoResponse(new FSResponse { Success = false, Message = FILE_ACCESS_DENIED_MESSAGE });
 			}
 
-			fsRepository.Delete(filepath);
+			//THREAT ADDRESSED - time-of-check to time-of-use, CWE-367, on a DESTRUCTIVE operation. The
+			//authorization above tested a row read on an earlier connection; without pinning, a concurrent
+			//move could put a different user's file at this path between the check and the delete, and the
+			//delete is irreversible. The identifier of the authorized row is passed through so the repository
+			//removes that row and no other.
+			fsRepository.Delete(filepath, sourceFile.Id);
 			return DoResponse(new FSResponse(new FSResult { Url = filepath, Filename = fileName }));
 		}
 
@@ -3632,8 +4046,13 @@ namespace WebVella.Erp.Web.Controllers
 		// it will be served as text, or the reverse. The extension allow-list stays the authoritative control,
 		// because the stored extension is what decides how the file is later served; this is a consistency
 		// check layered on top, which is why an absent or generic declaration is accepted rather than refused.
-		// Deliberately NOT magic-byte or file-signature inspection: that is deep content examination, beyond
-		// what this finding requires, and it would add real per-request cost.
+		//
+		// It compares CALLER-SUPPLIED METADATA against caller-supplied metadata, and that limit is the whole
+		// reason GetUploadContentRejectionReason exists: a blank or "application/octet-stream" declaration
+		// still returns true here - refusing it would break the browsers and clients that legitimately send
+		// one - and the submitted BYTES are what settles the question afterwards. Neither check substitutes
+		// for the other, and this one is deliberately NOT extended into content inspection, which belongs
+		// with the bytes rather than with the header.
 		private static bool IsUploadContentTypeConsistent(string fileName, string declaredContentType)
 		{
 			if (string.IsNullOrWhiteSpace(declaredContentType))
@@ -3727,6 +4146,75 @@ namespace WebVella.Erp.Web.Controllers
 			return null;
 		}
 
+		// THREAT ADDRESSED - finding H-08, CWE-434 (unrestricted upload of file with dangerous type), OWASP
+		// A04 + A03. The pre-read gate above can only test caller-supplied METADATA - the name, the declared
+		// content type and the declared length - and metadata is exactly what an attacker controls. This is
+		// the content half: the bytes actually submitted must begin the way the admitted extension's format
+		// is specified to begin, so a markup or script body cannot be parked behind an image name and later
+		// served from this application's own origin.
+		//
+		// It runs AFTER the size cap has already been enforced, never before, so the buffer it inspects is
+		// bounded by MAX_UPLOAD_SIZE_BYTES and this check cannot itself be turned into a memory-exhaustion
+		// lever. Only the first MAX_SIGNATURE_PROBE_BYTES bytes are read, so the cost is constant.
+		//
+		// An extension with no entry in UPLOAD_CONTENT_SIGNATURES passes: those formats have no fixed
+		// leading signature, so a signature test would reject legitimate files. That is a deliberately
+		// stated residual - the extension allow-list remains their gate - and not an oversight.
+		// Returns null when the content is acceptable, otherwise a caller-safe reason that never echoes the
+		// submitted name, the submitted bytes or any internal detail: the reason is rendered into a JSON body
+		// and into a script context, so echoing input would turn the rejection itself into the injection.
+		private static string GetUploadContentRejectionReason(string safeFileName, byte[] content)
+		{
+			if (content == null || content.Length == 0)
+			{
+				return "The uploaded file is empty.";
+			}
+
+			//re-asserted on the buffer actually read, because IFormFile.Length is a declared value: a
+			//chunked or mis-declared body can deliver more bytes than it announced, and the announced value
+			//is what the pre-read cap tested.
+			if (content.LongLength > MAX_UPLOAD_SIZE_BYTES)
+			{
+				return "The uploaded file is larger than the " + (MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)) + " MB limit.";
+			}
+
+			if (safeFileName == null)
+			{
+				return "The uploaded file name is missing or cannot be used.";
+			}
+
+			if (!UPLOAD_CONTENT_SIGNATURES.TryGetValue(Path.GetExtension(safeFileName), out byte[][] acceptedSignatures))
+			{
+				//no fixed signature is specified for this format - see the table's own remarks
+				return null;
+			}
+
+			foreach (var signature in acceptedSignatures)
+			{
+				if (content.Length < signature.Length)
+				{
+					continue;
+				}
+
+				var matches = true;
+				for (var index = 0; index < signature.Length; index++)
+				{
+					if (content[index] != signature[index])
+					{
+						matches = false;
+						break;
+					}
+				}
+
+				if (matches)
+				{
+					return null;
+				}
+			}
+
+			return "The uploaded file content does not match its file type.";
+		}
+
 		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The two multi-file actions wrap their
 		// loop in a database transaction, so validating file-by-file inside that loop would mean a rejection
 		// arriving after earlier files had already been written - and unwinding that correctly is the easy
@@ -3764,7 +4252,10 @@ namespace WebVella.Erp.Web.Controllers
 		// Reads the posted file name exactly as the multi-file actions did inline: parse the
 		// Content-Disposition header, trim, lower-case, then strip the surrounding quotes the header may carry
 		// - Trim('"') was removed in Core 2, hence the explicit StartsWith/EndsWith pair, which is preserved
-		// here verbatim and simply shared now so validation and the storage path agree on one value.
+		// here and simply shared now so validation and the storage path agree on one value. The two tests use
+		// the char overloads: a quote is a single ordinal character, so the framework analyzer's CA1865/CA1866
+		// guidance and the correct semantic for stripping a literal delimiter agree - a culture-sensitive
+		// comparison has no meaning for a structural quote and is the slower of the two.
 		// The header is caller-supplied, so a malformed one must not throw out of validation and become a 500;
 		// it falls back to the name ASP.NET Core has already parsed.
 		private static string GetPostedFileName(IFormFile file)
@@ -3793,10 +4284,10 @@ namespace WebVella.Erp.Web.Controllers
 			}
 
 			fileName = fileName.Trim().ToLowerInvariant();
-			if (fileName.StartsWith("\"", StringComparison.InvariantCulture))
+			if (fileName.StartsWith('"'))
 				fileName = fileName.Substring(1);
 
-			if (fileName.EndsWith("\"", StringComparison.InvariantCulture))
+			if (fileName.EndsWith('"'))
 				fileName = fileName.Substring(0, fileName.Length - 1);
 
 			return fileName;
@@ -3835,9 +4326,25 @@ namespace WebVella.Erp.Web.Controllers
 		// The check costs nothing extra: both callers had ALREADY retrieved the file and left the result
 		// unused, so this is a test on data in hand - no additional query and no added latency. Deny-by-
 		// default applies at every uncertain edge, which is the first clause of the authorization standard: an
-		// unresolvable principal, a file that does not resolve, and a file whose CreatedBy is null - system-
-		// and temp-created files carry no owner - all refuse for a non-administrator. Administrators bypass
-		// through ErpUser.IsAdmin, the platform's own role test, rather than a hand-rolled role comparison.
+		// unresolvable principal, a file that does not resolve, and a file whose CreatedBy is null all refuse
+		// for a non-administrator. Administrators bypass through ErpUser.IsAdmin, the platform's own role
+		// test, rather than a hand-rolled role comparison.
+		//
+		// The five cases this decides, verified against the branches below and against every file-creation
+		// site in the tree (finding F-05):
+		//   administrator         -> allow, whoever created the file
+		//   owner                 -> allow; CreatedBy is populated at all five caller-initiated creation
+		//                            sites, so this branch is genuinely reachable. It was NOT before:
+		//                            CreateTempFile hardcoded a null creator, which silently collapsed
+		//                            every upload into the ownerless row and made this guard behave as an
+		//                            administrator-only test.
+		//   non-owner             -> refuse, logged as "caller is not the owner"
+		//   file does not resolve -> refuse, logged as "file not found"; indistinguishable to the caller
+		//                            from a refusal, so the response cannot be used to probe for existence
+		//   ownerless file        -> refuse. This still applies, and deliberately so: a file the platform
+		//                            itself created has no principal to record, so no non-administrator can
+		//                            claim it.
+		//   unresolvable caller   -> refuse, logged as "unresolved principal"
 		private bool IsFileMutationAuthorized(DbFile file, string requestedPath, string operation)
 		{
 			//AuthService.GetUser returns null for a principal this build cannot use, so it is null-guarded
@@ -3856,28 +4363,147 @@ namespace WebVella.Erp.Web.Controllers
 				}
 			}
 
-			//"Log authorization failures" is an explicit, separate clause of the authorization standard this
-			//audit applies, so a refusal is recorded rather than merely returned. The string-and-details
-			//overload is chosen deliberately: LogService's Exception overload sends an outbound SMTP message
-			//BEFORE it persists, so routing a refusal through it would let a caller probing object references
-			//generate one e-mail per attempt. DoNotNotify is passed explicitly because the parameter's default
-			//is NotNotified, which is the mailing path. Only the acting identity, the requested path and the
-			//reason are recorded - never a secret - and the path is length-bounded.
 			var reason = currentUser == null ? "unresolved principal" : (file == null ? "file not found" : "caller is not the owner");
-			var loggedPath = requestedPath ?? string.Empty;
-			if (loggedPath.Length > MAX_LOGGED_PATH_LENGTH)
-			{
-				loggedPath = loggedPath.Substring(0, MAX_LOGGED_PATH_LENGTH);
-			}
-
-			new LogService().Create(Diagnostics.LogType.Error, "WebApiController:" + operation,
-				"Authorization failure: file modification refused.",
-				"user_id=" + (currentUser == null ? "anonymous" : currentUser.Id.ToString())
-					+ "; requested_path=" + loggedPath
-					+ "; reason=" + reason,
-				Diagnostics.LogNotificationStatus.DoNotNotify);
+			LogFileAuthorizationFailure(operation, "Authorization failure: file modification refused.", currentUser, requestedPath, reason);
 
 			return false;
+		}
+
+		// THREAT ADDRESSED - insecure direct object reference, OWASP A01 Broken Access Control. The five
+		// GET /fs/... routes read stored file CONTENT and carried no object-level check at all: the mutation
+		// actions above were guarded while the read that actually discloses the bytes was not, so any
+		// authenticated caller holding or guessing a path could read a file that was never theirs. The audit
+		// inventory records this finding under OWASP A01 with NO CWE assigned, so none is attributed here.
+		//
+		// The decision is made on the DbFile the caller's own lookup already produced - no extra query for the
+		// file itself - and it is ordered so the common case costs nothing at all. That ordering is deliberate
+		// rather than incidental, for two reasons that both matter:
+		//
+		//   CORRECTNESS. This file store is a SHARED content store by design, not a per-user drop box. A
+		//   record's image or attachment lives at /{entity}/{recordId}/{name} (RecordManager moves it there on
+		//   save) and a file-manager or CKEditor upload lives at /file/{id}/{name} (UserFileService promotes it
+		//   there immediately), and DbFileRepository.Move carries created_by across unchanged - so every one of
+		//   those published assets is stamped with the ONE user who happened to upload it. Refusing a non-owner
+		//   would therefore blank every record image, every attachment and every editor-embedded picture for
+		//   everybody except its uploader. That is a functionality regression, not a security control, and the
+		//   preservation requirement forbids it. Authorization for published content is what the class-level
+		//   [Authorize] attribute already provides: these routes are not anonymous.
+		//
+		//   COST. Deciding "published" from the stored path alone means the hot path - a page full of <img>
+		//   tags - resolves NO principal and issues NO additional query, so download latency is unchanged.
+		//   AuthService.GetUser performs a database lookup per call (the platform's user cache is disabled), and
+		//   paying that once per image would be a real per-page cost for no benefit.
+		//
+		// What IS owner-scoped is the temp staging namespace. A file under /tmp/ is an in-flight upload: its
+		// path is handed back to exactly one client, which previews it and then saves - at which point it stops
+		// being a temp file. Nothing in the platform ever serves another user's temp path, so restricting it
+		// costs nothing and closes the disclosure of one user's unattached uploads to another. Deny-by-default
+		// governs every uncertain edge of that namespace: an unresolvable principal and a temp file with no
+		// recorded owner both refuse for a non-administrator. Administrators pass through ErpUser.IsAdmin, the
+		// platform's own role test, rather than a hand-rolled role comparison.
+		//
+		// The caller turns a refusal into the SAME not-found response its file-missing branch returns, so this
+		// check cannot be used to distinguish "exists but is not yours" from "does not exist".
+		private bool IsFileReadAuthorized(DbFile file)
+		{
+			if (file == null)
+			{
+				//deny-by-default: an unresolvable object is never authorized. The caller checks for null
+				//first, so this is the belt-and-braces branch rather than the expected path.
+				return false;
+			}
+
+			var storedPath = file.FilePath ?? string.Empty;
+			var tempNamespacePrefix = DbFileRepository.FOLDER_SEPARATOR + DbFileRepository.TMP_FOLDER_NAME + DbFileRepository.FOLDER_SEPARATOR;
+
+			//stored paths are normalised to lower case on write, so an ordinal comparison is exact here and
+			//is not a culture-sensitive one dressed up as a security check
+			if (!storedPath.StartsWith(tempNamespacePrefix, StringComparison.Ordinal))
+			{
+				//published, shared content - see the note above on why owner-scoping this would break
+				//rendering for every user who is not the uploader
+				return true;
+			}
+
+			var currentUser = AuthService.GetUser(User);
+			if (currentUser != null)
+			{
+				if (currentUser.IsAdmin)
+				{
+					return true;
+				}
+
+				if (file.CreatedBy.HasValue && file.CreatedBy.Value == currentUser.Id)
+				{
+					return true;
+				}
+			}
+
+			var reason = currentUser == null
+				? "unresolved principal"
+				: (file.CreatedBy.HasValue ? "caller is not the owner of the staged file" : "staged file has no recorded owner");
+			LogFileAuthorizationFailure("Download", "Authorization failure: file read refused.", currentUser, storedPath, reason);
+
+			return false;
+		}
+
+		// "Log authorization failures" is an explicit, separate clause of the authorization standard this audit
+		// applies, so a refusal is recorded rather than merely returned. Three properties of this writer are
+		// deliberate:
+		//
+		//   The string-and-details overload is used rather than LogService's Exception overload, because that
+		//   overload sends an outbound SMTP message BEFORE it persists - so routing refusals through it would
+		//   let a caller probing object references generate one e-mail per attempt. DoNotNotify is passed
+		//   explicitly because the parameter's own default is the mailing path.
+		//
+		//   Only the acting identity, the requested path and the reason are recorded - never a secret - and the
+		//   path is length-bounded so a caller cannot inflate the log with a long path.
+		//
+		//   THREAT ADDRESSED - the audit trail must never become a denial-of-service or a fail-open lever. This
+		//   writer opens a database connection, so a database fault, a full disk or a logging misconfiguration
+		//   would otherwise propagate out of the authorization helper and turn a controlled, deliberate refusal
+		//   into an unhandled 500 - a different response, from a different code path, that leaks the fact that
+		//   the object exists and that hands the caller a way to make every refusal fail loudly. Logging is
+		//   therefore best-effort: it can fail, and the refusal still stands. The catch is deliberately empty
+		//   and deliberately broad - there is no second channel to report a logging failure to, and re-raising
+		//   is the exact outcome being prevented. The callers return false regardless of what happens here.
+		private static void LogFileAuthorizationFailure(string operation, string message, ErpUser currentUser, string requestedPath, string reason)
+		{
+			//THREAT ADDRESSED - CWE-117 (improper output neutralisation for logs), OWASP A09:2021. These
+			//details are "name=value; name=value" text and requested_path arrives straight from the request,
+			//so length-bounding it - which is all that stood here - was not sufficient on its own. The
+			//delimiters are PRINTABLE, so no control character was even needed: a path of
+			//`x; reason=caller is the owner` read back as a well-formed record whose reason field the CALLER
+			//chose, letting the party a refusal exists to incriminate write part of it. SecurityAuditLog.Field
+			//bounds the value, wraps it in quotes and escapes the quote and the escape character, so a
+			//delimiter inside it cannot forge a field, and it neutralises control characters in the same call,
+			//so neither can it forge an additional record.
+			//
+			//user_id and reason are deliberately left unquoted and un-neutralised: the first is a Guid or the
+			//fixed literal "anonymous", and the second is one of three fixed literals chosen by the two
+			//callers, so neither can carry a delimiter and only the quoted field can.
+			//
+			//THREAT ADDRESSED - CWE-778 (insufficient logging), and the reason the sink changed. This wrote
+			//through LogService, whose Exception overload sends an outbound SMTP message BEFORE it persists
+			//and whose status parameter DEFAULTS to that mailing path - so a caller probing object references
+			//could generate one e-mail per attempt if any future edit here dropped the explicit DoNotNotify.
+			//SecurityAuditLog.Write owns that choice instead: the core WebVella.Erp.Diagnostics.Log writer
+			//with DoNotNotify passed explicitly, so the guarantee no longer depends on this call site
+			//remembering it.
+			//
+			//It also cannot throw for any storage failure and counts every write it loses, carrying the count
+			//into the next record that does succeed - so a gap in the trail is visible IN the trail rather
+			//than only as an absence of rows. That is what replaces the blanket catch that used to stand
+			//here: the authorization decision is still returned by the caller whether or not this record was
+			//written, but a storage fault is no longer indistinguishable from "nothing happened".
+			//
+			//Shared by BOTH refusal paths - file modification and file read - so the neutralisation and the
+			//sink choice are audited in one place rather than restated at each call site.
+			SecurityAuditLog.Write(Diagnostics.LogType.Error, "WebApiController:" + operation,
+				message,
+				"user_id=" + (currentUser == null ? "anonymous" : currentUser.Id.ToString())
+					+ "; requested_path=" + SecurityAuditLog.Field(requestedPath, MAX_LOGGED_PATH_LENGTH)
+					+ "; reason=" + reason);
 		}
 
 		#endregion
@@ -3916,9 +4542,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "ErpApi:GetJobs", e);
+				SecurityAuditLog.RecordApiFault("ErpApi:GetJobs", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			return DoResponse(response);
@@ -4133,10 +4759,10 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UpdateSchedulePlan", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:UpdateSchedulePlan", e);
 				response.Success = false;
 				response.Timestamp = DateTime.UtcNow;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			response.Success = true;
@@ -4174,9 +4800,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:TriggerNowSchedulePlan", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:TriggerNowSchedulePlan", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			response.Success = true;
@@ -4200,9 +4826,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:GetSchedulePlansList", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:GetSchedulePlansList", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			return DoResponse(response);
@@ -4232,9 +4858,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:GetSchedulePlan", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:GetSchedulePlan", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			return DoResponse(response);
@@ -4286,9 +4912,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:CreateTestSchedulePlan", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:CreateTestSchedulePlan", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			return DoResponse(response);
@@ -4356,9 +4982,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:GetSystemLog", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:GetSystemLog", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			return DoResponse(response);
@@ -4379,9 +5005,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:GetUserFileList", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:GetUserFileList", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			return DoResponse(response);
@@ -4432,11 +5058,29 @@ namespace WebVella.Erp.Web.Controllers
 			{
 				response.Object = new UserFileService().CreateUserFile(filePath, fileAlt, fileCaption);
 			}
+			//THREAT ADDRESSED - insecure direct object reference, CWE-639, OWASP A01 Broken Access Control,
+			//and the information disclosure that a naive refusal would introduce. UserFileService now refuses
+			//to publish a path that is not the caller's own staged upload. That refusal MUST NOT fall through
+			//to the general handler below, which returns the exception message concatenated with the full
+			//STACK TRACE - a hardening change that leaked internal frames would trade one finding for
+			//another. The dedicated clause answers with the service's own generic message, records the
+			//refusal server-side for the authorization-logging requirement, and deliberately does NOT pass
+			//the exception to LogService's Exception overload, because that overload sends mail before it
+			//persists and a caller probing paths would generate one message per attempt.
+			catch (UnauthorizedAccessException uae)
+			{
+				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UploadUserFile",
+					"Authorization failure: user file publication refused.",
+					uae.Message,
+					Diagnostics.LogNotificationStatus.DoNotNotify);
+				response.Success = false;
+				response.Message = uae.Message;
+			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UploadUserFile", e);
+				SecurityAuditLog.RecordApiFault("TErpApi:UploadUserFile", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			return DoResponse(response);
@@ -4476,8 +5120,31 @@ namespace WebVella.Erp.Web.Controllers
 						upload.CopyTo(ms);
 						fileBytes = ms.ToArray();
 					}
+
+					//the content half of the check, on the bytes actually submitted rather than on the
+					//metadata that accompanied them - see GetUploadContentRejectionReason
+					var contentRejectionReason = GetUploadContentRejectionReason(safeFileName, fileBytes);
+					if (contentRejectionReason != null)
+					{
+						response["uploaded"] = 0;
+						var contentRejectionRecord = new EntityRecord();
+						contentRejectionRecord["message"] = contentRejectionReason;
+						response["error"] = contentRejectionRecord;
+						return Json(response);
+					}
+
 					var tempPath = "tmp/" + Guid.NewGuid() + "/" + safeFileName;
-					var tempFile = new DbFileRepository().Create(tempPath, fileBytes, null, null);
+					// THREAT ADDRESSED - finding F24 (High), CWE-639 authorization bypass through
+					// user-controlled key, OWASP A01 Broken Access Control. This site stages a file with
+					// Create rather than CreateTempFile, so it did not inherit the creator stamping added
+					// there and would have produced an ownerless staged row. DbFileRepository.Find refuses an
+					// ownerless staged file to every non-administrator, which is deliberate deny-by-default -
+					// so leaving this null would have broken the very next line, where CreateUserFile reads
+					// and then moves this path. The acting identity is recorded instead, which both keeps the
+					// flow working for its owner and makes the ownership test meaningful for everyone else.
+					// The recorded owner also SURVIVES the CreateUserFile promotion on the next line, because
+					// Move updates only the filepath column and leaves created_by untouched.
+					var tempFile = new DbFileRepository().Create(tempPath, fileBytes, null, AuthService.GetUser(User)?.Id);
 
 					var newFile = new UserFileService().CreateUserFile(tempFile.FilePath, null, null);
 
@@ -4491,16 +5158,26 @@ namespace WebVella.Erp.Web.Controllers
 				}
 				else
 				{
+					//THREAT ADDRESSED - none directly; this is the response-contract half of the H-08
+					//hardening and it must not be left inconsistent. A missing file returned a bare, empty
+					//JSON object, which the CKEditor upload adapter reads as neither success nor failure: it
+					//sees no "uploaded" flag and no "error", so the editor hangs on the upload instead of
+					//reporting it. Every other refusal in this action - and the catch block below - answers
+					//with uploaded=0 plus error.message, so the same envelope is used here.
+					response["uploaded"] = 0;
+					var missingFileRecord = new EntityRecord();
+					missingFileRecord["message"] = "No file was supplied.";
+					response["error"] = missingFileRecord;
 					return Json(response);
 				}
 			}
 			catch (Exception ex)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UploadDropCKEditor", ex);
+				SecurityAuditLog.RecordApiFault("TErpApi:UploadDropCKEditor", ex);
 				response["uploaded"] = 0;
 				response["error"] = new EntityRecord();
 				var message = new EntityRecord();
-				message["message"] = ex.Message;
+				message["message"] = SafeErrorMessage(ex);
 				response["error"] = message;
 				return Json(response);
 			}
@@ -4552,8 +5229,24 @@ namespace WebVella.Erp.Web.Controllers
 					upload.CopyTo(ms);
 					fileBytes = ms.ToArray();
 				}
+
+				//the content half of the check, on the bytes actually submitted rather than on the metadata
+				//that accompanied them - see GetUploadContentRejectionReason. The reason is returned through
+				//the same encoded callback the metadata rejection above uses, so it cannot become injection.
+				var contentRejectionReason = GetUploadContentRejectionReason(safeFileName, fileBytes);
+				if (contentRejectionReason != null)
+				{
+					return Content(BuildCKEditorCallback(callbackFunctionNumber, string.Empty, contentRejectionReason), "text/html");
+				}
+
 				var tempPath = "tmp/" + Guid.NewGuid() + "/" + safeFileName;
-				var tempFile = new DbFileRepository().Create(tempPath, fileBytes, null, null);
+				// THREAT ADDRESSED - finding F24 (High), CWE-639 authorization bypass through user-controlled
+				// key, OWASP A01 Broken Access Control. Same reasoning as the browse-upload action above: this
+				// site stages with Create rather than CreateTempFile, so it must record the acting identity
+				// itself or DbFileRepository.Find would refuse the ownerless staged row on the very next line,
+				// where CreateUserFile reads and then moves it.
+				// The owner survives that promotion: Move updates only the filepath column.
+				var tempFile = new DbFileRepository().Create(tempPath, fileBytes, null, AuthService.GetUser(User)?.Id);
 
 				var newFile = new UserFileService().CreateUserFile(tempFile.FilePath, null, null);
 
@@ -4565,7 +5258,7 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception ex)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "TErpApi:UploadFileManagerCKEditor", ex);
+				SecurityAuditLog.RecordApiFault("TErpApi:UploadFileManagerCKEditor", ex);
 				// THREAT ADDRESSED - finding H-07 (CWE-79 + CWE-94, OWASP A03) compounded by information
 				// disclosure: the exception message was interpolated into this same script block, so a
 				// provoked fault both leaked internal detail to the browser and carried attacker-influenced
@@ -4615,6 +5308,20 @@ namespace WebVella.Erp.Web.Controllers
 					{
 						var fileBuffer = ReadFully(file.OpenReadStream());
 						var fileName = safeFileNames[file];
+
+						//the content half of the check, on the bytes actually submitted rather than on the
+						//metadata validated before the transaction opened - see
+						//GetUploadContentRejectionReason. Throwing here is correct rather than returning:
+						//this is inside the transaction, so the catch below rolls the whole batch back and no
+						//partially written set of records survives.
+						var contentRejectionReason = GetUploadContentRejectionReason(fileName, fileBuffer);
+						if (contentRejectionReason != null)
+						{
+							//InvalidOperationException rather than the base Exception type: the enclosing
+							//catch reports ex.Message as the response message, and a specific exception type
+							//keeps the analyzer's CA2201 rule satisfied without changing that behaviour.
+							throw new InvalidOperationException(contentRejectionReason);
+						}
 
 						var recMan = new RecordManager();
 						DbFileRepository fsRepository = new DbFileRepository();
@@ -4676,7 +5383,7 @@ namespace WebVella.Erp.Web.Controllers
 				{
 					connection.RollbackTransaction();
 					response.Success = false;
-					response.Message = ex.Message;
+					response.Message = SafeErrorMessage(ex);
 					return DoResponse(response);
 				}
 			}
@@ -4710,14 +5417,35 @@ namespace WebVella.Erp.Web.Controllers
 
 				try
 				{
+					//resolved once outside the loop: the owner is the same authenticated principal for every
+					//file in the batch, and resolving it per file would repeat the work for no benefit
+					var batchUploaderId = AuthService.GetUser(User)?.Id;
+
 					foreach (var file in files)
 					{
 						var fileBuffer = ReadFully(file.OpenReadStream());
 						var fileName = safeFileNames[file];
 
+						//the content half of the check, on the bytes actually submitted rather than on the
+						//metadata validated before the transaction opened - see
+						//GetUploadContentRejectionReason. Throwing here is correct rather than returning:
+						//this is inside the transaction, so the catch below rolls the whole batch back and no
+						//partially written set of records survives.
+						var contentRejectionReason = GetUploadContentRejectionReason(fileName, fileBuffer);
+						if (contentRejectionReason != null)
+						{
+							//InvalidOperationException rather than the base Exception type: the enclosing
+							//catch reports ex.Message as the response message, and a specific exception type
+							//keeps the analyzer's CA2201 rule satisfied without changing that behaviour.
+							throw new InvalidOperationException(contentRejectionReason);
+						}
+
 						var recMan = new RecordManager();
 						DbFileRepository fsRepository = new DbFileRepository();
-						DbFile dbFile = fsRepository.CreateTempFile(fileName, fileBuffer);
+						//the uploader is recorded as the owner so the record save that later moves this
+						//temporary file out of the temporary namespace can authorize it as theirs - see
+						//DbFileRepository.CreateTempFile for why an unowned temp file is a problem
+						DbFile dbFile = fsRepository.CreateTempFile(fileName, fileBuffer, null, batchUploaderId);
 
 						var resultRec = new EntityRecord();
 
@@ -4767,7 +5495,7 @@ namespace WebVella.Erp.Web.Controllers
 				{
 					connection.RollbackTransaction();
 					response.Success = false;
-					response.Message = ex.Message;
+					response.Message = SafeErrorMessage(ex);
 					return DoResponse(response);
 				}
 			}
@@ -4817,9 +5545,9 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "GetSnippetNames", e);
+				SecurityAuditLog.RecordApiFault("GetSnippetNames", e);
 				response.Success = false;
-				response.Message = e.Message + e.StackTrace;
+				response.Message = SafeErrorMessage(e);
 			}
 
 			return DoResponse(response);
@@ -4885,8 +5613,52 @@ namespace WebVella.Erp.Web.Controllers
 			var remoteAddress = HttpContext?.Connection?.RemoteIpAddress?.ToString();
 			if (!loginThrottle.TryBeginAttempt(model?.Email, remoteAddress))
 			{
+				// THREAT ADDRESSED - CWE-779 (logging of excessive data), OWASP A09: a refusal costs an
+				// anonymous caller nothing here, so auditing every one of them would let the throttle that
+				// protects the credential check become an amplifier against the audit trail. The claim below
+				// records the lockout transition once per window and carries the count of refusals it
+				// suppressed. It is the SAME address-keyed claim the login page uses, deliberately: the two
+				// surfaces share one budget, so they must share one audit claim or an attacker alternating
+				// between them would double the volume the coalescing is there to bound.
+				if (loginThrottle.TryClaimRefusalAudit(remoteAddress, out var suppressedRefusals))
+				{
+					SecurityAuditLog.Write(Diagnostics.LogType.Error, "GetJwtToken",
+						"Bearer token request refused - account temporarily locked.",
+						"email=" + SecurityAuditLog.Field(model?.Email, MAX_AUDITED_FIELD_LENGTH)
+							+ "; ip=" + SecurityAuditLog.Field(remoteAddress, MAX_AUDITED_FIELD_LENGTH)
+							+ "; refusals_not_audited=" + suppressedRefusals.ToString(CultureInfo.InvariantCulture));
+				}
+
 				// Byte-identical to the rejection this endpoint already returns for a bad credential, so the
 				// throttle cannot be used to distinguish a real account from a fabricated one.
+				response.Success = false;
+				response.Message = AuthService.InvalidCredentialMessage;
+				return DoResponse(response);
+			}
+
+			// THREAT ADDRESSED - finding M-2, CWE-476 (null pointer dereference) compounding CWE-778 and
+			// CWE-779, OWASP A09. This controller carries no [ApiController] attribute, so a POST with an
+			// absent, empty or unparseable body binds model to null WITHOUT the framework's automatic 400.
+			// The credential call below then dereferenced it, and the resulting NullReferenceException took
+			// the catch path - which classified it as a server fault, ABANDONED the reserved attempt rather
+			// than counting it, and wrote a NOTIFYING log record. The three compounded into an unauthenticated
+			// request that consumed no lockout budget yet produced one outbound e-mail, repeatable without
+			// limit. Rejecting the submission here, and counting it, closes all three: it is metered like any
+			// other failed attempt, and it never reaches the fault path at all.
+			//
+			// A blank e-mail or password is treated the same as a malformed body because neither can
+			// authenticate - the check is what the credential path would conclude anyway, reached without
+			// touching the datastore. The response is byte-identical to a rejected credential, so this adds
+			// no account-existence oracle, and the attempt is registered as failed rather than abandoned so a
+			// flood of empty bodies exhausts the address budget instead of running unmetered.
+			if (model == null || string.IsNullOrWhiteSpace(model.Email) || string.IsNullOrWhiteSpace(model.Password))
+			{
+				loginThrottle.RegisterFailedAttempt(model?.Email, remoteAddress);
+				SecurityAuditLog.Write(Diagnostics.LogType.Error, "GetJwtToken",
+					"Bearer token request rejected - incomplete credential submission.",
+					"email=" + SecurityAuditLog.Field(model?.Email, MAX_AUDITED_FIELD_LENGTH)
+						+ "; ip=" + SecurityAuditLog.Field(remoteAddress, MAX_AUDITED_FIELD_LENGTH));
+
 				response.Success = false;
 				response.Message = AuthService.InvalidCredentialMessage;
 				return DoResponse(response);
@@ -4907,7 +5679,36 @@ namespace WebVella.Erp.Web.Controllers
 			catch (Exception e)
 			{
 				credentialWasRejected = string.Equals(e.Message, AuthService.InvalidCredentialMessage, StringComparison.Ordinal);
-				new LogService().Create(Diagnostics.LogType.Error, "GetJwtToken", e);
+
+				// THREAT ADDRESSED - finding M-2, CWE-778 / CWE-779 on an [AllowAnonymous] route.
+				// LogService.Create's Exception overload hands the record to MailService.SendLogMessage
+				// BEFORE persisting it whenever the notification status is left at its NotNotified default,
+				// which this call did. Every rejected credential therefore sent an outbound e-mail carrying
+				// the fault detail off-box, ahead of the database, on a route requiring no authentication and
+				// no antiforgery token - so a credential-stuffing run doubled as a mail flood, and the audit
+				// record an operator needed was the slowest and least reliable part of handling it. The write
+				// is also now guarded, so a datastore fault during it can no longer escape this catch block
+				// and turn a handled rejection into an unhandled 500.
+				//
+				// The exception is passed ONLY for a genuine server fault. A rejected credential carries
+				// nothing but the sentinel message AuthService throws, and it is the one outcome an attacker
+				// can produce on demand, so recording its stack trace would add no diagnostic value while
+				// letting the caller choose how much text each attempt writes. The identity and address are
+				// recorded in both cases, bounded and neutralised, because attribution is the whole point of
+				// the record.
+				var auditDetails = "email=" + SecurityAuditLog.Field(model.Email, MAX_AUDITED_FIELD_LENGTH)
+					+ "; ip=" + SecurityAuditLog.Field(remoteAddress, MAX_AUDITED_FIELD_LENGTH);
+				if (credentialWasRejected)
+				{
+					SecurityAuditLog.Write(Diagnostics.LogType.Error, "GetJwtToken",
+						"Bearer token request rejected - invalid credential.", auditDetails);
+				}
+				else
+				{
+					SecurityAuditLog.Write(Diagnostics.LogType.Error, "GetJwtToken",
+						"Bearer token request failed.", auditDetails, e);
+				}
+
 				response.Success = false;
 
 				// THREAT ADDRESSED - finding H-13, CWE-209 (generation of an error message containing
@@ -4952,7 +5753,7 @@ namespace WebVella.Erp.Web.Controllers
 		[AllowAnonymous]
 		[Route("api/v3/en_US/auth/jwt/token/refresh")]
 		[HttpPost]
-		public async Task<IActionResult> GetNewJwtToken([FromBody] JwtTokenModel model)
+		public async Task<IActionResult> GetNewJwtToken([FromBody] JwtTokenModel model, [FromServices] LoginThrottleService loginThrottle)
 		{
 			ResponseModel response = new ResponseModel { Timestamp = DateTime.UtcNow, Success = true, Errors = new List<ErrorModel>() };
 
@@ -4968,13 +5769,90 @@ namespace WebVella.Erp.Web.Controllers
 				return DoResponse(response);
 			}
 
+			// THREAT ADDRESSED - finding M-2, CWE-476 (null pointer dereference), OWASP A09. As on the issue
+			// route, no [ApiController] attribute means an absent or unparseable body binds model to null with
+			// no automatic 400, and the dereference below took the catch path - where a NOTIFYING log record
+			// was written. Because this route needs no credential at all, not even a guessable one, that was
+			// the cheapest outbound-mail trigger in the platform: an empty POST, repeated. The submission is
+			// rejected here instead, before anything is dereferenced.
+			//
+			// The response is the same generic failure the catch path already returned in production, so
+			// production behaviour is unchanged. In development mode a malformed body no longer renders a
+			// NullReferenceException stack trace, which is a strict improvement: that trace described this
+			// method's own missing guard, not anything about the token.
+			var remoteAddress = HttpContext?.Connection?.RemoteIpAddress?.ToString();
+			if (model == null || string.IsNullOrWhiteSpace(model.Token))
+			{
+				loginThrottle.RegisterAddressFailure(remoteAddress);
+				SecurityAuditLog.Write(Diagnostics.LogType.Error, "GetNewJwtToken",
+					"Bearer token refresh rejected - no token supplied.",
+					"ip=" + SecurityAuditLog.Field(remoteAddress, MAX_AUDITED_FIELD_LENGTH));
+
+				response.Success = false;
+				response.Message = INTERNAL_ERROR_MESSAGE;
+				return DoResponse(response);
+			}
+
+			// THREAT ADDRESSED - finding M-2 and finding H-16, CWE-307 (improper restriction of excessive
+			// authentication attempts), OWASP A07. This route was the one unmetered credential-adjacent
+			// surface left after the login page and the token issue route were throttled. It is
+			// [AllowAnonymous] and it VALIDATES AN ATTACKER-SUPPLIED TOKEN, so it is a signature-guessing
+			// oracle: unlimited attempts, each one telling the caller whether a candidate token verified.
+			// Throttling only the two password surfaces would have left forgery attempts free.
+			//
+			// The control is deliberately the ADDRESS budget alone, not an account budget. No account is named
+			// on this route - a token is, and an unverified token names nobody trustworthy - so there is no
+			// principal to lock, and inferring one from an unverified token would let a forged token lock out
+			// the account it claims to be. The address budget is shared with the login page and the issue
+			// route, which is intended: it bounds the total unauthenticated failure rate from one source
+			// however the attacker distributes it. The interaction is bounded and accepted rather than
+			// unnoticed - a source that has already burnt its budget on failed logins will find refresh
+			// refused too, which is the correct outcome for a single hostile source and is documented in the
+			// risk register.
+			if (loginThrottle.IsAddressRefusing(remoteAddress))
+			{
+				if (loginThrottle.TryClaimRefusalAudit(remoteAddress, out var suppressedRefusals))
+				{
+					SecurityAuditLog.Write(Diagnostics.LogType.Error, "GetNewJwtToken",
+						"Bearer token refresh refused - source temporarily locked.",
+						"ip=" + SecurityAuditLog.Field(remoteAddress, MAX_AUDITED_FIELD_LENGTH)
+							+ "; refusals_not_audited=" + suppressedRefusals.ToString(CultureInfo.InvariantCulture));
+				}
+
+				// The same generic failure every other rejection on this route returns, so being throttled is
+				// indistinguishable from an ordinary refusal and cannot be probed for.
+				response.Success = false;
+				response.Message = INTERNAL_ERROR_MESSAGE;
+				return DoResponse(response);
+			}
+
 			try
 			{
 				response.Object = await AuthService.GetNewTokenAsync(model.Token);
+
+				// GetNewTokenAsync returns null rather than throwing for a token that fails validation, so
+				// this - not the catch below - is the path a forgery attempt actually takes, and it is where
+				// the attempt has to be counted. The response is left exactly as it was: this route has always
+				// answered a bad token with Success = true and a null Object, and changing that would alter the
+				// response envelope for every existing client.
+				if (response.Object == null)
+				{
+					loginThrottle.RegisterAddressFailure(remoteAddress);
+				}
 			}
 			catch (Exception e)
 			{
-				new LogService().Create(Diagnostics.LogType.Error, "GetNewJwtToken", e);
+				// THREAT ADDRESSED - finding M-2, CWE-778 / CWE-779: the notifying LogService write is
+				// replaced by the guarded, explicitly non-notifying writer for the reasons set out on the
+				// issue route above. With the null body now rejected before the try, this catch is reachable
+				// only by a genuine server fault, so the exception IS passed and the operator keeps the full
+				// stack trace. A fault here is not counted against the address budget - an attacker cannot
+				// provoke one on demand, and counting it would let a datastore wobble lock out legitimate
+				// sources.
+				SecurityAuditLog.Write(Diagnostics.LogType.Error, "GetNewJwtToken",
+					"Bearer token refresh failed.",
+					"ip=" + SecurityAuditLog.Field(remoteAddress, MAX_AUDITED_FIELD_LENGTH), e);
+
 				response.Success = false;
 
 				// THREAT ADDRESSED - finding H-13, CWE-209, OWASP A05 Security Misconfiguration. The second

@@ -220,3 +220,9 @@ _Pvt_Extensions
 /WebVella.ERP.Site/Pages/WV/Pages
 **/Properties/launchSettings.json
 /.idea/.idea.WebVella.ERP3/.idea
+
+# Outputs written into the workspace by .github/workflows/security-scan.yml
+# (the security gate). Generated at run time; never source content.
+/secret-sweep.txt
+/sln-members.txt
+/tracked-projects.txt

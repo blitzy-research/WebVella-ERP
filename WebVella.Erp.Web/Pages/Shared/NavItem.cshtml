@@ -8,29 +8,27 @@
 @if(navItem.Nodes.Count > 0){
 	navItem.Content = navItem.Content.Replace("dropdown-item","dropdown-toggle").Replace("<a","<a data-toggle='dropdown' ");
 	<div class="dropdown-item dropdown dropright" style="overflow:unset">
-		@* SECURITY TRIAGE - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting).
-		   THREAT: MenuItem.Content is database-sourced navigation content rendered without
-		   output encoding, and this view renders on every page of all seven host applications.
-		   TRIAGE OUTCOME: BY-DESIGN MARKUP CHANNEL - deliberately NOT encoded.
-		   EVIDENCE: MenuItem.IsHtml defaults to true (Models/MenuItem.cs:L22) and is never
-		   assigned false anywhere in the repository, so this raw branch is the only branch
-		   ever taken. Every producer writes server-built anchor and icon markup - see
-		   Models/BaseErpPageModel.cs:L366-L369, L381, L385, L398-L400 and L448, plus
-		   Services/RenderService.cs:L465 and Plugins.Project/Services/RenderService.cs:L19.
-		   Line 9 above additionally rewrites this value AS MARKUP, injecting
-		   data-toggle='dropdown' by string-replacing the "<a" tag, so encoding here would not
-		   merely print literal anchor HTML in the navigation - it would stop every dropdown
-		   in the product from toggling.
-		   The IsHtml gate is the opt-in control; the else branch below is already
-		   auto-encoded by Razor for any caller that sets IsHtml to false.
-		   COMPENSATING CONTROL: markup authoring is restricted to privileged roles, plus the
-		   Content-Security-Policy emitted by SecurityHeadersMiddleware (commit class 8),
-		   which ships report-only by default.
-		   RESIDUAL (out of scope, documented only): area.Label, node.Label, node.Url,
-		   node.IconClass, sitePage.Name and sitePage.Label are interpolated unencoded in
-		   Models/BaseErpPageModel.cs - that builder is the true sink.
-		   ACCEPTED, DOCUMENTED RISK - see docs/security/risk-register.md.
-		   Do not encode this branch and do not remove the Html.Raw call. *@
+		@* SECURITY - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting). REMEDIATED.
+		   THREAT: MenuItem.Content is database-sourced navigation content, and this view renders on
+		   every page of all seven host applications, so an injected payload executed for every
+		   authenticated user of the platform.
+		   WHERE IT IS FIXED: at the point of composition, not at this sink. Every database-sourced
+		   value interpolated into this markup - area.Label, node.Label, node.Url and node.IconClass -
+		   is encoded or allow-listed by Models/BaseErpPageModel.cs before it ever reaches here:
+		   EncodeMenuText for text and attribute values, TryEncodeMenuUrl for the href (an allow-list,
+		   because encoding does not neutralise a "javascript:" URL), and EncodeMenuIconClass for the
+		   class attribute. What this line receives is server-authored markup whose data slots are inert.
+		   WHY THIS SINK ITSELF STAYS RAW: the value IS markup, and line 9 above rewrites it AS MARKUP -
+		   it injects data-toggle='dropdown' by string-replacing the "<a" tag. Encoding here would print
+		   literal anchor HTML in the navigation of every host and stop every dropdown in the product
+		   from toggling, so encoding the composed skeleton is the wrong control; encoding its inputs is
+		   the right one. The else branch below stays auto-encoded by Razor for any caller that sets
+		   IsHtml to false.
+		   DEFENCE IN DEPTH: markup authoring is restricted to privileged roles, plus the
+		   Content-Security-Policy emitted by SecurityHeadersMiddleware (commit class 8), which ships
+		   report-only by default.
+		   Do not remove this Html.Raw call while line 9 rewrites the value as markup, and do not move
+		   the encoding out of Models/BaseErpPageModel.cs. *@
 		@if (navItem.IsHtml)
 		{
 			@Html.Raw(navItem.Content)
@@ -48,22 +46,21 @@
 	</div>
 }
 else{
-	@* SECURITY TRIAGE - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting).
+	@* SECURITY - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting). REMEDIATED.
 	   THREAT: the same database-sourced MenuItem.Content, rendered here for leaf nodes that
 	   have no children, on every page of all seven host applications.
-	   TRIAGE OUTCOME: BY-DESIGN MARKUP CHANNEL - deliberately NOT encoded.
-	   EVIDENCE: MenuItem.IsHtml defaults to true (Models/MenuItem.cs:L22) and is never
-	   assigned false anywhere in the repository, so this raw branch is the only branch ever
-	   taken. The leaf items reaching it are built at Models/BaseErpPageModel.cs:L381, L385
-	   and L389, each an anchor carrying an icon span driven by node.IconClass; encoding it
-	   would print that markup as visible text in the navigation of every host. The else
-	   branch below is already auto-encoded by Razor for any caller that sets IsHtml to false.
-	   COMPENSATING CONTROL: markup authoring is restricted to privileged roles, plus the
+	   WHERE IT IS FIXED: at the point of composition. The leaf anchors reaching this line are
+	   built in Models/BaseErpPageModel.cs, which now encodes node.Label with EncodeMenuText,
+	   allow-lists node.Url with TryEncodeMenuUrl (a rejected URL degrades to the inert
+	   href="#" onclick="return false" form) and allow-lists node.IconClass with
+	   EncodeMenuIconClass, so the icon span and anchor arrive here with inert data slots.
+	   WHY THIS SINK ITSELF STAYS RAW: the value is a server-authored anchor carrying an icon
+	   span; encoding it would print that markup as visible text in the navigation of every
+	   host. The else branch below stays auto-encoded by Razor for any caller that sets IsHtml
+	   to false.
+	   DEFENCE IN DEPTH: markup authoring is restricted to privileged roles, plus the
 	   report-only Content-Security-Policy emitted by SecurityHeadersMiddleware (class 8).
-	   RESIDUAL (out of scope, documented only): node.Label, node.Url and node.IconClass are
-	   interpolated unencoded in Models/BaseErpPageModel.cs - that builder is the true sink.
-	   ACCEPTED, DOCUMENTED RISK - see docs/security/risk-register.md.
-	   Do not encode this branch and do not remove the Html.Raw call. *@
+	   Do not move the encoding out of Models/BaseErpPageModel.cs. *@
 	@if (navItem.IsHtml)
 	{
 		@Html.Raw(navItem.Content)

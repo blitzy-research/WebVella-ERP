@@ -55,12 +55,13 @@ Three more are conditional:
 | Setting | Environment variable | When it is needed |
 | --- | --- | --- |
 | `Settings:Jwt:Key` | `Settings__Jwt__Key` | Only to serve bearer tokens. At least 32 bytes. While it is absent the token issue and refresh routes disable themselves rather than sign forgeable tokens; cookie login is unaffected. |
-| `Settings:InitialAdministratorPassword` | `Settings__InitialAdministratorPassword` | Only on a **brand-new** database. Sets the first administrator's password. If it is absent, provisioning generates a random one and prints it **once** on standard error — the shipped default password `erp` no longer exists (finding C-01). |
+| `Settings:InitialAdministratorPassword` | `Settings__InitialAdministratorPassword` | Only on a **brand-new** database. Sets the first administrator's password. If it is absent, provisioning generates a random one and prints it **once** on standard error — the shipped default password `erp` no longer exists (finding C-01). **If you do supply it, it must be 12–128 characters and contain a lower-case letter, an upper-case letter, a digit and a symbol; otherwise provisioning fails fast** rather than seeding a weak administrator. The error names the setting, never the value. Whichever way it is set, the account is flagged **change-required-on-first-login**: it can sign in interactively to rotate the password, but cannot issue an API bearer token until it has been rotated. |
 | `Settings:EmailSMTPPassword` | `Settings__EmailSMTPPassword` | Only when outgoing mail is enabled. |
 
-Configuration is read from `config.json` first, then from environment variables, then — in the Development
-environment only — from user secrets, so a later provider always wins. Startup aborts with a message naming
-every missing setting; the message never prints a value.
+Configuration is read from **`Config.json`** first — note the capital `C`, and note that it is resolved from
+the directory the application was loaded from rather than from the working directory — then from environment
+variables, then, in the Development environment only, from user secrets, so a later provider always wins.
+Startup aborts with a message naming every missing setting; the message never prints a value.
 
 ```bash
 export Settings__ConnectionString='Server=localhost;Port=5432;User Id=...;Password=...;Database=...;'
