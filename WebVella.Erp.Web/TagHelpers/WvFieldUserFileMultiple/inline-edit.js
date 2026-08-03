@@ -85,14 +85,43 @@ function FileInlineEditPreEnableCallback(fieldId, fieldName, entityName, recordI
 						$(selectors.inputEl).attr("data-newfilepath", result.object.url).attr("data-newfilename", result.object.filename);  //Input element 'value' and 'data-filename' are updated only on save
 						$(selectors.fakeInputLinkEl).first().removeClass("d-none");
 					},
+					//THREAT ADDRESSED - CWE-754, improper handling of an exceptional condition that carries a
+					//security decision. /fs/upload rejects a disallowed file with HTTP 400 and the FSResponse
+					//envelope, whose JSON field is lowercase "message" - so reading the capitalised ".Message"
+					//always yielded undefined, and the next line then dereferenced "response", an identifier
+					//that is never declared anywhere in this scope. That threw a ReferenceError which aborted
+					//this handler at its second statement, so the feedback element, the toast and even the
+					//console diagnostic below never ran: the extension, size and content-type controls on the
+					//upload action reported their refusal correctly, yet the interface showed a field frozen
+					//mid-upload with the rejected file still selected and no reason given. A control the user
+					//cannot see a refusal from is a control the user works around. The message is now read
+					//from the field the server actually sends, applied with .text() so a message can never be
+					//interpreted as markup, and the rejected selection is cleared so the refusal is enforced
+					//in the interface and not merely reported.
 					error: function (xhr, status, p3, p4) {
 						var err = "Error " + " " + status + " " + p3 + " " + p4;
-						if (xhr.responseText && xhr.responseText[0] === "{")
-							err = JSON.parse(xhr.responseText).Message;
+						if (xhr.responseText && xhr.responseText[0] === "{") {
+							var parsed = null;
+							try {
+								parsed = JSON.parse(xhr.responseText);
+							}
+							catch (parseError) {
+								parsed = null;
+							}
+							if (parsed && parsed.message)
+								err = parsed.message;
+						}
+						//Leave the field in a resting state rather than stuck at the progress it reached, and
+						//drop the rejected file so it cannot be carried into a save
+						$(selectors.fakeInputProgressEl).first().attr("style", "display:none;width:0%").text("");
+						$(selectors.fakeInputLinkEl).show();
+						$(selectors.fileUploadEl).first().val("");
 						$(selectors.fakeInputEl).addClass("is-invalid");
-						$(selectors.editWrapper + " .input-group").after("<div class='invalid-feedback'>" + response.message + "</div>");
+						//Replace any feedback from a previous rejection instead of stacking another one
+						$(selectors.editWrapper + " .invalid-feedback").remove();
+						$(selectors.editWrapper + " .input-group").first().after($("<div class='invalid-feedback'></div>").text(err));
 						$(selectors.editWrapper + " .invalid-feedback").first().show();
-						toastr.error("An error occurred", 'Error!', { closeButton: true, tapToDismiss: true });
+						toastr.error(err, 'Error!', { closeButton: true, tapToDismiss: true });
 						console.log(err);
 					}
 				});

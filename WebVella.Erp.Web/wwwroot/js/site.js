@@ -559,6 +559,192 @@ function GetFilenameFromUrl(url)
 
 
 //////////////////////////////////////////////////
+// Upload rejection feedback
+//////////////////////////////////////////////////
+//THREAT ADDRESSED - CWE-754, improper handling of an exceptional condition that carries a security
+//decision. POST /fs/upload enforces the extension allow-list, the size cap and the content-type
+//consistency check, and refuses a disallowed file with HTTP 400 plus the FSResponse envelope. The
+//packaged field widgets that drive that endpoint cannot consume the refusal: their jQuery error
+//callbacks read the capitalised ".Message" while the envelope serialises lowercase "message", and the
+//very next statement dereferences "response", an identifier those callbacks never declare. The
+//resulting ReferenceError aborts each handler at its second statement, so the feedback element, the
+//toast and even the console diagnostic never run - the server refuses the file correctly while the
+//interface shows a field stuck mid-upload, no reason, and the rejected file still selected and
+//submittable. A control whose refusal the user cannot see is a control the user works around, so the
+//upload restriction was being reported but not enforced where it had to hold.
+//
+//Those callbacks live in the WebVella.TagHelpers package and are emitted as inline script, so they
+//cannot be edited here: third-party code takes version updates only, and versions 1.8.1 and 1.8.2 were
+//both checked and still carry the same two defects, so upgrading is not a remedy either. Reassigning
+//the four global functions that build them does not work: two of them create the callback inside a
+//change handler bound at field-initialisation time, which has already run by the time any script at the
+//end of the document could replace them. jQuery resolves prefilters before it installs a request's
+//error callback, so a prefilter is the one hook that reaches a closure created earlier, and it is a
+//single hook rather than four reimplementations of vendor logic.
+//
+//The hook is deliberately narrow twice over. It looks only at POSTs whose path ends exactly at
+//"/fs/upload" - never at "/fs/upload-file-multiple" or "/fs/upload-user-file-multiple", whose callbacks
+//already read the field correctly - and even then it replaces the callback only when the callback's own
+//source proves it carries the defect. A correct handler on the same endpoint is therefore left
+//untouched, and this override retires itself the moment the package ships a fixed one. The success path
+//is never read or altered, and nothing here relaxes the server-side check: the refusal still comes from
+//the server, this only makes it legible and clears the file the server refused.
+(function () {
+	var UPLOAD_ENDPOINT = "/fs/upload";
+	//The field whose upload is in flight. Recorded in the capture phase so it is already set by the time
+	//the field's own change handler runs and calls $.ajax, which is when the prefilter executes.
+	var activeFieldId = null;
+
+	function rememberFieldId(value) {
+		if (value !== null && value !== undefined && String(value).length > 0) {
+			activeFieldId = String(value);
+		}
+	}
+
+	if (document.addEventListener) {
+		document.addEventListener("change", function (ev) {
+			var target = ev ? ev.target : null;
+			if (target && target.id && target.type === "file" && target.id.indexOf("file-") === 0) {
+				rememberFieldId(target.id.substring("file-".length));
+			}
+		}, true);
+		//The packaged paste-to-upload path fires no change event; it records its field in this global
+		//instead, which is already populated by the time the paste reaches the document.
+		document.addEventListener("paste", function () {
+			if (typeof FieldFileFormGlobalPasteActiveFieldId !== "undefined") {
+				rememberFieldId(FieldFileFormGlobalPasteActiveFieldId);
+			}
+		}, true);
+	}
+
+	function isUploadRequest(options) {
+		if (!options || !options.url) {
+			return false;
+		}
+		var verb = String(options.type || options.method || "GET").toUpperCase();
+		if (verb !== "POST") {
+			return false;
+		}
+		//Compare the path only, and require it to END at the endpoint, so the longer multi-file upload
+		//routes - whose callbacks are already correct - can never be captured by this hook
+		var path = String(options.url).split("#")[0].split("?")[0];
+		return path === UPLOAD_ENDPOINT || path.slice(-UPLOAD_ENDPOINT.length) === UPLOAD_ENDPOINT;
+	}
+
+	function isDefectiveHandler(handler) {
+		if (typeof handler !== "function") {
+			return false;
+		}
+		var source = "";
+		try {
+			source = Function.prototype.toString.call(handler);
+		}
+		catch (readError) {
+			return false;
+		}
+		//The two defects, in the callback's own source: the undeclared identifier and the capitalised field
+		return source.indexOf("response.message") !== -1 || source.indexOf("responseText).Message") !== -1;
+	}
+
+	function readServerMessage(xhr, status, p3, p4) {
+		var fallback = "Error " + " " + status + " " + p3 + " " + p4;
+		if (!xhr || !xhr.responseText || String(xhr.responseText).charAt(0) !== "{") {
+			return fallback;
+		}
+		var parsed = null;
+		try {
+			parsed = JSON.parse(xhr.responseText);
+		}
+		catch (parseError) {
+			return fallback;
+		}
+		//The envelope's field is lowercase. This is the whole point of the fix.
+		if (parsed && typeof parsed.message === "string" && parsed.message.length > 0) {
+			return parsed.message;
+		}
+		return fallback;
+	}
+
+	//Renders the refusal into whichever of the two field shapes is on the page. Every anchor the packaged
+	//callbacks touch sits inside the field's .wv-field container, and both shapes derive every one of
+	//their selectors from the same field id, so one routine covers all of them without branching per
+	//widget. The message is applied with .text(), never concatenated into markup.
+	function renderRejection(message) {
+		if (activeFieldId === null) {
+			return;
+		}
+		var fakeInput = $("#fake-" + activeFieldId);
+		var editWrapper = $("#edit-" + activeFieldId);
+		var fileInput = $("#file-" + activeFieldId);
+
+		//Leave the field at rest rather than frozen at the progress it reached
+		$("#fake-" + activeFieldId + " .form-control-progress").first().attr("style", "display:none;width:0%").text("");
+		$("#fake-" + activeFieldId + " a").show();
+		fakeInput.addClass("is-invalid");
+		//The image shape's own error indicator, kept as the fixed literal the package uses. The server
+		//text goes to the feedback element and the toast below, never into markup.
+		editWrapper.find(".wrapper-text span").first().html("<i class='fa fa-exclamation-circle go-red'></i> Error").removeClass("d-none");
+
+		//Drop the refused file so it cannot be carried into a save. Without this the interface still
+		//holds the file the server just rejected.
+		fileInput.val("");
+
+		var container = fileInput.closest(".wv-field");
+		if (container.length === 0) {
+			container = fakeInput.closest(".wv-field");
+		}
+		if (container.length === 0) {
+			container = editWrapper.closest(".wv-field");
+		}
+		var anchor = container.length > 0 ? container : editWrapper;
+		//Replace any feedback left by an earlier rejection instead of stacking another one
+		anchor.find(".invalid-feedback").remove();
+		var feedback = $("<div class='invalid-feedback'></div>").text(message);
+		var inputGroup = anchor.find(".input-group").first();
+		if (inputGroup.length > 0) {
+			inputGroup.after(feedback);
+		}
+		else if (editWrapper.length > 0) {
+			editWrapper.after(feedback);
+		}
+		else {
+			anchor.append(feedback);
+		}
+		feedback.show();
+	}
+
+	if (typeof $ === "undefined" || !$ || typeof $.ajaxPrefilter !== "function") {
+		return;
+	}
+
+	$.ajaxPrefilter(function (options) {
+		if (!isUploadRequest(options) || !isDefectiveHandler(options.error)) {
+			return;
+		}
+		options.error = function (xhr, status, p3, p4) {
+			var message = readServerMessage(xhr, status, p3, p4);
+			//Each channel is isolated so a surprise in one cannot suppress the others - the failure mode
+			//this replaces was precisely one statement stopping every report that followed it
+			try {
+				renderRejection(message);
+			}
+			catch (renderError) {
+				if (typeof console !== "undefined" && console.log) {
+					console.log(renderError);
+				}
+			}
+			if (typeof toastr !== "undefined" && toastr && typeof toastr.error === "function") {
+				toastr.error(message, 'Error!', { closeButton: true, tapToDismiss: true });
+			}
+			if (typeof console !== "undefined" && console.log) {
+				console.log(message);
+			}
+		};
+	});
+})();
+
+
+//////////////////////////////////////////////////
 // Timer
 //////////////////////////////////////////////////
 function StartTimer(elementSelector,startTime)
