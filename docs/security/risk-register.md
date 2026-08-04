@@ -91,6 +91,7 @@ the same risk written from different angles; the subject and status in this tabl
 | `RISK-116` | ~~Gate 3 accepts exactly **one** credential-shaped location: a commented-out connection-string template in `WebVella.Erp.Site/Config.json` whose every value is angle-bracketed.~~ **CLOSED - the residual no longer exists.** The commented-out template was removed from `WebVella.Erp.Site/Config.json`, so the reviewed allowance now has nothing to allow: Gate 3 reports **0 credential-shaped locations and 0 tolerated** across 1,518 tracked text files. The reasoning is retained below because the *decision* it records still governs - narrowing the pattern to ignore an angle-bracketed value was rejected as a fail-open for any real password containing `<`, and that pattern is unchanged. | Closed | Platform team |
 | `RISK-117` | The licence-governance gate that keeps `RISK-001` unshippable refuses to **build** a package, not to **publish** one: a `.nupkg` produced before the gate existed remains pushable, and the gate can confirm that an answer was recorded but not that the person recording it was entitled to. What it buys is deliberateness — the answer must be typed and appears in the log or the diff — on the one step that cannot be undone. | Accepted — bounded residual of the control | Whoever performs a release |
 | `RISK-118` | Authenticated page renderings stay recoverable from the **browser's** back/forward cache after logout, because authenticated content responses carry no `Cache-Control` while `/login` and `/logout` do. Measured during runtime verification: two presses of Back after logout restored the authenticated shell with **no document request issued**. The restored view is inert — the same ticket replayed against four protected routes is refused server-side — so what survives is one already-delivered rendering on a device an attacker must already hold. Recorded with a minimal fix rather than remediated: `Cache-Control` is not in the mandated seven-header set, and the ticket-acceptance weakness behind `CR2-F-01` / `CR2-F-02` is separately proven closed. | Accepted — documented with fix guidance | Platform team |
+| `RISK-119` | Two **pre-existing** defects in the shipped Blazor WebAssembly client's HTTP layer, found while remediating `B3-SEAM-01` and outside its scope. `Client/Services/TokenManagerService.cs` builds its refresh URL as `api/v3/en_US/auth/jwt/token/refresh` on an `HttpClient` whose `BaseAddress` already ends in `/api/`, so the client's automatic token refresh addresses a doubled segment that no route serves. `Client/ApiService/ApiService.System.cs` sets a **lower-case** `bearer` scheme on `DefaultRequestHeaders`, and both token-issuing hosts select the authentication handler by a case-**sensitive** `Authorization` prefix match, so those calls are not authenticated as bearer at all — and the credential is left attached to a shared client rather than scoped to one request. Neither is a new exposure and neither weakens the `B3-SEAM-01` fix, which builds its own URL and sets its own correctly-cased request-scoped header. | Accepted — documented with fix guidance | Platform team |
 
 
 
@@ -4679,3 +4680,88 @@ to the existing security workflow as a non-blocking step so the count cannot sil
 short script that resolves every non-`http` markdown link against the filesystem and prints the unresolved
 ones. Keeping it non-blocking matters — promoting a 74-item pre-existing backlog to a build error would
 demand exactly the mass edit this entry declines.
+
+#### RISK-119 — Two pre-existing defects in the WebAssembly client's HTTP layer
+
+**How they were found.** Both surfaced while remediating review finding `B3-SEAM-01`, which required reading
+the shipped Blazor WebAssembly client's authentication path end to end. Neither is that finding, neither is
+caused by its fix, and neither is repaired by it. They are recorded here because AAP 0.1.3 guideline 8
+directs that out-of-scope concerns be documented rather than fixed unless Critical, and because the review
+that raised `B3-SEAM-01` listed both under its areas of concern while placing them outside the finding's
+scope.
+
+**Defect one — the client's token refresh addresses a route that does not exist.**
+`WebVella.Erp.WebAssembly/Client/Services/TokenManagerService.cs` holds its refresh endpoint as
+`api/v3/en_US/auth/jwt/token/refresh`. The `HttpClient` it is resolved against is configured with a
+`BaseAddress` of the server URL plus `api/`, so the effective request path carries the segment twice —
+`…/api/api/v3/en_US/auth/jwt/token/refresh` — which no route on any host serves. The client's automatic
+refresh therefore cannot succeed; it fails as a not-found rather than as a rejected credential. Every
+sibling in the same client gets this right by holding the path *without* the `api/` prefix, which is the
+shape `LoginAsync` and the `B3-SEAM-01` logout call both use.
+
+**Defect two — a lower-case scheme on a shared client.** `WebVella.Erp.WebAssembly/Client/ApiService/ApiService.System.cs`
+assigns `new AuthenticationHeaderValue("bearer", token)` to `_httpClient.DefaultRequestHeaders.Authorization`.
+Two separate problems live in that one line. The scheme is lower-case, and both hosts that issue tokens
+select which authentication handler sees a request by matching the `Authorization` prefix
+case-**sensitively**, so the request is routed to the cookie handler and is never authenticated as the
+bearer session it presents. And the assignment is to `DefaultRequestHeaders` rather than to a single
+request, so the credential stays attached to a client shared with every other call the application makes,
+including ones that should carry no credential at all.
+
+**Why neither is escalated.** Neither grants access that was previously refused, discloses anything, or
+weakens a control: the first is a request that cannot reach a route, and the second causes a request to be
+*less* authenticated than intended, not more. Under the severity matrix neither reaches Critical or High, so
+the minimal-change constraint governs and the correct disposition is documentation. Repairing them would
+also mean changing client behaviour that no finding asked to change, in a project the plan's scope note
+excludes except where a finding makes a change unavoidable — which, unlike `B3-SEAM-01`, these do not.
+
+**Why they do not undermine the `B3-SEAM-01` fix.** The logout request built in
+`Client/Services/AuthenticationService.cs` inherits neither defect, deliberately. It composes its own path
+from the `apiAuthRoot` constant without an `api/` prefix, so it is not affected by the doubled segment; and
+it attaches a correctly-cased `Bearer` header to a single `HttpRequestMessage` rather than to
+`DefaultRequestHeaders`, so it is both routed to the bearer handler and unable to leak the retired
+credential onto later requests. The reasoning is stated in comments at both lines so that a future edit
+cannot quietly reintroduce either shape.
+
+**One consequence for verification, worth stating explicitly.** Because the client's own refresh helper
+cannot reach the server, a verification that drove refresh *through the client* would report a failure for
+the wrong reason and could be mistaken for proof that revocation works. Gate 5's `M19` procedure therefore
+directs the tester at the server route `POST api/v3/en_US/auth/jwt/token/refresh` directly, so that a
+refusal is attributable to the revoked session rather than to a malformed path.
+
+**Impact proven at runtime, and it is larger than that one line suggests.** Browser verification of the
+`B3-SEAM-01` fix established that defect two does not merely leave individual calls unauthenticated. On
+either token-issuing host it prevents the client's home page from ever presenting its authenticated branch,
+and that branch holds the client's **only** logout control. The chain is short and entirely pre-existing.
+`Client/Pages/Index.razor.cs` sets `_isAuthenticated` from token presence alone, which succeeds, and then
+calls `GetCurrentUserAsync()` on the following line before it re-renders. That call resolves its client
+through `GetAuthorizedHttpClientAsync()`, so it carries the lower-case scheme, is routed to the cookie
+handler, is answered with an authentication redirect, and throws. The throw happens *before*
+`StateHasChanged()`, so the page goes on rendering the stale anonymous branch even though the field now says
+otherwise — and `Client/Pages/Index.razor` dereferences `@_user.Email` unguarded, so a re-render with a null
+user would fault as well. Observed in the browser as an alternating redirect loop terminating in
+`ERR_TOO_MANY_REDIRECTS`, surfaced to the user as nothing at all, because the framework's error banner is
+commented out of the client's `index.html`.
+
+Two consequences follow, and both are worth stating plainly. The screen reads as signed-out while a live,
+unrevoked administrator token is still held in local storage: a misleading signal rather than a
+vulnerability, since the token is one a successful login legitimately minted and it expires on its own
+schedule. And the shipped Logout button cannot be clicked on a stock build, so a browser verification of
+`B3-SEAM-01` must reach the fixed code through the client's library entry point `IApiService.LogoutAsync()`,
+or correct the scheme casing first, rather than through that button. `M19` is worded to permit exactly that.
+
+**A note on which side of this is actually wrong.** RFC 7235 section 2.1 defines the `auth-scheme` token as
+case-insensitive, so the client's lower-case `bearer` is legal and the hosts' case-**sensitive**
+`StartsWith("Bearer ")` prefix match is the non-conforming half. That match has been in place since June
+2022 and was not introduced, moved or relied upon by this remediation. Either side can be corrected. The
+one-token client change below is the smaller and is the one recommended; a maintainer who instead made the
+two host selectors compare case-insensitively would be repairing the more defective side and would fix every
+client at once. Neither change is a security fix, and neither is made here.
+
+**Recommended fix, for a maintenance sprint rather than a security one.** Two one-line changes, each
+independently verifiable. Drop the `api/` prefix from the refresh endpoint constant so it matches every
+other path in the client, then confirm a refresh returns a token rather than a not-found. Capitalise the
+scheme to `Bearer` and move the assignment off `DefaultRequestHeaders` onto the individual request, then
+confirm a protected call is authenticated as the bearer principal rather than falling through to the cookie
+handler. Fixing the second will make previously-unauthenticated client calls start authenticating, so it
+should be validated against the client's protected screens rather than assumed to be inert.

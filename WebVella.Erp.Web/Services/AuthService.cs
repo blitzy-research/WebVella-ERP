@@ -372,8 +372,14 @@ namespace WebVella.Erp.Web.Services
 			// rather than hard-coded, so a host that adds a second cookie scheme is covered without editing
 			// this method. Two exclusions, both deterministic rather than defensive:
 			//   * a handler that does not implement IAuthenticationSignOutHandler has nothing to sign out -
-			//     JwtBearer is the case that matters here, because a bearer token is stateless and cannot be
-			//     withdrawn by the server at all (recorded as an accepted residual, not silently ignored);
+			//     JwtBearer is the case that matters here, because SignOutAsync cannot withdraw a bearer token:
+			//     there is no server-side artifact for it to delete. That is NOT the same statement as "the
+			//     session cannot be ended", which is what this comment used to claim and what made the residual
+			//     look permanent. RevokeCurrentSession above has already recorded THIS session as revoked, and
+			//     all three bearer decision points refuse a revoked identifier, so the bearer half of RISK-007
+			//     is closed rather than accepted. Do not remove that call as dead code on the strength of this
+			//     exclusion - it is the only thing that ends a bearer session (review findings CR2-F-02 for the
+			//     mechanism and B3-SEAM-01 for reaching it from the shipped WebAssembly client);
 			//   * PolicySchemeHandler only FORWARDS, and the JWT_OR_COOKIE policy scheme these hosts register
 			//     configures no sign-out forward target, so naming it would raise rather than sign anything out.
 			// Enumerating instead of guessing is what makes this exhaustive; the explicit fallback below keeps

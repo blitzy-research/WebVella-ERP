@@ -8510,3 +8510,122 @@ commented-out connection-string template in `WebVella.Erp.Site/Config.json`. Tha
 removed, so Gate 3's reviewed allowance has nothing to allow and the sweep reports zero tolerated
 locations. The entry is marked closed and its reasoning retained, because the decision it records - never
 narrow a credential pattern to excuse a reviewed line - still governs.
+
+
+## The shipped client logout made to end the server session (`B3-SEAM-01`)
+
+An earlier class stamped a per-sign-in session identifier into every bearer token and taught three decision
+points to refuse a revoked one. This class closes the gap that left all of it unreachable from the
+product's own interface: the shipped Blazor WebAssembly client signed out by deleting its copy of the token
+from browser local storage and never told the server. Review finding `B3-SEAM-01` (MAJOR, CWE-613, OWASP
+A07) states the consequence exactly — a bearer token is *presented*, not *stored*, so any copy taken before
+the button was pressed stayed a fully valid credential for the remainder of its 24-hour lifetime and could
+be exchanged for a successor at the refresh endpoint under the seven-day absolute horizon. The revocation
+mechanism was already complete and defect-free. Nothing invoked it.
+
+Four files changed, none of them new. `WebVella.Erp.Web/Services/AuthService.cs` — the file the finding was
+filed against — is among them for a **comment correction only**, not a behavioural one. No executable line
+of the revocation mechanism changed, because the mechanism needed no repair; the finding was filed at that
+address because that is where the unreachable machinery lives, and fixing the machinery would have been a
+fix aimed at the symptom's location rather than its cause.
+
+| File | Change | Threat addressed |
+| --- | --- | --- |
+| `WebVella.Erp.Web/Controllers/WebApiController.cs` | New action `RevokeJwtToken` on `POST api/v3/en_US/auth/jwt/token/logout`, appended inside the existing JWT region beside the two token routes it completes. It adds no revocation logic of its own: it awaits `AuthService.LogoutAsync()` and returns the controller's standard `ResponseModel` envelope through `DoResponse`. Faults go to `SecurityAuditLog.RecordApiFault` and the caller receives `SafeErrorMessage`. | CWE-613 insufficient session expiration; OWASP A07; the Authentication Hardening standard's "proper logout with session invalidation" clause |
+| `WebVella.Erp.WebAssembly/Client/Services/AuthenticationService.cs` | `LogoutAsync` now POSTs that route with a request-scoped `Authorization: Bearer <token>` header before clearing local state, returns whether the server confirmed the revocation, and clears the token and notifies the auth-state provider in a `finally`. The interface member gains the return-value contract as a doc comment. | As above, from the consumer side - this is the half that was missing |
+| `WebVella.Erp.Web/Services/AuthService.cs` | **Comment only, no executable change.** The `LogoutAsync` scheme-enumeration exclusion claimed a bearer token "cannot be withdrawn by the server at all (recorded as an accepted residual)". That contradicted both the `RevokeCurrentSession` call six lines above it and that method's own reasoning about bearer coverage. Narrowed to the true statement - `SignOutAsync` cannot withdraw a bearer token - with an explicit warning not to delete the revocation call as dead code on the strength of the exclusion. | A stale comment asserting the control is impossible is how a working control gets removed as dead code by a later maintainer |
+| `.github/workflows/security-scan.yml` | Gate 5 gains manual row `M19` and its procedure, and `expected_rows` moves from 32 to 33. | A remediation with no verification scenario is an assertion; `M19` is what makes this class checkable |
+
+**Why the route is authenticated, and why that is the access control.** It carries no `[AllowAnonymous]`
+exemption, unlike the two token routes beside it. That is deliberate and load-bearing rather than an
+oversight: `AuthService.RevokeCurrentSession` reads the session identifier off the **current principal**,
+so the class-level `[Authorize]` means a caller can only ever revoke the session it actually authenticated
+with. The alternative shape — an anonymous route accepting a token in its body — would have been a
+revoke-anything primitive and, simultaneously, an unauthenticated oracle for probing the revocation store.
+No `ErpSettings.IsJwtConfigured` guard is needed either: on a host that issues no tokens the route is
+simply unreachable with a bearer credential, and a cookie-authenticated caller arriving at it is performing
+a genuine logout.
+
+**Why a new route rather than reusing `/logout`.** The finding's suggested resolution offered either, and
+the existing Razor Page was tried first. It is not usable by a browser-hosted bearer client: it answers
+with a redirect into an HTML page and runs the whole page pipeline including the `ILogoutPageHook`
+extension points, which exist for a navigating browser. Driving it from `HttpClient` would have meant a
+client that follows a redirect chain into markup it discards and that fires page hooks written for a
+different caller. One route that delegates to the same single audited method is both smaller in behaviour
+and impossible to drift from the cookie path, because there remains exactly one implementation of "end
+this session" for both credential forms.
+
+**Why the fix reaches the client at all.** The plan's scope note excludes changes to the Blazor WebAssembly
+client, and that exclusion was read before this class was written rather than after. Its stated rationale
+is server-side request forgery: the client's outbound HTTP is browser-side, so SSRF does not apply there.
+It is not a prohibition on the client's authentication contract, and it cannot be read as one here, because
+a server-only fix is *physically impossible* — the defect is that the client never sends a request, and no
+amount of server code can cause a request that is never made. Precedent is already in this log: finding
+`F-09` removed a hard-coded credential from `WebVella.Erp.WebAssembly/Client/Pages/Index.razor.cs`. The
+change is confined to one method and the doc comment on the interface member it implements.
+
+**Why the token is read from storage rather than through `ITokenManagerService`.** That service refreshes a
+token that is past its refresh hint, which on this path would mint a brand-new successor moments before
+asking the server to destroy the session. The session identifier is carried verbatim across refreshes, so
+either token revokes the same chain and the outcome would still be correct — but issuing a credential in
+order to retire it is needless work on the one path that must also behave well when the network is
+failing. `_localStorageService.GetItemAsync<string>` reads exactly what is held.
+
+**Why the header is request-scoped, and why the capital `B` matters.** The header is attached to a single
+`HttpRequestMessage`, never to `_httpClient.DefaultRequestHeaders`, because that `HttpClient` is shared
+with every other call the client makes and a default assignment would leave the retired credential
+attached to unrelated later requests — the exact opposite of signing out. The capital `Bearer` is not
+cosmetic: both token-issuing hosts select the authentication handler by matching the `Authorization`
+prefix **case-sensitively**, so a lower-case scheme is handed to the cookie handler instead, the request
+is never authenticated as this session, and the revocation would record nothing while the client reported
+success. This is a fail-open shape, so it is stated in a comment at the line rather than left to be
+rediscovered.
+
+**Why local state is cleared in a `finally` and the method never throws.** A browser client must finish
+clearing its own state even when the server is unreachable; otherwise a network failure would leave the
+user apparently signed in with a live credential still in local storage, which is strictly worse than the
+state being handled. The exception is therefore swallowed — but just as deliberately **not** reported as
+success. `LogoutAsync` returns `true` only when the server confirmed the revocation or when no credential
+was held, and `false` when a credential was held and the server did not confirm. A `401` counts as
+unconfirmed: harmless, but not a proven revocation, so it is not claimed as one. The single UI caller,
+`Index.razor.cs`, needs no change and received none: it ignores the return value and sets its local
+`_isAuthenticated` flag to `false`, which stays correct precisely because the `finally` clears the token
+on every path.
+
+**What is deliberately left alone.** Two pre-existing client defects sit next to this code and are
+recorded rather than fixed, because neither is this finding and both are outside its scope.
+`TokenManagerService` builds its refresh URL as `api/v3/en_US/auth/jwt/token/refresh` on an `HttpClient`
+whose `BaseAddress` already ends in `/api/`, producing a doubled segment; and `ApiService.System.cs` sets
+a lower-case `bearer` scheme on `DefaultRequestHeaders`, which the case-sensitive host selector does not
+route to the bearer handler. Both are noted in the risk register. Neither weakens this class: the logout
+request builds its own URL and sets its own correctly-cased header, so it does not inherit either defect.
+
+**Verification.** Measured on .NET SDK `10.0.302`, resolved from `global.json` with
+`rollForward: disable`.
+
+| Check | Recorded result |
+| --- | --- |
+| `dotnet restore WebVella.ERP3.sln` | exit 0, zero `NU19xx` diagnostics |
+| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore -t:Rebuild` | exit 0, **0 errors, 3,044 warnings** - identical to the figure the consolidated pass recorded for the shipped tree |
+| Analyzer parity, normalised as Gate 1 normalises it | **631** distinct `(rule, file)` CA pairs, matching the recorded baseline exactly; zero error-severity CA diagnostics |
+| Analyzer diagnostics attributable to this class | **zero.** `WebApiController.cs` reports no CA diagnostic above line 5700 and the new action occupies 5932-5999; `Client/Services/AuthenticationService.cs` reports none at all. The nine pairs naming the controller are pre-existing and unmoved |
+| Security-category diagnostics | **2** pairs, both accepted documented residuals - `CA5351` in `WebVella.Erp/Utilities/CryptoUtility.cs` and in `WebVella.Erp/Utilities/PasswordUtil.cs`. No new security-category diagnostic |
+| `WebVella.Erp.WebAssembly/Server` and `/Shared`, built explicitly | exit 0 each; **0 errors** with 53 and 0 warnings, both on `net10.0` - unchanged |
+| `dotnet list … package --vulnerable --include-transitive` | 17 solution members plus the 2 explicitly gated non-members, all 19 reporting no vulnerable packages; zero advisory rows. No dependency was added by this class |
+| Gate 5 shape, executed locally | **33** rows evaluated against a declared 33, no row-count drift error, every row exactly 4 fields and every procedure exactly 2, no duplicate identifier, and `M19` present as `DEFERRED` with its procedure attached. Zero `M`-row failures |
+| Compiled-output proof | the interpolated route literal `v3/en_US/auth/jwt/token/logout` is present in `WebVella.Erp.WebAssembly.dll`, so the client change is genuinely compiled rather than merely saved |
+| Runtime, server side | Against a published host: a token is issued, accepted on a protected call (200, establishing it was genuinely valid), then `POST api/v3/en_US/auth/jwt/token/logout` presenting that same token returns 200 with `success` true. Replaying the copy afterwards is refused, the host log naming the reason exactly - `Bearer was not authenticated. Failure message: The session this token belongs to is no longer accepted.` - and `token/refresh` answers with a null `Object`, minting no successor. A control run with a live token does mint one, so the refusal is attributable to the revocation rather than to the route |
+| Runtime, access control | An unauthenticated call to the new route never reaches the action at all: the host log records `DenyAnonymousAuthorizationRequirement: Requires an authenticated user` followed by a challenge. The class-level `[Authorize]` is the control, exactly as the action's remarks claim |
+| Runtime, no over-revocation | Two sessions held concurrently, both accepted; logging out the first refuses the first and leaves the second accepted. The route ends only the caller's own session, which is what reading the session identifier off `HttpContext.User` should produce |
+| Runtime, client side in a browser | The genuine shipped `AuthenticationService.LogoutAsync` was observed emitting exactly one `POST` to `api/v3/en_US/auth/jwt/token/logout`, preceded by a `204` preflight that negotiated the `authorization` header, carrying the scheme word `Bearer` **capitalised**, answered `200` with `success` true and a `set-cookie` expiring `erp_auth_base`. The ordering that matters was measured, not inferred: the POST was issued 17 ms before, and had completed 4 ms before, the single `removeItem` of the token ran. Revocation precedes the local clear, which is the entire point of the change |
+| Runtime limitation, stated rather than glossed | On a stock build the client's **only** Logout control never renders, so the browser evidence above was obtained by reaching the same shipped `LogoutAsync` without pressing that button. The cause is `RISK-119` - a lower-case `bearer` scheme on the client's shared `HttpClient` meeting a case-sensitive host selector that predates this work by three years - and it is outside this finding's scope. Its full mechanism, its runtime impact and the one-token fix are recorded in the risk register, and `M19` is worded to be executable either way |
+| Regression, cookie sign-out | The untouched cookie flow was re-verified end to end in a browser: login sets `erp_auth_base` (`HttpOnly`, `Secure`, `SameSite=Lax`), `/logout` returns it emptied with a 1970 expiry and the browser evicts it entirely, a later visit is treated as anonymous, and a replay of the pre-logout ticket is refused - measured against a positive control proving the replay technique itself works. Zero console errors and no response outside 200 or 302 across 112 requests |
+| Regression, response headers | All seven mandated headers remain present on both a dynamic document and a static asset, byte-identical across the two, on 24 of 24 responses in a page load - including the gzip-compressed static files, which confirms the headers middleware still precedes both response compression and static-file serving |
+
+`M19` is honestly `DEFERRED` in the matrix rather than attested `PASS`, because Gate 5 permits a `PASS`
+only against a dated attestation and the browser scenario is executed outside that job. The runtime
+exercise itself is recorded separately; the matrix records only what evidence the gate holds.
+
+This section is the thirty-fourth `## ` heading of this log; the preceding count was thirty-three, and it
+is restated here because the section that changes the count is the only one that can. Reproduce with
+`grep -c '^## ' docs/security/remediation-log.md`.

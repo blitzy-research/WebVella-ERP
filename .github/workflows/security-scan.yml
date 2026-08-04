@@ -2373,7 +2373,7 @@ jobs:
           set -u
           matrix=manual-verification-matrix.txt
           attest=manual-verification-results.txt
-          expected_rows=32
+          expected_rows=33
           # Rows: ID~KIND~ARG~SCENARIO. The ID is a stable identifier that an
           # attestation refers to, not a position, so a row added later is
           # appended rather than renumbered.
@@ -2425,6 +2425,7 @@ jobs:
             M16~manual~-~The HTML-block component and the components emitting generated inline script still render, proving the by-design raw channels were not broken (H-06 exclusions)
             M17~manual~-~A full-record round-trip update does not overwrite the stored password hash with the redaction marker (C-02 ripple)
             M18~manual~-~The login-latency increase caused by the deliberate key-derivation work factor is measured and recorded as an accepted trade-off (C-03)
+            M19~manual~-~A bearer token copied before the shipped WebAssembly logout is refused for protected API use AND for token refresh after that logout, proving the client logout revokes the server-side session rather than only clearing browser storage (B3-SEAM-01, H-02, H-03)
           ROWS
           }
           procedures() {
@@ -2447,6 +2448,7 @@ jobs:
             M16~Render a page containing the HTML-block component and a page emitting generated inline script, and confirm both display exactly as before the encoding pass.
             M17~GET a full user record, POST it back unchanged, then re-read the password column and assert it still holds the original hash rather than the redaction marker.
             M18~Measure authentication latency before and after the key-derivation change and record both figures with the accepted-trade-off note.
+            M19~Authenticate the WebAssembly client at /login, read the bearer token out of browser local storage and keep a copy, and confirm the copy is accepted by a protected API call (it must succeed, establishing the token was genuinely valid). Trigger the shipped client logout through whichever of its entry points is reachable on the build under test: the Logout button on the client home page, or the library call IApiService.LogoutAsync() where RISK-119 still stops that button from rendering. Then replay the copied token twice: once against the same protected API call and once against POST api/v3/en_US/auth/jwt/token/refresh. Both must be refused, and the refresh route must not mint a successor token. Repeat with the server unreachable to assert local state is still cleared.
           PROCEDURES
           }
           {

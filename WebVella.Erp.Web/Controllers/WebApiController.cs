@@ -5929,6 +5929,75 @@ namespace WebVella.Erp.Web.Controllers
 			return DoResponse(response);
 		}
 
+		/// <summary>
+		/// Ends the bearer session the caller authenticated with, recording it as revoked so that no other
+		/// copy of the same token is accepted again and no successor may be minted for it by refresh.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - review finding B3-SEAM-01, CWE-613 (insufficient session expiration), OWASP
+		/// A07 Identification and Authentication Failures, and the user-specified Authentication Hardening
+		/// standard's "proper logout with session invalidation" clause.
+		/// <para>
+		/// The platform already had a complete bearer revocation mechanism, but the ONLY way to reach it was
+		/// the <c>/logout</c> Razor Page, which a browser-hosted bearer client cannot usefully drive: it
+		/// answers with a redirect into an HTML page and runs the whole page pipeline including
+		/// <c>ILogoutPageHook</c> extension points intended for a navigating browser. The shipped
+		/// WebAssembly client therefore signed out by deleting its own copy of the token from local storage
+		/// and told the server nothing, so a token copied beforehand - from a shared machine, a proxy log or
+		/// an exfiltration payload - stayed valid for the rest of its 24-hour lifetime and could be refreshed
+		/// under the seven-day horizon. The interface reported a completed logout while a replayed credential
+		/// remained live, which is the worst possible shape for a sign-out control.
+		/// </para>
+		/// <para>
+		/// This route is the reachable path, and it is deliberately the SMALLEST one: it adds no revocation
+		/// logic of its own but delegates to <see cref="AuthService.LogoutAsync"/>, so there remains exactly
+		/// one implementation of "end this session" for both credential forms and the two cannot drift apart.
+		/// </para>
+		/// <para>
+		/// It carries NO <c>[AllowAnonymous]</c> exemption, unlike the two token routes above, and that is
+		/// the access control rather than an oversight: the class-level <c>[Authorize]</c> means a caller may
+		/// only revoke the session it actually authenticated with, because
+		/// <c>AuthService.RevokeCurrentSession</c> reads the session identifier off the CURRENT principal. An
+		/// anonymous route taking a token in its body would instead have been a revoke-anything primitive and
+		/// an unauthenticated way to probe the revocation store. No <c>ErpSettings.IsJwtConfigured</c> guard
+		/// is needed for the same reason: on a host that issues no tokens this route is simply unreachable
+		/// with a bearer credential, and a cookie-authenticated caller reaching it is performing a genuine
+		/// logout.
+		/// </para>
+		/// <para>
+		/// Nothing is written to the audit trail on success, matching the existing <c>/logout</c> handler,
+		/// which records none either. Logging only here would leave the two sign-out paths reporting
+		/// differently for the same event, and an authenticated caller could otherwise drive log growth one
+		/// idempotent request at a time (CWE-779).
+		/// </para>
+		/// </remarks>
+		[Route("api/v3/en_US/auth/jwt/token/logout")]
+		[HttpPost]
+		public async Task<IActionResult> RevokeJwtToken([FromServices] AuthService authService)
+		{
+			ResponseModel response = new ResponseModel { Timestamp = DateTime.UtcNow, Success = true, Errors = new List<ErrorModel>() };
+
+			try
+			{
+				// Awaited, not fire-and-forget: the revocation must be recorded before this response is
+				// written, or a client that clears its local state on the reply would report a completed
+				// logout while the session was still accepted - the same race finding F8 closed on the
+				// Razor Pages handler.
+				await authService.LogoutAsync();
+			}
+			catch (Exception e)
+			{
+				// The guarded, rate-bounded, explicitly non-notifying writer every other fault in this
+				// controller uses. A sign-out that fails must be visible to an operator, but it must not
+				// return the reason to the caller and must not be able to trigger outbound mail.
+				SecurityAuditLog.RecordApiFault("RevokeJwtToken", e);
+				response.Success = false;
+				response.Message = SafeErrorMessage(e);
+			}
+
+			return DoResponse(response);
+		}
+
 		#endregion
 	}
 }
