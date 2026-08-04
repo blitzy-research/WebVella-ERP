@@ -145,17 +145,14 @@ namespace WebVella.Erp.Web.Controllers
 		// stored images with src-prefix="/fs", i.e. <img src="/fs/...">, so forcing every response to
 		// download would break image display across the whole platform.
 		//
-		// NARROWED to exactly the four extensions this action's own isImage test names, and no wider. An
-		// earlier revision also admitted .bmp, .webp, .ico, .tif, .tiff and .pdf on the reasoning that the
-		// upload allow-list accepts them, and that reasoning was wrong in both directions:
-		//   an inline allow-list must be derived from what the platform PROVES it renders inline, which is
-		//   the raster set the isImage test and the image field components consume - nothing in this
-		//   repository ever emits a <img src="/fs/...">, a preview or an <embed> for the other five raster
-		//   types, so admitting them widened the inline surface for no functional gain;
-		//   .pdf is the sharper error. A PDF served inline is rendered by the browser's own PDF engine,
-		//   which historically has been a source of same-origin script execution and which honours embedded
-		//   JavaScript actions. It is a document format with an execution surface, not an image, so it now
-		//   downloads like every other non-raster type.
+		// It is NARROWED to exactly the four extensions this action's own isImage test names, and must not be
+		// widened to match the UPLOAD allow-list. An inline allow-list has to be derived from what the
+		// platform PROVES it renders inline - the raster set the isImage test and the image field components
+		// consume - and nothing here emits an <img src="/fs/...">, a preview or an <embed> for .bmp, .webp,
+		// .ico, .tif or .tiff, so admitting them would widen the inline surface for no functional gain.
+		// .pdf is excluded for a stronger reason: served inline it is rendered by the browser's own PDF
+		// engine, which honours embedded JavaScript actions and has historically been a source of
+		// same-origin script execution. It is a document format with an execution surface, not an image.
 		// Everything not named here - including .html, .htm, .svg, .xhtml, .xml, .js and every extension
 		// with no known media type - is forced to an attachment, which is what breaks the stored-scripting
 		// chain. Widening this set is an owner decision; see docs/security/risk-register.md.
@@ -242,7 +239,7 @@ namespace WebVella.Erp.Web.Controllers
 		// this one control: the authenticated code-compile endpoint, and the five page-node mutation actions
 		// that are the same weakness at one remove.
 		//
-		// WHAT WAS WRONG: this controller carries a class-level [Authorize], so every action required *a*
+		// THREAT: this controller carries a class-level [Authorize], so every action required *a*
 		// session and nothing more. api/v3.0/datasource/code-compile handed the request body straight to
 		// CodeEvalService.Compile, which calls CSScript.Evaluator.LoadCode with
 		// ReferenceDomainAssemblies = true - so ANY authenticated principal, including the lowest-privileged
@@ -2917,8 +2914,52 @@ namespace WebVella.Erp.Web.Controllers
 		[ResponseCache(NoStore = true, Duration = 0)]
 		public IActionResult GetRecordsByFieldAndRegex(string fieldName, string entityName, [FromBody] EntityRecord patternObj)
 		{
+			// THREAT ADDRESSED - finding F-03 (CWE-1333 inefficient regular expression complexity,
+			// CWE-400 uncontrolled resource consumption), OWASP A03:2021 / A05:2021.
+			//
+			// THE THREAT, measured rather than assumed. The caller-supplied pattern used to travel
+			// straight into a WHERE predicate that PostgreSQL evaluates ONCE PER ROW, under a
+			// ten-minute command timeout. The per-row cost is what makes this a denial of service
+			// rather than a slow query: measured against PostgreSQL 16 on this toolchain, the pattern
+			// '^(a{1,120}){1,120}$' over 20,000 short rows took 3.9 SECONDS, so a table of ordinary
+			// ERP size, or a slightly larger bound, runs for the whole ten minutes while holding a
+			// pooled connection and a CPU core. A handful of concurrent requests exhausts the
+			// connection pool. A second, sharper shape exists: '^(a{1,200}){1,200}$' made the server
+			// attempt a 1.6 GB allocation while merely COMPILING the pattern, which no timeout can
+			// bound because it fails - or succeeds - in milliseconds.
+			//
+			// THE CONTROL, in two independent layers because neither alone is sufficient:
+			//   (1) here, the pattern's COMPLEXITY is bounded before it can reach the database. This is
+			//       the layer that closes the compile-time allocation shape, which a timeout cannot;
+			//   (2) in WebVella.Erp/Database/DbRecordRepository.cs, any query carrying a regex
+			//       predicate executes under a short command timeout instead of the ten-minute
+			//       default, which bounds the per-row amplification of a pattern that is individually
+			//       cheap. That layer also covers the platform's other regex entry point, the SDK
+			//       entity data filter, which does not pass through this action.
+			//
+			// The absent-key case is fixed in the same edit: Expando's indexer THROWS
+			// KeyNotFoundException for a missing property, so a POST with no "pattern" member used to
+			// raise an unhandled exception on an authenticated endpoint rather than a 400. It is now
+			// read defensively and refused as invalid input, and nothing about the rejected pattern is
+			// echoed back to the caller.
+			string pattern = null;
+			if (patternObj != null && patternObj.Properties != null && patternObj.Properties.ContainsKey(REGEX_PATTERN_PROPERTY))
+				pattern = patternObj[REGEX_PATTERN_PROPERTY] as string;
 
-			QueryObject filterObj = EntityQuery.QueryRegex(fieldName, patternObj["pattern"]);
+			string refusalReason = DbRegexPattern.DescribeRejection(pattern);
+			if (refusalReason != null)
+			{
+				var refusedResponse = new QueryResponse
+				{
+					Success = false,
+					Timestamp = DateTime.UtcNow,
+					Message = refusalReason
+				};
+				refusedResponse.Errors.Add(new ErrorModel(REGEX_PATTERN_PROPERTY, null, refusalReason));
+				return DoResponse(refusedResponse);
+			}
+
+			QueryObject filterObj = EntityQuery.QueryRegex(fieldName, pattern);
 
 			EntityQuery query = new EntityQuery(entityName, "*", filterObj, null, null, null);
 
@@ -2927,6 +2968,14 @@ namespace WebVella.Erp.Web.Controllers
 				return DoResponse(result);
 			return Json(result);
 		}
+
+		// Finding F-03. Name of the request-body member carrying the pattern. Named once so the read,
+		// the refusal's error key and the guard against a missing member cannot drift apart. The
+		// complexity rule itself deliberately does NOT live here: it is enforced in the data layer by
+		// WebVella.Erp/Database/DbRegexPattern.cs, so that the SDK record-filter entry point - which
+		// never passes through this controller - is bound by the same single definition.
+		private const string REGEX_PATTERN_PROPERTY = "pattern";
+
 
 
 		// Create an entity record
@@ -3685,20 +3734,14 @@ namespace WebVella.Erp.Web.Controllers
 			string headerModifiedSince = Request.Headers["If-Modified-Since"];
 			if (headerModifiedSince != null)
 			{
-				//THREAT ADDRESSED - none; this is a correctness defect the H-08 remediation exposed and must
-				//not leave behind. The comparison was inverted: "isModifiedSince <= LastModificationDate"
-				//answered 304 Not Modified precisely when the stored file WAS newer than the client's copy,
-				//so a stale cache was told to keep serving stale bytes while a fresh one was sent the body.
-				//A security fix that changes what a file may contain is worthless if the browser keeps
-				//serving the previous content, so the direction is corrected here.
-				//RFC 9110 defines the comparison the other way round: respond 304 only when the resource has
-				//NOT been modified since the supplied date. Both operands are normalised to UTC first,
-				//because DateTime.TryParse yields Local for an offset-bearing HTTP-date while
-				//LastModificationDate is read from a timestamp column, and comparing across kinds silently
-				//shifts the answer by the server's offset. The truncation to whole seconds matches the
-				//one-second resolution of the RFC 1123 date this action emits in Last-Modified: without it a
-				//sub-second component in the stored value makes the resource look newer than the value the
-				//client was told, and every conditional request re-downloads the body.
+				//Per RFC 9110, answer 304 only when the resource has NOT been modified since the supplied date -
+				//the comparison direction below must stay this way round, or a stale cache is told to keep serving
+				//stale bytes. Both operands are normalised to UTC first, because DateTime.TryParse yields Local
+				//for an offset-bearing HTTP-date while LastModificationDate comes from a timestamp column, and
+				//comparing across kinds silently shifts the answer by the server's offset. Truncating to whole
+				//seconds matches the one-second resolution of the RFC 1123 date emitted in Last-Modified;
+				//without it a sub-second component makes the resource look newer than the value the client was
+				//told and every conditional request re-downloads the body.
 				if (DateTime.TryParse(headerModifiedSince, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AllowWhiteSpaces, out DateTime isModifiedSince))
 				{
 					var storedModifiedUtc = file.LastModificationDate.Kind == DateTimeKind.Utc
@@ -3715,19 +3758,15 @@ namespace WebVella.Erp.Web.Controllers
 					}
 				}
 			}
-			// MINIMAL CORRECTION, REQUIRED TO MAKE THE H-08 DOWNLOAD CONTROL BELOW REACHABLE AT ALL.
-			// This header was written as a culture-formatted date via new CultureInfo("en-US"). On .NET 10 the
-			// en-US short time pattern separates the AM/PM designator with U+202F (NARROW NO-BREAK SPACE), and
-			// Kestrel rejects every non-ASCII character in a header value, so this line threw
-			// InvalidOperationException "Invalid non-ASCII or control character in header: 0x202F" and EVERY
-			// /fs/ download answered 500 - before reaching the content-disposition decision at the end of this
-			// action. The H-08 remediation could therefore never execute and could not be verified, which is
-			// why this one line is corrected here rather than left alone. No prior working behaviour is lost:
-			// the endpoint failed for 100% of requests on this target framework, so there is nothing to
-			// preserve. The value is now the RFC 1123 HTTP-date that Last-Modified is specified to carry - pure
-			// ASCII, and still parseable by the DateTime.TryParse used for If-Modified-Since above, so
-			// conditional-GET behaviour is retained. Indexer assignment replaces Add for the same reason the
-			// disposition below uses it: IHeaderDictionary.Add throws when the key is already present.
+			// Last-Modified MUST be formatted invariantly, not with a culture. On .NET 10 the en-US short time
+			// pattern separates the AM/PM designator with U+202F (NARROW NO-BREAK SPACE) and Kestrel rejects
+			// every non-ASCII character in a header value, so a culture-formatted date throws
+			// InvalidOperationException "Invalid non-ASCII or control character in header: 0x202F" and answers
+			// 500 for EVERY /fs/ download - before reaching the content-disposition decision that carries the
+			// H-08 control at the end of this action. The RFC 1123 HTTP-date this header is specified to carry
+			// is pure ASCII and is still parseable by the DateTime.TryParse used for If-Modified-Since above,
+			// so conditional-GET behaviour is retained. Indexer assignment rather than Add, for the same reason
+			// the disposition below uses it: IHeaderDictionary.Add throws when the key is already present.
 			HttpContext.Response.Headers["last-modified"] = file.LastModificationDate.ToString("R", CultureInfo.InvariantCulture);
 			const int durationInSeconds = 60 * 60 * 24 * 30; //30 days caching of these resources
 			HttpContext.Response.Headers[HeaderNames.CacheControl] = "public,max-age=" + durationInSeconds;
@@ -5175,12 +5214,9 @@ namespace WebVella.Erp.Web.Controllers
 				}
 				else
 				{
-					//THREAT ADDRESSED - none directly; this is the response-contract half of the H-08
-					//hardening and it must not be left inconsistent. A missing file returned a bare, empty
-					//JSON object, which the CKEditor upload adapter reads as neither success nor failure: it
-					//sees no "uploaded" flag and no "error", so the editor hangs on the upload instead of
-					//reporting it. Every other refusal in this action - and the catch block below - answers
-					//with uploaded=0 plus error.message, so the same envelope is used here.
+					//The CKEditor upload adapter reads a bare, empty JSON object as neither success nor failure - no
+					//"uploaded" flag and no "error" - and hangs instead of reporting the problem, so every refusal on
+					//this action, including the catch below, must answer with uploaded=0 plus error.message.
 					response["uploaded"] = 0;
 					var missingFileRecord = new EntityRecord();
 					missingFileRecord["message"] = "No file was supplied.";
@@ -5578,7 +5614,7 @@ namespace WebVella.Erp.Web.Controllers
 		/// Returned by both bearer-token routes when no usable signing key is configured.
 		/// </summary>
 		/// <remarks>
-		/// M-2 (CWE-209 information exposure through an error message): states only that the feature is off.
+		/// Findings H-04 and H-13 (CWE-209 information exposure through an error message): states only that
 		/// It never names the setting, reports the key's length, or says WHY the value was rejected, because
 		/// this is an anonymous route and any of those details would help an attacker profile the deployment.
 		/// The actionable detail an operator needs was emitted once, at startup, by
@@ -5593,7 +5629,7 @@ namespace WebVella.Erp.Web.Controllers
 		{
 			ResponseModel response = new ResponseModel { Timestamp = DateTime.UtcNow, Success = true, Errors = new List<ErrorModel>() };
 
-			// SECURITY - finding M-2 (CWE-20 improper input validation, CWE-798 hard-coded credentials),
+			// SECURITY - finding H-04 (CWE-20 improper input validation, CWE-798 hard-coded credentials),
 			// OWASP A05 Security Misconfiguration / A07 Authentication Failures.
 			// THREAT: this route is [AllowAnonymous] and is declared in WebVella.Erp.Web, so it exists on ALL
 			// SEVEN hosts - yet only two of them configure a 'Settings:Jwt' section. On the other five the
@@ -5653,7 +5689,7 @@ namespace WebVella.Erp.Web.Controllers
 				return DoResponse(response);
 			}
 
-			// THREAT ADDRESSED - finding M-2, CWE-476 (null pointer dereference) compounding CWE-778 and
+			// THREAT ADDRESSED - findings H-13 and M-17, CWE-476 (null pointer dereference) compounding CWE-778 and
 			// CWE-779, OWASP A09. This controller carries no [ApiController] attribute, so a POST with an
 			// absent, empty or unparseable body binds model to null WITHOUT the framework's automatic 400.
 			// The credential call below then dereferenced it, and the resulting NullReferenceException took
@@ -5697,7 +5733,7 @@ namespace WebVella.Erp.Web.Controllers
 			{
 				credentialWasRejected = string.Equals(e.Message, AuthService.InvalidCredentialMessage, StringComparison.Ordinal);
 
-				// THREAT ADDRESSED - finding M-2, CWE-778 / CWE-779 on an [AllowAnonymous] route.
+				// THREAT ADDRESSED - finding M-17, CWE-778 / CWE-779 on an [AllowAnonymous] route.
 				// LogService.Create's Exception overload hands the record to MailService.SendLogMessage
 				// BEFORE persisting it whenever the notification status is left at its NotNotified default,
 				// which this call did. Every rejected credential therefore sent an outbound e-mail carrying
@@ -5774,7 +5810,7 @@ namespace WebVella.Erp.Web.Controllers
 		{
 			ResponseModel response = new ResponseModel { Timestamp = DateTime.UtcNow, Success = true, Errors = new List<ErrorModel>() };
 
-			// SECURITY - finding M-2 (CWE-20, CWE-798), OWASP A05 / A07. Same reasoning as the issue route
+			// SECURITY - finding H-04 (CWE-20, CWE-798), OWASP A05 / A07. Same reasoning as the issue route
 			// above: [AllowAnonymous], present on all seven hosts, and previously faulted on a null signing key
 			// with a stack trace in the response body. Refusing here also closes the subtler half of the
 			// problem - validating a SUPPLIED token requires the same key, so without this guard the refresh
@@ -5786,7 +5822,7 @@ namespace WebVella.Erp.Web.Controllers
 				return DoResponse(response);
 			}
 
-			// THREAT ADDRESSED - finding M-2, CWE-476 (null pointer dereference), OWASP A09. As on the issue
+			// THREAT ADDRESSED - findings H-13 and M-17, CWE-476 (null pointer dereference), OWASP A09. As on the issue
 			// route, no [ApiController] attribute means an absent or unparseable body binds model to null with
 			// no automatic 400, and the dereference below took the catch path - where a NOTIFYING log record
 			// was written. Because this route needs no credential at all, not even a guessable one, that was
@@ -5810,7 +5846,7 @@ namespace WebVella.Erp.Web.Controllers
 				return DoResponse(response);
 			}
 
-			// THREAT ADDRESSED - finding M-2 and finding H-16, CWE-307 (improper restriction of excessive
+			// THREAT ADDRESSED - finding H-02 and finding H-16, CWE-307 (improper restriction of excessive
 			// authentication attempts), OWASP A07. This route was the one unmetered credential-adjacent
 			// surface left after the login page and the token issue route were throttled. It is
 			// [AllowAnonymous] and it VALIDATES AN ATTACKER-SUPPLIED TOKEN, so it is a signature-guessing
@@ -5859,7 +5895,7 @@ namespace WebVella.Erp.Web.Controllers
 			}
 			catch (Exception e)
 			{
-				// THREAT ADDRESSED - finding M-2, CWE-778 / CWE-779: the notifying LogService write is
+				// THREAT ADDRESSED - finding M-17, CWE-778 / CWE-779: the notifying LogService write is
 				// replaced by the guarded, explicitly non-notifying writer for the reasons set out on the
 				// issue route above. With the null body now rejected before the try, this catch is reachable
 				// only by a genuine server fault, so the exception IS passed and the operator keeps the full

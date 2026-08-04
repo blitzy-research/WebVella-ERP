@@ -17,23 +17,16 @@
 		<div class="dropdown-menu level-0">
 			@foreach (var menuItem in siteMenu)
 			{
-				@* SECURITY - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting). REMEDIATED.
-				   THREAT: MenuItem.Content is database-sourced site-menu content, and this component
-				   renders on every page of all seven host applications - it is invoked from
-				   Components/Nav/Nav.Default.cshtml:L23.
-				   WHERE IT IS FIXED: at the point of composition, not at this sink. The single producer
-				   of SiteMenu items is Models/BaseErpPageModel.cs, which now percent-encodes
-				   sitePage.Name with EncodeUrlPathSegment before it becomes the "/s/{name}" path and
-				   HTML-encodes sitePage.Label with EncodeMenuText before it becomes the link text, so
-				   the anchor arriving here is server-authored markup with inert data slots.
-				   WHY THIS SINK ITSELF STAYS RAW: the value is that server-built anchor tag; encoding
-				   it would print the anchor as literal text in the site-menu dropdown on every page of
-				   every host. The else branch below stays auto-encoded by Razor for any caller that
-				   sets IsHtml to false.
-				   DEFENCE IN DEPTH: markup authoring is restricted to privileged roles, plus the
-				   Content-Security-Policy emitted by SecurityHeadersMiddleware (commit class 8),
-				   which ships report-only by default.
-				   Do not move the encoding out of Models/BaseErpPageModel.cs. *@
+				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel. MenuItem.Content
+				   is database-sourced site-menu content and this component renders on every page of all seven
+				   hosts. The encoding is applied UPSTREAM, by the single producer of SiteMenu items in
+				   Models/BaseErpPageModel.cs: EncodeUrlPathSegment on sitePage.Name for the "/s/{name}" path and
+				   EncodeMenuText on sitePage.Label for the link text, so what arrives here is server-authored
+				   markup with inert data slots. Encoding it HERE would print the anchor as literal text in the
+				   dropdown on every page of every host. Do NOT move that encoding out of BaseErpPageModel.cs.
+				   The else branch stays auto-encoded by Razor for any caller that sets IsHtml to false. Defence in
+				   depth: markup authoring is restricted to privileged roles, plus the report-only
+				   Content-Security-Policy from SecurityHeadersMiddleware. *@
 				@if (menuItem.IsHtml)
 				{
 					@Html.Raw(menuItem.Content)

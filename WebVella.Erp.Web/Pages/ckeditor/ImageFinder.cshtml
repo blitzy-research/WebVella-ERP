@@ -222,9 +222,11 @@
 		   interpolated INSIDE a quoted JavaScript string, not emitted as a JSON document like
 		   FilesServerLoad above it, so it needs JavaScript string-context encoding. WvJsonRaw escapes
 		   only '<', which leaves a '"' free to close this literal and turn the remainder of the line
-		   into executable script, and a trailing backslash free to escape the closing quote.
-		   WvJsScriptString encodes the complete string-context threat set with the framework encoder. *@
-		var CurrentType = 	"@Html.WvJsScriptString(Model.CurrentType)";
+		   into executable script, and a trailing backslash free to escape the closing quote. The model
+		   property encodes the complete string-context threat set with the framework encoder; the
+		   encoding sits on the page model rather than in a new HTML helper so that closing this one
+		   sink does not widen the platform's published API surface - review finding API-01. *@
+		var CurrentType = 	"@Model.CurrentTypeJsEncoded";
 		var CurrentSort = 	@Html.Raw(Model.CurrentSort);
 		var CurrentPage = 	@Html.Raw(Model.CurrentPage);
 		var CurrentPageSize = 	@Html.Raw(Model.CurrentPageSize);

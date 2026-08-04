@@ -55,23 +55,21 @@ namespace WebVella.Erp.Api
 		/// THREAT ADDRESSED - CWE-1050 (excessive platform resource consumption within a loop) and
 		/// CWE-770 (allocation of resources without limits or throttling), OWASP A04:2021 Insecure
 		/// Design, reached through the availability side of A07:2021.
-		/// Nothing in this platform normalises the case of a stored address, and the login lookup has
-		/// to match case-insensitively for stored mixed-case addresses to keep working, so N rows can
-		/// legitimately come back for one submitted address when the stored data contains case-fold
-		/// duplicates. Every one of those rows used to be run through a 600,000-iteration key
-		/// derivation - roughly 120 ms of server CPU each - with no bound whatsoever on N, so a single
-		/// unauthenticated login attempt cost N x 120 ms. Bounding the QUERY is what removes the
-		/// amplification: the cost of a login attempt is now a constant regardless of the stored data.
+		/// Nothing normalises the case of a stored address, and the login lookup must match
+		/// case-insensitively for stored mixed-case addresses to keep working, so N rows can legitimately
+		/// come back for one submitted address when the data contains case-fold duplicates. Unbounded,
+		/// every such row costs a 600,000-iteration key derivation - roughly 120 ms of server CPU - so one
+		/// unauthenticated login attempt cost N x 120 ms. Bounding the QUERY removes the amplification:
+		/// the cost of a login attempt is a constant regardless of the stored data.
 		/// <para>
-		/// The bound is 2 rather than 1 DELIBERATELY, and the distinction matters. At 1 the query would
-		/// silently truncate a case-fold duplicate set and one of the two colliding accounts would stop
-		/// being able to log in, which the requirement that all existing functionality remain
-		/// operational forbids. At 2 both candidates are still verified - so neither account loses
-		/// access - the worst case is a constant two derivations, and a second returned row is itself
-		/// the signal that the duplicate exists, which is reported for operator cleanup by
+		/// The bound is 2 rather than 1 DELIBERATELY. At 1 the query would silently truncate a case-fold
+		/// duplicate set and one of the colliding accounts would stop being able to log in, which the
+		/// preserve-existing-functionality requirement forbids. At 2 both candidates are still verified,
+		/// the worst case is a constant two derivations, and a second returned row is itself the signal
+		/// that the duplicate exists - reported for operator cleanup by
 		/// <see cref="ReportCredentialMaintenanceFailure(string, Exception)"/>.
-		/// <see cref="IsEmailRegisteredToAnotherUser(string, Guid)"/> stops new duplicates being
-		/// created, so the set cannot grow past what is already stored.
+		/// <see cref="IsEmailRegisteredToAnotherUser(string, Guid)"/> stops new duplicates being created,
+		/// so the set cannot grow past what is already stored.
 		/// </para>
 		/// </remarks>
 		private const int MaxCredentialCandidates = 2;
@@ -179,12 +177,11 @@ namespace WebVella.Erp.Api
 		/// <remarks>
 		/// THREAT ADDRESSED - finding C-03, CWE-916 (password hash with insufficient computational
 		/// effort) and CWE-759 (one-way hash without a salt), OWASP A02:2021.
-		/// This method used to compute an unsalted MD5 digest of the supplied password and compare
-		/// it INSIDE the SQL predicate. That comparison is what made the whole credential store
-		/// unsaltable: a salted hash carries a different salt per row, so no single value can be
-		/// compared for equality by the database. Restructuring the lookup to fetch by e-mail alone
-		/// and verify in application code is therefore not a stylistic preference - it is the
-		/// enabling change for salted, work-factored hashing, and it also carries the
+		/// An unsalted MD5 digest of the supplied password was compared INSIDE the SQL predicate, and
+		/// that comparison is what made the credential store unsaltable: a salted hash carries a
+		/// different salt per row, so no single value can be compared for equality by the database.
+		/// Fetching by e-mail alone and verifying in application code is therefore not a stylistic
+		/// preference - it is the ENABLING change for salted, work-factored hashing, and it carries the
 		/// upgrade-on-next-authentication migration for credentials written by earlier releases.
 		///
 		/// Three further weaknesses are closed by the same restructure, and one regression that the
@@ -209,32 +206,23 @@ namespace WebVella.Erp.Api
 		///
 		///
 		///    THREAT ADDRESSED - finding F28, CWE-208 (observable timing discrepancy) and CWE-20,
-		///    OWASP A07:2021. An earlier revision of this method documented two residual timing
-		///    discrepancies here and accepted them as unfixable from this side. Both are now closed,
-		///    and closing them needed a change in WHERE the fact lives rather than a duplicate of
-		///    PasswordUtil's guards, which is what made the earlier assessment wrong:
+		///    OWASP A07:2021. Two shapes return WITHOUT deriving, and each one is an enumeration oracle
+		///    unless the compensating derivation accounts for it:
 		///
-		///     1. An over-long password. VerifyPassword refuses anything past its size bound before
-		///        deriving, yet keyDerivationPerformed was set from IsLegacyHash returning false, so
-		///        the compensating derivation was skipped and an existing modern account answered in
-		///        about a millisecond while an address that does not exist took the full 120 ms.
-		///        Sampling latency with a single 129-character password therefore enumerated accounts
-		///        outright. This is now refused BEFORE the lookup below, so the request never reaches
-		///        the database and costs the same whether the account exists or not.
+		///     1. An over-long password, which VerifyPassword refuses on its size bound. It is now
+		///        refused BEFORE the lookup below, so the request never reaches the database and costs
+		///        the same whether the account exists or not.
 		///     2. A corrupt or hand-edited stored value - neither a legacy digest nor a decodable V3
-		///        payload - returned in about 16 ms for the same reason. PasswordUtil.VerifyPassword
-		///        now REPORTS whether it actually derived, as an out parameter, instead of leaving
-		///        this method to predict it from the stored value's shape. A prediction cannot be
-		///        right about a value whose shape it has not parsed; the fact always is. The
-		///        compensating derivation below is therefore owed exactly when no derivation
-		///        happened, whatever the reason, which is the property the finding asks for:
-		///        "exactly one fixed, bounded dummy derivation independent of row/hash shape".
+		///        payload. PasswordUtil.VerifyPassword REPORTS whether it actually derived, as an out
+		///        parameter, rather than leaving this method to predict it from the stored value's shape:
+		///        a prediction cannot be right about a value whose shape it has not parsed, the fact
+		///        always is. The compensating derivation below is therefore owed exactly when no
+		///        derivation happened, whatever the reason - "exactly one fixed, bounded dummy
+		///        derivation independent of row/hash shape".
 		///
-		///    Note that this is strictly CHEAPER than the alternative that revision rejected. An
-		///    unconditional dummy verification on every failure would have spent two derivations on
-		///    the commonest failure of all - a wrong password against a modern hash - doubling that
-		///    path to about 280 ms. Accounting for what actually happened spends exactly one
-		///    derivation on every failing path, which is both correct and the minimum possible.
+		///    Accounting for what actually happened is also the CHEAPEST correct option: an
+		///    unconditional dummy verification would spend two derivations on the commonest failure of
+		///    all - a wrong password against a modern hash - doubling that path to about 280 ms.
 		///
 		///    KNOWN BOUND, stated rather than implied: "exactly one" holds because the anchored
 		///    pattern matches a single address and SaveUser enforces address uniqueness, so at most
@@ -318,7 +306,7 @@ namespace WebVella.Erp.Api
 				foreach (var rec in candidates)
 				{
 
-					//THREAT ADDRESSED - finding C-REV-07, CWE-200 / CWE-522, OWASP A01:2021 + A02:2021.
+					//THREAT ADDRESSED - finding C-02, CWE-200 / CWE-522, OWASP A01:2021 + A02:2021.
 					//The hash used to be taken from rec["password"], i.e. out of the EQL projection - and
 					//because it had to be readable there, the EQL projection could not redact it, which
 					//is precisely how "SELECT password FROM user" returned every stored credential to any
@@ -333,13 +321,12 @@ namespace WebVella.Erp.Api
 
 					string storedHash = recordId == Guid.Empty ? null : ReadStoredPasswordHash(recordId);
 
-					//SECURITY (finding F28) - whether this request spent a key derivation is now taken
-					//from PasswordUtil as a FACT rather than predicted from the stored value's shape. The
-					//prediction this replaces - 'not a legacy digest, therefore a derivation happened' - was
-					//wrong for an over-long password and wrong for a corrupt payload, and each wrong answer
-					//skipped the compensating derivation below and left a measurable timing signal.
-					//Accumulated with |= rather than assigned, so a row that derived can never be masked by
-					//a later row that did not.
+					//SECURITY (finding F28) - whether this request spent a key derivation is taken from
+					//PasswordUtil as a FACT. Do NOT infer it from the stored value's shape: 'not a legacy
+					//digest, therefore a derivation happened' is wrong for an over-long password and wrong for
+					//a corrupt payload, and each wrong answer skips the compensating derivation below and
+					//leaves a measurable timing signal. Accumulated with |= rather than assigned, so a row
+					//that derived can never be masked by a later row that did not.
 					bool matched = PasswordUtil.VerifyPassword(password, storedHash, out bool needsRehash,
 						out bool derivedForThisRow);
 					keyDerivationPerformed |= derivedForThisRow;
@@ -453,7 +440,7 @@ namespace WebVella.Erp.Api
 		/// <see cref="UpgradeStoredPasswordHash(Guid, string, string)"/>.
 		/// </summary>
 		/// <remarks>
-		/// THREAT ADDRESSED - finding C-REV-07 (Critical), CWE-200 (exposure of sensitive information
+		/// THREAT ADDRESSED - finding C-02 (Critical), CWE-200 (exposure of sensitive information
 		/// to an unauthorized actor) and CWE-522 (insufficiently protected credentials), OWASP
 		/// A01:2021 Broken Access Control + A02:2021 Cryptographic Failures.
 		///
@@ -592,24 +579,19 @@ namespace WebVella.Erp.Api
 		{
 			try
 			{
-				//THREAT ADDRESSED - finding M-REV-11 (credential race, CWE-362 concurrent execution
-				//using shared resource with improper synchronization). This write used to be
-				//unconditional - UPDATE rec_user SET password = @password WHERE id = @id - and that
-				//is a lost update with a security consequence rather than merely a stale one. This
-				//method is reached only from a legacy or under-worked verification, and reaching it
-				//means a full 600,000-iteration derivation has just been paid, so the window between
-				//reading the old hash and writing the new one is hundreds of milliseconds wide, not
-				//microseconds. If the account's password is changed by any other route inside that
-				//window - the owner resetting it, or an administrator revoking a compromised
-				//credential - the unconditional write landed afterwards and REINSTATED the hash of
-				//the old plaintext, silently resurrecting a password that had just been retired. For
-				//an administrator revoking a leaked credential that turns a completed containment
-				//action into a still-valid credential.
-				//The guard is the row's own current value: the update applies only while the column
-				//still holds precisely the value that was verified. A concurrent change makes the
-				//predicate false, zero rows are affected and the upgrade is simply abandoned - which
-				//is already this method's documented failure mode, because the next authentication
-				//with whatever password is then current will re-derive and retry. Nothing is retried
+				//THREAT ADDRESSED - finding M-REV-11 (credential race, CWE-362 concurrent execution using
+				//shared resource with improper synchronization). An unconditional write here is a lost
+				//update with a security consequence, not merely a stale one. This method is reached only
+				//after a full 600,000-iteration derivation has been paid, so the window between reading the
+				//old hash and writing the new one is hundreds of milliseconds wide. If the password is
+				//changed by another route inside that window - the owner resetting it, or an administrator
+				//revoking a compromised credential - an unconditional write lands afterwards and REINSTATES
+				//the hash of the old plaintext, turning a completed containment action into a still-valid
+				//credential.
+				//The guard is the row's own current value: the update applies only while the column still
+				//holds precisely the value that was verified. A concurrent change makes the predicate false,
+				//zero rows are affected and the upgrade is abandoned - already this method's documented
+				//failure mode, because the next authentication re-derives and retries. Nothing is retried
 				//here on purpose: a retry loop would race the same way.
 				if (string.IsNullOrEmpty(verifiedHash) || userId == Guid.Empty)
 					return;
@@ -956,7 +938,7 @@ namespace WebVella.Erp.Api
 				{
 					record["password"] = user.Password;
 
-					//THREAT ADDRESSED - finding M-REV-12, CWE-521 (weak password requirements), OWASP
+					//THREAT ADDRESSED - finding M-13, CWE-521 (weak password requirements), OWASP
 					//A07:2021. The record write seam refuses a non-conforming password unconditionally,
 					//which is the guarantee; this is the same policy stated where the platform ALREADY
 					//has a per-field validation channel, so an operator setting a password on the user
@@ -1046,7 +1028,7 @@ namespace WebVella.Erp.Api
 				{
 					record["password"] = user.Password;
 
-					//THREAT ADDRESSED - finding M-REV-12, CWE-521, OWASP A07:2021. The create-path twin
+					//THREAT ADDRESSED - finding M-13, CWE-521, OWASP A07:2021. The create-path twin
 					//of the check in the update branch above; see the rationale recorded there. Stated
 					//here as well because a new account is exactly where a weak credential is most likely
 					//to be introduced, and because the two branches must not diverge.

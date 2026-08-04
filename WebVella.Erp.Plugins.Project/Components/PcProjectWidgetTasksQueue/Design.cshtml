@@ -51,19 +51,14 @@
 			default:
 				break;
 		}
-			@* SECURITY - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting). REMEDIATED.
-			   THREAT: these two cells used to render pre-built markup strings through Html.Raw, so the
-			   task key, the task subject, the owner name, the avatar path and the priority icon class and
-			   colour - all of them database text - executed in the browser of every user who opened a
-			   dashboard carrying this widget. A task subject is editable by any user who can edit a task,
-			   which made this the widest-reach sink of the group.
-			   HOW IT IS FIXED: PcProjectWidgetTasksQueue.cs no longer builds markup. It publishes each
-			   value as its own data field, additionally allow-listing the icon class and the colour, and
-			   the elements are authored here as literal Razor markup so Razor encodes every value in its
-			   own context - attribute values as attributes, link text as text.
-			   The priority icon carries no text of its own and the subject beside it conveys the same row,
-			   so it is marked aria-hidden rather than being given an invented label.
-			   This Design twin must stay behaviourally identical to Display.cshtml; change both or neither. *@
+			@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING. PcProjectWidgetTasksQueue.cs
+			   builds no markup: it publishes the task key, subject, owner name, avatar path, priority icon class
+			   and colour each as its own data field, allow-listing the icon class and the colour. The elements
+			   are authored here as literal Razor markup so Razor encodes every value in its own context -
+			   attribute values as attributes, link text as text. The priority icon carries no text of its own and
+			   the subject beside it conveys the same row, so it is aria-hidden rather than given an invented
+			   label. Do NOT reintroduce Html.Raw and do NOT move the markup back into the component; the Design
+			   and Display twins must stay behaviourally identical - change both or neither. *@
 			var taskUrl = $"/projects/tasks/tasks/r/{record["task_id"]}/details";
 			var taskIconClass = (string)record["task_icon_class"];
 			var taskColorStyle = "color:" + (string)record["task_color"];

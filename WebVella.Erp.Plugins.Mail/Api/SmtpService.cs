@@ -107,15 +107,22 @@ namespace WebVella.Erp.Plugins.Mail.Api
 		/// convenience: it is the original vulnerability behind a flag.
 		/// </para>
 		/// <para>
-		/// THE GATE: the opt-out is honoured ONLY in development posture and is INERT in production, which is
-		/// the finding's own required remediation - refuse the setting when it is enabled outside Development.
-		/// Refusing to START was considered and rejected as the more invasive of the two permitted answers:
-		/// it converts one subsystem's misconfiguration into a total outage of an application whose other
-		/// subsystems are unaffected, and the preservation requirement asks for the least invasive control
-		/// that closes the vulnerability. Being inert closes it completely rather than partially, because
-		/// with this policy false no callback is installed at all and MailKit's own validation applies -
-		/// which is also why the five call sites need no change: each already tests this member before
-		/// installing a callback, and the callback itself yields this member rather than a literal true.
+		/// THE EXACT GATE, stated precisely because it is NOT the hosting environment: the opt-out is
+		/// honoured only when <c>ErpSettings.DevelopmentMode</c> is true, and that is an APPLICATION setting
+		/// read from <c>Settings:DevelopmentMode</c> (environment variable
+		/// <c>Settings__DevelopmentMode</c>). It is independent of <c>ASPNETCORE_ENVIRONMENT</c> and of
+		/// <c>IWebHostEnvironment</c>, so a deployment that sets it stays gated open no matter which
+		/// environment name the host is running under.
+		/// WARNING - ENABLING IT CHANGES POSTURE APPLICATION-WIDE, not just for mail: the same flag widens
+		/// internal-detail disclosure in <c>Api/RecordManager.cs</c> and
+		/// <c>Web/Controllers/ApiControllerBase.cs</c>. It must never be true on an internet-facing
+		/// deployment, and turning it on to make mail work would be the worst possible reason to set it.
+		/// When the flag is false this member is false, so no callback is installed at all and MailKit's own
+		/// validation applies - which is why the five call sites need no change: each already tests this
+		/// member before installing a callback, and the callback yields this member rather than a literal
+		/// true. Refusing to START was rejected as the more invasive of the two permitted answers, because
+		/// it turns one subsystem's misconfiguration into a total outage of an otherwise healthy
+		/// application, and the preservation requirement asks for the least invasive control.
 		/// </para>
 		/// <para>
 		/// WHY <c>ErpSettings.DevelopmentMode</c> IS THE DISCRIMINATOR: it is the platform's single existing
@@ -203,23 +210,21 @@ namespace WebVella.Erp.Plugins.Mail.Api
 		/// which its issuer has since revoked, is still accepted - the attacker keeps the ability to
 		/// impersonate the relay and harvest the SMTP credentials the send paths authenticate with two
 		/// lines after connecting. So the default must be, and is, to check.</item>
-		/// <item>Leaving revocation UNCONDITIONALLY checked and unconfigurable means a relay whose chain
-		/// cannot produce a definitive revocation answer becomes permanently unreachable. That is an
-		/// availability defect introduced by a security control, and it was observed rather than
-		/// theorised: an internal-CA relay that publishes no CRL distribution point, or a host whose
-		/// egress filtering blocks the CRL or OCSP fetch, fails the handshake with a chain status of
-		/// nothing but "unable to get certificate CRL" while the certificate is otherwise perfectly
-		/// valid. Mail delivery stops, and the message reads as though the certificate were untrusted.</item>
+		/// <item>Leaving revocation UNCONDITIONALLY checked and unconfigurable makes a relay whose chain
+		/// cannot produce a definitive revocation answer permanently unreachable - an availability defect
+		/// introduced by a security control. An internal-CA relay publishing no CRL distribution point, or
+		/// a host whose egress filtering blocks the CRL or OCSP fetch, fails the handshake on "unable to
+		/// get certificate CRL" alone while the certificate is otherwise valid, and the failure reads as
+		/// though the certificate were untrusted.</item>
 		/// </list>
-		/// WHY THIS SETTING IS HONOURED IN EVERY POSTURE, unlike <see cref="AllowInvalidRemoteCertificates"/>
-		/// immediately above, whose whole point is to be inert in production: the two relaxations are not
-		/// comparable in width. Accepting any certificate removes transport authentication entirely.
-		/// Declining to consult a revocation list removes ONE of several checks and leaves the trust chain,
-		/// the validity dates, the key usage and the host name all still enforced, so a self-signed,
-		/// expired, wrong-name or wrong-CA certificate is refused exactly as before. A control that is
-		/// refused in production is no remedy for a production outage, and refusing this one there would
-		/// leave affected installations with the choice between no mail and the far wider opt-out - which
-		/// is precisely the trade this member exists to remove.
+		/// WHY THIS SETTING IS HONOURED REGARDLESS OF <c>DevelopmentMode</c>, unlike
+		/// <see cref="AllowInvalidRemoteCertificates"/> above: the two relaxations are not comparable in
+		/// width. Accepting any certificate removes transport authentication entirely, whereas declining to
+		/// consult a revocation list removes ONE check and leaves the trust chain, validity dates, key usage
+		/// and host name all still enforced - a self-signed, expired, wrong-name or wrong-CA certificate is
+		/// still refused. Gating this one behind DevelopmentMode would leave an affected installation
+		/// choosing between no mail and the far wider opt-out, which is the trade this member exists to
+		/// remove.
 		/// <para>
 		/// FAIL-SAFE PARSING, WITH THE DEFAULT INVERTED relative to its neighbour. The non-throwing overload
 		/// is used for the same reason: a configuration typo must not raise <c>FormatException</c> on every
@@ -388,22 +393,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here,
-				// letting an active man-in-the-middle present any certificate and harvest the credentials
-				// authenticated below. The opt-out is now explicit and defaults to SECURE - with the policy
-				// off no callback is installed at all, so MailKit's own validation applies. The callback
-				// yields that policy rather than a literal true, so the accept-any-certificate pattern
-				// cannot creep back in unnoticed and stays visible to analyzer rule CA5359.
+				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, letting an
+				// active man-in-the-middle present any certificate and harvest the credentials authenticated
+				// below. Both policy members below are the single source of truth for that decision and carry the
+				// full rationale - including the exact gate and its application-wide consequence. Do not inline a
+				// literal here: the callback must keep yielding the member so the accept-any-certificate pattern
+				// stays visible to analyzer rule CA5359.
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
-				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02):
-				// MailKit defaults this to true and it was left implicit, which turned revocation
-				// REACHABILITY into an unconfigurable delivery prerequisite - a relay whose chain yields no
-				// definitive revocation answer became permanently unreachable, in every posture, with no
-				// supported remedy. Stated explicitly and bound to the policy member, which still defaults to
-				// checking; see that member for why this narrow relaxation is honoured in every posture while
-				// the accept-any-certificate opt-out above is refused outside development.
+				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02): left
+				// implicit, MailKit's default of true made revocation REACHABILITY an unconfigurable delivery
+				// prerequisite. Stated explicitly and bound to the policy member, which still defaults to
+				// checking; see that member for the asymmetry between this narrow relaxation and the far wider
+				// accept-any-certificate opt-out above.
 				client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;
 
 				client.Connect(Server, Port, ConnectionSecurity);
@@ -551,22 +554,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here,
-				// letting an active man-in-the-middle present any certificate and harvest the credentials
-				// authenticated below. The opt-out is now explicit and defaults to SECURE - with the policy
-				// off no callback is installed at all, so MailKit's own validation applies. The callback
-				// yields that policy rather than a literal true, so the accept-any-certificate pattern
-				// cannot creep back in unnoticed and stays visible to analyzer rule CA5359.
+				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, letting an
+				// active man-in-the-middle present any certificate and harvest the credentials authenticated
+				// below. Both policy members below are the single source of truth for that decision and carry the
+				// full rationale - including the exact gate and its application-wide consequence. Do not inline a
+				// literal here: the callback must keep yielding the member so the accept-any-certificate pattern
+				// stays visible to analyzer rule CA5359.
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
-				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02):
-				// MailKit defaults this to true and it was left implicit, which turned revocation
-				// REACHABILITY into an unconfigurable delivery prerequisite - a relay whose chain yields no
-				// definitive revocation answer became permanently unreachable, in every posture, with no
-				// supported remedy. Stated explicitly and bound to the policy member, which still defaults to
-				// checking; see that member for why this narrow relaxation is honoured in every posture while
-				// the accept-any-certificate opt-out above is refused outside development.
+				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02): left
+				// implicit, MailKit's default of true made revocation REACHABILITY an unconfigurable delivery
+				// prerequisite. Stated explicitly and bound to the policy member, which still defaults to
+				// checking; see that member for the asymmetry between this narrow relaxation and the far wider
+				// accept-any-certificate opt-out above.
 				client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;
 
 				client.Connect(Server, Port, ConnectionSecurity);
@@ -700,22 +701,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here,
-				// letting an active man-in-the-middle present any certificate and harvest the credentials
-				// authenticated below. The opt-out is now explicit and defaults to SECURE - with the policy
-				// off no callback is installed at all, so MailKit's own validation applies. The callback
-				// yields that policy rather than a literal true, so the accept-any-certificate pattern
-				// cannot creep back in unnoticed and stays visible to analyzer rule CA5359.
+				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, letting an
+				// active man-in-the-middle present any certificate and harvest the credentials authenticated
+				// below. Both policy members below are the single source of truth for that decision and carry the
+				// full rationale - including the exact gate and its application-wide consequence. Do not inline a
+				// literal here: the callback must keep yielding the member so the accept-any-certificate pattern
+				// stays visible to analyzer rule CA5359.
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
-				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02):
-				// MailKit defaults this to true and it was left implicit, which turned revocation
-				// REACHABILITY into an unconfigurable delivery prerequisite - a relay whose chain yields no
-				// definitive revocation answer became permanently unreachable, in every posture, with no
-				// supported remedy. Stated explicitly and bound to the policy member, which still defaults to
-				// checking; see that member for why this narrow relaxation is honoured in every posture while
-				// the accept-any-certificate opt-out above is refused outside development.
+				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02): left
+				// implicit, MailKit's default of true made revocation REACHABILITY an unconfigurable delivery
+				// prerequisite. Stated explicitly and bound to the policy member, which still defaults to
+				// checking; see that member for the asymmetry between this narrow relaxation and the far wider
+				// accept-any-certificate opt-out above.
 				client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;
 
 				client.Connect(Server, Port, ConnectionSecurity);
@@ -862,22 +861,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here,
-				// letting an active man-in-the-middle present any certificate and harvest the credentials
-				// authenticated below. The opt-out is now explicit and defaults to SECURE - with the policy
-				// off no callback is installed at all, so MailKit's own validation applies. The callback
-				// yields that policy rather than a literal true, so the accept-any-certificate pattern
-				// cannot creep back in unnoticed and stays visible to analyzer rule CA5359.
+				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, letting an
+				// active man-in-the-middle present any certificate and harvest the credentials authenticated
+				// below. Both policy members below are the single source of truth for that decision and carry the
+				// full rationale - including the exact gate and its application-wide consequence. Do not inline a
+				// literal here: the callback must keep yielding the member so the accept-any-certificate pattern
+				// stays visible to analyzer rule CA5359.
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
-				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02):
-				// MailKit defaults this to true and it was left implicit, which turned revocation
-				// REACHABILITY into an unconfigurable delivery prerequisite - a relay whose chain yields no
-				// definitive revocation answer became permanently unreachable, in every posture, with no
-				// supported remedy. Stated explicitly and bound to the policy member, which still defaults to
-				// checking; see that member for why this narrow relaxation is honoured in every posture while
-				// the accept-any-certificate opt-out above is refused outside development.
+				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02): left
+				// implicit, MailKit's default of true made revocation REACHABILITY an unconfigurable delivery
+				// prerequisite. Stated explicitly and bound to the policy member, which still defaults to
+				// checking; see that member for the asymmetry between this narrow relaxation and the far wider
+				// accept-any-certificate opt-out above.
 				client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;
 
 				client.Connect(Server, Port, ConnectionSecurity);

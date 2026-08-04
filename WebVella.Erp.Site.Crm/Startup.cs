@@ -23,14 +23,13 @@ namespace WebVella.Erp.Site.Crm
 		// This method gets called by the runtime. Use this method to add services to the container.
 		public void ConfigureServices(IServiceCollection services)
 		{
-			// THREAT ADDRESSED - findings H-04 / H-05 (CWE-798 use of hard-coded credentials), OWASP A05:
-			// this host deliberately builds NO configuration of its own, and that absence is the fix rather
-			// than an omission. Secrets reach it two ways: Program.cs uses WebHost.CreateDefaultBuilder,
-			// whose default provider chain already reads environment variables, and ErpSettings is
-			// initialised from the chain extended in ErpMvcExtensions - reached here through app.UseErp().
-			// Adding a second ConfigurationBuilder here would never reach ErpSettings, so it would be dead
-			// code that only appeared to supply secrets. Config.json is therefore SCRUBBED AND RETAINED,
-			// never deleted: its JSON source is non-optional, so removing the file breaks startup outright.
+			// THREAT ADDRESSED - findings H-04 / H-05 (CWE-798 hard-coded credentials), OWASP A05: this host
+			// deliberately builds NO configuration of its own, and that absence is the fix. Program.cs uses
+			// WebHost.CreateDefaultBuilder, whose default chain already reads environment variables, and
+			// ErpSettings is initialised from the chain extended in ErpMvcExtensions, reached via app.UseErp().
+			// A second ConfigurationBuilder here would never reach ErpSettings, so it would be dead code that
+			// only appeared to supply secrets. Config.json is SCRUBBED AND RETAINED, never deleted: its JSON
+			// source is non-optional, so removing the file breaks startup.
 			//legacy until we fix system tables
 			AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 			services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Optimal);
@@ -98,18 +97,11 @@ namespace WebVella.Erp.Site.Crm
 						// browser, the Lax cookie is sent on a cross-site top-level GET but withheld on a cross-site POST,
 						// while the Strict antiforgery cookie is withheld on both.
 						//
-						// This host used to carry its own copy of those four settings, as did the other six, and the copies
-						// had drifted from the frozen session contract in two ways that mattered: the secure policy
-						// downgraded itself to SameAsRequest whenever the host environment name read "Development", and
-						// sliding expiration was disabled. Seven duplicated copies is the ROOT CAUSE of that drift rather
-						// than merely where it surfaced, so the contract now lives in exactly one place - see
-						// ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie for the full rationale, including why the
-						// Development relaxation was unnecessary and why sliding expiration is safe here only because it is
-						// paired with an absolute session horizon. Six hosts can no longer desynchronise from the seventh
-						// because there is one place left to edit.
-						//
-						// Called LAST in this lambda deliberately: the platform contract must win over anything a host sets,
-						// and nothing above this line is a security attribute - only the cookie name and the sign-in paths.
+						// The four attributes live in ONE place rather than being duplicated per host, because seven copies
+						// are what let them drift apart; see ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie for
+						// the full rationale, including why sliding expiration is safe only when paired with an absolute
+						// session horizon. Called LAST in this lambda deliberately, so the platform contract wins over
+						// anything a host sets; nothing above this line is a security attribute.
 						ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie(options);
 					});
 
@@ -159,44 +151,39 @@ namespace WebVella.Erp.Site.Crm
 			}
 
 			//Should be before Static files
-			// THREAT ADDRESSED - finding H-08 / M-01 (OWASP A05: Security Misconfiguration):
+			// THREAT ADDRESSED - finding M-01 (OWASP A05: Security Misconfiguration):
 			// SecurityHeadersMiddleware existed but was never inserted into any pipeline, so not one of the
-			// seven mandated security response headers was emitted. It is placed first - ahead of
-			// UseResponseCompression and ahead of BOTH UseStaticFiles calls - because ordering decides which
-			// responses the headers reach: registered after compression or after static files, compressed
-			// responses and static assets would be served bare.
+			// seven mandated security response headers was emitted. It is placed ahead of BOTH UseStaticFiles
+			// calls because UseStaticFiles TERMINATES the pipeline for a matched asset: anything registered
+			// after it never runs for a static-file response, so those responses would ship bare. The default
+			// policy is report-only and HSTS is suppressed in Development; see SecurityHeadersMiddleware.
 			app.UseSecurityHeaders();
 
 			app.UseResponseCompression();
 
 			app.UseCors("AllowNodeJsLocalhost"); //Enable CORS -> should be before static files to enable for it too
 
-			// THREAT ADDRESSED - finding H-08 / H-15, CWE-319 (cleartext transmission of sensitive
-			// information) and CWE-614, OWASP A02: Cryptographic Failures and A05: Security
-			// Misconfiguration: no host enforced HTTPS or published an HSTS policy, so a session
-			// could be downgraded to plaintext and its cookie intercepted. This is the transport half of
-			// H-15; its cookie half is applied in ConfigureServices above. Guarded to non-Development
-			// because local development runs over plain HTTP. UseHsts adds the policy to HTTPS responses
-			// only - HstsMiddleware returns without writing a header when Request.IsHttps is false - so the
-			// header is published on the secured responses that FOLLOW the redirect, never on the redirect
-			// itself. Ordering HSTS first is still correct, because the two calls must not be transposed:
-			// UseHttpsRedirection short-circuits a plaintext request, so anything after it never runs for
-			// that request at all.
+			// THREAT ADDRESSED - finding H-15, CWE-319 (cleartext transmission of sensitive information)
+			// and CWE-614, OWASP A02 and A05: no host enforced HTTPS or published an HSTS policy, so a
+			// session could be downgraded to plaintext and its cookie intercepted. This is the transport
+			// half of H-15; its cookie half is applied in ConfigureServices above. Guarded to
+			// non-Development because local development runs over plain HTTP.
 			//
-			// Ordering is deliberate and load-bearing: this sits AFTER UseCors. The CORS middleware
-			// short-circuits cross-origin preflight, so an OPTIONS request is answered before it can reach
-			// the redirect. That is what avoids the documented failure where HTTPS redirection answers a
-			// preflight with a redirect the browser rejects as invalid. Moving this above UseCors would
-			// reintroduce it.
+			// HSTS must precede the redirect: UseHttpsRedirection short-circuits a plaintext request, so
+			// anything after it never runs for that request. HstsMiddleware itself writes nothing on a
+			// plaintext request, but UseSecurityHeaders() ran earlier and has already attached
+			// Strict-Transport-Security, so the redirect response does carry it - inertly, because a user
+			// agent must ignore the header when it arrives over plaintext (RFC 6797 section 7.2).
 			//
-			// THREAT ADDRESSED - finding F-06: app.UseHsts() alone does NOT publish the mandated policy. It
-			// emits whatever HstsOptions holds, and the framework defaults are thirty days with subdomains
-			// excluded - "max-age=2592000". Because HstsMiddleware assigns the header by indexer and runs
-			// after UseSecurityHeaders(), it overwrote the mandated value rather than agreeing with it. The
-			// exact one-year, subdomain-inclusive values are now configured once in AddErp through
-			// services.AddHsts(), so both writers emit the identical string. This call site must not be
-			// given per-host options, and AddErp's registration must not be removed, or this line silently
-			// reverts to the thirty-day header.
+			// Both sit AFTER UseCors, deliberately: the CORS middleware short-circuits cross-origin
+			// preflight, so an OPTIONS request is answered before it can reach the redirect. Moving them
+			// above UseCors reintroduces the documented failure where redirection answers a preflight with a
+			// redirect the browser rejects as invalid.
+			//
+			// app.UseHsts() alone does not publish the mandated policy: it emits whatever HstsOptions holds,
+			// and the framework default is thirty days without subdomains ("max-age=2592000"). The mandated
+			// one-year, subdomain-inclusive values are configured once in AddErp, so both writers emit the
+			// identical string. Do not give this call site per-host options.
 			if (!string.Equals(env.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
 			{
 				app.UseHsts();
@@ -216,16 +203,14 @@ namespace WebVella.Erp.Site.Crm
 			app.UseStaticFiles(); //Workaround for blazor to work - https://github.com/dotnet/aspnetcore/issues/9588
 			app.UseRouting();
 
-			// THREAT ADDRESSED - finding H-08 / H-16, CWE-307 (improper restriction of excessive
-			// authentication attempts), OWASP A07: Identification and Authentication Failures - unlimited
-			// attempts allowed credential stuffing and brute-force guessing. Activates the
-			// per-remote-address fixed window registered in AddErp.
-			// Positioned after both UseStaticFiles calls so static assets are never throttled, and after
-			// UseRouting so endpoint metadata is available to the limiter.
+			// THREAT ADDRESSED - finding H-16, CWE-307 (improper restriction of excessive authentication
+			// attempts), OWASP A07: unlimited request rates left credential stuffing unthrottled. Activates
+			// the per-remote-address fixed window registered in AddErp. Positioned after both UseStaticFiles
+			// calls so static assets are never throttled, and after UseRouting so endpoint metadata is
+			// available to the limiter.
 			//
-			// This is the coarse TRANSPORT-level layer only. The precise 5-attempt per-account lockout is a
-			// complementary control living in LoginThrottleService, consulted at the login entry point, so
-			// nothing here needs to - or should - implement account lockout.
+			// This is the coarse TRANSPORT-level layer only; the mandated five-attempt per-account lockout is
+			// a complementary control in LoginThrottleService, consulted at the login entry point.
 			app.UseRateLimiter();
 			app.UseAuthentication();
 			app.UseAuthorization();

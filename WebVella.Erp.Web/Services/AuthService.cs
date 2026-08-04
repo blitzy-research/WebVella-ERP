@@ -26,7 +26,7 @@ namespace WebVella.Erp.Web.Services
 		private const double JWT_TOKEN_EXPIRY_DURATION_MINUTES = 1440;
 		private const double JWT_TOKEN_FORCE_REFRESH_MINUTES = 120;
 
-		// H-4 (CWE-613, OWASP A07): THREAT ADDRESSED - unbounded session renewal. Refresh minted a brand new 24h
+		// H-02 (CWE-613, OWASP A07): THREAT ADDRESSED - unbounded session renewal. Refresh minted a brand new 24h
 		// token from any still-valid token, so an attacker holding one captured token could refresh it shortly before
 		// each expiry and keep it alive for ever; the credential never had to be presented again. This is the absolute
 		// horizon past which no amount of refreshing can carry a session, stamped once at authentication and then
@@ -98,9 +98,17 @@ namespace WebVella.Erp.Web.Services
 		// such pairs drift apart. Internal rather than public because both of those sites live in this one
 		// assembly, so internal is the narrowest visibility that works - and it keeps the claim name out of the
 		// library's public surface, which the no-API-change constraint requires.
-		// Deliberately NOT added to bearer tokens: a bearer credential has no server-side session to end, and
-		// SessionRevocationService.IsRevoked treats an absent claim as not-revoked so those principals are
-		// unaffected. Token revocation is tracked separately as an accepted, recorded residual.
+		// THREAT ADDRESSED - finding F-02 (session hijacking via a non-revocable bearer token; CWE-613), OWASP
+		// A07. This claim used to be stamped into cookie tickets ONLY, on the reasoning that "a bearer credential
+		// has no server-side session to end". That reasoning inverted the problem: a bearer token has no
+		// server-side session to end precisely BECAUSE nothing identified the session, and the consequence was
+		// that a stolen token could not be revoked by any means - logging out, disabling the account and rotating
+		// the password all left it working until it expired, and the refresh endpoint would keep minting
+		// successors for it up to the seven-day horizon. The identifier is therefore now minted into every token
+		// as well (BuildTokenAsync), carried verbatim across refresh, and consulted by both bearer validators, so
+		// ONE claim name and ONE store cover both credential kinds. It remains internal: the mint sites and the
+		// two check sites are all in this assembly, and the hosts consult it only through the public
+		// IsBearerSessionRevoked predicate below, so no claim name enters the library's public surface.
 		internal const string CLAIM_SESSION_ID = "erp_session_id";
 
 		// Suppression window for the token-validation failure log in GetValidSecurityTokenAsync, guarded by the plain
@@ -136,9 +144,16 @@ namespace WebVella.Erp.Web.Services
 		}
 
 		// M-03 (OWASP A07): asynchronous because the sign-in below must be awaited - a fire-and-forget sign-in can
-		// return before the authentication cookie is written. The name is deliberately unchanged; the sole caller
-		// repository-wide is the login page handler in Pages/login.cshtml.cs, which must await this method.
-		public async Task<ErpUser> Authenticate(string email, string password)
+		// return before the authentication cookie is written. The sole caller repository-wide is the login page
+		// handler in Pages/login.cshtml.cs, which awaits this method.
+		//
+		// BACKWARD COMPATIBILITY - review finding API-01. This method carried the name Authenticate while returning
+		// Task<ErpUser>, which changed the return type of a member the previous release published as
+		// "public ErpUser Authenticate(string, string)". A return-type change is both a source and a binary break
+		// for every external plugin or package compiled against this assembly, and the engagement forbids API
+		// contract changes. The awaited implementation therefore lives here under the -Async name and the original
+		// signature is preserved verbatim by the blocking wrapper immediately below.
+		public async Task<ErpUser> AuthenticateAsync(string email, string password)
 		{
 			var user = new SecurityManager().GetUser(email, password);
 			if (user != null && user.Enabled)
@@ -195,6 +210,38 @@ namespace WebVella.Erp.Web.Services
 				return null;
 		}
 
+		/// <summary>
+		/// Authenticates a set of credentials and establishes the authentication cookie, preserving the
+		/// signature published by earlier releases. New code should call
+		/// <see cref="AuthenticateAsync(string, string)"/> directly.
+		/// </summary>
+		/// <param name="email">The account's e-mail address.</param>
+		/// <param name="password">The candidate password.</param>
+		/// <returns>The authenticated user, or <c>null</c> when the credentials are rejected or the account is disabled.</returns>
+		/// <remarks>
+		/// BACKWARD COMPATIBILITY - review finding API-01. Earlier releases published this exact signature, so
+		/// removing it or changing its return type would break source and binary compatibility for external
+		/// plugins and packages built against this assembly. It is retained as a thin shim over
+		/// <see cref="AuthenticateAsync(string, string)"/> so that no caller loses the security fixes carried by
+		/// that method: the sign-in is genuinely awaited to completion before this method returns, which is the
+		/// whole of finding M-03, and every credential, session-identifier and ticket-lifetime control applies
+		/// unchanged because there is exactly one implementation.
+		/// <para>
+		/// Blocking on the task is safe in this application and is not a latent deadlock. ASP.NET Core installs
+		/// no <c>SynchronizationContext</c>, so the continuation inside
+		/// <see cref="AuthenticateAsync(string, string)"/> never needs to re-enter the thread that is waiting
+		/// here; and this method cannot be reached outside a request, because the implementation resolves
+		/// <c>IHttpContextAccessor</c> and signs in on the current <c>HttpContext</c>.
+		/// <c>GetAwaiter().GetResult()</c> is used rather than <c>.Result</c> so that a failure surfaces as the
+		/// original exception instead of an <c>AggregateException</c>, preserving the exception contract the
+		/// synchronous member had before it was made asynchronous.
+		/// </para>
+		/// </remarks>
+		public ErpUser Authenticate(string email, string password)
+		{
+			return AuthenticateAsync(email, password).GetAwaiter().GetResult();
+		}
+
 		// Enforces the absolute session horizon on every authenticated request. Wired once, for all seven hosts, by
 		// ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie.
 		//
@@ -216,16 +263,33 @@ namespace WebVella.Erp.Web.Services
 			if (context == null)
 				return;
 
-			// A ticket with no horizon stamp can only be one minted before this control existed: the item travels
-			// inside the encrypted and signed ticket, so a client can neither strip nor add it. Such tickets are
-			// LEFT ALONE rather than rejected, and that is safe rather than lenient - every one of them also carries
-			// AllowRefresh = false, and the renewal path requires the ticket's own AllowRefresh, so they cannot slide
-			// at all and remain bounded by the ExpiresUtc they were issued with. Rejecting them would sign out every
-			// currently signed-in user on deployment for no security gain.
+			// THREAT ADDRESSED - finding F-01 (CWE-613 insufficient session expiration, CWE-636 not failing
+			// securely), OWASP A07. This check used to RETURN, accepting the ticket, whenever the horizon stamp
+			// was absent - and that made the entire absolute-session ceiling optional from the ticket's own point
+			// of view. The reasoning it rested on does not hold:
+			//   * "such tickets can only predate this control" is an assumption about what a ticket contains, and
+			//     a session-lifetime control must not depend on one. Anything that can produce a ticket without
+			//     the stamp - an older build still running behind the same load balancer, a ticket restored from
+			//     a backup, a re-used data-protection key ring, or a future code path that signs in without
+			//     going through Authenticate - produced a session with NO ceiling at all;
+			//   * "they also carry AllowRefresh = false, so they cannot slide" is inferred, not verified. Nothing
+			//     here reads AllowRefresh, so the branch granted unbounded acceptance on the strength of a
+			//     property it never checked.
+			// FAILING CLOSED instead. Authenticate stamps this item in the same operation that mints the ticket,
+			// so every ticket this platform issues carries it; a ticket without it is therefore not a ticket this
+			// build would produce, and the correct response to an unrecognised session shape is to end it rather
+			// than to exempt it. The stamp travels inside the encrypted, signed ticket, so no client can strip it
+			// to reach this path deliberately.
+			// COST, stated plainly: any session still held from before this deployment is signed out once and its
+			// owner signs in again. That is a single re-authentication, which is the accepted price of the fix -
+			// the alternative is a documented, permanently reachable bypass of the ceiling.
 			if (context.Properties == null
 				|| !context.Properties.Items.TryGetValue(AUTH_TICKET_ABSOLUTE_EXPIRY_ITEM, out string stampedHorizon)
 				|| stampedHorizon == null)
+			{
+				await RejectAndSignOutAsync(context);
 				return;
+			}
 
 			// Present but unreadable is treated as expired. This is unreachable from outside - the value is written by
 			// this class alone, inside a signed ticket - so failing closed here costs nothing and leaves no shape of
@@ -243,6 +307,15 @@ namespace WebVella.Erp.Web.Services
 			if (!expired)
 				return;
 
+			await RejectAndSignOutAsync(context);
+		}
+
+		// F-01: the single rejection path for ticket validation, extracted so that the two refusals above - an
+		// unrecognised ticket shape and an expired horizon - cannot drift apart in behaviour. Rejects FIRST and
+		// clears the cookie afterwards, so the current request is already unauthenticated even if the cookie
+		// cannot be cleared from the response; the security outcome never depends on the cleanup succeeding.
+		private static async Task RejectAndSignOutAsync(CookieValidatePrincipalContext context)
+		{
 			context.RejectPrincipal();
 
 			try
@@ -262,17 +335,28 @@ namespace WebVella.Erp.Web.Services
 		//   (1) FIRE AND FORGET. The returned Task was discarded, so sign-out raced the response. The
 		//       cookie-deletion header could be written after the response had already begun, in which case it
 		//       was silently dropped and the user stayed signed in with no error anywhere.
-		//   (2) ONE SCHEME ONLY. Two of the seven hosts register more than one sign-out-capable scheme, and a
-		//       sign-out that names a single scheme by hand leaves any other holding its state.
+		//   (2) SCHEME NAMED BY HAND, not enumerated. Sign-out cleared exactly one scheme, hard-coded as the
+		//       cookie scheme as a literal. Today the only second scheme any host adds is JwtBearer, which
+		//       implements no sign-out handler and so holds no state to clear, so nothing is currently left
+		//       behind - but a hard-coded scheme name would miss a future sign-out-capable scheme silently.
+		//       Sign-out therefore enumerates the registered schemes and clears every one whose handler can
+		//       actually sign out (see the loop below), falling back to the cookie scheme if none resolves.
 		//   (3) NO SERVER-SIDE INVALIDATION. Deleting a cookie is a request to one browser. A COPY of that
 		//       cookie - from a shared machine, a backup, a proxy log or a cross-site scripting payload -
-		//       remained a fully valid credential for the remainder of the eight-hour ticket lifetime, and the
-		//       legitimate user had no way at all to end it.
+		//       remained a fully valid credential for the rest of the ticket's lifetime, which pre-remediation
+		//       was set 100 years ahead (finding H-03), and the legitimate user had no way at all to end it.
 		//
-		// RENAMED, not merely made async, and that is the load-bearing part of the fix: a method still called
-		// Logout() that returned Task would leave every existing `authService.Logout();` call site compiling
+		// RENAMED rather than merely made async, and the distinction is load-bearing: a method still called
+		// Logout() that RETURNED Task would leave every existing `authService.Logout();` call site compiling
 		// unchanged and STILL fire-and-forget, reintroducing defect (1) invisibly. Renaming makes the compiler
 		// find every caller.
+		//
+		// BACKWARD COMPATIBILITY - review finding API-01. Renaming alone deleted a published member, which is a
+		// source and binary break for external plugins, so the original `public void Logout()` is restored below
+		// as a blocking wrapper over this method. That restoration does NOT reintroduce defect (1): the wrapper
+		// returns void and waits for this task to complete, so sign-out is finished before control returns to the
+		// caller. It is specifically a Task-returning Logout() that would have been unsafe, and that is not what
+		// was added.
 		public async Task LogoutAsync()
 		{
 			IHttpContextAccessor httpContextAccesor = (IHttpContextAccessor)serviceProvider.GetService(typeof(IHttpContextAccessor));
@@ -316,29 +400,67 @@ namespace WebVella.Erp.Web.Services
 				await httpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
 		}
 
+		/// <summary>
+		/// Signs the current user out, preserving the signature published by earlier releases. New code should
+		/// call <see cref="LogoutAsync"/> directly.
+		/// </summary>
+		/// <remarks>
+		/// BACKWARD COMPATIBILITY - review finding API-01. Earlier releases published <c>void Logout()</c>, so
+		/// removing it in favour of <see cref="LogoutAsync"/> alone would break source and binary compatibility
+		/// for external plugins and packages built against this assembly.
+		/// <para>
+		/// This wrapper carries the full finding F8 remediation rather than the behaviour it replaces, because
+		/// there is exactly one implementation: the current session is recorded as revoked, every sign-out-capable
+		/// scheme is signed out, and - critically - all of it is COMPLETE before this method returns. That is the
+		/// difference between this wrapper and the fire-and-forget defect the original method had: the original
+		/// discarded a task, whereas this one waits for it. Returning void rather than Task is what makes that
+		/// guarantee unavoidable at every call site.
+		/// </para>
+		/// <para>
+		/// Blocking is safe for the same reason as in <see cref="Authenticate(string, string)"/>: ASP.NET Core
+		/// installs no <c>SynchronizationContext</c>, and this path requires an active <c>HttpContext</c>.
+		/// <c>GetAwaiter().GetResult()</c> preserves the original exception rather than wrapping it - though
+		/// <see cref="LogoutAsync"/> is written not to throw, so this is contract hygiene rather than a live path.
+		/// </para>
+		/// </remarks>
+		public void Logout()
+		{
+			LogoutAsync().GetAwaiter().GetResult();
+		}
+
 		// SECURITY - finding F8. Records the current sign-in as revoked so that any OTHER copy of the same
 		// cookie is refused from its next request onwards.
 		//
 		// Every exit is silent and non-throwing by design: this runs on the sign-out path, where a failure to
 		// record a revocation must not turn logging out into a server error that leaves the user signed in. An
-		// absent or malformed claim simply means the ticket predates this control - tickets minted before the
-		// upgrade carry no session identifier - and such a ticket is left to expire on its own rather than being
-		// rejected, so an in-flight session is never broken by the deployment itself.
-		private void RevokeCurrentSession(HttpContext httpContext)
+		// absent or malformed claim means there is no session identity to record, so there is nothing this method
+		// could revoke; both validators now REFUSE credentials of that shape outright (findings F-01 and F-02), so
+		// returning early here leaves nothing accepted.
+		//
+		// F-02: this now revokes BEARER sessions as well as cookie ones, with no change to the code that does it.
+		// Middleware/JwtMiddleware.cs assigns HttpContext.User from the presented token's claims, and
+		// BuildTokenAsync now stamps the same session identifier into every token, so "the identifier the current
+		// principal carries" resolves correctly whichever credential the caller signed out with.
+		private static void RevokeCurrentSession(HttpContext httpContext)
 		{
 			var sessionIdClaim = httpContext.User?.FindFirst(CLAIM_SESSION_ID);
 			if (sessionIdClaim == null || !Guid.TryParse(sessionIdClaim.Value, out var sessionId))
 				return;
 
-			var revocations = (SessionRevocationService)serviceProvider.GetService(typeof(SessionRevocationService));
-			if (revocations == null)
-				return;
-
-			// A full ticket lifetime measured from NOW, rather than the ticket's own remaining time. It is a
+			// F-02: written through the process-wide store rather than through a resolved service instance. The
+			// previous lookup returned null on any host that had not registered the service and then RETURNED, so a
+			// logout silently recorded nothing while reporting success - the worst possible shape for a revocation
+			// control, failing open at the exact moment the user is asking for protection. The store cannot be
+			// absent, so that branch no longer exists.
+			//
+			// A full ticket lifetime measured from NOW, rather than the credential's own remaining time. It is a
 			// deliberate over-estimate: reading the real ExpiresUtc would cost a second authenticate call, and
 			// retaining a revocation slightly longer than the credential it kills is the safe direction to err -
-			// the store clamps it to its own ceiling either way.
-			revocations.Revoke(sessionId, DateTime.UtcNow.AddMinutes(AUTH_TICKET_EXPIRY_DURATION_MINUTES));
+			// the store clamps it to its own ceiling either way. The same value covers bearer credentials, whose
+			// individual token lifetime is the same 24 hours (JWT_TOKEN_EXPIRY_DURATION_MINUTES), so no live token
+			// can outlast its own revocation; the seven-day horizon is longer, but no token may be MINTED against a
+			// revoked identifier, so the chain cannot be extended past the entry that ends it.
+			SessionRevocationService.RevokeSessionIdentifier(sessionId, DateTime.UtcNow.AddMinutes(AUTH_TICKET_EXPIRY_DURATION_MINUTES));
 		}
 
 		public static ErpUser GetUser(ClaimsPrincipal principal)
@@ -452,7 +574,7 @@ namespace WebVella.Erp.Web.Services
 			if (claims.Count == 0)
 				return null;
 
-			// H-4 (CWE-613, OWASP A07): the absolute horizon is read from the presented token and enforced BEFORE any new
+			// H-02 (CWE-613, OWASP A07): the absolute horizon is read from the presented token and enforced BEFORE any new
 			// token is minted. Three properties make this actually bound the session rather than merely look like it:
 			// (1) Fail closed on an absent or unparseable claim. A token that carries no horizon cannot be refreshed at
 			//     all, so tokens minted before this fix are not grandfathered into unlimited renewal - they simply live
@@ -466,6 +588,22 @@ namespace WebVella.Erp.Web.Services
 			//     else in the validation path.
 			DateTime? absoluteSessionExpiryUtc = ReadUtcBinaryClaim(claims, CLAIM_SESSION_ABSOLUTE_EXPIRY);
 			if (absoluteSessionExpiryUtc == null || DateTime.UtcNow >= absoluteSessionExpiryUtc.Value)
+				return null;
+
+			// THREAT ADDRESSED - finding F-02 (CWE-613), OWASP A07. Refresh is the reason a bearer token needed a
+			// revocable session identity at all: without this check, ending a session stopped nothing, because the
+			// holder of a still-valid token could exchange it for a fresh one and keep doing so until the horizon
+			// above ran out. Two refusals, both failing closed:
+			//   * no parseable session identifier - a token this build would not have minted, so it is refused
+			//     rather than granted a successor. Tokens issued before this change fall here and simply live out
+			//     their own remaining lifetime, exactly as the horizon fix above already established for tokens
+			//     with no horizon claim;
+			//   * a revoked identifier - the session was ended, so no successor may be minted for it.
+			// GetValidSecurityTokenAsync above has already applied the identical pair of refusals, so this is the
+			// second of two independent checks rather than the only one; it is repeated here because this method is
+			// the mint site, and a mint site must never rely on a caller having validated for it.
+			Guid bearerSessionId = ReadSessionIdentifierClaim(claims);
+			if (bearerSessionId == Guid.Empty || SessionRevocationService.IsSessionIdentifierRevoked(bearerSessionId))
 				return null;
 
 			//validate for active user
@@ -482,7 +620,9 @@ namespace WebVella.Erp.Web.Services
 				// already treats null as "refuse the refresh", so the outcome needs no new handling.
 				if (user is not null && user.Enabled && !IsPasswordRotationRequired(user))
 				{
-					var (newTokenString, newToken) = await BuildTokenAsync(user, absoluteSessionExpiryUtc.Value);
+					// F-02: the identifier read above is carried into the successor, never regenerated, so a
+					// revocation recorded at any point continues to reject every token in this chain.
+					var (newTokenString, newToken) = await BuildTokenAsync(user, absoluteSessionExpiryUtc.Value, bearerSessionId);
 					return newTokenString;
 				}
 			}
@@ -494,6 +634,67 @@ namespace WebVella.Erp.Web.Services
 		// number, or not a representable DateTime. Returning null rather than throwing is deliberate: the sole caller
 		// treats null as "refuse the refresh", so a malformed security claim fails closed instead of turning the
 		// anonymous refresh endpoint into a 500 that echoes a stack trace.
+		// F-02: reads the bearer session identifier, returning Guid.Empty when the claim is absent, blank, not a
+		// GUID, or present more than once. Returning a sentinel rather than throwing matches this class's
+		// established convention for malformed security claims, and every caller treats Guid.Empty as a refusal,
+		// so a malformed identifier fails closed instead of turning a token endpoint into a 500.
+		// A DUPLICATED claim is refused rather than resolved by taking the first: two identifiers in one token is
+		// a shape this build never mints, and picking one would let a crafted token pair a revoked identifier with
+		// an unrevoked decoy. This is defence in depth - the token is signed, so a client cannot add a claim - and
+		// it costs one comparison.
+		private static Guid ReadSessionIdentifierClaim(List<Claim> claims)
+		{
+			if (claims == null)
+				return Guid.Empty;
+
+			Guid sessionId = Guid.Empty;
+			int seen = 0;
+			foreach (var claim in claims)
+			{
+				if (!string.Equals(claim.Type, CLAIM_SESSION_ID, StringComparison.Ordinal))
+					continue;
+
+				seen++;
+				if (seen > 1)
+					return Guid.Empty;
+
+				if (!Guid.TryParse(claim.Value, out sessionId))
+					return Guid.Empty;
+			}
+
+			return sessionId;
+		}
+
+		/// <summary>
+		/// Whether a bearer principal must be refused because its session is no longer accepted.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding F-02 (session hijacking via a non-revocable bearer token; CWE-613
+		/// insufficient session expiration), OWASP A07. Bearer tokens are validated TWICE on these hosts and by
+		/// two entirely independent validators: Middleware/JwtMiddleware.cs calls GetValidSecurityTokenAsync, while
+		/// framework authorization for every [Authorize] endpoint runs the host's own AddJwtBearer handler, which
+		/// the JWT_OR_COOKIE policy scheme forwards to. The handler is the one that actually authorises the
+		/// request, so a revocation check present only in this assembly's validator would have been decorative.
+		/// This predicate is the shared decision both paths use, exposed publicly for exactly one reason: the
+		/// JwtBearer handler's options type lives in a package only the two token-issuing hosts reference, so the
+		/// hook must be installed in those hosts while the RULE stays here, single-sourced. It is a pure
+		/// predicate - it neither signs anything out nor writes any state - so a host can only use it to refuse.
+		/// FAILS CLOSED on a principal with no parseable identifier, which is what makes this a control rather
+		/// than a courtesy: an absent claim previously meant "not revoked", so any token shaped differently from
+		/// what this build mints was granted the benefit of the doubt.
+		/// </remarks>
+		public static bool IsBearerSessionRevoked(ClaimsPrincipal principal)
+		{
+			if (principal == null)
+				return true;
+
+			Guid sessionId = ReadSessionIdentifierClaim(principal.Claims?.ToList());
+			if (sessionId == Guid.Empty)
+				return true;
+
+			return SessionRevocationService.IsSessionIdentifierRevoked(sessionId);
+		}
+
 		private static DateTime? ReadUtcBinaryClaim(List<Claim> claims, string claimType)
 		{
 			var rawValue = claims.FirstOrDefault(x => x.Type == claimType)?.Value;
@@ -574,7 +775,27 @@ namespace WebVella.Erp.Web.Services
 					IssuerSigningKey = mySecurityKey,
 					ClockSkew = JwtClockSkew,
 				}, out SecurityToken validatedToken);
-				return validatedToken as JwtSecurityToken;
+
+				// THREAT ADDRESSED - finding F-02 (CWE-613 insufficient session expiration), OWASP A07. Signature,
+				// issuer, audience and lifetime were all verified above and the token was then accepted - so a token
+				// whose session had been ENDED was still a valid credential for the remainder of its lifetime, and
+				// nothing a user or an administrator could do would stop it. Consulted only AFTER validation
+				// succeeds, deliberately: an unauthenticated caller must not be able to probe the revocation store
+				// with forged tokens, and a token that fails signature validation has no trustworthy claims to read.
+				// Refusal is the same null every other rejection on this path returns, so no caller changes.
+				// Deliberately NOT audited, for the reason recorded on ValidateSessionHorizonAsync: this runs on an
+				// anonymous, unauthenticated-reachable path, and a caller replaying one revoked token in a loop
+				// would otherwise drive unbounded log growth. The sign-out that created the revocation is itself
+				// audited, so the security-relevant event is already on the record.
+				var jwtSecurityToken = validatedToken as JwtSecurityToken;
+				if (jwtSecurityToken == null)
+					return null;
+
+				Guid sessionId = ReadSessionIdentifierClaim(jwtSecurityToken.Claims?.ToList());
+				if (sessionId == Guid.Empty || SessionRevocationService.IsSessionIdentifierRevoked(sessionId))
+					return null;
+
+				return jwtSecurityToken;
 			}
 			// SECURITY - finding F11 (CWE-396 declaration of catch for generic exception), OWASP A09.
 			// THREAT ADDRESSED: this was catch (Exception), so EVERY failure inside ValidateToken - including a
@@ -605,8 +826,7 @@ namespace WebVella.Erp.Web.Services
 		}
 
 		// SECURITY - finding H-02 / F11. Records one rate-bounded, sanitised audit entry for a token that was
-		// judged and rejected. Extracted from the catch block it used to live in so that the two narrowed clauses
-		// above share a single implementation; the body, and every property its comments assert, is unchanged.
+		// judged and rejected. Shared by the two narrowed catch clauses above so both audit identically.
 		private static void RecordTokenValidationFailure(Exception ex)
 		{
 			// "Log authorization failures": failures here were swallowed in silence, so expired or forged tokens left no
@@ -709,15 +929,32 @@ namespace WebVella.Erp.Web.Services
 			}
 		}
 
-		// H-4 (CWE-613, OWASP A07): absoluteSessionExpiryUtc is null only on a fresh credential authentication, where a
+		// H-02 (CWE-613, OWASP A07): absoluteSessionExpiryUtc is null only on a fresh credential authentication, where a
 		// new horizon is opened. Every refresh passes the horizon it read from the presented token, which is what makes
 		// the session bounded: the value is carried, never recomputed.
-		private static async ValueTask<(string, JwtSecurityToken)> BuildTokenAsync(ErpUser user, DateTime? absoluteSessionExpiryUtc = null)
+		//
+		// F-02 (CWE-613, OWASP A07): bearerSessionId follows exactly the same carry-never-recompute rule, and for the
+		// same reason. Null means "a fresh credential authentication", so a new identifier is minted; every refresh
+		// passes the identifier it read from the presented token, which is what makes a revocation stick across
+		// refreshes. Recomputing it here would let a refresh mint an unrevoked successor for a session that had just
+		// been ended - the token equivalent of handing back the credential the user asked to destroy.
+		private static async ValueTask<(string, JwtSecurityToken)> BuildTokenAsync(ErpUser user, DateTime? absoluteSessionExpiryUtc = null, Guid? bearerSessionId = null)
 		{
 			var claims = new List<Claim>();
 			claims.Add(new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()));
 			claims.Add(new Claim(ClaimTypes.Email, user.Email));
 			user.Roles.ForEach(role => claims.Add(new Claim(ClaimTypes.Role.ToString(), role.Name)));
+
+			// F-02: the session identity every bearer credential now carries. Guid.NewGuid is the platform's own
+			// choice of session identifier at the cookie mint site and is used here for parity; it is a
+			// cryptographically strong value on this runtime, and its only security requirement is that it be
+			// unguessable to an attacker who cannot already read the signed token that contains it.
+			// Guid.Empty is never minted: it is the value an absent or malformed claim parses to, and both
+			// validators treat that as a refusal, so an identifier that collided with it would be self-revoking.
+			Guid sessionId = bearerSessionId ?? Guid.NewGuid();
+			if (sessionId == Guid.Empty)
+				sessionId = Guid.NewGuid();
+			claims.Add(new Claim(CLAIM_SESSION_ID, sessionId.ToString()));
 
 			DateTime issuedUtc = DateTime.UtcNow;
 			DateTime horizonCeiling = issuedUtc.AddMinutes(JWT_ABSOLUTE_SESSION_HORIZON_MINUTES);

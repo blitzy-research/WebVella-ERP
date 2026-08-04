@@ -47,9 +47,9 @@ namespace WebVella.Erp.Plugins.Project
 	//the Guest CREATE grant is removed, so this patch can no longer widen what provisioning and
 	//the migration record. The Guest READ grant is removed as well, under review finding F17
 	//(CWE-200 exposure of sensitive information to an unauthorized actor, CWE-732 incorrect
-	//permission assignment for a critical resource): MigrateSecurityDefaults5 in ERPService.cs revokes
-	//anonymous READ on the role entity at schema version 5, and this patch runs AFTER the migrations,
-	//so retaining the grant here reinstated exactly what version 5 removes. The earlier justification -
+	//permission assignment for a critical resource): ERPService.cs no longer seeds anonymous READ
+	//on the role entity, and this patch runs AFTER provisioning, so retaining the grant here
+	//reinstated exactly what provisioning had stopped granting. The earlier justification -
 	//that anonymous READ is how role names resolve before sign-in - does not hold: credential
 	//resolution and role hydration both run inside SecurityContext.OpenSystemScope in
 	//SecurityManager.GetUser, so the sign-in path never consults the Guest grants, and no anonymous
@@ -68,10 +68,9 @@ namespace WebVella.Erp.Plugins.Project
 	//
 	// ALSO REMOVED, under review finding F17: the anonymous Guest READ grant this region used to add. It
 	// was previously retained on the premise that role names must still resolve for a caller who has not
-	// yet authenticated; MigrateSecurityDefaults5 in ERPService.cs establishes that they do not - the
-	// sign-in path hydrates roles under a system scope - and revokes that grant at schema version 5.
-	// Because plugin patches run after the migrations, retaining it here reopened F17 on every
-	// installation that loads this plugin.
+	// yet authenticated; ERPService.cs establishes that they do not - the sign-in path hydrates roles
+	// under a system scope - and no longer seeds that grant. Because plugin patches run after
+	// provisioning, retaining it here reopened F17 on every installation that loads this plugin.
 	updateObject.RecordPermissions.CanCreate.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 	updateObject.RecordPermissions.CanUpdate.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 	updateObject.RecordPermissions.CanDelete.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));

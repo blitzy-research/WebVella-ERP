@@ -2,15 +2,23 @@
   // Security: pinned SDK - NuGetAudit defaults and the analyzer rule set are
   // SDK-version dependent; an unpinned toolchain makes the dependency and SAST
   // gates non-reproducible (finding L-07). See docs/security/secure-configuration.md
-  // "latestPatch" is the deliberate roll-forward policy: it holds the pin on the
-  // 10.0.3xx feature band - which is what keeps the gate reproducible, because
-  // the audit mode default and the analyzer rule set are selected by the feature
-  // band - while still admitting a security patch of the SDK itself. "disable"
-  // was rejected because it makes the repository unbuildable the moment this
-  // exact patch is superseded, breaking the "all existing functionality remains
-  // operational" preservation requirement for developers and for CI.
+  // "disable" is the roll-forward policy, and it is the pin: the SDK selected is
+  // exactly 10.0.302 or the command fails. An earlier revision used
+  // "latestPatch", reasoning that holding the 10.0.3xx feature band was enough
+  // because the audit mode default and the analyzer rule set are chosen by the
+  // band. That reasoning does not hold. A patch release can change an analyzer
+  // rule's default severity or its implementation, and it can change the
+  // NuGetAudit defaults within a band, so "latestPatch" leaves the gate's verdict
+  // dependent on whichever patch a machine happens to have - which is precisely
+  // the non-reproducibility finding L-07 records. An EXACT pin is what makes a
+  // green gate mean the same thing on a developer machine and in CI.
+  // The cost is understood and accepted: when this patch is superseded the pin
+  // must be raised deliberately, in a commit, together with a re-measurement of
+  // the analyzer baselines the security workflow enforces. That is the intended
+  // behaviour of a reproducible gate, not a defect - a toolchain change that can
+  // move the gate's verdict must be a reviewed change.
   "sdk": {
     "version": "10.0.302",
-    "rollForward": "latestPatch"
+    "rollForward": "disable"
   }
 }

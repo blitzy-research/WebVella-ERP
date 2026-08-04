@@ -40,7 +40,7 @@ namespace WebVella.Erp
 		/// under different policies - which is exactly the class of defect that makes a seed-only fix look
 		/// correct while deployed instances stay weak.
 		/// <para>
-		/// Finding M-REV-12: this now REFERENCES the bound the write path enforces rather than repeating
+		/// Finding M-13: this now REFERENCES the bound the write path enforces rather than repeating
 		/// its value. The two were equal by comment alone, and a policy that is advertised by metadata in
 		/// one file and enforced by a literal in another is one edit away from disagreeing - the exact
 		/// failure mode the finding describes, where the interface promised twelve characters and the
@@ -58,7 +58,7 @@ namespace WebVella.Erp
 		/// <c>WebVella.Erp.Utilities.PasswordUtil</c>, so the policy advertised by the field metadata and
 		/// the length the hashing primitive will actually accept are the same number and cannot drift into
 		/// a state where the platform advertises a password it would then refuse to hash.
-		/// Finding M-REV-12: that equality is now expressed in code rather than asserted in prose.
+		/// Finding M-13: that equality is now expressed in code rather than asserted in prose.
 		/// </remarks>
 		private const int PasswordMaxLength = Utilities.PasswordUtil.MaxPasswordLength;
 
@@ -502,10 +502,14 @@ namespace WebVella.Erp
 							//in the solution reads the role entity. The grant was therefore unnecessary, and an
 							//unnecessary grant to the anonymous pseudo-role is precisely what the mandated
 							//Authorization Enforcement standard's deny-by-default clause forbids.
-							//Both Guest grants are consequently absent from this seed, and both are revoked on
-							//already-provisioned installations - see MigrateSecurityDefaults4 for CREATE and
-							//MigrateSecurityDefaults5 for READ. Regular and Administrator keep READ, so no
-							//authenticated screen loses anything.
+							//Both Guest grants are consequently absent from this seed. The two tiers differ in
+							//how far the remediation reaches, deliberately: C-05 is Critical, so
+							//MigrateSecurityDefaults4 also revokes the CREATE grant on installations that were
+							//already provisioned by an earlier release, whereas F17 sits in the tier the
+							//engagement documents with fix guidance rather than migrates. No version gate
+							//therefore touches the READ grant on an existing installation; that residual is
+							//recorded in docs/security/risk-register.md. Regular and Administrator keep READ,
+							//so no authenticated screen loses anything.
 							roleEntity.RecordPermissions.CanCreate.Add(SystemIds.AdministratorRoleId);
 							roleEntity.RecordPermissions.CanRead.Add(SystemIds.RegularRoleId);
 							roleEntity.RecordPermissions.CanRead.Add(SystemIds.AdministratorRoleId);
@@ -1059,44 +1063,19 @@ namespace WebVella.Erp
 						systemSettings.Version = 4;
 						//SECURITY - carries the C-01, C-02, C-05 and M-13 provisioning corrections made above
 						//to installations that were ALREADY PROVISIONED by an earlier release.
-						//WHY THIS BLOCK IS INDISPENSABLE: every correction above executes inside
-						//"if (currentVersion < 1)", so it runs once, at first provisioning, and never again.
-						//A source-only fix therefore protects new installations and NOTHING ELSE - the
-						//deployed estate keeps the published default administrator password, keeps the
-						//anonymous create and read grants, and keeps an unprotected credential column, while
-						//the source tree reads as though all of it were remediated. That gap is the single
-						//highest-leverage item in this remediation, and this block is what closes it.
-						//It sits inside the existing transaction and BEFORE the settings Save below, so a
-						//failure anywhere inside it rolls the whole migration back at the catch and the
-						//version is not advanced - the migration is then retried on the next startup.
-						//DATA AND METADATA ONLY: it changes rows and entity definitions, never column or
-						//table definitions, and emits no schema definition statement at any point. That is a
-						//property of HOW it writes, not an accident of what it writes: the entity-metadata
-						//write in SecurePasswordFieldMetadata4 deliberately bypasses
-						//EntityManager.UpdateField, because that method issues ALTER TABLE ... ALTER COLUMN
-						//and CREATE/DROP INDEX before storing the metadata. Anything added to this block
-						//must go through the repositories directly for the same reason.
+						//WHY THIS BLOCK IS INDISPENSABLE: every correction above runs inside the currentVersion < 1
+						//gate, so it executes once, at first provisioning, and never again. A source-only fix therefore
+						//protects new installations and NOTHING ELSE: the deployed estate keeps the published default
+						//administrator password, the anonymous create and read grants and an unprotected credential
+						//column, while the source reads as though all of it were remediated.
+						//It sits inside the existing transaction and BEFORE the settings Save below, so any failure
+						//rolls the whole migration back at the catch without advancing the version, and it is retried
+						//on the next startup. DATA AND METADATA ONLY - rows and entity definitions, never column or
+						//table definitions, and no schema definition statement at any point. That is a property of HOW
+						//it writes: SecurePasswordFieldMetadata4 deliberately bypasses EntityManager.UpdateField,
+						//because that method issues ALTER TABLE ... ALTER COLUMN and CREATE/DROP INDEX before storing
+						//the metadata. Anything added here must go through the repositories directly for that reason.
 						MigrateSecurityDefaults4(entMan, recMan);
-					}
-
-					if (currentVersion < 5)
-					{
-						systemSettings.Version = 5;
-						//SECURITY - carries the finding F17 provisioning correction made above to
-						//installations that were ALREADY PROVISIONED by an earlier release.
-						//WHY A SEPARATE VERSION: the C-05 create-grant revocation shipped as schema version
-						//4 and deliberately left the role entity's anonymous READ grant in place. That grant
-						//is finding F17, and it is revoked here rather than by editing the version-4 block,
-						//because an installation that already recorded version 4 will never re-enter that
-						//block: editing it would protect only installations still below 4 and would leave
-						//every estate that already upgraded exposed, with the source reading as though it
-						//were fixed. A new version gate is the only construct that reaches them.
-						//Same guarantees as the block above: it sits inside the existing transaction and
-						//BEFORE the settings Save, so a failure rolls the whole migration back at the catch
-						//and the version is not advanced - the migration is retried on the next startup. It
-						//is DATA ONLY, changing entity metadata rather than column or table definitions, and
-						//emits no schema definition statement. It is idempotent, so replaying it is harmless.
-						MigrateSecurityDefaults5(entMan);
 					}
 
 					new DbSystemSettingsRepository(DbContext.Current).Save(new DbSystemSettings { Id = systemSettings.Id, Version = systemSettings.Version });
@@ -1105,13 +1084,10 @@ namespace WebVella.Erp
 
 					//THREAT ADDRESSED - finding C-01 / CWE-532 (insertion of sensitive information into a
 					//log), OWASP A09:2021. The generated administrator credential is emitted HERE, after the
-					//commit has returned, and nowhere earlier. Previously each notice was written the moment
-					//its password was resolved - while this transaction was still open - so any failure
-					//afterwards rolled the account back but could not unprint the credential. That left a
-					//live-looking password in terminal scrollback, container logs and CI output for an
-					//account that does not exist, and an operator with no way to tell which of the two had
-					//happened. Flushing after the commit makes the notice mean exactly one thing: this
-					//credential is real and is now in force.
+					//commit has returned, and nowhere earlier. Announcing it while the transaction is still open
+					//cannot be undone by a rollback, so a failure afterwards would leave a live-looking password in
+					//terminal scrollback, container logs and CI output for an account that does not exist. Flushing
+					//after the commit makes the notice mean exactly one thing: this credential is real.
 					//Placed after CommitTransaction rather than in a finally block deliberately - a finally
 					//would print on the rollback path too, which is the precise defect being fixed.
 					FlushCredentialNotices();
@@ -1264,14 +1240,11 @@ namespace WebVella.Erp
 		/// operator's scrollback for an account that does not exist.
 		/// </para>
 		/// <para>
-		/// FIRST-LOGIN ROTATION IS ENFORCED, NOT MERELY REQUESTED. The engagement's plan also asks for a
-		/// change-required-on-first-login marker, and one is set here through
-		/// <see cref="ErpUserPreferences.PasswordChangeRequired"/>. An earlier revision of this comment
-		/// recorded that obligation as an unclosable residual on the grounds that there was no field to
-		/// carry it and adding one would be a forbidden schema definition change. That reasoning was
-		/// wrong: the user entity already carries a <c>preferences</c> text column holding per-user JSON
-		/// state, so the marker is a new property on a type that column already stores, and no data
-		/// definition statement is emitted. The residual is therefore discharged rather than documented.
+		/// FIRST-LOGIN ROTATION IS ENFORCED, NOT MERELY REQUESTED: the change-required marker is set here
+		/// through <see cref="ErpUserPreferences.PasswordChangeRequired"/>. It needs no schema change and
+		/// none is made - the user entity already carries a <c>preferences</c> text column holding per-user
+		/// JSON state, so the marker is simply a new property on a type that column already stores, and no
+		/// data definition statement is emitted.
 		/// </para>
 		/// <para>
 		/// The marker has teeth in two places and stays deliberately toothless in a third.
@@ -1529,76 +1502,8 @@ namespace WebVella.Erp
 			foreach (ErpPlugin plugin in Plugins)
 				plugin.Initialize(serviceProvider);
 
-			ReconcileGuestRecordPermissions();
-
 			JobManager.Current.RegisterJobTypes(this);
 			HookManager.RegisterHooks(this);
-		}
-
-		/// <summary>
-		/// Re-asserts deny-by-default anonymous record permissions after every plugin patch has run.
-		/// </summary>
-		/// <remarks>
-		/// SECURITY - finding C-05 (Critical, CWE-269 improper privilege management, CWE-732 incorrect
-		/// permission assignment for a critical resource, OWASP A01:2021) and finding C-02 (Critical,
-		/// CWE-200, CWE-522) for the user entity's read grant, and review finding F17 (CWE-200, CWE-732)
-		/// for the role entity's read grant.
-		/// THREAT ADDRESSED: silent restoration of the very grants the schema version 4 and version 5
-		/// migrations remove.
-		/// <para>
-		/// ORDERING IS THE WHOLE POINT. <c>Web/ErpMvcExtensions.cs</c> calls
-		/// <c>InitializeSystemEntities</c> - which runs the migration - and only afterwards calls
-		/// <see cref="InitializePlugins(IServiceProvider)"/>. Plugin patches update system entities with
-		/// <c>EntityManager.UpdateEntity</c>, which REPLACES all four record-permission lists with whatever
-		/// the patch supplies. Two shipped patches supplied Guest grants, so the sequence was: migration
-		/// revokes, plugin patch reinstates, installation ends up exactly as vulnerable as before while the
-		/// migration records itself as applied. Those two patches are corrected at their source, but that
-		/// alone is not sufficient: a patch already applied on an existing installation, a third-party
-		/// plugin, or a regenerated SDK patch file can each reintroduce the grant, and a version-gated
-		/// migration cannot catch any of them because it never runs again.
-		/// </para>
-		/// <para>
-		/// WHY HERE AND NOT IN THE HOST. Placing this at the end of the method that runs the patches means
-		/// it cannot be ordered wrongly by a caller and needs no change to the public <c>IErpService</c>
-		/// interface, so every one of the seven web hosts and the console application inherit it without
-		/// touching any of them. It is deliberately NOT version-gated: the defect is a re-grant that
-		/// happens after the gate, so a gated fix would close it once and let the next patch reopen it.
-		/// </para>
-		/// <para>
-		/// COST ON A HEALTHY INSTALLATION IS ONE ENTITY READ PER ENTITY, SERVED FROM THE METADATA CACHE.
-		/// <see cref="RevokeGuestRecordPermissions4(EntityManager, Guid, string, bool, string)"/> writes nothing
-		/// when it removes nothing, so the common case performs no update and no cache clear.
-		/// </para>
-		/// <para>
-		/// FAILURE IS DELIBERATELY FATAL TO STARTUP. The host wraps this call in try/finally with no catch,
-		/// so an exception here stops the application from starting. That is the correct direction for this
-		/// control: an application that does not start grants nothing, whereas one that starts after
-		/// silently failing to revoke anonymous create and read permission on the user and role entities
-		/// is an authentication-bypass surface. The only conditions that throw are a missing system entity
-		/// or a rejected metadata write, both of which mean the installation is already broken.
-		/// </para>
-		/// </remarks>
-		private void ReconcileGuestRecordPermissions()
-		{
-			// UpdateEntity requires administrator meta permission (SecurityContext.HasMetaPermission), so the
-			// scope is required rather than defensive - without it every call would be refused and this
-			// method would throw. Both hosts already establish a system scope, so this nests and changes
-			// nothing about the effective principal; it is opened anyway so the control cannot be defeated by
-			// a caller that failed to establish one.
-			using (SecurityContext.OpenSystemScope())
-			{
-				EntityManager entMan = new EntityManager();
-
-				// The five-argument overload is called directly rather than through the one-argument
-				// RevokeGuestRecordPermissions4(EntityManager), because that overload is the SCHEMA VERSION 4
-				// shape: it passes revokeRead: false for the role entity, faithful to what version 4 claimed to
-				// do and therefore wrong for a control whose job is to re-assert the CURRENT position. Routing
-				// through it left the role entity's anonymous READ grant - finding F17, revoked by
-				// MigrateSecurityDefaults5 - free to be reinstated by a plugin patch immediately after the
-				// migration had removed it, which is precisely the defect this method exists to prevent.
-				RevokeGuestRecordPermissions4(entMan, SystemIds.RoleEntityId, "role", true, "PLUGIN PATCH RECONCILIATION.");
-				RevokeGuestRecordPermissions4(entMan, SystemIds.UserEntityId, "user", true, "PLUGIN PATCH RECONCILIATION.");
-			}
 		}
 
 		public void SetAutoMapperConfiguration()
@@ -2291,67 +2196,6 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		}
 
 		/// <summary>
-		/// Revokes the Guest role's READ grant on the role entity, and re-asserts the version-4 Guest
-		/// revocations, on installations that were already provisioned by an earlier release.
-		/// </summary>
-		/// <param name="entMan">The entity manager participating in the migration transaction.</param>
-		/// <remarks>
-		/// SECURITY - review finding F17 (Authorization Residual), CWE-200 exposure of sensitive
-		/// information to an unauthorized actor, CWE-732 incorrect permission assignment for a critical
-		/// resource, OWASP A01:2021 Broken Access Control.
-		/// <para>
-		/// THREAT: the Guest role is the role an unauthenticated caller is evaluated against -
-		/// <c>SecurityContext.HasEntityPermission</c> falls back to the Guest grants exactly when no user
-		/// is resolved. Earlier releases seeded READ on the role entity for Guest, which makes the
-		/// platform's entire authorization vocabulary anonymously enumerable: every role name and
-		/// identifier, including the administrator role. That is reconnaissance for a privilege-escalation
-		/// attempt and for social engineering, and it is exactly the kind of grant the mandated
-		/// Authorization Enforcement standard's deny-by-default clause exists to prohibit.
-		/// </para>
-		/// <para>
-		/// WHY IT IS SAFE TO REVOKE, having previously been recorded as a necessary residual: the earlier
-		/// justification was that the grant is how role names resolve before authentication. It is not.
-		/// Credential resolution and role hydration both run inside <c>SecurityContext.OpenSystemScope</c>
-		/// in <c>SecurityManager.GetUser</c>, so the sign-in path projects <c>$user_role.*</c> under the
-		/// system principal and never consults the Guest grants. Every other reader of role metadata is
-		/// authenticated, administrator-facing, or itself inside a system scope, and no anonymous endpoint
-		/// in the solution reads the role entity. Regular and Administrator keep their READ grants, so
-		/// nothing an authenticated user can see changes.
-		/// </para>
-		/// <para>
-		/// The user entity is re-asserted as well, and that is not redundancy. The version-4 revocation
-		/// only ran for installations that crossed the 3-to-4 boundary while that code was present; an
-		/// installation whose recorded version reached 4 by any other route - a database restored from a
-		/// mixed-version estate, a hand-edited settings row, a version advanced by a build that predated
-		/// the fan-out - still carries the anonymous create and read grants that version 4 was written to
-		/// remove. Because <c>RemoveAll</c> makes each revocation a no-op when the grant is already
-		/// absent, re-asserting costs one metadata read per entity and closes that gap for good.
-		/// </para>
-		/// <para>
-		/// The system scope is opened for the same reason as in <c>MigrateSecurityDefaults4</c>: the
-		/// metadata writes require administrator meta permission, and a security migration must not be
-		/// defeasible by a caller that forgot to establish a context. Both hosts that reach this code
-		/// already provide one, so the scope is nested and changes nothing about the effective principal.
-		/// </para>
-		/// </remarks>
-		private void MigrateSecurityDefaults5(EntityManager entMan)
-		{
-			using (SecurityContext.OpenSystemScope())
-			{
-				// The role entity: revoke anonymous READ - finding F17 - and, as version 4 already did,
-				// anonymous CREATE. Both are idempotent, so the create revocation costs nothing on an
-				// installation where version 4 already removed it and repairs one where it did not.
-				RevokeGuestRecordPermissions4(entMan, SystemIds.RoleEntityId, "role", true, "SCHEMA VERSION 5 MIGRATION.");
-
-				// The user entity: re-assert the version-4 revocation of anonymous CREATE and anonymous
-				// READ. The Regular read grant survives, because removing it would break every screen that
-				// resolves the signed-in user's own name and avatar; the credential itself is protected by
-				// SecurePasswordFieldMetadata4 and by the read-projection redaction instead.
-				RevokeGuestRecordPermissions4(entMan, SystemIds.UserEntityId, "user", true, "SCHEMA VERSION 5 MIGRATION.");
-			}
-		}
-
-		/// <summary>
 		/// Revokes the administrator credential that earlier releases shipped, if and only if it is still
 		/// in place.
 		/// </summary>
@@ -2365,7 +2209,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// <para>
 		/// HOW THE STORED VALUE IS READ, and why not through the obvious route: EVERY projection seam in the
 		/// platform - <c>Api/RecordManager.cs</c>, <c>Database/DbRecordRepository.cs</c> and, since finding
-		/// C-REV-07, <c>Eql/EqlCommand.cs</c> - now replaces every encrypted password value with a redaction
+		/// C-02, <c>Eql/EqlCommand.cs</c> - now replaces every encrypted password value with a redaction
 		/// marker, unconditionally and for every role. There is no exempt projection left, deliberately: the
 		/// query-language path used to be the exemption, and that exemption WAS the vulnerability, because
 		/// "SELECT password FROM user" is reachable by any caller holding read access on the user entity.
@@ -2389,13 +2233,13 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// demands.
 		/// </para>
 		/// <para>
-		/// RESIDUAL, recorded rather than glossed over: the replacement is not accompanied by a
-		/// change-required-on-first-login marker. No field on the user entity can carry one - and, more to
-		/// the point, nothing in the platform reads such a marker, so setting one would enforce nothing -
-		/// while adding a field would be the schema definition change the constraints forbid. The
-		/// obligation is discharged the only way it can be without that change: the replacement is unique
-		/// per installation, and the notice below instructs the operator to replace it at once. Tracked as
-		/// RISK-027 in docs/security/risk-register.md.
+		/// The replacement is ALSO marked for rotation: <c>PasswordChangeRequired</c> is set below on the
+		/// account's existing <c>preferences</c> JSON, so no schema definition statement is emitted. The
+		/// marker has teeth - <c>AuthService</c> refuses to mint or refresh a bearer token while it is set,
+		/// the login page records a warning audit entry on each sign-in that still uses the credential, and
+		/// <c>SecurityManager</c> clears it when the password is actually changed. Interactive login stays
+		/// open on purpose, being the only route to the screen that performs that change. The replacement
+		/// is unique per installation and the notice below tells the operator to replace it at once.
 		/// </para>
 		/// </remarks>
 		private void RevokeSeedAdministratorCredential4(RecordManager recMan)
@@ -2409,7 +2253,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 				return;
 			}
 
-			// SECURITY C-REV-07 (Critical, CWE-200 / CWE-522, OWASP A01:2021 + A02:2021). The hash is read
+			// SECURITY C-02 (Critical, CWE-200 / CWE-522, OWASP A01:2021 + A02:2021). The hash is read
 			// through SecurityManager.ReadStoredPasswordHash - the platform's ONE system-only credential
 			// query - and no longer from seedAdministrator.Password. That property is populated from a query
 			// projection, and every projection seam now redacts encrypted password fields unconditionally so
@@ -2516,12 +2360,14 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// both users and roles. Removing the grants from provisioning protects new installations only;
 		/// this is what protects the ones already running.
 		/// <para>
-		/// The role entity's Guest READ grant is NOT revoked here, and that is a statement about this
-		/// migration's version boundary rather than about the grant. C-05 is scoped to the two create
-		/// grants, so schema version 4 revokes exactly those; the read grant is finding F17 and is revoked
-		/// by <see cref="MigrateSecurityDefaults5(EntityManager)"/> at schema version 5. Keeping each
-		/// version's block faithful to what that version claimed to do is what lets an installation at any
-		/// version replay the sequence and arrive at the same state.
+		/// The role entity's Guest READ grant is NOT revoked here, and that is a statement about severity
+		/// tiers rather than about the grant. What this migration carries is exactly the Critical scope:
+		/// C-05's two create grants and C-02's read grant on the user entity. The role entity's read grant
+		/// is finding F17, an information-disclosure weakness whose severity places it in the tier this
+		/// engagement documents with fix guidance rather than remediates, so no migration reaches it on an
+		/// already-provisioned installation and the residual is recorded in
+		/// <c>docs/security/risk-register.md</c>. Provisioning no longer seeds that grant, so a new
+		/// installation never has it in the first place.
 		/// </para>
 		/// <para>
 		/// <c>EntityManager.UpdateEntity</c> copies only the entity's own scalars and its four permission
@@ -2538,8 +2384,9 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			// read-projection redaction instead.
 			RevokeGuestRecordPermissions4(entMan, SystemIds.UserEntityId, "user", true, "SCHEMA VERSION 4 MIGRATION.");
 
-			// The role entity: revoke anonymous create only. Its anonymous READ grant is finding F17 and is
-			// revoked by MigrateSecurityDefaults5 at schema version 5, not here.
+			// The role entity: revoke anonymous create only. Its anonymous READ grant is finding F17,
+			// which this engagement documents with fix guidance rather than migrates, so it is left in
+			// place here and recorded in docs/security/risk-register.md instead.
 			RevokeGuestRecordPermissions4(entMan, SystemIds.RoleEntityId, "role", false, "SCHEMA VERSION 4 MIGRATION.");
 		}
 
@@ -2551,15 +2398,15 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// <param name="entityId">Identifier of the entity whose record permissions are being narrowed.</param>
 		/// <param name="entityName">Entity name, used only to make a failure message diagnostic.</param>
 		/// <param name="revokeRead">
-		/// True to also remove the Guest role from the read permissions. False for the role entity at
-		/// schema version 4, whose anonymous read grant is revoked one version later by
-		/// <see cref="MigrateSecurityDefaults5(EntityManager)"/> under finding F17.
+		/// True to also remove the Guest role from the read permissions. False for the role entity, whose
+		/// anonymous read grant is finding F17 - documented with fix guidance rather than migrated - so
+		/// this migration deliberately leaves it in place on an already-provisioned installation.
 		/// </param>
 		/// <param name="migrationLabel">
-		/// Prefix for any failure message, naming the migration or control on whose behalf the revocation
-		/// is running. Passed in rather than hard-coded because three callers share this method - the
-		/// schema version 4 migration, the schema version 5 migration and the per-startup plugin-patch
-		/// reconciliation - and a failure that names the wrong one sends an operator to the wrong place.
+		/// Prefix for any failure message, naming the migration on whose behalf the revocation is running,
+		/// so that an operator reading the exception is sent to the right place. It is a parameter rather
+		/// than a literal because the message is assembled here while the identity of the migration is
+		/// known only to the caller.
 		/// </param>
 		/// <remarks>
 		/// SECURITY - findings C-05 and C-02; see
@@ -2572,9 +2419,10 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// permission model does not prevent, cannot leave one copy behind; it also reports how many grants
 		/// it removed, which is what lets this method write nothing at all when there was nothing to revoke.
 		/// <para>
-		/// That makes re-running it harmless AND free, which matters because it now has three callers with
-		/// very different frequencies: the one-time schema version 4 and version 5 migrations, and the
-		/// reconciliation that <see cref="InitializePlugins(IServiceProvider)"/> performs on EVERY startup.
+		/// That makes re-running it harmless AND free, which matters because the version gate advances
+		/// only after the whole migration commits: a failure anywhere later in the transaction rolls the
+		/// version back, so this method is replayed on the next startup against an entity it may already
+		/// have narrowed.
 		/// </para>
 		/// </remarks>
 		private static void RevokeGuestRecordPermissions4(EntityManager entMan, Guid entityId, string entityName, bool revokeRead, string migrationLabel)
@@ -2603,12 +2451,12 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			if (revokeRead)
 				revokedGrants += canRead.RemoveAll(roleId => roleId == SystemIds.GuestRoleId);
 
-			// Nothing was revoked, so nothing is written. This guard is what makes the per-startup
-			// reconciliation in InitializePlugins free on a healthy installation: without it every single
-			// startup would issue two entity updates and two process-wide metadata cache clears in order to
-			// store permission lists identical to the ones already stored. The test is on what was actually
-			// REMOVED rather than on whether a grant looks present, so the one-time migration and the
-			// per-startup reconciliation share exactly one definition of "there was something to fix".
+			// Nothing was revoked, so nothing is written. This guard is what makes a replay free on an
+			// installation that has already been narrowed: without it, a migration retried after a rolled
+			// back transaction would issue two entity updates and two process-wide metadata cache clears
+			// in order to store permission lists identical to the ones already stored. The test is on what
+			// was actually REMOVED rather than on whether a grant looks present, so "there was something
+			// to fix" has exactly one definition here.
 			if (revokedGrants == 0)
 				return;
 
@@ -2658,9 +2506,9 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// is carried through untouched, because the object is never reconstructed.
 		/// </para>
 		/// <para>
-		/// NO SCHEMA DEFINITION STATEMENT IS EMITTED - finding M-REV-13. The bounds are field metadata; the
-		/// column is <c>varchar(500)</c> and its width does not derive from them. Only the entity metadata
-		/// row is written. See the body for why <c>EntityManager.UpdateField</c> is deliberately not used
+		/// NO SCHEMA DEFINITION STATEMENT IS EMITTED, which the constraints require. The bounds of finding
+		/// M-13 are field metadata; the column is <c>varchar(500)</c> and its width does not derive from
+		/// them. Only the entity metadata row is written. See the body for why <c>EntityManager.UpdateField</c> is deliberately not used
 		/// here, and for what it would have emitted against <c>rec_user</c> if it were.
 		/// </para>
 		/// </remarks>
@@ -2680,7 +2528,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			if (storedPasswordField == null)
 				throw new InvalidOperationException("SCHEMA VERSION 4 MIGRATION. Entity: user. Field: password. The field is missing or is not a password field, so it could not be secured.");
 
-			//THREAT ADDRESSED - finding M-REV-13, and the engagement's own acceptance criterion that no
+			//THREAT ADDRESSED - finding M-13, and the engagement's own acceptance criterion that no
 			//schema definition statement is emitted at any point. This step used to rebuild the field as an
 			//InputPasswordField and push it through EntityManager.UpdateField. UpdateField calls
 			//Database/DbRecordRepository.cs.UpdateRecordField, which issues, against rec_user:

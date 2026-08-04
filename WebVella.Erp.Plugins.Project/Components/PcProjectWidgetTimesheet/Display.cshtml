@@ -14,16 +14,13 @@
 <wv-grid small="true" columns="@gridColumns" has-tfoot="false">
 	@foreach (var record in records)
 	{
-		@* SECURITY - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting). REMEDIATED.
-		   THREAT: "label" was a union type - a plain caption on the three summary rows, but an HTML
-		   avatar string on the per-user rows - and this cell rendered it through Html.Raw for every row
-		   alike, so the avatar path and the username, both database text, executed in the browser.
-		   HOW IT IS FIXED: PcProjectWidgetTimesheet.cs no longer builds markup. "label" is now always
-		   plain text and the avatar path travels separately in "label_image", null on the summary rows.
-		   The avatar element is authored here as literal Razor markup, so Razor encodes the src
-		   attribute value and the label text independently and in the right context for each.
-		   The avatar is decorative and the username sits beside it, so alt is intentionally empty.
-		   Do not reintroduce Html.Raw here, and do not move the markup back into the component. *@
+		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING. PcProjectWidgetTimesheet.cs
+		   builds no markup: "label" is always plain text and the avatar path travels separately in
+		   "label_image", null on the summary rows. The avatar element is authored here as literal Razor
+		   markup, so Razor encodes the src attribute value and the label text independently and in the right
+		   context for each. The avatar is decorative and the username sits beside it, so alt is intentionally
+		   empty. Do NOT reintroduce Html.Raw and do NOT move the markup back into the component; the Design
+		   and Display twins must stay identical - change both or neither. *@
 		var labelImagePath = (string)record["label_image"];
 		<wv-grid-row>
 			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">

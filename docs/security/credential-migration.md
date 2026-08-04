@@ -32,7 +32,7 @@ Measured against the tree rather than asserted:
 | Oversized-input bound | 128 characters, enforced at all four entry points before any scan, encode, digest or derivation |
 | Legacy MD5 acceptance | Retained deliberately, and reported by the analyzer gate as `CA5351` — accepted as `RISK-004` |
 | Seeded administrator credential | **Changed in a later pass.** `WebVella.Erp/ERPService.cs` no longer assigns the literal `"erp"`: it resolves the initial administrator password from `Settings:InitialAdministratorPassword`, or generates a 20-character password (~120 bits) with `RandomNumberGenerator.GetItems<char>` and surfaces it exactly once at provisioning. **Two further changes landed at the code-review checkpoint** (finding `F-05`): an operator-supplied value must now satisfy a **12–128 character policy with all four character classes** or startup fails fast, and a **change-required-on-first-login marker is now set and enforced** — carried in the existing `rec_user.preferences` column, so the earlier claim that this needed a forbidden schema change was wrong. `RISK-027` is **closed** |
-| Password length bounds, guest-role grants and the data migration | **Landed in a later pass.** The bounds in `WebVella.Erp/ERPService.cs` are now **12–128** (finding M-13), the guest-role create grants on the user and role entities are **removed** (findings C-05 and C-02), and the **schema version 4 data migration has been added** — the core schema version head is now `4`. Sections further down that still describe these as planned are superseded by [§ Schema version 4 — as landed](#schema-version-4-as-landed). **A later pass added schema version 5**, which carries no credential change at all: it revokes the Guest role’s read grant on role metadata and needs no operator action beyond one start. **Consequence for operators:** an **already-deployed** installation is now remediated on upgrade, not merely a freshly provisioned one. The administrator credential is invalidated automatically *only* if it still carries the previously published default; a password the operator already changed is detected and left untouched |
+| Password length bounds, guest-role grants and the data migration | **Landed in a later pass.** The bounds in `WebVella.Erp/ERPService.cs` are now **12–128** (finding M-13), the guest-role create grants on the user and role entities are **removed** (findings C-05 and C-02), and the **schema version 4 data migration has been added** — the core schema version head is now `4`. Sections further down that still describe these as planned are superseded by [§ Schema version 4 — as landed](#schema-version-4-as-landed). The ladder head **stops at 4**: a version-5 gate that revoked the Guest role’s read grant on role metadata was added in a later pass and has since been **removed** as outside the frozen scope, so review finding `F17` is documented rather than migrated — see [§ The migration ladder head is 4](#the-migration-ladder-head-is-4-and-why-it-stops-there). **Consequence for operators:** an **already-deployed** installation is now remediated on upgrade, not merely a freshly provisioned one. The administrator credential is invalidated automatically *only* if it still carries the previously published default; a password the operator already changed is detected and left untouched |
 
 ## How this guide is organised
 
@@ -204,7 +204,7 @@ started:
 | `RecordManager` — the `PasswordField` write path where `Encrypted` is true | **Switched in a later pass** — `:2359` calls `HashPassword`. |
 | `DbRecordRepository` — the password write path | **Switched in a later pass** — `:666` calls `HashPassword`. `GetMd5Hash` now has no caller outside `PasswordUtil`. |
 | Password length bounds | **Raised in a later pass** to a 12-character minimum and a 128-character maximum (finding M-13 — CWE-521), at both the provisioning seed and the version 4 migration. The low 24-character ceiling was itself an obstacle to strong passphrases. |
-| Invalidation of the seeded default administrator credential on **existing** installations | **Landed in a later pass.** The `if (currentVersion < 4)` block carries the invalidation to deployed instances. See [§ Schema version 4 — as landed](#schema-version-4-as-landed). (The head has since moved to `5`, which adds no credential change — see [§ Schema version 5, and why the ladder grew again](#schema-version-5-and-why-the-ladder-grew-again).) |
+| Invalidation of the seeded default administrator credential on **existing** installations | **Landed in a later pass.** The `if (currentVersion < 4)` block carries the invalidation to deployed instances. See [§ Schema version 4 — as landed](#schema-version-4-as-landed). (The head remains `4`; a version-5 gate was briefly added and has been removed — see [§ The migration ladder head is 4](#the-migration-ladder-head-is-4-and-why-it-stops-there).) |
 
 **What this means in practice.** At this commit no credential is yet written or verified in the modern
 format, so **existing installations are unaffected and there is nothing to migrate yet**. The
@@ -376,7 +376,7 @@ row was re-verified against the source rather than carried forward on trust.
 | Shared mutable digest instance removed | **In force** — replaced by a stateless one-shot call |
 | Credential lookup restructured so verification happens in application code | **In force** — `SecurityManager.GetUser` fetches by e-mail, reads the hash through the dedicated `ReadStoredPasswordHash` query, and verifies with `PasswordUtil.VerifyPassword`. No hash comparison remains in any authentication SQL predicate; the only comparison left in SQL is the compare-and-swap guard on the rehash `UPDATE` (`... WHERE id = @id AND password = @expected_password`), which is optimistic concurrency rather than credential verification |
 | Record write paths routed through the new primitive | **In force** — `RecordManager.ExtractFieldValue` and `DbRecordRepository.ExtractFieldValue` both call `PasswordUtil.HashPassword` |
-| Version-gated data migration for existing installations | **In force** — `WebVella.Erp/ERPService.cs`, `if (currentVersion < 4)` carries every credential-related change; the schema version **head is now 5**, and version 5 is authorization-only |
+| Version-gated data migration for existing installations | **In force** — `WebVella.Erp/ERPService.cs`, `if (currentVersion < 4)` carries every credential-related change; the schema version **head is 4**, and there is no version 5 |
 | Shipped default administrator credential removed from provisioning | **In force** — resolved from configuration, else generated with a CSPRNG and surfaced once |
 | Password length bounds raised from 6–24 to 12–128 | **In force** — bound to `PasswordUtil.MinPasswordLength`/`MaxPasswordLength` so the seed, the migration and the runtime policy cannot drift apart |
 | Password policy enforced on every write path | **In force** at four seams — `RecordManager.ExtractFieldValue`, `DbRecordRepository.ExtractFieldValue`, `SecurityManager.SaveUser` (which surfaces a per-field validation error rather than a generic one), and `ERPService.ResolveInitialAdministratorPassword` (which fails startup with a value-free message) |
@@ -742,6 +742,32 @@ The first query is your migration progress report. Its count falls by one each t
 
 Verified during remediation: after a real login, an account's stored value changed from 32 hex characters to the versioned Base64 form, and accounts that had **not** authenticated were left untouched - confirming the migration is per-user and login-driven rather than global.
 
+#### Expect one sign-out at deployment — every in-flight session ends once
+
+This is a **credential-session** consequence rather than a password one, and it is listed here because it
+lands at the same moment and is the only user-visible effect of deploying this change.
+
+Session revocation and the absolute session horizon are both keyed on markers that the platform stamps
+into a credential when it mints it: an `erp_session_id` claim, and a horizon stamp inside the
+authentication ticket. Both controls used to **accept** a credential that carried no marker, on the
+reasoning that such a credential could only predate the control. Review finding `CR2-F-01` established that
+this left a permanent bypass rather than a temporary allowance — nothing expired the exemption, and any
+future source of an unmarked credential inherited a session that neither control could bound or end.
+Both now **fail closed**.
+
+The consequence, stated plainly so that it is not mistaken for a fault:
+
+* Anyone holding a session issued **before** this deployment is signed out on their next request and
+  signs in again. Once. There is nothing to configure and nothing to migrate.
+* Any bearer token issued before this deployment is refused, and the refresh endpoint will not renew it;
+  clients re-authenticate to obtain a token that carries the new marker. The WebAssembly client already
+  handles a refused refresh by discarding its stored token, so it recovers without operator action.
+* Sessions issued after deployment are unaffected — every credential the platform now mints carries both
+  markers.
+
+There is no way to avoid the single re-authentication while closing the bypass, and it is accepted as the
+price. It is recorded in the risk register as the closure of the transitional residual under `RISK-036`.
+
 #### Ongoing
 
 * Users who never log in keep legacy hashes. If you need the table fully migrated, require those users to sign in or reset their passwords.
@@ -1028,48 +1054,48 @@ revocation ran first and was then silently undone, meaning **C-05 was left open 
 installation** even though the migration itself was correct. Upgraded installations whose `plugin_data`
 row already records a later version were unaffected.
 
-**The fix, in two independent halves.** Either half alone would have been insufficient, which is why
-both were applied:
+**The fix, and the half that was withdrawn.** The correction has one half in force and one half that was
+applied and then removed, and both are recorded because the removal is deliberate:
 
-1. **The stale grants were deleted from both plugin patches** — guest `CanCreate` on the role entity,
-   guest `CanRead` on the user entity, guest `CanCreate` on the user entity, and guest `CanRead` on the
-   role entity. That is **four** deletions per file. The fourth was initially left in place, on the
-   ground that the version-4 migration revokes exactly the other three and that removing more at this
-   boundary would be an unrequested behaviour change. The version-5 migration
-   (`MigrateSecurityDefaults5`, review finding `F17`) then revoked that grant and, in doing so,
-   disproved the premise the retention rested on: role hydration runs inside a system security scope in
-   `SecurityManager.GetUser`, so the sign-in path never consults the Guest grants. Once version 5
-   revokes the grant, a patch that re-adds it is a re-grant like any other — and because
-   `InitializeSystemEntities` runs **before** `InitializePlugins`, the patch is the *last* write, so
-   leaving it would have kept `F17` open on every freshly provisioned installation. The `revokeRead`
-   flag on `RevokeGuestRecordPermissions4` remains `false` for the `role` entity at version 4 and `true`
-   at version 5, so each migration body stays faithful to what that version claimed to do.
-2. **An idempotent reconciliation now runs after plugin initialisation on every startup.** Deleting the
-   grants from these two first-party files cannot protect against a *third-party* plugin doing the same
-   thing, and the ordering that caused the defect — system entities first, plugins second — is
-   structural. So the last thing `InitializePlugins` does is re-apply the same idempotent revocation the
-   **version-5** migration uses — guest create and read removed from both the `user` and the `role`
-   entity — inside a system security scope. It is **not** version-gated, because the whole point is that
-   it must run after any plugin that might have re-granted. It deliberately does *not* route through the
-   version-4 shape of that helper: that shape passes `revokeRead: false` for the `role` entity, so a
-   reconciliation built on it would re-assert only three of the four revocations and leave the fourth to
-   whichever plugin patch wrote last.
+1. **IN FORCE — the stale grants were deleted from both plugin patches.** Guest `CanCreate` on the role
+   entity, guest `CanRead` on the user entity, guest `CanCreate` on the user entity, and guest `CanRead`
+   on the role entity: **four** deletions per file, all four retained. This is what matters most, because
+   `InitializeSystemEntities` runs **before** `InitializePlugins`, so a patch that re-granted would be the
+   *last* write and would reopen the finding on every freshly provisioned installation regardless of what
+   any migration did. Verified tree-wide: the Guest role identifier now appears in exactly one place in
+   the entire repository, `WebVella.Erp/Api/Definitions.cs`, where the constant itself is declared —
+   neither plugin patch references it at all.
+2. **WITHDRAWN — the always-on reconciliation after plugin initialisation.** An earlier pass had
+   `InitializePlugins` finish by re-applying an idempotent revocation on every startup, together with a
+   version-5 migration. Both have been **removed**. They were outside the frozen scope, which limits the
+   data migration to the Critical and High findings and documents unrelated Mediums; and the first half
+   above made the reconciliation unnecessary in practice, since the only two plugins that ever re-granted
+   no longer do. Verified: after replaying both SDK patches on an upgraded installation, no entity grants
+   Guest anything — without any reconciliation running.
 
-**Why it is silent.** The reconciliation logs nothing. A plugin that re-grants on every start would
-otherwise produce a log line on every start, and a benign no-op would fill the audit trail. The
-trade-off is recorded as `RISK-036`: the condition is corrected forever, but without an operator signal
-that it keeps recurring.
+`RevokeGuestRecordPermissions4` therefore keeps its `revokeRead` flag, which is **`true`** for the `user`
+entity and **`false`** for the `role` entity. That flag is not vestigial: it is what makes the version-4
+body faithful to what version 4 claims to do, and removing it would silently change behaviour.
 
-**Verified.** Proven across four real host startups: repair (grants present → removed), no-op
-(already-correct state → no second write, because the reconciliation skips `UpdateEntity` when nothing
-was actually removed), and durability (the revocation survives subsequent startups). Final committed
-state on the `user` entity is guest create **false** / read **false**, and on the `role` entity create
-**false** / read **false**. That `role` read column previously read **true** *by design* here; the
-reading was superseded when version 5 revoked the grant under `F17`, and a database still showing
-**true** is at a pre-version-5 state and is repaired by starting any host once.
+**The residual, stated rather than silently absorbed.** Deleting the grants from two first-party files
+cannot stop a *third-party* plugin doing the same thing, and the ordering that allowed it — system
+entities first, plugins second — is structural. With the reconciliation withdrawn, that exposure is a
+**documented residual** rather than a silently applied control, and it is tracked in
+[the risk register](risk-register.md). An operator running third-party plugins that manage record
+permissions should verify the `user` and `role` entity permissions after installing or upgrading them.
 
-**Operator action: none.** The previous instruction to verify and manually revoke guest permissions
-after first provisioning is **withdrawn** — it is now done automatically on every startup.
+**Verified.** Proven against a real PostgreSQL instance in three scenarios. *Fresh provisioning:*
+recorded version `4`; `user` and `role` each grant read to `Regular` and `Administrator` only and create,
+update and delete to `Administrator` only — no Guest grant anywhere. *Upgrade from version 3:* completes
+with no exception, records version `4`, and leaves Guest create `false` on both entities and Guest read
+`false` on `user`, while Guest read on `role` remains `true` — the intended version-4 boundary, since
+`F17` is documented rather than migrated. *Plugin-patch replay:* re-running SDK patches `20201221` and
+`20210429` leaves no Guest grant on any entity, because the corrected patches restate each entity's
+complete permission set with no Guest entry.
+
+**Operator action: none is required for the credential migration.** Optionally, to close `F17` now, remove
+the Guest role from `CanRead` on the `role` entity through the administration UI; and if you run
+third-party plugins that write record permissions, verify those two entities after installing them.
 
 
 ### Operator actions
@@ -1207,40 +1233,49 @@ happens on **every** credential path, including the ones that fail, so a failed 
 as a successful one. That is what removes the signal.
 
 
-## Schema version 5, and why the ladder grew again
+## The migration ladder head is 4, and why it stops there
 
-Review finding `F17`. **Nothing in this section changes a credential**, and it needs no operator action
-beyond starting any host or the console application once. It is recorded here because this guide is
-where an operator looks to understand the migration ladder, and the ladder head moved from `4` to `5`.
+Review finding `F17`. **Nothing in this section changes a credential**, and it requires no operator
+action. It is recorded here because this guide is where an operator looks to understand the migration
+ladder, and the obvious question — why the ladder stops at `4` when a related weakness is known — should
+be answered here rather than left to inference.
 
-**What version 5 does.** It removes the **Guest** role from `CanRead` on the `role` entity, and
-re-asserts the version-4 removal of Guest `CanCreate` and `CanRead` on the `user` entity. Guest is the
-role an unauthenticated caller is evaluated against, so the read grant made every role name and
-identifier — including the administrator role — anonymously enumerable. `Regular` and `Administrator`
-keep their read grants, so nothing an authenticated user can see changes.
+**The ladder head is `4`.** `WebVella.Erp/ERPService.cs` gates `if (currentVersion < 1)` through
+`if (currentVersion < 4)` and saves at most `Version = 4`. There is no version 5. An earlier revision of
+this guide described a version-5 migration that revoked the **Guest** role's `CanRead` grant on the
+`role` entity; that migration has been **removed**, and this section replaces the description of it.
 
-**Why it is a separate version rather than an edit to version 4.** The version-4 block deliberately
-removed only the two **create** grants, and an installation that already recorded version 4 will never
-re-enter that block. Editing it would have protected only installations still below 4 and left every
-estate that had already upgraded exposed, with the source reading as though it were fixed. A new gate is
-the only construct that reaches them, and leaving version 4 faithful to what version 4 claimed to do is
-what lets an installation at any version replay the ladder and arrive at the same state.
+**Why it was removed.** The frozen remediation plan scopes the data migration to the Critical and High
+findings and states that unrelated Medium findings are documented with fix guidance rather than
+migrated, unless a Medium is a compensating control for a confirmed Critical or High. `F17` — anonymous
+readability of role metadata — is **information disclosure**, which the engagement's severity matrix
+places in the Medium tier, and it is not a compensating control for anything above it. A version-5 gate
+was therefore outside the agreed scope, and the same applies to the always-on permission reconciliation
+that ran after every plugin initialisation: both have been withdrawn to restore the version-4 contract.
 
-**Why the user entity is re-asserted.** A development installation was found recording schema version 4
-while still carrying Guest create *and* read on both entities. A recorded version reaching 4 is
-therefore not proof that the version-4 body ever ran against that database. Because the revocation uses
-`RemoveAll`, it is a no-op when the grant is already absent, so re-asserting costs one metadata read per
-entity and repairs an installation in that state. The residual — that an operator who *deliberately*
-re-granted Guest access will lose it — is `RISK-050`.
+**What that means for an existing installation, stated plainly.** On an upgrade from version 3, the
+version-4 block removes Guest `CanCreate` **and** `CanRead` on the `user` entity and Guest `CanCreate` on
+the `role` entity. It deliberately does **not** touch Guest `CanRead` on the `role` entity, so an
+upgraded installation will still show that grant as **true**. This is the intended version-4 boundary and
+not an incomplete run. Verified against a real PostgreSQL instance: after a forced version-3 upgrade the
+recorded version is `4`, and `user` create/read for Guest are both `false` while `role` create is `false`
+and `role` read remains `true`.
 
-**Properties it shares with version 4.** It runs inside the same provisioning transaction and **before**
-the settings row is saved, so a failure rolls the whole migration back and the version is not advanced;
-the migration is then retried on the next start. It is **data only**: it changes entity metadata through
-the manager API and emits no schema definition statement, so no column or table is altered, added or
-dropped. It is idempotent.
+**A freshly provisioned installation is not affected.** The seed in `InitializeSystemEntities` grants
+Guest nothing on either entity, and both shipped plugin patches had every Guest grant removed at source,
+so a fresh install carries no Guest grant anywhere. Verified on a real instance: after first
+provisioning, `user` and `role` both grant read to `Regular` and `Administrator` only, and create, update
+and delete to `Administrator` only.
 
-**Rollback.** There is nothing credential-related to roll back. If an installation genuinely requires
-anonymous role enumeration, re-grant `CanRead` on the `role` entity to the Guest role through the
-administration UI and set the recorded schema version to `5` so the migration does not remove it again
-on the next start — but prefer a purpose-built read endpoint, because the grant applies to the whole
-entity and to every caller with no credentials at all.
+**A side effect worth knowing, because it is easy to misattribute.** An installation that *replays* the
+SDK plugin patch `20201221` — for example after a plugin-version rollback — will also lose the `role`
+entity's Guest `CanRead` grant. That happens because the corrected patch restates the entity's **complete**
+permission set and that restatement contains no Guest entry at all; it is a consequence of the patch's own
+shape, not of any migration, and it is not version-gated. Verified: replaying that patch on an upgraded
+installation leaves no Guest grant on any entity.
+
+**Remediating `F17` deliberately, if you want it closed now.** Remove the Guest role from `CanRead` on
+the `role` entity through the administration UI. Guest is the role an unauthenticated caller is evaluated
+against, so that grant is what makes role names and identifiers anonymously enumerable; `Regular` and
+`Administrator` keep their read grants, so nothing an authenticated user can see changes. The residual and
+this recommendation are tracked in [the risk register](risk-register.md).

@@ -11,6 +11,24 @@
 		<Version>1.7.7</Version>
 		<Authors>WebVella</Authors>
 		<Company>WebVella</Company>
+		<!-- Security CR2-F-04 / H-01 - LICENCE POSTURE, PENDING OWNER RATIFICATION.
+		     This expression is the licence this package DECLARES to everyone who consumes it from
+		     nuget.org. It is left at Apache-2.0 deliberately and it is NOT yet ratified, because the
+		     AutoMapper pin below links a dependency published under the Reciprocal Public License 1.5,
+		     whose source-disclosure obligation an Apache-2.0 declaration does not carry forward. Only
+		     the repository owner may settle that: changing a product's effective licence posture is a
+		     distribution and legal decision, not an engineering one, so this remediation must neither
+		     silently rewrite this expression nor silently leave the mismatch shippable.
+		     It is therefore MECHANICALLY BLOCKED rather than merely commented: the
+		     ErpAssertAutoMapperLicenceDecisionRecorded target in Directory.Build.props at the repository
+		     root fails `dotnet pack` while the decision is unrecorded, so no package carrying this claim
+		     can be published by accident. It is defined there, not here, because the same Apache-2.0
+		     expression is declared by four packable manifests - this one, WebVella.Erp.Web,
+		     WebVella.Erp.Plugins.Mail and WebVella.Erp.Plugins.SDK - and a gate in this file alone was
+		     measurably bypassable by packing any of the other three. `build`, `publish` and `run` are
+		     deliberately unaffected - the risk is in DISTRIBUTING the claim, not in compiling the code.
+		     Both options and the exact reversal steps for each are in docs/security/risk-register.md
+		     (RISK-001). -->
 		<PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
 		<Copyright>Copyright 2025</Copyright>
 		<PackageProjectUrl>https://webvella.com</PackageProjectUrl>
@@ -49,16 +67,24 @@
 		     recursion (GHSA-rvv3-g6hj-g44x / CVE-2026-32933, High severity). Pinned to the newest
 		     release on the lowest patched major so the advisory is genuinely closed - the dependency
 		     audit reports no vulnerable package and nothing is suppressed to achieve that.
-		     LICENCE ESCALATION - RISK-001, OPEN, OWNER DECISION REQUIRED. Every version from 15.1.1
-		     onwards ships under the Reciprocal Public License 1.5 instead of MIT, while this project
-		     declares Apache-2.0 above and is published for third-party consumption, so a reciprocal
-		     source-disclosure obligation conflicts with that posture and there is no patched permissive
-		     line to fall back to. The advisory fix is kept in force because removing it would return a
-		     High-severity denial-of-service advisory to the dependency graph and would require an audit
-		     suppression to keep the gate green. The residual concern is legal, not technical, and it is
-		     recorded rather than absorbed: docs/security/risk-register.md (RISK-001) carries the full
-		     assessment, both options, and the exact steps to reverse this pin should the owner decline
-		     RPL-1.5. Do not change this pin without resolving the licence question first. -->
+		     LICENCE ESCALATION - RISK-001, OPEN, OWNER DECISION REQUIRED, AND MECHANICALLY BLOCKED.
+		     Every version from 15.1.1 onwards ships under the Reciprocal Public License 1.5 instead of
+		     MIT, while this project declares Apache-2.0 above and is published for third-party
+		     consumption, so a reciprocal source-disclosure obligation conflicts with that posture and
+		     there is no patched permissive line to fall back to. The advisory fix is kept in force
+		     because removing it would return a High-severity denial-of-service advisory to the
+		     dependency graph and would require an audit suppression to keep the gate green - and that
+		     suppression would also silence the CI negative control, which deliberately pins 14.0.0 and
+		     requires its restore to FAIL.
+		     The residual concern is legal, not technical. It is neither absorbed nor left to a comment
+		     nobody reads: the ErpAssertAutoMapperLicenceDecisionRecorded target in Directory.Build.props
+		     fails `dotnet pack` - for every packable manifest in this repository, not only this one -
+		     until the owner's decision is recorded in the ErpAutoMapperLicenceDecision property, so the
+		     unresolved question cannot be shipped by accident while still never blocking build, publish
+		     or run. docs/security/risk-register.md
+		     (RISK-001) carries the full assessment, both options, and the exact steps to reverse this
+		     pin should the owner decline RPL-1.5. Do not change this pin without resolving the licence
+		     question first. -->
 		<PackageReference Include="AutoMapper" Version="[15.1.3]" />
 		<PackageReference Include="CsvHelper" Version="33.1.0" />
 		<PackageReference Include="Ical.Net" Version="5.1.4" />
@@ -93,5 +119,15 @@
 		<TypeScriptMapRoot />
 		<TypeScriptSourceRoot />
 	</PropertyGroup>
+
+	<!-- Security CR2-F-04 / H-01 - LICENCE GOVERNANCE GATE, DEFINED ONCE FOR THE WHOLE REPOSITORY.
+	     The enforcing target, ErpAssertAutoMapperLicenceDecisionRecorded, lives in
+	     Directory.Build.props at the repository root rather than here. It was originally written in this
+	     file, which left it bypassable: `dotnet pack` on WebVella.Erp.Web, WebVella.Erp.Plugins.Mail or
+	     WebVella.Erp.Plugins.SDK produced a package carrying the same unratified Apache-2.0 expression
+	     with no diagnostic, which was measured rather than suspected. All four packable manifests in this
+	     repository declare that expression and all four sit on a graph that reaches AutoMapper, so the
+	     gate has to be inherited by all four. Directory.Build.props carries the full rationale, the
+	     ERPLIC001-ERPLIC004 diagnostics and the permissive-version list. -->
 
 </Project>

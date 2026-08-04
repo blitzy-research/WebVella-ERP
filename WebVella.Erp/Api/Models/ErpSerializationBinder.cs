@@ -73,7 +73,7 @@ namespace WebVella.Erp.Api.Models
 		/// resolution is attempted.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY M-01 (CWE-400 uncontrolled resource consumption). <see cref="MaxTypeGraphDepth"/>
+		/// SECURITY H-10 hardening (CWE-400 uncontrolled resource consumption). <see cref="MaxTypeGraphDepth"/>
 		/// bounds the walk over an ALREADY RESOLVED type, which is too late to be the only bound.
 		/// The outer-name allow-list inspects only the portion of the discriminator before the first
 		/// bracket, so a token such as
@@ -122,39 +122,25 @@ namespace WebVella.Erp.Api.Models
 		/// </summary>
 		/// <remarks>
 		/// SECURITY H-10 (CWE-502 deserialization of untrusted data). This inventory is enumerated
-		/// type by type rather than discovered from a namespace, and that distinction IS the control.
-		/// <para>
-		/// An earlier revision admitted every non-delegate, non-disposable type in five namespaces
-		/// AND all their descendant namespaces. Measured, that admitted 268 types - among them seven
-		/// repositories, two managers, a job pool, a job data service, two ambient contexts, thirteen
-		/// object-mapping profiles, eight type converters and an exception. None of those is a
-		/// persisted data document. A deserialization gadget does not have to be a plausible DTO; it
-		/// only needs a reachable constructor or property setter with a side effect, so admitting a
-		/// repository or a service leaves CWE-502 substantially open while presenting as closed.
-		/// </para>
-		/// <para>
-		/// That breadth was not merely theoretical. It was verified reachable: a job result is
-		/// declared <c>dynamic</c>, so a discriminator stored in the <c>jobs.result</c> column is
-		/// resolved through this binder, and both <c>WebVella.Erp.Database.DbRecordRepository</c> and
-		/// <c>WebVella.Erp.Jobs.JobPool</c> were successfully instantiated that way. The same held
-		/// for a value nested in a dynamic record. Narrowing the inventory is what closes it.
-		/// </para>
+		/// type by type rather than discovered from a namespace, and that distinction IS the control:
+		/// a namespace rule admits whatever later lands in the namespace, and a deserialization gadget
+		/// need not be a plausible DTO - it only needs a reachable constructor or property setter with a
+		/// side effect, so admitting a repository or a service would leave CWE-502 substantially open
+		/// while presenting as closed. The surface is real: a job result is declared <c>dynamic</c>, so
+		/// a discriminator stored in the <c>jobs.result</c> column is resolved through this binder.
 		/// <para>
 		/// Membership is the transitive closure, over DATA MEMBERS only, of the types the
 		/// deserialization sites actually read - entity and relation documents with their whole field
 		/// hierarchy, the job and schedule graph including the job result wrapper, the PostgreSQL
 		/// notification payload and the dynamic record - so it is derived from the sites rather than
 		/// guessed, with ONE deliberate addition on top of that closure - the system settings document,
-		/// annotated at its entry below - which is retained for generic-argument completeness even
-		/// though no site reads it. Nothing here owns behaviour. Three consequences worth stating,
-		/// because each was decided rather than overlooked:
-		/// <c>WebVella.Erp.Api.CurrencySymbolPlacement</c> is
-		/// included because a currency field genuinely reaches it, yet it sits outside every
-		/// namespace the previous rule listed and so was being REFUSED - a latent break this
-		/// enumeration also closes; the abstract bases are included because a
+		/// annotated at its entry below - retained for generic-argument completeness even though no site
+		/// reads it. Nothing here owns behaviour. Three membership decisions are deliberate:
+		/// <c>WebVella.Erp.Api.CurrencySymbolPlacement</c> is included because a currency field
+		/// genuinely reaches it; the abstract bases are included because a
 		/// <c>List&lt;DbBaseField&gt;</c> discriminator names one as a generic argument; and the
-		/// diagnostics log record is deliberately EXCLUDED, because no deserialization site reads it
-		/// and it carries behaviour.
+		/// diagnostics log record is deliberately EXCLUDED, because no deserialization site reads it and
+		/// it carries behaviour.
 		/// </para>
 		/// </remarks>
 		private static readonly Type[] PersistedModelTypes =
@@ -241,35 +227,15 @@ namespace WebVella.Erp.Api.Models
 		/// type name. Built once from <see cref="PersistedModelTypes"/>.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY H-10 (CWE-502 deserialization of untrusted data). The allow-list has been
-		/// narrowed twice, and both narrowings matter because each earlier form was an allow-list in
-		/// name only.
-		/// <para>
-		/// The first form admitted a first party type by NAME PREFIX - any type whose name began with
-		/// <c>WebVella.Erp.</c> in any assembly whose simple name began with <c>WebVella.Erp.</c>.
-		/// That spanned roughly seven hundred types across the core library, the web framework and
-		/// all six plugin assemblies, including services, repositories, page models and hook
-		/// implementations.
-		/// </para>
-		/// <para>
-		/// The second form replaced the prefix with a namespace scan of the pinned assembly. That was
-		/// a real improvement - a payload could no longer nominate the assembly, and plugin types
-		/// stopped being nameable - but it still admitted a measured 268 types, because scanning five
-		/// namespaces and their descendants picks up everything those namespaces happen to contain
-		/// alongside the data documents. Seven repositories, two managers, a job pool, a job data
-		/// service, two ambient contexts, thirteen object-mapping profiles and eight converters were
-		/// all nameable, and two of them were confirmed instantiable through a real column.
-		/// </para>
-		/// <para>
-		/// This form is built from <see cref="PersistedModelTypes"/>, an explicit inventory derived
-		/// from the deserialization sites themselves, so admission is exact full-name matching over
-		/// 45 data types instead of 268 mixed ones. The assembly remains pinned - by construction
-		/// now, since every entry is a <c>typeof</c> in this assembly - and
-		/// <see cref="IsAllowedResolvedType"/> still confirms the accepted type is that very
-		/// <see cref="Type"/> instance by reference, so a same-named type from anywhere else is
-		/// refused. Delegates and <see cref="IDisposable"/> implementors remain excluded as a
-		/// standing guard on future edits to the inventory.
-		/// </para>
+		/// SECURITY H-10 (CWE-502 deserialization of untrusted data). Admission is EXACT full-name
+		/// matching against <see cref="PersistedModelTypes"/>, never a name prefix and never a namespace
+		/// scan: either of those admits whatever the matching namespace or assembly happens to contain
+		/// alongside the data documents, which is an allow-list in name only. The assembly is pinned by
+		/// construction, since every entry is a <c>typeof</c> in this assembly, and
+		/// <see cref="IsAllowedResolvedType"/> confirms the accepted type is that very
+		/// <see cref="Type"/> instance by reference, so a same-named type from anywhere else is refused.
+		/// Delegates and <see cref="IDisposable"/> implementors are excluded as a standing guard on
+		/// future edits to the inventory.
 		/// </remarks>
 		private static readonly Dictionary<string, Type> AllowedFirstPartyTypes = BuildFirstPartyTypeMap();
 
@@ -377,7 +343,7 @@ namespace WebVella.Erp.Api.Models
 				throw Refused(assemblyName, typeName, "the type name is missing");
 			}
 
-			// SECURITY M-01 (CWE-400). Size and shape bounds come FIRST - before the allow-list,
+			// SECURITY H-10 hardening (CWE-400). Size and shape bounds come FIRST - before the allow-list,
 			// before any parsing and before any resolution - because the allow-list only inspects
 			// the outer name and would happily pass a permitted outer type carrying an arbitrarily
 			// large nested argument list on to the base binder. These are O(1) and O(n) scans over a
@@ -584,21 +550,17 @@ namespace WebVella.Erp.Api.Models
 			// vouch for a first party type name, and a first party assembly may not vouch for a type
 			// the inventory does not list.
 			//
-			// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). The test is
-			// an EXACT map lookup, deliberately NOT a namespace-prefix test. A prefix test on
-			// "WebVella.Erp." is an allow-list in name only: it admits roughly seven hundred types
-			// across the core library, the web framework and all six plugin assemblies - every
-			// repository, manager, page model and hook implementation among them - and it would make
-			// PersistedModelTypes dead code while this file's own documentation claimed an enumerated
-			// inventory. That breadth was verified REACHABLE, not merely theoretical: DbRecordRepository
-			// and JobPool were both successfully instantiated through a discriminator in the jobs.result
-			// column while a prefix-shaped rule was in force.
+			// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). The test is an
+			// EXACT map lookup, deliberately NOT a namespace-prefix test. A prefix test on "WebVella.Erp."
+			// is an allow-list in name only - it admits every repository, manager, page model and hook
+			// implementation across the core library, the web framework and all six plugin assemblies, and
+			// it would make PersistedModelTypes dead code while this file claimed an enumerated inventory.
+			// Types of that kind are reachable in practice: a discriminator in the jobs.result column
+			// resolves through this binder.
 			//
-			// A prefix rule was proposed on the grounds that refusing a plugin-authored payload type
-			// would break every job read, because JobProfile deserializes job.Attributes with no
-			// try/catch around it. That reasoning was tested against the code and does not hold, for
-			// three measured reasons, each recorded so the rule is not widened again on the same
-			// argument:
+			// Do NOT relax this to a prefix on the argument that refusing a plugin-authored payload type
+			// would break job reads because JobProfile deserializes job.Attributes without a try/catch.
+			// That does not hold, for three reasons:
 			//   1. The attributes read targets ExpandoObject, and Newtonsoft resolves an ExpandoObject
 			//      target internally WITHOUT consulting a SerializationBinder, so BindToType is never
 			//      reached on that path and no refusal can occur there at all.
@@ -691,7 +653,7 @@ namespace WebVella.Erp.Api.Models
 				? type.GetGenericTypeDefinition().FullName
 				: type.FullName;
 
-			// SECURITY M-01 (CWE-502). A first party constituent must be the EXACT type held in the
+			// SECURITY H-10 (CWE-502). A first party constituent must be the EXACT type held in the
 			// pinned map - reference equality against the Type object, not merely a name match - so
 			// a same-named type loaded from any other assembly is refused here even if it somehow
 			// satisfied the name check. Framework constituents fall through to the enumerated
@@ -735,11 +697,10 @@ namespace WebVella.Erp.Api.Models
 		/// <remarks>
 		/// Threat addressed - CWE-502 (deserialization of untrusted data), OWASP A08:2021.
 		/// <para>
-		/// There is deliberately NO reflection here. An earlier revision enumerated the whole
-		/// assembly and admitted every type in five namespace trees, which is why services,
-		/// repositories, managers and ambient contexts became instantiable from a persisted
-		/// discriminator. Indexing a hand-enumerated list instead means the permitted set cannot
-		/// grow as a side effect of adding a class to one of those namespaces.
+		/// There is deliberately NO reflection here. Enumerating an assembly or a namespace tree is what
+		/// makes services, repositories, managers and ambient contexts instantiable from a persisted
+		/// discriminator; indexing a hand-enumerated list instead means the permitted set cannot grow as
+		/// a side effect of adding a class to a namespace.
 		/// </para>
 		/// <para>
 		/// Assembly pinning is now inherent rather than enforced: every entry is a
@@ -876,7 +837,7 @@ namespace WebVella.Erp.Api.Models
 		/// with every character outside printable ASCII escaped.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY M-01 (CWE-400 uncontrolled resource consumption, CWE-117 improper output
+		/// SECURITY H-10 hardening (CWE-400 uncontrolled resource consumption, CWE-117 improper output
 		/// neutralisation for logs). The refusal message is the one place a rejected discriminator is
 		/// reflected back, and refusals are logged. Echoing the token verbatim meant the two
 		/// oversize bounds added above still produced an oversize RESULT: a 2,000 character type name

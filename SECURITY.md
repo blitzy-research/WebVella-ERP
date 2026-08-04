@@ -82,7 +82,7 @@ inherited by every project:
 | Dependency auditing | `NuGetAudit=true`, `NuGetAuditMode=all`, `NuGetAuditLevel=low` | Every direct **and transitive** package is checked against the advisory database, reporting advisories of every severity. |
 | Advisories fail the build | `NU1901`–`NU1904` promoted through `WarningsAsErrors` | A package with a published advisory of any severity cannot be introduced without the build failing. |
 | An audit that cannot run also fails the build | `NU1900` and `NU1905` promoted through `WarningsAsErrors` | These are *availability* diagnostics, not severities: the advisory source was unreachable, or supplied no data. Left as warnings they produce a green build that audited nothing. Six codes are promoted in total. |
-| Static analysis | `EnableNETAnalyzers=true`, `AnalysisLevel=latest-recommended`, `AnalysisLevelSecurity=latest-all` | All 94 rules the pinned SDK places in the Security category run on every compilation — hard-coded keys, disabled certificate validation, SQL and query construction, insecure deserialisation, cross-site scripting, weak hashing, non-random initialisation vectors, cookie security, disabled token-validation checks. The category is deliberately raised above the general analysis level. Diagnostics stay warnings at the project level; the CI job fails on any Security-category diagnostic outside a reviewed allow-list, and proves the analyzers are live by compiling a deliberate defect and asserting it is reported. |
+| Static analysis | `EnableNETAnalyzers=true`, `AnalysisLevel=latest-recommended` | The .NET analyzers run on every compilation at the recommended level. Four rules in the Security category are active at that level — `CA5350` and `CA5351` (weak and broken cryptographic algorithms), `CA5359` (certificate validation disabled) and `CA5364` (deprecated security protocols). The category is **not** raised above the general analysis level, and no global analyzer configuration file is supplied or permitted, because a per-rule severity promotion is outside the frozen scope of this gate. Diagnostics stay warnings at the project level; the CI job ratchets each of the four families against a recorded baseline, fails on any Security-category diagnostic outside a reviewed allow-list, asserts that no global analyzer config is being loaded, and proves the analyzers are live by compiling a deliberate defect and asserting it is reported. |
 
 Analyzer diagnostics are reported as **warnings**, not errors, deliberately: enabling them across
 roughly 700 pre-existing source files surfaces a large backlog, and failing the build on it would
@@ -104,8 +104,8 @@ Open decisions and accepted residual risk are in the [risk register](docs/securi
 
 #### One decision is waiting on the repository owner
 
-**`RISK-001` — the AutoMapper licence. The advisory half is closed; one bounded item is still open,
-and it cannot be settled by an automated remediation.** It is surfaced here because it is the only item in this remediation that requires a
+**`RISK-001` — the AutoMapper licence. The advisory half is closed; the licensing half is open, pending
+owner ratification, and cannot be settled by an automated remediation.** It is surfaced here because it is the only item in this remediation that requires a
 human decision, and a reader who never opens the risk register would otherwise not know it exists.
 
 The security half is already closed: `AutoMapper` is pinned to `[15.1.3]`, which is the newest release
@@ -125,18 +125,35 @@ Three options, with the engineering cost of each already worked out in
 [LIBRARIES.md](LIBRARIES.md):
 
 1. **Accept the upgrade** — reconcile the product's licensing position with RPL 1.5, or obtain the
-   vendor's commercial licence. Requires no code change; the tree is already in this state.
-2. **Decline the upgrade** — revert the pin to `[14.0.0]` and apply the narrowly scoped, per-advisory
-   audit suppression together with a formal recorded risk acceptance. The reversal path is written out
-   step by step in the risk register, and the suppression seam already exists, deliberately inert, as a
+   vendor's commercial licence. Requires no code change; the tree is already in this state. Record the
+   ratification by setting the `ErpAutoMapperLicenceDecision` MSBuild property to the value
+   `accepted-rpl-1.5`, which is what releases the packaging block described below.
+2. **Decline the upgrade** — revert the pin to `[14.0.0]`, record the declination as
+   `declined-rpl-1.5`, and apply the narrowly scoped, per-advisory audit suppression together with a
+   formal recorded risk acceptance. The order matters and is enforced: recording the declination while
+   an RPL-licensed version is still pinned is itself refused, with `error ERPLIC002`, so the
+   declaration cannot drift away from the pin it describes. The reversal path is written out step by
+   step in the risk register, and the suppression seam already exists, deliberately inert, as a
    commented `<NoWarn>` in `Directory.Build.props`. **Choosing this option knowingly returns a
    High-severity advisory to the dependency graph**, which is why it is not the shipped default.
 3. **Replace the dependency** — not recommended: the platform declares hundreds of mappings across its
    profiles, so removing the library means hand-writing them, far beyond a security remediation.
 
-Until the owner decides, option 1 is what ships, and the escalation stays open. The inline rationale is
-also carried at the pin itself in `WebVella.Erp/WebVella.Erp.csproj`, so it cannot be changed without
-encountering it.
+Until the owner decides, the tree sits in option 1's **code** state — the upgrade in place, the declared
+licence expression untouched — but option 1 does **not** ship. Producing a package is refused:
+`dotnet pack` fails with `error ERPLIC001` while an RPL-licensed `AutoMapper` version is pinned and no
+decision has been recorded — and it fails for **every** package this repository publishes, not just the
+core one. Publishing is gated because it is the one irrevocable action — a package version cannot be
+recalled from nuget.org once a consumer has resolved it — while `restore`, `build`, `publish`, `run` and
+every CI gate step are deliberately left unaffected, so the block costs nothing except a deliberate
+choice. Any value other than the two recognised decisions is also refused, with `error ERPLIC003`, so a
+typo cannot be read as consent.
+
+The inline rationale is carried at **both** sites in `WebVella.Erp/WebVella.Erp.csproj` — the package pin
+and the `<PackageLicenseExpression>` — so neither can be changed without encountering it. The enforcing
+target itself lives in `Directory.Build.props`, because four manifests declare the same `Apache-2.0`
+expression and all four sit on a graph reaching `AutoMapper`; a gate in the core project alone was
+measurably bypassable by packing any of the other three.
 
 ### Before you run this in production
 
@@ -180,7 +197,7 @@ separate and still applies.
 | [Risk register](docs/security/risk-register.md) | Accepted risks, sanctioned deviations, documented-only findings, and ongoing recommendations |
 | [Secure configuration guide](docs/security/secure-configuration.md) | Operator guidance: required secrets, response headers, transport security, cookies, rate limiting |
 | [Credential migration guide](docs/security/credential-migration.md) | The password-hash migration, what operators must do, and rollback guidance |
-| [`LIBRARIES.md`](LIBRARIES.md) | Third-party dependency inventory, licences, advisory state and the recorded licensing decision |
+| [`LIBRARIES.md`](LIBRARIES.md) | Third-party dependency inventory, licences, advisory state and the evidence behind the open licensing escalation `RISK-001` |
 
 ## Scope
 
@@ -204,7 +221,7 @@ report merely restating one is triaged against the existing record.
 than recorded is very welcome:
 
 * Anything already recorded in the [audit report](docs/security/security-audit-report.md) or the
-  [risk register](docs/security/risk-register.md), including the accepted licensing residual `RISK-001`.
+  [risk register](docs/security/risk-register.md), including the open licensing decision `RISK-001`.
 * Secrets that appear in this repository's **history**. The tracked `Config.json` files now ship
   blank, and the two published default keys are rejected by digest comparison, so they cannot be used
   even deliberately. History cannot be rewritten retrospectively; treat those values as public and
@@ -234,7 +251,7 @@ Before exposing an installation to untrusted networks:
 * Terminate TLS in front of the application. Outside Development it issues HSTS on every response; plaintext redirection additionally requires an HTTPS port to be discoverable (set `ASPNETCORE_HTTPS_PORTS`, and forward the protocol if TLS terminates at a proxy) - otherwise the redirect is silently inert.
 * Change the seeded administrator credential immediately, and confirm the old one no longer authenticates.
 * If you send mail, make sure the SMTP relay's certificate chain publishes a **reachable CRL distribution point or OCSP responder**, and that the application host is allowed to fetch it. Revocation is checked by default, so a relay whose revocation source cannot be reached fails the handshake with a chain status of only `unable to get certificate CRL` even though the certificate is otherwise valid — which reads like an untrusted certificate and is not one. Do **not** reach for `Settings__EmailSMTPAllowInvalidCertificates`; it accepts *any* certificate and is refused outside Development anyway. Where the chain genuinely cannot publish a revocation source, set `Settings__EmailSMTPCheckCertificateRevocation=false`, which narrows that one check while still verifying the trust chain, the validity dates and the host name, and record it as an accepted risk. The [secure configuration guide](docs/security/secure-configuration.md) has the recognition signature and both fixes.
-* Restrict cross-origin access to origins you control. A permissive `Access-Control-Allow-Origin: *` policy is still present on **one** host - `WebVella.Erp.Site.Project` - and is recorded as an open finding. `WebVella.Erp.Site` has been given an explicit allow-list.
+* Restrict cross-origin access to origins you control. **No permissive `Access-Control-Allow-Origin: *` policy remains on any host** - an earlier revision of this checklist said one was still live at `WebVella.Erp.Site.Project` and recorded it as open; that is no longer accurate. The two hosts supply their allow-lists differently, and the difference decides what you have to do. `WebVella.Erp.Site` names its three allowed origins in source, so replace them with the origins your deployment actually serves. `WebVella.Erp.Site.Project` instead reads `Settings__Cors__AllowedOrigins`, one string of origins delimited by `,` or `;` - **supply it**, because an absent key outside `Development` allows *no* origin at all. That is the correct default and not a working configuration for a cross-origin browser client, so an unconfigured Project host looks like a broken client rather than like a refusal. The [secure configuration guide](docs/security/secure-configuration.md#cross-origin-policy) has the full resolution table and the exact-match rules.
 * Review the Content-Security-Policy rollout. It ships in report-only mode by design, so it reports violations without blocking them until the inline-script inventory in the secure configuration guide has been worked through.
 
 The secure configuration guide expands each of these, including the exact variable names and the reasoning behind the defaults.

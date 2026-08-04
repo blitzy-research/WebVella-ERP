@@ -124,12 +124,11 @@ namespace WebVella.Erp.Web.Services
 		// Consulted by every credential-verification entry point BEFORE the credential is checked.
 		//
 		// A false result means the attempt must be refused outright and no authentication attempted.
-		// A true result reserves one attempt against both the account and the source address; the
-		// caller MUST then finalise that reservation with exactly one of RegisterSuccess,
-		// RegisterFailedAttempt or AbandonAttempt, which is why callers wrap the credential check in
-		// try/finally. An outstanding reservation counts towards the threshold, so a burst of
-		// concurrent requests cannot each slip past the check before any of them has recorded a
-		// failure.
+		// A true result reserves one attempt against both the account and the source address, and the
+		// caller MUST then finalise that reservation exactly once - RegisterSuccess or
+		// RegisterFailedAttempt on the outcome branch, or AbandonAttempt if the attempt threw before an
+		// outcome was reached. An outstanding reservation counts towards the threshold, so a burst of
+		// concurrent requests cannot each slip past the check before any of them has recorded a failure.
 		//
 		// A leaked reservation - one whose caller died before finalising - can only ever make this
 		// service refuse more, never less, and is bounded rather than permanent: the entry holding it
@@ -316,10 +315,11 @@ namespace WebVella.Erp.Web.Services
 		//
 		// RESIDUAL, documented rather than hidden: this is a check-then-act protocol, not the
 		// reserve-then-finalise one the login path uses, so a concurrent burst can collectively exceed
-		// the address budget once by up to the size of the burst before the lockout takes effect. That
-		// is bounded and accepted: the reserve protocol would require a principal to reserve against,
-		// which this route does not have until after the work it is protecting, and the transport rate
-		// limiter already caps how large a burst can be.
+		// the address budget once by up to the size of the burst before the lockout takes effect. That is
+		// bounded and accepted. Reserve-then-finalise is not used because it exists to GATE work that
+		// follows the check, whereas this entry point records a failure that has already happened - there
+		// is no subsequent work and therefore nothing to finalise. The transport rate limiter already caps
+		// how large a burst can be.
 		public void RegisterAddressFailure(string ipAddress)
 		{
 			var now = DateTime.UtcNow;
@@ -426,15 +426,11 @@ namespace WebVella.Erp.Web.Services
 		// Reads the state for a key, normalised for the current time. Returns null when nothing is
 		// tracked.
 		//
-		// This is the ONE place that knows when a counting window has ended, and every operation
-		// reads through it. That matters: an earlier revision applied the rule inside the reservation
-		// step instead, where it was unreachable, because the refusal check ran first and refused on
-		// the stale failure count before the reservation could ever clear it. A principal whose
-		// lockout had fully elapsed therefore stayed refused, and was only rescued by the cache entry
-		// happening to expire on the same schedule - a coincidence, not a guarantee, since Store
-		// deliberately extends an entry's lifetime to outlive the lockout it carries. Applying the
-		// rule at the single read path makes recovery a property of the logic rather than of cache
-		// timing, and leaves no unreachable safety branch behind.
+		// INVARIANT: this is the ONE place that knows when a counting window has ended, and every
+		// operation reads through it. Applying the rule here rather than inside any individual operation
+		// is what makes recovery from a lockout a property of the LOGIC rather than of cache timing -
+		// Store deliberately extends an entry's lifetime to outlive the lockout it carries, so eviction
+		// must never be what releases a principal. Do not duplicate this rule into a caller.
 		private LoginAttemptState GetState(string key, DateTime now)
 		{
 			LoginAttemptState state;
@@ -475,12 +471,13 @@ namespace WebVella.Erp.Web.Services
 			if (remainingLockout > lifetime)
 				lifetime = remainingLockout;
 
-			// An explicit absolute expiration is mandatory: without one the entry would never expire
-			// and a user who failed five logins would remain locked out permanently. Re-writing it on
-			// every recorded attempt means the window is measured from the most recent attempt, which
-			// is stricter than a fixed window - an attacker pacing attempts cannot age the counter out
-			// from under itself - while for a legitimate user it only means the counter lives slightly
-			// longer before self-clearing.
+			// An explicit absolute expiration is mandatory so that tracking state is RECLAIMED rather than
+			// retained for the process lifetime. It is not what releases a lockout: GetState normalises a
+			// window whose deadline has passed, so a principal recovers on the next read whether or not the
+			// entry has been evicted, and the lifetime below is deliberately extended to OUTLIVE the lockout
+			// it carries so eviction can never end one early. Re-writing it on every recorded attempt
+			// measures the window from the most recent attempt, which is stricter than a fixed window - an
+			// attacker pacing attempts cannot age the counter out from under itself.
 			//
 			// Size is mandatory too, because the cache above declares a SizeLimit; every entry counts
 			// as one tracked principal.
@@ -523,9 +520,12 @@ namespace WebVella.Erp.Web.Services
 		}
 
 		// Malformed input must never turn into a denial of service on the login path, so values are
-		// normalised defensively here and every public member is non-throwing by construction: the
-		// key is always a non-empty string, the counters are bounded by their thresholds because they
-		// stop advancing once a lockout is in force, and the computed expiration is always positive.
+		// normalised defensively here: a null, empty or whitespace value becomes a placeholder rather
+		// than a null key, so no public member can fault on the input it was given. Counters stay bounded
+		// by their thresholds because they stop advancing once a lockout is in force, and the computed
+		// expiration is always positive. This bounds INPUT-driven failure only - it is not a claim that
+		// the members cannot throw at all, since the underlying memory cache can still fault (for example
+		// ObjectDisposedException during shutdown); callers must not rely on absolute non-throwing.
 		private static string Normalize(string value)
 		{
 			if (string.IsNullOrWhiteSpace(value))

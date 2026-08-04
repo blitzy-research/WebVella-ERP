@@ -8,27 +8,20 @@
 {
 	<div class="menu-nav-wrapper @menu.Class">
 		<div class="menu-nav @(menu.Nodes.Count > 0 ? "dropdown" : "")">
-			@* SECURITY - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting). REMEDIATED.
-			   THREAT: MenuItem.Content is database-sourced navigation content. Four components
-			   render this view - ApplicationMenu, UserMenu, ToobarMenu and SidebarMenu - and the
-			   first two are invoked from Nav.Default.cshtml, so this branch renders on every page
-			   of all seven host applications.
-			   WHERE IT IS FIXED: at the point of composition, not at this sink. The application-menu
-			   items reaching this line are built in Models/BaseErpPageModel.cs, which now encodes
-			   area.Label and node.Label with EncodeMenuText, allow-lists node.Url with
-			   TryEncodeMenuUrl - encoding alone would not neutralise a "javascript:" href - and
-			   allow-lists node.IconClass with EncodeMenuIconClass. Services/RenderService.cs copies
-			   Content through unchanged, so it carries the encoded form. Every database-sourced slot
-			   inside the markup that reaches this line is therefore inert.
-			   WHY THIS SINK ITSELF STAYS RAW: the value is a server-authored anchor with an icon
-			   span, and NavItem.cshtml additionally rewrites the same value AS MARKUP to inject
-			   data-toggle='dropdown'; encoding it would print literal anchor HTML in the navigation
-			   of every host and break dropdown toggling. The else branch stays auto-encoded by Razor
-			   for any caller that sets IsHtml to false.
-			   DEFENCE IN DEPTH: markup authoring is restricted to privileged roles, plus the
-			   Content-Security-Policy emitted by SecurityHeadersMiddleware (commit class 8), which
-			   ships report-only by default.
-			   Do not move the encoding out of Models/BaseErpPageModel.cs. *@
+			@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel. MenuItem.Content
+			   is database-sourced navigation content. Four components render this view - ApplicationMenu,
+			   UserMenu, ToobarMenu and SidebarMenu - and the first two are invoked from Nav.Default.cshtml, so
+			   this branch renders on every page of all seven hosts. The encoding is applied UPSTREAM in
+			   Models/BaseErpPageModel.cs, which encodes area.Label and node.Label with EncodeMenuText,
+			   allow-lists node.Url with TryEncodeMenuUrl (encoding alone would NOT neutralise a "javascript:"
+			   href) and allow-lists node.IconClass with EncodeMenuIconClass; RenderService copies Content
+			   through unchanged, so it carries the encoded form and every database-sourced slot is inert.
+			   Encoding it HERE would print literal anchor HTML in the navigation of every host and break
+			   dropdown toggling, because the value is a server-authored anchor and NavItem.cshtml rewrites the
+			   same value AS MARKUP to inject data-toggle. Do NOT move that encoding out of BaseErpPageModel.cs.
+			   The else branch stays auto-encoded by Razor for any caller that sets IsHtml to false. Defence in
+			   depth: markup authoring is restricted to privileged roles, plus the report-only
+			   Content-Security-Policy from SecurityHeadersMiddleware. *@
 			@if (menu.IsHtml)
 			{
 				@Html.Raw(menu.Content)
@@ -51,23 +44,16 @@
 }
 else
 {
-	@* SECURITY - finding H-06 (CWE-79, OWASP A03: stored cross-site scripting).
-	   THREAT: the same MenuItem.Content, rendered here for callers that opt out of the wrapper by
-	   setting RenderWrapper to false. This view renders on every page of all seven hosts.
-	   PROVENANCE OF THIS BRANCH: its only live caller carries no database data at all. The
-	   "Create Task" user-menu item built at Plugins.Project/Services/RenderService.cs:L17-L24
-	   sets RenderWrapper = false (L22) with IsHtml = true (L19), and its Content (L20) is a fixed
-	   literal - nested div/div/a markup whose innermost element is a Font Awesome icon of class
-	   'fa fa-plus'. It reaches this exact branch through AddUserMenu
-	   (Models/BaseErpPageModel.cs) and UserMenu.cshtml:L11, so encoding here would print that
-	   whole structure as literal text in the Projects user menu for no security benefit.
-	   Any database-sourced menu item that reaches this view arrives already encoded: the builder
-	   in Models/BaseErpPageModel.cs encodes labels with EncodeMenuText, allow-lists URLs with
-	   TryEncodeMenuUrl and allow-lists icon classes with EncodeMenuIconClass. The else branch
-	   below stays auto-encoded by Razor for any caller that sets IsHtml to false.
-	   DEFENCE IN DEPTH: markup authoring is restricted to privileged roles, plus the report-only
-	   Content-Security-Policy emitted by SecurityHeadersMiddleware (commit class 8).
-	   Do not move the encoding out of Models/BaseErpPageModel.cs. *@
+	@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel, no-wrapper
+	   branch. The same MenuItem.Content, rendered for callers that set RenderWrapper false. Its only
+	   live caller is the Projects plugin's "Create Task" user-menu item, whose Content is a fixed
+	   server-side literal carrying no database data at all - nested div/div/a markup around a Font
+	   Awesome icon - so encoding here would print that whole structure as literal text in the Projects
+	   user menu for no security benefit. Any database-sourced item that reaches this view arrives
+	   already encoded upstream in Models/BaseErpPageModel.cs: labels with EncodeMenuText, URLs
+	   allow-listed with TryEncodeMenuUrl, icon classes allow-listed with EncodeMenuIconClass. Do NOT
+	   move that encoding out of BaseErpPageModel.cs. The else branch stays auto-encoded by Razor for
+	   any caller that sets IsHtml to false. *@
 	@if (menu.IsHtml)
 	{
 		@Html.Raw(menu.Content)

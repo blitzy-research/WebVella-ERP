@@ -64,7 +64,29 @@ namespace WebVella.Erp.Site.MicrosoftCDM
 			services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
 					.AddCookie(options =>
 					{
-						options.Cookie.Name = "erp_auth_crm";
+						// THREAT ADDRESSED - review finding CR2-F-11 (CWE-565 reliance on cookies without validation
+						// and integrity checking, CWE-488 exposure of data element to wrong session), OWASP A05:2021
+						// Security Misconfiguration. This host shipped the cookie name "erp_auth_crm" - byte-identical
+						// to the one WebVella.Erp.Site.Crm uses - and the collision is UPSTREAM rather than introduced
+						// here: git show origin/master carries the same literal in both hosts, so it is a copy-paste
+						// inheritance that has always been present.
+						//
+						// A cookie name is scoped by domain and path, NOT by port or by application, so two hosts served
+						// from one hostname overwrite each other's authentication cookie. Whichever host wrote last owns
+						// the browser's single "erp_auth_crm" cookie, and the other host is handed a ticket it cannot
+						// decrypt once the application discriminator differs - which it now explicitly does, see
+						// ErpMvcExtensions - producing an authentication failure or a redirect loop rather than a clean
+						// session. Before the discriminator was set explicitly the failure mode was worse than a loop:
+						// where two co-hosted applications happened to share a key ring AND a content root, one host
+						// could DECRYPT and accept a ticket minted by the other, silently carrying an identity across an
+						// application boundary it was never issued for.
+						//
+						// The rename is applied to this host alone rather than to both participants, because that is the
+						// minimal change that makes the pair unique: "erp_auth_crm" is the correct, descriptive name for
+						// the CRM host, and renaming that host too would log out its users for no security gain.
+						// Existing sessions on THIS host end once, at deployment, because the browser's old cookie is no
+						// longer read - a one-time re-login, recorded in the remediation log.
+						options.Cookie.Name = "erp_auth_mscdm";
 						options.LoginPath = new PathString("/login");
 						options.LogoutPath = new PathString("/logout");
 						options.AccessDeniedPath = new PathString("/error?access_denied");
@@ -75,18 +97,11 @@ namespace WebVella.Erp.Site.MicrosoftCDM
 						// A02 / A05, and Agent Action Plan section 0.6.1 Class 6, which mandates "an always-secure policy, a
 						// same-site policy, an explicit expiry window and sliding expiration".
 						//
-						// This host used to carry its own copy of those four settings, as did the other six, and the copies
-						// had drifted from the frozen session contract in two ways that mattered: the secure policy
-						// downgraded itself to SameAsRequest whenever the host environment name read "Development", and
-						// sliding expiration was disabled. Seven duplicated copies is the ROOT CAUSE of that drift rather
-						// than merely where it surfaced, so the contract now lives in exactly one place - see
-						// ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie for the full rationale, including why the
-						// Development relaxation was unnecessary and why sliding expiration is safe here only because it is
-						// paired with an absolute session horizon. Six hosts can no longer desynchronise from the seventh
-						// because there is one place left to edit.
-						//
-						// Called LAST in this lambda deliberately: the platform contract must win over anything a host sets,
-						// and nothing above this line is a security attribute - only the cookie name and the sign-in paths.
+						// The four attributes live in ONE place rather than being duplicated per host, because seven copies
+						// are what let them drift apart; see ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie for
+						// the full rationale, including why sliding expiration is safe only when paired with an absolute
+						// session horizon. Called LAST in this lambda deliberately, so the platform contract wins over
+						// anything a host sets; nothing above this line is a security attribute.
 						ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie(options);
 					});
 
@@ -136,42 +151,38 @@ namespace WebVella.Erp.Site.MicrosoftCDM
 			}
 
 			//Should be before Static files
-			// THREAT ADDRESSED - finding H-08 / M-01 (OWASP A05: Security Misconfiguration):
+			// THREAT ADDRESSED - finding M-01 (OWASP A05: Security Misconfiguration):
 			// SecurityHeadersMiddleware existed but was never inserted into any pipeline, so not one of the
-			// seven mandated security response headers was emitted. It is placed first - ahead of
-			// UseResponseCompression and ahead of BOTH UseStaticFiles calls - because ordering decides which
-			// responses the headers reach: registered after compression or after static files, compressed
-			// responses and static assets would be served bare.
+			// seven mandated security response headers was emitted. It is placed ahead of BOTH UseStaticFiles
+			// calls because UseStaticFiles TERMINATES the pipeline for a matched asset: anything registered
+			// after it never runs for a static-file response, so those responses would ship bare. The default
+			// policy is report-only and HSTS is suppressed in Development; see SecurityHeadersMiddleware.
 			app.UseSecurityHeaders();
 
 			app.UseResponseCompression();
 
 			app.UseCors("AllowNodeJsLocalhost"); //Enable CORS -> should be before static files to enable for it too
 
-			// THREAT ADDRESSED - finding H-08 / H-15, CWE-319 (cleartext transmission of sensitive
-			// information) and CWE-614: no host enforced HTTPS or published an HSTS policy, so a session
-			// could be downgraded to plaintext and its cookie intercepted. Guarded to non-Development
-			// because local development runs over plain HTTP. UseHsts adds the policy to HTTPS responses
-			// only - HstsMiddleware returns without writing a header when Request.IsHttps is false - so the
-			// header is published on the secured responses that FOLLOW the redirect, never on the redirect
-			// itself. Ordering HSTS first is still correct, because the two calls must not be transposed:
-			// UseHttpsRedirection short-circuits a plaintext request, so anything after it never runs for
-			// that request at all.
+			// THREAT ADDRESSED - finding H-15, CWE-319 (cleartext transmission of sensitive information)
+			// and CWE-614: no host enforced HTTPS or published an HSTS policy, so a session could be
+			// downgraded to plaintext and its cookie intercepted. Guarded to non-Development because local
+			// development runs over plain HTTP.
 			//
-			// Ordering is deliberate and load-bearing: this sits AFTER UseCors. The CORS middleware
-			// short-circuits cross-origin preflight, so an OPTIONS request is answered before it can reach
-			// the redirect. That is what avoids the documented failure where HTTPS redirection answers a
-			// preflight with a redirect the browser rejects as invalid. Moving this above UseCors would
-			// reintroduce it.
+			// HSTS must precede the redirect: UseHttpsRedirection short-circuits a plaintext request, so
+			// anything after it never runs for that request. HstsMiddleware itself writes nothing on a
+			// plaintext request, but UseSecurityHeaders() ran earlier and has already attached
+			// Strict-Transport-Security, so the redirect response does carry it - inertly, because a user
+			// agent must ignore the header when it arrives over plaintext (RFC 6797 section 7.2).
 			//
-			// THREAT ADDRESSED - finding F-06: app.UseHsts() alone does NOT publish the mandated policy. It
-			// emits whatever HstsOptions holds, and the framework defaults are thirty days with subdomains
-			// excluded - "max-age=2592000". Because HstsMiddleware assigns the header by indexer and runs
-			// after UseSecurityHeaders(), it overwrote the mandated value rather than agreeing with it. The
-			// exact one-year, subdomain-inclusive values are now configured once in AddErp through
-			// services.AddHsts(), so both writers emit the identical string. This call site must not be
-			// given per-host options, and AddErp's registration must not be removed, or this line silently
-			// reverts to the thirty-day header.
+			// Both sit AFTER UseCors, deliberately: the CORS middleware short-circuits cross-origin
+			// preflight, so an OPTIONS request is answered before it can reach the redirect. Moving them
+			// above UseCors reintroduces the documented failure where redirection answers a preflight with a
+			// redirect the browser rejects as invalid.
+			//
+			// app.UseHsts() alone does not publish the mandated policy: it emits whatever HstsOptions holds,
+			// and the framework default is thirty days without subdomains ("max-age=2592000"). The mandated
+			// one-year, subdomain-inclusive values are configured once in AddErp, so both writers emit the
+			// identical string. Do not give this call site per-host options.
 			if (!string.Equals(env.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
 			{
 				app.UseHsts();
@@ -191,24 +202,14 @@ namespace WebVella.Erp.Site.MicrosoftCDM
 			app.UseStaticFiles(); //Workaround for blazor to work - https://github.com/dotnet/aspnetcore/issues/9588
 			app.UseRouting();
 
-			// THREAT ADDRESSED - finding H-08 / H-16, CWE-307 (improper restriction of excessive
-			// authentication attempts), OWASP A07 Identification and Authentication Failures: unlimited
-			// request rates left credential stuffing and brute-force guessing unthrottled at the transport
-			// level. This activates the per-remote-address fixed window registered in AddErp.
+			// THREAT ADDRESSED - finding H-16, CWE-307 (improper restriction of excessive authentication
+			// attempts), OWASP A07: unlimited request rates left credential stuffing unthrottled. Activates the
+			// per-remote-address fixed window registered in AddErp. Positioned after both UseStaticFiles calls
+			// so static assets are never throttled, and after UseRouting so endpoint metadata is available.
 			//
-			// Transport level is only HALF of H-16, and the halves are not interchangeable: the mandated
-			// five-attempt lockout is a separate per-account control applied at the login page, so a slow
-			// distributed guess spread thinly across many addresses is still stopped by the account counter
-			// even though it never trips this limiter.
-			//
-			// The window and permit count are deliberately generous - one interactive ERP screen fans out
-			// into many dynamic API calls, and a limiter that refuses legitimate use converts a security fix
-			// into an outage - and they are single-sourced in AddErp rather than restated per host, because
-			// seven copies of a security constant is precisely the drift M-REV-09 was raised for. Tightening
-			// them is an operator decision, not a per-host edit.
-			//
-			// Positioned after both UseStaticFiles calls so static assets are never throttled, and after
-			// UseRouting so endpoint metadata is available to the limiter.
+			// This is the coarse TRANSPORT-level layer only; the mandated five-attempt per-account lockout is a
+			// complementary control in LoginThrottleService, which still stops a guess spread thinly across many
+			// addresses. Permit counts are single-sourced in AddErp - tune them there, never per host.
 			app.UseRateLimiter();
 			app.UseAuthentication();
 			app.UseAuthorization();

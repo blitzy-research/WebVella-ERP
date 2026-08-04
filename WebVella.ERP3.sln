@@ -54,10 +54,6 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "WebVella.Erp.Plugins.Micros
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "WebVella.Erp.WebAssembly", "WebVella.Erp.WebAssembly\Client\WebVella.Erp.WebAssembly.csproj", "{A59872C0-8CE4-4705-9981-CF4087840830}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "WebVella.Erp.WebAssembly.Server", "WebVella.Erp.WebAssembly\Server\WebVella.Erp.WebAssembly.Server.csproj", "{FC3F8496-D906-4C13-80C7-66A3F2683165}"
-EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "WebVella.Erp.WebAssembly.Shared", "WebVella.Erp.WebAssembly\Shared\WebVella.Erp.WebAssembly.Shared.csproj", "{8A62C3C5-3018-412F-B1A4-52B8359760BE}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -132,14 +128,6 @@ Global
 		{A59872C0-8CE4-4705-9981-CF4087840830}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A59872C0-8CE4-4705-9981-CF4087840830}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A59872C0-8CE4-4705-9981-CF4087840830}.Release|Any CPU.Build.0 = Release|Any CPU
-		{FC3F8496-D906-4C13-80C7-66A3F2683165}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{FC3F8496-D906-4C13-80C7-66A3F2683165}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{FC3F8496-D906-4C13-80C7-66A3F2683165}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{FC3F8496-D906-4C13-80C7-66A3F2683165}.Release|Any CPU.Build.0 = Release|Any CPU
-		{8A62C3C5-3018-412F-B1A4-52B8359760BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{8A62C3C5-3018-412F-B1A4-52B8359760BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{8A62C3C5-3018-412F-B1A4-52B8359760BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{8A62C3C5-3018-412F-B1A4-52B8359760BE}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

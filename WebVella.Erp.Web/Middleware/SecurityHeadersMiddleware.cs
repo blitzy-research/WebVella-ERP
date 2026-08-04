@@ -7,7 +7,10 @@ using Microsoft.Extensions.Options;
 
 namespace WebVella.Erp.Web.Middleware
 {
-	// Emits the platform's mandated security response headers on every response.
+	// Emits the platform's mandated security response headers on the responses that reach this
+	// middleware, with two documented qualifications: the Content-Security-Policy ships under the
+	// REPORT-ONLY header name by default (see SecurityHeadersOptions below), and
+	// Strict-Transport-Security is suppressed in the Development environment (see the constructor).
 	//
 	// THREAT ADDRESSED - finding M-01 (OWASP A05: Security Misconfiguration): not one of the seven
 	// security headers was emitted by any of the seven host applications before this middleware
@@ -70,18 +73,12 @@ namespace WebVella.Erp.Web.Middleware
 
 		public async Task Invoke(HttpContext context)
 		{
-			// THREAT ADDRESSED - finding CFG-04 (incomplete security-header coverage) and CWE-693
-			// (protection mechanism failure): this method previously short-circuited on a
-			// violation-report collector path and returned 204 No Content BEFORE any of the seven
-			// headers were attached, so the all-responses guarantee this middleware exists to provide
-			// was false for that one path. The collector has been removed outright rather than merely
-			// re-ordered, which makes the bypass structurally impossible: there is now exactly one
-			// path through Invoke and it always attaches every mandated header. Removal also retires
-			// an anonymous, unauthenticated POST endpoint that was reachable on all seven hosts ahead
-			// of routing and authentication, and with it the CWE-400 body-size and CWE-779
-			// log-flooding exposures that endpoint had to be defended against. Do not reintroduce a
-			// collector branch here: per-path variation of the mandated header set is the defect
-			// itself, not an optimisation.
+			// THREAT ADDRESSED - CWE-693 (protection mechanism failure): there is exactly ONE path
+			// through this method and it attaches the same header set every time. Do not add a
+			// branch that skips or varies that set - per-path variation is the defect this middleware
+			// exists to prevent, not an optimisation. (An earlier violation-report collector branch
+			// returned 204 before the headers were attached; it was removed rather than re-ordered,
+			// which also retired an anonymous POST endpoint reachable ahead of routing.)
 			//
 			// Headers are attached before the response starts, because mutating them once the response
 			// has begun throws InvalidOperationException. Every write below uses indexer assignment
@@ -134,8 +131,10 @@ namespace WebVella.Erp.Web.Middleware
 			// Components/Nav/Nav.Default.cshtml:L48 and, in the SDK plugin,
 			// Components/WvSdkPageSitemap/Form.cshtml:L92 - so enforcing script-src 'self' on the first
 			// deployment would break them and violate the functionality-preservation requirement. An
-			// operator flips ContentSecurityPolicyReportOnly to false - now a bound configuration
-			// setting, see ErpMvcExtensions.AddErp - once violation reports are clean.
+			// operator flips ContentSecurityPolicyReportOnly to false - a bound configuration setting,
+			// see ErpMvcExtensions.AddErp - once report-only violations have stopped. This application
+			// hosts no report collector: in report-only mode a browser logs each violation to its own
+			// console, and collection is only possible by adding an external report-to endpoint.
 			//
 			// THREAT ADDRESSED - finding CFG-02, CWE-1032: the emitted value is byte-identical to the
 			// mandated policy, with no reporting directive appended. No blank-value fallback is needed
@@ -193,17 +192,19 @@ namespace WebVella.Erp.Web.Middleware
 		//
 		// THREAT ADDRESSED - finding CFG-02 (a documented rollout switch that no configuration source
 		// could actually reach): this is the ONLY member bound from configuration, by
-		// ErpMvcExtensions.AddErp, from the key SecurityHeaders:ContentSecurityPolicyReportOnly. The
-		// binding fails safe - an absent, blank or unparseable value leaves report-only mode in force
-		// - so a typo can never silently drop the platform out of the staged rollout it documents.
+		// ErpMvcExtensions.AddErp, from the key SecurityHeaders:ContentSecurityPolicyReportOnly. An
+		// absent or blank value leaves this report-only default in force; a value that is PRESENT but
+		// not parseable as a boolean ABORTS startup there rather than being guessed, so an ambiguous
+		// security-mode setting can neither be silently ignored nor silently inverted.
 		public bool ContentSecurityPolicyReportOnly { get; set; } = true;
 	}
 
 	public static class SecurityHeadersMiddlewareExtensions
 	{
-		// Pipeline position is deliberately left to each host rather than fixed inside UseErp: the
-		// headers must reach static-file and compressed responses too, so each host inserts this
-		// early - ahead of UseResponseCompression and ahead of UseStaticFiles.
+		// Pipeline position is deliberately left to each host rather than fixed inside UseErp, which
+		// runs far too late: UseStaticFiles TERMINATES the pipeline for a matched asset, so anything
+		// registered after it never runs for a static-file response and those responses would ship
+		// bare. Each host therefore inserts this ahead of both UseStaticFiles calls.
 		public static IApplicationBuilder UseSecurityHeaders(this IApplicationBuilder app)
 		{
 			app.UseMiddleware<SecurityHeadersMiddleware>();

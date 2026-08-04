@@ -20,6 +20,13 @@ namespace WebVella.Erp.Web.Services
 	// cookie after logout is rejected and the copy is dead. That turns logout into server-validated
 	// session termination, which is what the finding asks for.
 	//
+	// F-02 EXTENDS THE CONTROL TO BEARER TOKENS. A JWT is exactly as self-contained as the cookie, so the
+	// same threat applied verbatim to every issued token - and worse, because the refresh endpoint would
+	// keep minting successors for as long as the horizon allowed. AuthService.BuildTokenAsync now stamps
+	// the same session identifier claim into every token and carries it verbatim across refresh, both
+	// bearer validators consult this store, and sign-out revokes whichever identifier the current
+	// principal carries. One identifier, one store, both credential kinds.
+	//
 	// WHY A REVOCATION LIST RATHER THAN A SECURITY STAMP COLUMN. A per-user stamp persisted on the user
 	// record would survive a restart and span instances, and is the stronger design - but it requires a
 	// schema change, which the change constraints for this remediation exclude, and a database read on
@@ -33,10 +40,22 @@ namespace WebVella.Erp.Web.Services
 	// cookie are the same across restarts only when key persistence is configured, and a revoked session
 	// surviving a restart is bounded by the ticket lifetime in any case.
 	//
-	// Sealed deliberately, for the same reason as LoginThrottleService: the invariants below are only
-	// sound if no subclass can widen them, and sealing keeps the disposal pattern for the owned cache
-	// minimal.
-	public sealed class SessionRevocationService : IDisposable
+	// STATIC deliberately, and that shape is what finding F-02 required rather than a stylistic preference.
+	// This began as an injected singleton holding a private instance cache, which confined the control to
+	// consumers that could resolve a service - and the bearer-token validators cannot: they are static code
+	// (AuthService.GetValidSecurityTokenAsync, and the token-validated hook the two token-issuing hosts
+	// install) with no service provider in reach. A static store closes that gap and strengthens the control
+	// twice over rather than merely relocating it:
+	//   * ONE store per process. An injected instance gave a host that builds more than one service provider
+	//     an independent, empty store per provider, so a logout recorded in one was invisible to the other -
+	//     a silent fail-open;
+	//   * the consult path can FAIL CLOSED. With injection every consumer had to tolerate an unresolvable
+	//     service, and "no service" was indistinguishable from "not revoked". A static store cannot be
+	//     absent, so a missing control can no longer be mistaken for an authorisation.
+	// Nothing is injected and nothing is disposed: every entry is individually bounded by MaxRetention and
+	// the whole store by MaxRevokedSessions, so process lifetime introduces no unbounded growth. This
+	// mirrors the platform's own process-lifetime cache in ErpAppContext.
+	public static class SessionRevocationService
 	{
 		// Hard ceiling on tracked revocations, which is what keeps CWE-770 (allocation without limits)
 		// unreachable: the store evicts rather than grows once this many entries are live. Reaching it
@@ -70,22 +89,45 @@ namespace WebVella.Erp.Web.Services
 		// A dedicated, size-bounded cache rather than the platform's Utils.Cache helper, for exactly the
 		// reason recorded on LoginThrottleService: that helper constructs its MemoryCache with default
 		// options and exposes no way to set a SizeLimit, so entries written through it are bounded only
-		// by their expiration. This instance is private, is never shared, and is owned for the lifetime
-		// of this service, which is registered as a singleton so revocations survive across requests. No
-		// new package dependency is introduced: MemoryCache is the same type that helper already uses.
-		private readonly MemoryCache cache = new MemoryCache(new MemoryCacheOptions
+		// by their expiration. No new package dependency is introduced: MemoryCache is the same type that
+		// helper already uses.
+		//
+		// THREAT ADDRESSED - finding F-02 (session hijacking via a non-revocable bearer token; CWE-613
+		// insufficient session expiration), OWASP A07. The store used to be a PRIVATE INSTANCE field
+		// reachable only through dependency injection, and that placement is what confined the control to
+		// the cookie pipeline. Bearer tokens are validated by STATIC code - AuthService.GetValidSecurityTokenAsync
+		// and the token-validated hook the two token-issuing hosts install - which has no service provider
+		// to resolve from, so the revocation list was structurally unreachable from the one credential
+		// class that most needed it. Making the store static is the minimum change that closes that gap,
+		// and it strengthens the control in two further ways rather than merely relocating it:
+		//   * there is now exactly ONE store per process. An instance field gave a host that builds more
+		//     than one service provider one independent, empty store per provider, so a logout recorded in
+		//     one would be invisible to the other - a silent fail-open;
+		//   * the consult path can now FAIL CLOSED. With injection the consumer had to tolerate a null
+		//     service (a host that never called AddErp), and "no service" was indistinguishable from "not
+		//     revoked". A static store cannot be absent, so a missing store can no longer be mistaken for
+		//     an authorisation.
+		// The store outlives every service instance deliberately: revocations must survive the disposal of
+		// any one provider, and they are individually bounded by MaxRetention plus the ceiling below, so
+		// process lifetime introduces no unbounded growth. This mirrors the platform's own ErpAppContext
+		// cache, which is likewise process-lifetime.
+		private static readonly MemoryCache revokedSessions = new MemoryCache(new MemoryCacheOptions
 		{
 			SizeLimit = MaxRevokedSessions,
 			CompactionPercentage = EvictionCompactionPercentage
 		});
 
 		// Records that a session identifier must no longer be accepted, until <paramref name="absoluteExpiryUtc"/>.
+		// Written by the sign-out path for whichever credential the caller presented - cookie or bearer.
 		//
 		// Non-throwing by construction, because it is called from the sign-out path: a failure to record a
 		// revocation must never turn logging out into a server error, and Guid.Empty - which is what an
 		// absent or malformed claim parses to - is ignored rather than recorded, so it can never revoke
-		// every ticket that happens to carry no session claim.
-		public void Revoke(Guid sessionId, DateTime absoluteExpiryUtc)
+		// every credential that happens to carry no session claim.
+		//
+		// Assembly-internal deliberately: no public surface is widened by this finding's fix, and every caller
+		// - AuthService and the cookie ticket-validation hook in ErpMvcExtensions - lives in this assembly.
+		internal static void RevokeSessionIdentifier(Guid sessionId, DateTime absoluteExpiryUtc)
 		{
 			if (sessionId == Guid.Empty)
 				return;
@@ -101,7 +143,7 @@ namespace WebVella.Erp.Web.Services
 			// is still holding a session closed in preference to something else - every entry here is
 			// equally load-bearing, and NeverRemove is deliberately NOT used because it would exempt
 			// entries from the ceiling and hand back the unbounded growth this store exists to prevent.
-			cache.Set(KeyPrefix + sessionId.ToString("N"), true, new MemoryCacheEntryOptions
+			revokedSessions.Set(KeyPrefix + sessionId.ToString("N"), true, new MemoryCacheEntryOptions
 			{
 				AbsoluteExpirationRelativeToNow = retention,
 				Size = 1,
@@ -109,22 +151,18 @@ namespace WebVella.Erp.Web.Services
 			});
 		}
 
-		// Consulted on every authenticated request by the cookie pipeline. Non-throwing and allocation-free
-		// on the overwhelmingly common negative path: an empty identifier is not revoked, so a ticket that
-		// carries no session claim - notably a bearer principal, which has no cookie session to end - is
-		// never rejected by this control.
-		public bool IsRevoked(Guid sessionId)
+		// Consulted on every authenticated request, by the cookie ticket-validation hook and by both bearer
+		// validators. Non-throwing and allocation-free on the overwhelmingly common negative path.
+		//
+		// F-02: an empty identifier is reported as NOT revoked, and that stays correct only because every
+		// caller now treats an absent or unparseable session claim as a refusal in its own right, before it
+		// ever reaches this method. This method answers "is this specific identifier revoked?", nothing more.
+		internal static bool IsSessionIdentifierRevoked(Guid sessionId)
 		{
 			if (sessionId == Guid.Empty)
 				return false;
 
-			return cache.TryGetValue(KeyPrefix + sessionId.ToString("N"), out _);
-		}
-
-		public void Dispose()
-		{
-			cache.Dispose();
-			GC.SuppressFinalize(this);
+			return revokedSessions.TryGetValue(KeyPrefix + sessionId.ToString("N"), out _);
 		}
 	}
 }

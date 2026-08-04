@@ -6,16 +6,19 @@
 	Layout = "~/Pages/_AppMaster.cshtml";
 	ViewData["Title"] = "Create New Page";
 
-	// SECURITY (CWE-79 cross-site scripting, OWASP A03:2021 Injection) - Model.ReturnUrl is
-	// URL-decoded query-string input (BaseErpPageModel binds it with SupportsGet and assigns it
-	// through HttpUtility.UrlDecode), and it reaches two sinks below: the page header's back-link
-	// and the Cancel link. Razor's HTML encoding stops attribute breakout but is NOT sufficient on
-	// its own here, because a browser decodes HTML entities before it parses the URL scheme - so an
-	// encoded "javascript:..." value still executes when the link is clicked. Allow-list the value
-	// as a same-site relative URL instead, which is a scheme-level control rather than a
-	// text-level one. A rejected value renders exactly as an absent one already did, so nothing
-	// legitimate changes: the only caller that supplies this parameter passes
-	// PageUtils.GetCurrentUrl, which returns a path and query only and is therefore always local.
+	// SECURITY (CWE-79 reflected XSS / CWE-601 open redirect, OWASP A03:2021 Injection) - ReturnUrl is
+	// URL-decoded query-string input (BaseErpPageModel binds it with SupportsGet and assigns it through
+	// HttpUtility.UrlDecode) and reaches two rendering sinks: the page header's return-url and the
+	// Cancel href below. BOTH controls are required. Razor's automatic HTML encoding - the raw-output
+	// wrapper that used to suppress it is gone - stops attribute breakout, and HTML is the correct
+	// encoding here because these are WHOLE href values that URL-encoding would break at the path
+	// separators. Encoding alone is NOT sufficient: a browser decodes entities before it parses the
+	// scheme, so an encoded "javascript:..." still executes when clicked and "//evil.example" still
+	// navigates off-site. The value is therefore ALSO allow-listed as a same-site relative URL, which
+	// is a scheme-level control rather than a text-level one. PageUtils.GetSafeReturnUrl applies the
+	// same rule centrally where BaseErpPageModel.Init() resolves ReturnUrl; this view re-checks
+	// independently so the rendering sinks stay guarded if that helper is ever bypassed or reordered.
+	// A rejected value renders exactly as an absent one already did, so nothing legitimate changes.
 	// This page's OnPost redirects to a fixed path, so it has no redirect sink to guard.
 	var safeReturnUrl = Url.IsLocalUrl(Model.ReturnUrl) ? Model.ReturnUrl : String.Empty;
 }
@@ -25,30 +28,7 @@
 
 <wv-page-header-actions>
 	<wv-button type='Submit' form="CreateRecord" class='btn btn-green btn-sm'><span class='fa fa-save go-white'></span> Create Page</wv-button>
-	@* SECURITY (CWE-79 reflected XSS / CWE-601 open redirect / OWASP A03:2021 Injection):
-	   Model.ReturnUrl is attacker-supplied, URL-decoded query-string input (BaseErpPageModel.cs
-	   [BindProperty(Name = "returnUrl", SupportsGet = true)], also assigned via
-	   HttpUtility.UrlDecode inside Init()), and it is emitted here as an entire single-quoted
-	   href value. Two distinct controls protect this sink, and BOTH are required:
-	     1. Razor's automatic HTML encoding. The raw-output helper that used to wrap this value
-	        suppressed the encoder and let a crafted returnUrl close the attribute and inject
-	        markup; that wrapper is gone, so Razor now encodes automatically. HTML encoding is
-	        the context-appropriate choice - this is a WHOLE href, so URL-encoding would
-	        percent-encode the path separators and break the Cancel link.
-	     2. Local-URL validation. Encoding alone is NOT sufficient here, because it leaves the
-	        URL context unconstrained: a whole value of "javascript:alert(1)" survives HTML
-	        encoding intact and would still execute in this authenticated origin when clicked,
-	        and "https://evil.example" or "//evil.example" would still navigate off-site. That
-	        is closed centrally by PageUtils.GetSafeReturnUrl, applied at the single point where
-	        BaseErpPageModel.Init() resolves ReturnUrl - so it protects this link, the
-	        return-url attribute of the page header above, and the post-submit redirect, without
-	        duplicating the check at each sink. Valid local paths, query strings and fragments
-	        are preserved exactly; a rejected value becomes empty and each page model then falls
-	        back to its own server-authored local default.
-	   Defence in depth, retained deliberately: this view ALSO re-checks the value with
-	   Url.IsLocalUrl and emits the checked local (safeReturnUrl) rather than the bound property,
-	   so the sink stays protected even if the central helper is ever bypassed, reordered or
-	   removed. The two controls are independent, and neither is load-bearing on its own. *@
+	@* Emits the allow-listed local value computed above, never the bound property - see the SECURITY note there. *@
 	<a href='@safeReturnUrl' class='btn btn-white btn-sm'>Cancel</a>
 </wv-page-header-actions>
 

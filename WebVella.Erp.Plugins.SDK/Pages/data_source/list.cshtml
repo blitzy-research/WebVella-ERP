@@ -25,36 +25,25 @@
 				@Html.Raw(record["action"])
 			</wv-grid-column>
 			<wv-grid-column>
-				@* SECURITY H-06 triage (CWE-79 stored XSS / OWASP A03:2021 Injection): record["icon"] is
-				   deliberately NOT encoded, by design. It is server-authored markup, not text: its only
-				   source is PageUtils.GetDataSourceIconBadge (WebVella.Erp.Web/Utils/PageUtils.cs,
-				   L460-L471 at the time of this change), a switch over the DataSourceType enum that
-				   returns one of two hardcoded literal badge strings or the empty string. Neither return
-				   carries an interpolation hole, so no user input and no database text can reach this
-				   sink on any path. Encoding it would render the badge markup as literal visible text
-				   and break the grid, violating the functionality-preservation requirement. Compensating
-				   controls: server-only provenance, plus the Content-Security-Policy emitted by
-				   WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs. Accepted, documented risk. *@
+				@* SECURITY H-06 triage (CWE-79 stored XSS, OWASP A03) - record["icon"] is deliberately NOT encoded:
+				   it is server-authored markup, not text. Its only source is PageUtils.GetDataSourceIconBadge, a
+				   switch over the DataSourceType enum returning one of two hardcoded literal badge strings or the
+				   empty string. No return carries an interpolation hole, so no user input and no database text can
+				   reach this sink on any path, and encoding it would render the badge markup as literal visible text
+				   and break the grid. Accepted, documented risk; compensating controls are its server-only
+				   provenance plus the Content-Security-Policy from SecurityHeadersMiddleware. *@
 				@Html.Raw(record["icon"])
 			</wv-grid-column>
 			<wv-grid-column>
-				@* SECURITY H-06 (CWE-79 stored XSS / OWASP A03:2021 Injection): record["name"] is
-				   operator-supplied text persisted in the database - list.cshtml.cs:L72 and :L86 both
-				   assign record["name"] = ds.Name - and it was previously emitted through the
-				   raw-output helper, so a stored script payload was rendered unencoded on every visit
-				   to this list. The raw wrapper is removed so Razor's implicit expression HTML-encodes
-				   automatically: no helper, no encoder and no dependency is added, which is the minimal
-				   subtractive fix. Rendered output is unchanged for ordinary data-source names. *@
+				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - record["name"] is operator-supplied text persisted
+				   in the database, so it carries no raw-output wrapper: Razor's implicit expression HTML-encodes it
+				   automatically. Rendered output is unchanged for ordinary data-source names. *@
 				@record["name"]
 			</wv-grid-column>
 			<wv-grid-column>
-				@* SECURITY H-06 (CWE-79 stored XSS / OWASP A03:2021 Injection): the raw wrapper is
-				   removed so Razor's implicit expression HTML-encodes automatically. Output is provably
-				   byte-identical: record["type_description"] is a compile-time enum label, since
-				   list.cshtml.cs:L74 and :L88 assign DataSourceType.DATABASE.GetLabel() and
-				   DataSourceType.CODE.GetLabel(), which resolve to the literals "database" and "code"
-				   declared at WebVella.Erp/Api/Models/DataSourceType.cs:L7 and :L9. Neither contains an
-				   HTML-special character, so nothing is escaped in practice. *@
+				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - auto-encoded by Razor. record["type_description"]
+				   is a compile-time DataSourceType enum label ("database" or "code"), neither of which contains an
+				   HTML-special character, so output is byte-identical. *@
 				@record["type_description"]
 			</wv-grid-column>
 			<wv-grid-column>
@@ -71,11 +60,8 @@
 				<code>@record["model"]</code>
 			</wv-grid-column>
 			<wv-grid-column>
-				@* SECURITY H-06 (CWE-79 stored XSS / OWASP A03:2021 Injection): the raw wrapper is
-				   removed so Razor's implicit expression HTML-encodes automatically. Output is provably
-				   byte-identical: record["param_count"] is an int, assigned as ds.Parameters.Count at
-				   list.cshtml.cs:L77 and as the literal 0 at :L91, so it can never contain an
-				   HTML-special character. *@
+				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - auto-encoded by Razor. record["param_count"] is an
+				   int, so it can never contain an HTML-special character and output is byte-identical. *@
 				@record["param_count"]
 			</wv-grid-column>
 		</wv-grid-row>

@@ -2338,19 +2338,14 @@ namespace WebVella.Erp.Api
 		/// (generation of error message containing sensitive information), OWASP A09:2021.
 		/// <para>
 		/// The record-write collectors report a rejected value by interpolating it into an exception
-		/// message. That message is returned to the caller AND persisted to the system_log table, so
-		/// for a password field it published the submitted PLAINTEXT into durable storage readable by
-		/// every account holding log access - a worse disclosure than the stored-hash exposure this
-		/// engagement set out to close, because a hash is one-way and this is not.
-		/// </para>
-		/// <para>
-		/// The exposure is pre-existing rather than introduced: any failure while processing a
-		/// password value already reached those messages. It becomes reachable far more easily once
-		/// the password policy of finding M-REV-12 is enforced at the write seam, because a refused
-		/// password is now an ORDINARY, user-triggered outcome rather than an internal fault - which
-		/// is exactly why the two changes belong in one commit. Redacting unconditionally, rather
-		/// than only for the policy failure, means no other exception on that path can leak the value
-		/// either.
+		/// message. That message is returned to the caller AND persisted to the system_log table, so for a
+		/// password field it publishes the submitted PLAINTEXT into durable storage readable by every
+		/// account holding log access - a worse disclosure than the stored-hash exposure this engagement
+		/// set out to close, because a hash is one-way and this is not. Enforcing the M-13 password bounds
+		/// at this write seam makes it far easier to reach, a refused password being an ordinary
+		/// user-triggered outcome rather than an internal fault. Redaction is therefore UNCONDITIONAL
+		/// rather than limited to the policy failure, so no other exception on this path can leak the
+		/// value either.
 		/// </para>
 		/// <para>
 		/// A fixed placeholder is returned rather than the length, a prefix, or a digest: each of
@@ -2374,6 +2369,7 @@ namespace WebVella.Erp.Api
 		/// </summary>
 		private const string RedactedFieldValueForErrorMessage = "[redacted]";
 
+		/// <summary>
 		/// Applies the platform password policy to every encrypted password field a record carries
 		/// on its way into storage, adding one field-level error per offending value.
 		/// </summary>
@@ -2391,7 +2387,7 @@ namespace WebVella.Erp.Api
 		/// for that policy platform-wide - applied at the second and last write boundary.
 		///
 		/// It reports through response.Errors rather than by throwing, deliberately. The per-field
-		/// catch inside both collectors re-wraps any exception as "Invalid value: '<value>'", which
+		/// catch inside both collectors re-wraps any exception as "Invalid value: '&lt;value&gt;'", which
 		/// for a password field would put the plaintext credential into an API message and into the
 		/// server log - a CWE-532 disclosure created by the very fix meant to strengthen the
 		/// credential. Running as a pre-pass, before any connection work, avoids that entirely,
@@ -2611,7 +2607,7 @@ namespace WebVella.Erp.Api
 							if (string.Equals(pair.Value as string, EncryptedFieldRedactedValue, StringComparison.Ordinal))
 								return null;
 
-							//THREAT ADDRESSED - finding M-REV-12, CWE-521 (weak password requirements),
+							//THREAT ADDRESSED - finding M-13, CWE-521 (weak password requirements),
 							//OWASP A07:2021, and the mandated Authentication Hardening standard
 							//"minimum password complexity: 12+ characters".
 							//This is the platform's ONE plaintext-to-hash write seam for records, so it

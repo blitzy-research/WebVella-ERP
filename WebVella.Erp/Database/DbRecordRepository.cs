@@ -245,6 +245,47 @@ namespace WebVella.Erp.Database
             }
         }
 
+        // Finding F-03. Command timeout applied to any query carrying a regex predicate. Deliberately
+        // a client-side timeout rather than a server-side "SET statement_timeout": DbContext's
+        // CreateConnection returns a TRANSACTION-BOUND SHARED connection when a transaction is
+        // active, so a session-level setting applied here could outlive this query and silently
+        // truncate an unrelated long-running statement on the same connection, while "SET LOCAL"
+        // only takes effect inside a transaction and so would do nothing on the common path. The
+        // client cancel was verified to interrupt a running regex scan, cancelling at 2000 ms
+        // against a two-second bound, so the simpler mechanism is also the effective one.
+        private const int REGEX_QUERY_COMMAND_TIMEOUT_SECONDS = 60;
+
+        // Preserves this method's original ten-minute ceiling verbatim for every non-regex query, so
+        // the F-03 change narrows one case rather than re-tuning the data layer.
+        private const int DEFAULT_QUERY_COMMAND_TIMEOUT_SECONDS = 600;
+
+        // Finding F-03. Walks the whole query tree, because a regex predicate can sit at any depth
+        // inside nested AND/OR groups and a top-level-only test would miss it. Modelled directly on
+        // ContainsRelationalQuery below, which already does this walk for a different property, so
+        // the traversal shape is the one this file established rather than a new idiom.
+        private static bool ContainsRegexQuery(QueryObject query)
+        {
+            if (query == null)
+                return false;
+
+            Queue<QueryObject> queue = new Queue<QueryObject>();
+            queue.Enqueue(query);
+            while (queue.Count > 0)
+            {
+                var q = queue.Dequeue();
+                if (q.QueryType == QueryType.REGEX)
+                    return true;
+
+                if (q.SubQueries != null && q.SubQueries.Count > 0)
+                {
+                    foreach (var sq in q.SubQueries)
+                        queue.Enqueue(sq);
+                }
+            }
+
+            return false;
+        }
+
         private static bool ContainsRelationalQuery(QueryObject query)
         {
             Queue<QueryObject> queue = new Queue<QueryObject>();
@@ -293,6 +334,15 @@ namespace WebVella.Erp.Database
                     sql = sql + " WHERE " + whereSql;
 
                 NpgsqlCommand command = con.CreateCommand(sql);
+
+                // THREAT ADDRESSED - finding F-03, CWE-400. This method evaluates the SAME
+                // caller-supplied predicate as Find, and set no timeout at all, so a regex count
+                // inherited the connection string's two-minute default. Every paged list issues a
+                // count beside its page, so leaving this unbounded would have left half the request
+                // unprotected. Narrowed only when a regex predicate is actually present, so
+                // ordinary counts keep the connection default untouched.
+                if (query != null && ContainsRegexQuery(query.Query))
+                    command.CommandTimeout = REGEX_QUERY_COMMAND_TIMEOUT_SECONDS;
 
                 if (parameters.Count > 0)
                     command.Parameters.AddRange(parameters.ToArray());
@@ -431,7 +481,7 @@ namespace WebVella.Erp.Database
         ///   Find(EntityQuery), both in this file, which this helper covers UNCONDITIONALLY;
         ///   the private ConvertJObjectToEntityRecord of WebVella.Erp/Eql/EqlCommand.cs, which is a
         ///   separate method reached by every EQL query including the api/v3/en_US/eql, eql-ds and
-        ///   eql-ds-select2 routes (finding C-REV-07). Leaving that seam out was a Critical gap,
+        ///   eql-ds-select2 routes (finding C-02). Leaving that seam out was a Critical gap,
         ///   because all three routes serialise an EqlCommand result straight into a response and
         ///   stored data sources shipped by the Project plugin select the user entity's password
         ///   column outright. It redacts DENY-BY-DEFAULT and can only be opted out of through the
@@ -691,7 +741,7 @@ namespace WebVella.Erp.Database
 						if (string.Equals(value as string, RecordManager.EncryptedFieldRedactedValue, StringComparison.Ordinal))
 							return null;
 
-						//THREAT ADDRESSED - finding M-REV-12, CWE-521, OWASP A07:2021. Defence in depth
+						//THREAT ADDRESSED - finding M-13, CWE-521, OWASP A07:2021. Defence in depth
 						//behind the identical check in RecordManager.ExtractFieldValue, which is the
 						//primary control because it is the seam the record write path actually uses.
 						//This copy exists because this method is PUBLIC and STATIC: any present or
@@ -1263,29 +1313,12 @@ namespace WebVella.Erp.Database
                         }
                     }
                 }
-                // ADDITIONAL FIX (not one of the review findings; recorded as an additional fix because
-                // it BLOCKED runtime verification of the sort construction below, which is the C-REV-08
-                // remediation, and because it makes this whole branch unusable on the deployment
-                // platform).
-                //
-                // This previously read: sql.Remove(sql.Length - 3, 3); //remove newline and comma
-                //
-                // The intent is to drop the trailing "," and the newline that StringBuilder.AppendLine
-                // added, so that FROM can follow the projection list. The count 3 hard-codes a
-                // TWO-character newline, i.e. Windows CRLF. AppendLine emits Environment.NewLine, which
-                // is a single "\n" on Linux, so on Linux the third removed character was the CLOSING
-                // DOUBLE QUOTE of the last projected column's alias. Every query whose projection
-                // contains a relation field - the only queries that reach this branch - therefore
-                // produced SQL ending in
-                //     ... )::jsonb AS "$user_role
-                //     FROM rec_role
-                // and PostgreSQL refused it with 42601 "unterminated quoted identifier". The branch was
-                // 100% broken on Linux regardless of the projected field order, because the same trim
-                // runs after a regular field too.
-                //
-                // The replacement removes the newline by inspecting it rather than assuming its width,
-                // then removes the comma, so it is byte-identical to the previous behaviour on Windows
-                // and correct on Linux. It also cannot over-trim an empty builder.
+                // The trailing "," and the newline StringBuilder.AppendLine added must both go so FROM can follow
+                // the projection list, and the newline is removed by INSPECTING it rather than assuming its width:
+                // AppendLine emits Environment.NewLine, which is one character on Linux and two on Windows, so a
+                // fixed count of 3 would remove the closing double quote of the last projected column's alias on
+                // Linux and PostgreSQL would refuse the statement with 42601 "unterminated quoted identifier".
+                // Inspecting also cannot over-trim an empty builder.
                 while (sql.Length > 0 && (sql[sql.Length - 1] == '\n' || sql[sql.Length - 1] == '\r'))
                     sql.Remove(sql.Length - 1, 1);
 
@@ -1401,7 +1434,17 @@ namespace WebVella.Erp.Database
                 using (var conn = DbContext.Current.CreateConnection())
                 {
                     NpgsqlCommand command = conn.CreateCommand(sql.ToString());
-                    command.CommandTimeout = 600;
+                    // THREAT ADDRESSED - finding F-03, CWE-400. Defence in depth behind the
+                    // complexity bound enforced in GenerateWhereClause: an ADMISSIBLE pattern is
+                    // still evaluated once per row, so on a large enough table a legitimate one can
+                    // run for a long time, and the ten-minute ceiling meant a single request could
+                    // hold a pooled connection and a CPU core for ten minutes. Measured worst case
+                    // for a pattern this platform now admits is 97 ms per 20,000 rows, so the
+                    // shorter ceiling below still leaves ample room for a genuine filter over
+                    // millions of rows while cutting the abuse window by an order of magnitude.
+                    // Non-regex queries keep the original ten minutes exactly, so no existing
+                    // report or export changes behaviour.
+                    command.CommandTimeout = ContainsRegexQuery(query.Query) ? REGEX_QUERY_COMMAND_TIMEOUT_SECONDS : DEFAULT_QUERY_COMMAND_TIMEOUT_SECONDS;
                     command.Parameters.AddRange(parameters.ToArray());
                     new NpgsqlDataAdapter(command).Fill(dt);
                 }
@@ -1737,6 +1780,19 @@ namespace WebVella.Erp.Database
                     }
                 case QueryType.REGEX:
                     {
+                        // THREAT ADDRESSED - finding F-03 (CWE-1333 inefficient regular expression
+                        // complexity, CWE-400 uncontrolled resource consumption), OWASP A03/A05. The
+                        // pattern is bound to a parameter below, so this is NOT an injection seam -
+                        // it is a COST seam: PostgreSQL evaluates the pattern once per row, so a
+                        // pattern whose own match cost is milliseconds becomes minutes across a
+                        // table scan. Enforced here, at the point the predicate is generated, rather
+                        // than in the calling controller, because there are two entry points and
+                        // only one is an API action: the SDK administrative record filter passes a
+                        // submitted value straight to EntityQuery.QueryRegex. A caller-side check
+                        // alone would leave that path unbounded. Fails hard by design; the callers'
+                        // own catch turns it into a generic, non-disclosing failure.
+                        DbRegexPattern.Validate(query.FieldValue);
+
                         var regexOperator = "~";
                         switch (query.RegexOperator)
                         {

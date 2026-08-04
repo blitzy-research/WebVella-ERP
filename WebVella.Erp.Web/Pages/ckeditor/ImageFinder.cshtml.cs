@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -182,6 +183,39 @@ namespace WebVella.Erp.Web.Pages
         public string CompanyName { get; private set; } = "Tefter.bg";
         public string CompanyLogo { get; private set; } = "";
         public string CurrentType { get; private set; } = "image";
+
+        /// <summary>
+        /// <see cref="CurrentType"/> encoded for interpolation inside a quoted JavaScript string literal.
+        /// </summary>
+        /// <remarks>
+        /// SECURITY - finding M-5 (CWE-116 improper encoding or escaping of output, CWE-79 cross-site
+        /// scripting), OWASP A03:2021 Injection.
+        /// THREAT ADDRESSED: ImageFinder.cshtml interpolates this value INSIDE a quoted JavaScript string
+        /// (<c>var CurrentType = "..."</c>), a context in which a '"' closes the literal and turns the
+        /// remainder of the line into executable script, and a trailing backslash escapes the closing quote
+        /// and swallows the following statement into the string. The view previously routed the value through
+        /// the JSON-document helper, which escapes only '&lt;' and therefore left both of those characters
+        /// untouched. The value is a constant today, so this was not exploitable; it is encoded here because
+        /// the distinction is invisible at the call site and the next value assigned to CurrentType will not
+        /// arrive with a warning that it must be constant.
+        /// <para>
+        /// The encoding lives on the page model rather than in a new HTML-helper extension method - review
+        /// finding API-01 - so that closing an injection sink at one call site does not widen the platform's
+        /// published API surface for every consumer. This follows the ReturnUrlEncoded pattern already used
+        /// elsewhere in the solution for exactly this purpose.
+        /// </para>
+        /// <para>
+        /// JavaScriptEncoder.Default encodes the complete string-context threat set - quote, apostrophe,
+        /// backslash, '&lt;', '&gt;', '&amp;', control characters, line and paragraph separators and all
+        /// non-ASCII - into \uXXXX escapes that are valid inside both a JavaScript string literal and a JSON
+        /// string value. A framework allow-list encoder is used rather than a hand-written replacement list
+        /// because an allow-list cannot be defeated by a character its author failed to think of. Its output
+        /// is plain ASCII containing no character Razor's automatic HTML encoding alters, so returning a
+        /// string rather than IHtmlContent renders byte-for-byte identically and cannot double-encode.
+        /// </para>
+        /// </remarks>
+        public string CurrentTypeJsEncoded => JavaScriptEncoder.Default.Encode(CurrentType ?? string.Empty);
+
         public int CurrentSort { get; private set; } = 1;
         public int CurrentPage { get; private set; } = 1;
         public int CurrentPageSize { get; private set; } = 30;

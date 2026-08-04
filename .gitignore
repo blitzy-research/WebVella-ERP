@@ -222,7 +222,41 @@ _Pvt_Extensions
 /.idea/.idea.WebVella.ERP3/.idea
 
 # Outputs written into the workspace by .github/workflows/security-scan.yml
-# (the security gate). Generated at run time; never source content.
+# (the security gate). Generated at run time; never source content. Every file
+# the workflow's "Publish the scan evidence" step uploads is listed here, plus
+# the intermediate enumerations the coverage assertions write, and the list must
+# stay in step with that workflow: a committed copy of a scan artifact is a
+# stale record vouching for commits it never examined, which is precisely the
+# evidence-integrity failure the gate exists to prevent. The list is COMPLETE
+# against the workflow deliberately - an earlier revision named only three of
+# them, so running the gate's commands locally, which is how its baselines are
+# re-measured, left the rest as untracked files in the working tree, one of them
+# the secret-sweep output.
+/all-ca-diagnostics.txt
+/analyzer-build.txt
+/declared-non-members.txt
+/editorconfig-items.txt
+/extra-projects.txt
+/manual-verification-matrix.txt
+/negative-control.txt
+/positive-control.txt
 /secret-sweep.txt
+/security-allowlist.txt
+/security-diagnostics.txt
+/security-rule-ids.txt
+/security-unreviewed.txt
 /sln-members.txt
+/startup-smoke.txt
 /tracked-projects.txt
+/vulnerable-packages.txt
+/vulnerable-packages-extra.txt
+/vulnerable-packages-wasm.txt
+# Scratch directories the Gate 1 positive control and the Gate 2 negative
+# control build in; each removes its own on exit, so these only ever appear if
+# a run was interrupted.
+/.gate-analyzer-control/
+/.gate-negative-control/
+# Deliberately NOT ignored: manual-verification-results.txt. That file is an
+# operator-supplied, dated attestation for the manual rows of Gate 5 rather
+# than job output, and a maintainer may legitimately want a release's
+# attestation committed. Do not "complete" the list above with it.

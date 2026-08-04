@@ -1,53 +1,45 @@
 ﻿// SECURITY C-03 (CWE-916 password hash with insufficient computational effort, CWE-759 one-way
 // hash without a salt / OWASP A02:2021 Cryptographic Failures).
-// This utility used to store credentials as an unsalted, single-pass MD5 digest. That is a
-// data-breach exposure rather than a mere "weak cryptography" note: a leaked password column is
-// recoverable wholesale from precomputed tables at effectively zero cost, and identical passwords
-// produce identical digests, so one cracked value exposes every account sharing it. Credentials
-// are now stored as a salted, work-factored PBKDF2-HMAC-SHA-256 value written in the ASP.NET Core
-// versioned (V3) payload layout, and verified in fixed time. Two further findings are closed by
-// the same edit: M-06 (CWE-362, the shared mutable MD5 instance) and M-05 (CWE-208, the
-// short-circuiting comparison).
+// Credentials were stored as an unsalted, single-pass MD5 digest. That is a data-breach exposure
+// rather than a mere "weak cryptography" note: a leaked password column is recoverable wholesale
+// from precomputed tables at effectively zero cost, and identical passwords produce identical
+// digests, so one cracked value exposes every account sharing it. Credentials are now stored as a
+// salted, work-factored PBKDF2-HMAC-SHA-256 value written in the ASP.NET Core versioned (V3)
+// payload layout, and verified in fixed time. The same edit closes M-06 (CWE-362, the shared
+// mutable MD5 instance) and M-05 (CWE-208, the short-circuiting comparison).
 //
-// The MD5 path is RETAINED, deliberately and solely, so that credentials already stored by
-// earlier releases keep working. Verification accepts either shape and reports when a successful
-// verification used the legacy shape, which lets the caller re-hash with the modern primitive
-// while it still holds the plaintext. That is the OWASP-prescribed "upgrade on next
-// authentication" pattern, and it is what makes this format change backward compatible with no
-// forced reset, no downtime and no user locked out. It is also why analyzer rule CA5351 ("do not
-// use broken cryptographic algorithms") still reports here: that warning is accepted, not a
-// defect, and is recorded in docs/security/risk-register.md. Do not delete the legacy path, and
-// do not add a global suppression, to silence it.
+// The MD5 path is RETAINED, deliberately and solely, so credentials already stored by earlier
+// releases keep working. Verification accepts either shape and reports when a successful
+// verification used the legacy shape, letting the caller re-hash while it still holds the
+// plaintext - the OWASP-prescribed "upgrade on next authentication" pattern, which is what makes
+// this format change backward compatible with no forced reset, no downtime and no user locked out.
+// It is also why analyzer rule CA5351 still reports here: that warning is ACCEPTED, recorded in
+// docs/security/risk-register.md. Do not delete the legacy path, and do not add a global
+// suppression, to silence it.
 //
-// TWO DEVIATIONS from the letter of the mandated Cryptographic Standards, both surfaced here and
-// in docs/security/risk-register.md rather than absorbed silently:
-//   1. The standard names bcrypt, scrypt or Argon2. This uses PBKDF2, which the authoritative
-//      OWASP Password Storage guidance sanctions explicitly at a high iteration count, and which
-//      needs no new package because it ships in the framework already referenced by this project
-//      (FrameworkReference Microsoft.AspNetCore.App, WebVella.Erp.csproj:L43). The minimal-change
-//      constraint prefers the least invasive control. Substituting a dedicated bcrypt or Argon2
-//      package remains an open repository-owner option if literal compliance is required.
-//   2. WITHDRAWN. An earlier revision of this file claimed the mandated HMAC-SHA-256 and the
-//      mandated versioned (V3) format are mutually exclusive in ASP.NET Core, and shipped
-//      HMAC-SHA-512 instead. That claim was WRONG, and correcting it is the substance of this
-//      edit. The V3 payload records its own pseudo-random function inside the stored value, and
-//      ASP.NET Core itself wrote V3 with HMAC-SHA-256 for years - SHA-512 became the default only
-//      in .NET 8. What is genuinely unavailable is a PRF selector on PasswordHasherOptions, which
-//      exposes only CompatibilityMode and IterationCount; that limits the framework's
-//      PasswordHasher, not the format. Both mandated parameters are therefore reachable together,
-//      by deriving with Rfc2898DeriveBytes.Pbkdf2 and writing the same self-describing V3 layout,
-//      which is what this file now does. The iteration count is 600,000, which is exactly the
-//      OWASP Password Storage floor for PBKDF2-HMAC-SHA-256, so the result MEETS the named
-//      standard rather than substituting something for it. Deviation 1 above is now the only
-//      remaining deviation.
+// Both mandated parameters are reached together by deriving with Rfc2898DeriveBytes.Pbkdf2 and
+// writing the self-describing V3 layout: the payload records its own pseudo-random function, so
+// HMAC-SHA-256 and V3 are not in tension. What is genuinely unavailable is a PRF selector on
+// PasswordHasherOptions, which exposes only CompatibilityMode and IterationCount - a limit of the
+// framework's PasswordHasher, not of the format. The iteration count is 600,000, exactly the OWASP
+// Password Storage floor for PBKDF2-HMAC-SHA-256, so the result MEETS the named standard.
+//
+// ONE DEVIATION from the letter of the mandated Cryptographic Standards, surfaced here and in
+// docs/security/risk-register.md rather than absorbed silently: the standard names bcrypt, scrypt
+// or Argon2, and this uses PBKDF2 - which the authoritative OWASP Password Storage guidance
+// sanctions explicitly at a high iteration count, and which needs no new package because it ships
+// in the framework already referenced by this project (FrameworkReference
+// Microsoft.AspNetCore.App, WebVella.Erp.csproj:L43). The minimal-change constraint prefers the
+// least invasive control. Substituting a dedicated bcrypt or Argon2 package remains an open
+// repository-owner option if literal compliance is required.
 //
 // PasswordHasher<T> is deliberately NOT used, for a second and independently decisive reason:
 // since .NET 8 its verifier returns SuccessRehashNeeded for ANY value whose PRF is not
 // HMAC-SHA-512, so routing HMAC-SHA-256 values through it would re-hash and re-persist every
 // credential on every single login, for ever - a permanent write amplification on the
-// authentication path. The two facilities it was previously kept for are provided directly
-// instead: fixed-time comparison by CryptographicOperations.FixedTimeEquals, and the needs-rehash
-// signal by comparing the parameters recorded in the stored value against the current target.
+// authentication path. Its two facilities are provided directly instead: fixed-time comparison by
+// CryptographicOperations.FixedTimeEquals, and the needs-rehash signal by comparing the parameters
+// recorded in the stored value against the current target.
 
 using System;
 using System.Buffers.Binary;
@@ -160,20 +152,17 @@ namespace WebVella.Erp.Utilities
         /// 128 characters is far above the 12-character minimum this remediation sets - it is
         /// purely a resource bound.
         /// <para>
-        /// CORRECTION, recorded rather than quietly amended: an earlier revision of this comment
-        /// claimed the agreement with the field definition meant this bound "can never refuse a
-        /// plaintext that the platform would otherwise accept". That was wrong. A
+        /// Agreeing with the field definition does NOT make this bound unreachable. A
         /// <c>PasswordField</c>'s <c>MinLength</c> and <c>MaxLength</c> are parsed into the field
         /// metadata but never enforced on write, so an over-long plaintext does reach
         /// <see cref="HashPassword(string)"/>, which returns <see cref="string.Empty"/> for it -
-        /// storing a value that nothing can ever verify, silently. Fail-closed, but silent, and on
-        /// the administrator account that outcome is an unreachable installation. Finding C-01
-        /// closes the provisioning route into this by validating the configured first administrator
-        /// password against the full 12-to-128 policy before it is hashed. The equivalent bound is
-        /// NOT enforced on the general user-update path, so that residual is documented in
-        /// docs/security/risk-register.md rather than asserted away here: enforcing field-metadata
-        /// length limits across every write projection is the platform-wide change the engagement's
-        /// minimal-change constraint forbids.
+        /// storing a value nothing can ever verify, silently. Fail-closed but silent, and on the
+        /// administrator account that outcome is an unreachable installation. Finding C-01 closes the
+        /// provisioning route by validating the configured first administrator password against the
+        /// full 12-to-128 policy before it is hashed. The equivalent bound is NOT enforced on the
+        /// general user-update path; that residual is documented in docs/security/risk-register.md,
+        /// because enforcing field-metadata length limits across every write projection is the
+        /// platform-wide change the minimal-change constraint forbids.
         /// </para>
         /// </remarks>
         internal const int MaxPasswordLength = 128;
@@ -182,7 +171,7 @@ namespace WebVella.Erp.Utilities
         /// The shortest plaintext the platform accepts when a NEW credential is written.
         /// </summary>
         /// <remarks>
-        /// Threat addressed - finding M-REV-12 (CWE-521 weak password requirements), and the
+        /// Threat addressed - finding M-13 (CWE-521 weak password requirements), and the
         /// engagement's mandated Authentication Hardening standard "minimum password complexity:
         /// 12+ characters".
         /// <para>
@@ -220,7 +209,7 @@ namespace WebVella.Erp.Utilities
         /// why it was refused.
         /// </returns>
         /// <remarks>
-        /// Threat addressed - finding M-REV-12 (CWE-521), OWASP A07:2021 Identification and
+        /// Threat addressed - finding M-13 (CWE-521), OWASP A07:2021 Identification and
         /// Authentication Failures.
         /// <para>
         /// The returned reason NEVER contains the plaintext, its length, or any derivative of it.
@@ -321,7 +310,7 @@ namespace WebVella.Erp.Utilities
         /// Hashes a password for storage using the modern primitive. Every call returns a
         /// different value for the same input because a fresh random salt is generated, so the
         /// result must never be compared for equality - and in particular must never be compared
-        /// inside a SQL predicate. Use <see cref="VerifyPassword(string, string, out bool)"/>.
+        /// inside a SQL predicate. Use <see cref="VerifyPassword(string, string, out bool, out bool)"/>.
         /// </summary>
         /// <param name="password">The plaintext password.</param>
         /// <returns>
@@ -353,17 +342,11 @@ namespace WebVella.Erp.Utilities
             // believes will work. Refusing loudly is the only outcome that cannot destroy a
             // credential.
             //
-            // Throwing is provably safe at every one of this member's three call sites:
-            //  - SecurityManager.UpgradeStoredPasswordHash cannot reach it. The plaintext it re-hashes
-            //    has just been verified by VerifyPassword, which rejects anything over this bound
-            //    before verifying, so a value arriving there is already <= MaxPasswordLength. Its
-            //    surrounding catch is therefore a backstop that this change does not arm.
-            //  - The two generic record-write collectors (Api/RecordManager.cs and
-            //    Database/DbRecordRepository.cs) run inside RecordManager's create/update handlers,
-            //    which convert an exception into an unsuccessful QueryResponse. The write fails
-            //    instead of half-succeeding, which is the entire point.
-            //  - SecurityManager.SaveUser validates through ValidatePasswordPolicy first, so it
-            //    reports a field-level error and never reaches this throw at all.
+            // Throwing is safe at all three of this member's call sites: the rehash path cannot reach it
+            // (its plaintext was already verified against this bound), the two generic record-write
+            // collectors run inside handlers that convert an exception into an unsuccessful QueryResponse
+            // so the write fails rather than half-succeeding, and SecurityManager.SaveUser validates
+            // through ValidatePasswordPolicy first and reports a field-level error instead.
             if (password != null && password.Length > MaxPasswordLength)
             {
                 throw new ArgumentOutOfRangeException(nameof(password),
@@ -421,25 +404,23 @@ namespace WebVella.Erp.Utilities
         /// <para>
         /// THREAT ADDRESSED - finding F28, CWE-208 (observable timing discrepancy) and CWE-203
         /// (observable difference in behaviour), OWASP A07:2021. A credential-resolution path that
-        /// finds no account has to spend a compensating derivation, or the absence of the account is
-        /// visible in the response time. Its caller used to decide whether that compensation was owed
-        /// by PREDICTING this member's behaviour from the stored value's shape - specifically, by
-        /// assuming that a non-legacy shape implies a derivation. That prediction is wrong in exactly
-        /// the two cases where it matters, and each wrong answer is an oracle:
+        /// finds no account must spend a compensating derivation, or the absence of the account is
+        /// visible in the response time. A caller cannot PREDICT whether that compensation is owed from
+        /// the stored value's shape, because two shapes return before deriving anything and each wrong
+        /// prediction is an oracle:
         /// </para>
         /// <list type="bullet">
         /// <item><description>
-        /// An over-long password returns on the size guard below without deriving anything, yet was
-        /// predicted to have derived - so the compensation was skipped and an existing account with a
-        /// modern hash answered in about a millisecond while an account that does not exist took the
-        /// full derivation. Sampling latency with one over-long password therefore enumerated accounts.
+        /// An over-long password returns on the size guard below without deriving. Predicted as derived,
+        /// the compensation is skipped, so an existing account with a modern hash answers in about a
+        /// millisecond while a non-existent account takes the full derivation - sampling latency with one
+        /// over-long password enumerates accounts.
         /// </description></item>
         /// <item><description>
         /// A corrupt or hand-edited modern payload is rejected by the cheap format guards in
-        /// <see cref="VerifyPbkdf2Hash(string, string, out bool, out bool)"/> before any derivation,
-        /// and was predicted the same wrong way. This is the residual that the caller previously
-        /// documented, measured at about 16 ms, and accepted as unfixable from its side. Reporting the
-        /// fact from here is what makes it fixable, and it is now fixed.
+        /// <see cref="VerifyPbkdf2Hash(string, string, out bool, out bool)"/> before any derivation, and
+        /// mispredicts the same way - a residual of about 16 ms that the caller cannot close from its own
+        /// side. Reporting the fact from here is what makes it closable.
         /// </description></item>
         /// </list>
         /// <para>
@@ -822,7 +803,7 @@ namespace WebVella.Erp.Utilities
         /// data migration in ERPService uses to test whether a deployment still carries the
         /// administrator credential those releases shipped - which lets that credential be
         /// invalidated without overwriting a password an operator has already changed. New
-        /// credentials are verified by <see cref="VerifyPassword(string, string, out bool)"/>,
+        /// credentials are verified by <see cref="VerifyPassword(string, string, out bool, out bool)"/>,
         /// which calls through to here only when the stored value has the legacy shape.
         /// </remarks>
         internal static bool VerifyMd5Hash(string input, string hash)

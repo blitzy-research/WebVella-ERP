@@ -86,35 +86,13 @@ namespace WebVella.Erp.Database
 		/// 63 characters of validated name plus a 4-byte prefix is 67 bytes, so 67 is the longest
 		/// physical name the platform can legitimately construct. It must remain addressable.
 		///
-		/// CORRECTION, recorded rather than quietly amended: a previous revision of this comment
-		/// asserted that "an earlier revision of this file set this bound to 67" and that doing so
-		/// was a security defect. The first half is false - this file has never carried 67; it was
-		/// introduced with 63 and git history contains no other value. The second half does not
-		/// hold either, for three measured reasons:
-		/// <list type="number">
-		/// <item><description>PostgreSQL truncation is DETERMINISTIC. A single over-long name
-		/// truncates to the same physical name on every statement, so it resolves consistently and
-		/// works correctly. A collision needs TWO names agreeing on their first 63 bytes, which is
-		/// a uniqueness question answered when an entity is CREATED - not something a quoting
-		/// helper is able to observe, since it only ever sees one name at a time.</description></item>
-		/// <item><description>Refusing to quote cannot undo a collision that already happened at
-		/// CREATE TABLE time. It only makes the platform unable to address its own data - including
-		/// the DROP TABLE at Database/DbEntityRepository.cs:L321, the one operation that could
-		/// clean the collision up.</description></item>
-		/// <item><description>The platform already depends on deterministic truncation elsewhere,
-		/// at far greater lengths and with no bound at all: index names are built as
-		/// idx_r_{relation}_{field} - up to 133 bytes - and DbRepository.CreateIndex and DropIndex
-		/// interpolate them without any length check. Capping table names alone at 63 would be
-		/// both inconsistent with that and ineffective against the collision it targets.</description></item>
-		/// </list>
-		///
-		/// Consequence of the 63 bound, which is what makes restoring 67 a preservation
-		/// requirement and not a relaxation: every entity or relation whose name is 60 characters
-		/// or longer became WHOLLY unreachable - read, write, EQL, relation maintenance and
-		/// deletion all threw at the SQL boundary - even where only one such name existed and no
-		/// collision was possible. That is a functional outage on an already-deployed
-		/// installation, and it bought no injection resistance, because the allow-list had already
-		/// supplied all of it.
+		/// Do NOT tighten this to 63: the allow-list already supplies all of the injection resistance,
+		/// and a 63-byte cap would make every entity or relation whose name is 60 characters or longer
+		/// wholly unaddressable - read, write, EQL, relation maintenance and deletion would all throw at
+		/// the SQL boundary on an already-deployed installation. PostgreSQL truncation is deterministic,
+		/// so an over-long name still resolves consistently; a collision needs two names agreeing on
+		/// their first 63 bytes, which is a uniqueness question settled at CREATE time and invisible to a
+		/// helper that only ever sees one name.
 		///
 		/// Both <see cref="Validate(string)"/> and <see cref="Quote(string)"/> apply this same
 		/// bound to the same physical name, so the two contexts can never disagree about what is
@@ -177,19 +155,15 @@ namespace WebVella.Erp.Database
 				throw new DbException("Invalid SQL identifier: a null, empty or whitespace-only identifier cannot be used in SQL.");
 			}
 
-			// SECURITY M-04 (CWE-400 uncontrolled resource consumption). The length bound is
-			// evaluated FIRST, before the double-quote scan and before the allow-list match,
-			// because it is the only check whose cost does not grow with the input. String.Length
-			// is a stored field, so an oversized identifier - the one case where the regex would
-			// be asked to do the most work - is refused in constant time having read none of it.
-			// An earlier revision ran the regex first and reached this bound last, which meant a
-			// megabyte-long candidate was pattern-matched in full before being rejected for its
-			// length. The allow-list pattern is source-generated and its (?!.*__) lookahead runs once
-			// from a fixed position, so the cost is linear rather than super-linear - but a linear scan
-			// over attacker-influenced input of unbounded length is still needless work on the
-			// record-query hot path, and it is work performed on a value already known to be invalid.
-			// Ordering the bound first removes that exposure outright rather than relying on a match
-			// timeout to contain it.
+			// SECURITY H-09 hardening (CWE-400 uncontrolled resource consumption). The length bound is
+			// evaluated FIRST - before the double-quote scan and before the allow-list match - because it
+			// is the only check whose cost does not grow with the input: String.Length is a stored field,
+			// so an oversized identifier is refused in constant time having read none of it. The
+			// allow-list pattern is source-generated and its (?!.*__) lookahead runs once from a fixed
+			// position, so the cost is linear rather than super-linear; but a linear scan over
+			// attacker-influenced input of unbounded length is still needless work on the record-query hot
+			// path, performed on a value already known to be invalid. Order, not a match timeout, is what
+			// removes that exposure.
 			//
 			// Characters are tested before bytes purely as the cheaper gate: a UTF-8 encoding is
 			// never shorter than its character count, so anything over the budget in characters is
@@ -237,16 +211,14 @@ namespace WebVella.Erp.Database
 		/// printable ASCII range replaced by an escape, and wrapped in single quotes.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY M-04 (CWE-117 improper output neutralisation for logs, CWE-400). An earlier
-		/// revision interpolated the rejected value into the message verbatim and unbounded. That
-		/// echo is attacker-influenced text on a path whose whole purpose is to reject attacker
-		/// influenced text, and these messages are written to the platform log and surfaced in
-		/// diagnostics, so echoing it raw had two consequences. A megabyte-long candidate produced
-		/// a megabyte-long exception message and log record, turning a rejection into an
-		/// amplification primitive. And a candidate containing newlines, carriage returns or
-		/// terminal control sequences could forge additional log lines or manipulate a console
-		/// reading them - a rejected SQL identifier is exactly the kind of value that carries such
-		/// characters deliberately.
+		/// SECURITY H-09 hardening (CWE-117 improper output neutralisation for logs, CWE-400). The
+		/// rejected value is attacker-influenced text on a path whose whole purpose is to reject
+		/// attacker-influenced text, and these messages reach the platform log and diagnostics, so it
+		/// must never be echoed raw. Unbounded, a megabyte-long candidate would turn a rejection into
+		/// an amplification primitive; unescaped, newlines, carriage returns or terminal control
+		/// sequences could forge additional log lines or manipulate a console reading them - and a
+		/// rejected SQL identifier is exactly the kind of value that carries such characters
+		/// deliberately.
 		///
 		/// Bounding and escaping keeps the message diagnostically useful - an operator can still
 		/// see what was refused - while ensuring the untrusted fragment cannot restructure the

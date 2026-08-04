@@ -1,5 +1,21 @@
 ﻿{
 	"Settings": {
+		// SECURITY - findings H-05 (High, plaintext database credentials), H-04 (High, weak
+		// bearer-token signing key) and C-04 (Critical, hard-coded encryption key); CWE-798 use of
+		// hard-coded credentials, CWE-321 use of a hard-coded cryptographic key; OWASP A02:2021
+		// Cryptographic Failures and A05:2021 Security Misconfiguration.
+		// THREAT: this file is tracked in a public repository, so every secret it carried - a live
+		// database user and password, the platform's data-at-rest encryption key and the token
+		// signing key - was readable by anyone, identical across every deployment that did not
+		// replace it, and impossible to rotate or revoke.
+		// INVARIANT: every secret-bearing value in this file stays EMPTY in source. Supply real
+		// values per deployment through environment variables (Settings__ConnectionString,
+		// Settings__EncryptionKey, Settings__Jwt__Key), or through user secrets in development.
+		// The keys are RETAINED with empty values rather than deleted because the JSON
+		// configuration source is non-optional - an absent file must still fail loudly - and
+		// because a later provider can only override a key that exists. Startup aborts with an
+		// actionable message when a required value is absent; see
+		// docs/security/secure-configuration.md for the complete list and the supply channels.
 		"ConnectionString": "",
 		"EncryptionKey": "",
 		"Lang": "en",
@@ -8,7 +24,7 @@
 		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "true",
 		"EnableFileSystemStorage": "false",
-		"FileSystemStorageFolder": "\\\\192.168.10.25\\Share\\erp3-files",
+		"FileSystemStorageFolder": "", // SECURITY: internal UNC storage path removed (CR2-F-12, CWE-200 exposure of sensitive information, CWE-497); blank selects the platform default, supply the deployment path via Settings__FileSystemStorageFolder.
 		"EmailEnabled": false,
 		"EmailSMTPServerName": "",
 		"EmailSMTPPort": "25",

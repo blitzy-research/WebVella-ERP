@@ -800,23 +800,17 @@ namespace WebVella.Erp.Plugins.Mail.Services
 				using (var client = new SmtpClient())
 				{
 					// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, so this
-					// send path - the one the background queue job drives - encrypted the session without ever
-					// authenticating it, letting an active man-in-the-middle present any certificate and harvest
-					// the credentials authenticated below. The opt-out is now explicit, defaults to SECURE and
-					// shares one policy member - hence one configuration key - with the Api.SmtpService paths.
-					// With it off no callback is installed at all, so MailKit's own validation applies, and the
-					// callback yields that policy rather than a literal true, so the accept-any-certificate
-					// pattern stays visible to analyzer rule CA5359 instead of being suppressed.
+					// path - the one the BACKGROUND QUEUE JOB drives - encrypted the session without authenticating
+					// it. It shares the SmtpService policy members, hence one configuration key across all five send
+					// paths; see those members for the full rationale and the exact gate. Do not inline a literal:
+					// the callback must keep yielding the member so the pattern stays visible to CA5359.
 					if (SmtpService.AllowInvalidRemoteCertificates)
 						client.ServerCertificateValidationCallback = (s, c, h, e) => SmtpService.AllowInvalidRemoteCertificates;
 
-					// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02):
-					// MailKit defaults this to true and it was left implicit, which turned revocation
-					// REACHABILITY into an unconfigurable delivery prerequisite - and on THIS path, the one the
-					// background queue job drives, the consequence is not a thrown exception an operator sees but
-					// a queue that retries to abort while the relay certificate is perfectly valid. Stated
-					// explicitly and bound to the same single policy member as the four Api.SmtpService sites -
-					// hence one configuration key - which still defaults to checking.
+					// SECURITY H-11 follow-up (CWE-299, OWASP A02): QUEUE-SPECIFIC CONSEQUENCE - on this path an
+					// unreachable revocation endpoint surfaces not as an exception an operator sees but as a queue
+					// retrying to abort while the relay certificate is perfectly valid. Bound to the same policy
+					// member as the four Api.SmtpService sites, which still defaults to checking.
 					client.CheckCertificateRevocation = SmtpService.CheckRemoteCertificateRevocation;
 
 					client.Connect(service.Server, service.Port, service.ConnectionSecurity);

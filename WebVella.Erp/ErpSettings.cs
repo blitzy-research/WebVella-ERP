@@ -80,9 +80,9 @@ namespace WebVella.Erp
 		/// consults, so "is JWT usable here?" has exactly one answer across the platform.
 		/// </summary>
 		/// <remarks>
-		/// M-2 (CWE-20 improper input validation, CWE-798 hard-coded credentials): the previous
-		/// validation demanded a signing key only when a 'Settings:Jwt' section already existed, and
-		/// accepted whatever it found provided the value was not blank. The token issue and refresh
+		/// SECURITY H-04 (CWE-798 hard-coded credentials, CWE-20 improper input validation): demanding a
+		/// signing key only when a 'Settings:Jwt' section already exists, and accepting whatever is there
+		/// provided it is not blank, is not sufficient. The token issue and refresh
 		/// routes live in WebVella.Erp.Web and are [AllowAnonymous], so they are exposed on ALL seven
 		/// hosts - including the five that legitimately ship no Jwt section at all. That combination
 		/// meant an anonymous caller could reach a route which then evaluated
@@ -96,7 +96,7 @@ namespace WebVella.Erp
 		/// </remarks>
 		public static bool IsJwtConfigured { get; private set; }
 
-		// M-2: a signing key for HMAC-SHA-256 must be at least as long as the hash it feeds. RFC 7518
+		// SECURITY H-04: a signing key for HMAC-SHA-256 must be at least as long as the hash it feeds. RFC 7518
 		// section 3.2 requires a key of at least the same size as the hash output for HS256, i.e. 256
 		// bits / 32 bytes. Below that the key, not the algorithm, is the weakest link.
 		private const int MinimumJwtKeyByteLength = 32;
@@ -110,7 +110,7 @@ namespace WebVella.Erp
 		// entropy, which a static check cannot do.
 		private const int MinimumDistinctCharacters = 8;
 
-		// M-2 "known public defaults still pass": the two secrets published in this repository's own
+		// SECURITY C-04 and H-04: the two secrets published in this repository's own
 		// example configuration are denied by SHA-256 digest rather than by literal.
 		// Storing the digest, not the value, is deliberate and matters twice over: a denylist written
 		// as literals would republish the very secrets being retired, and it would make this file a
@@ -222,7 +222,7 @@ namespace WebVella.Erp
 			JwtIssuer = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Issuer"]) ? "webvella-erp" : configuration["Settings:Jwt:Issuer"];
 			JwtAudience = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Audience"]) ? "webvella-erp" : configuration["Settings:Jwt:Audience"];
 
-			// M-2 (CWE-20, CWE-798): resolved once, here, so that every bearer-token code path asks the
+			// SECURITY H-04 (CWE-20, CWE-798): resolved once, here, so that every bearer-token code path asks the
 			// same question and gets the same answer. A key that is absent, too short, too repetitive or
 			// equal to this repository's published example is not usable, and the token routes disable
 			// themselves rather than issue forgeable tokens or fault on a null key.
@@ -343,52 +343,72 @@ namespace WebVella.Erp
 			else if (!IsAcceptableSecretShape(EncryptionKey, MinimumEncryptionKeyCharLength) ||
 				MatchesKnownPublishedDefault(EncryptionKey, PublishedDefaultEncryptionKeyDigest))
 			{
-				// M-2 "known public defaults still pass" / "checks only for nonblank values": the key that
-				// protects data at rest was accepted on the sole basis of being non-blank, so the example
-				// key published in this repository's own Config.json passed unchallenged - and it is 64
-				// characters long, so no length rule would ever have caught it.
-				//
-				// THREAT (findings C-04 Critical and H-05 High, CWE-798 use of hard-coded credentials,
-				// CWE-321 use of a hard-coded cryptographic key, OWASP A02 Cryptographic Failures): a
-				// publicly known data-at-rest key compromises every encrypted value, and it is exactly as
-				// public in a development checkout as it is in production - this repository is open
-				// source, so the example key is already in an attacker's hands either way. Enforcement is
-				// therefore UNCONDITIONAL: there is no DevelopmentMode, environment or posture exemption.
-				// A development bypass would recreate the very defect being removed, because a deployment
-				// would inherit the known-bad key merely by leaving one flag set, and a warning that
-				// startup deliberately ignores is not a control.
-				// The ordering precondition that once justified staging this rejection is now satisfied:
-				// AAP Class 5 has blanked all eight shipped Config.json files and set
-				// 'Settings:DevelopmentMode' to false, so no checkout ships a key this branch would
-				// refuse. A weak or published key can now only arrive from an operator's own supply
-				// channel, which is precisely the case where refusing to start is the correct outcome.
-				// Only the setting NAME is reported - never the value, its length or a digest of it - so
-				// the startup failure cannot leak key material into a console or crash report (CWE-532).
+				// THREAT (findings C-04 Critical and H-05 High, CWE-798 use of hard-coded credentials, CWE-321
+				// use of a hard-coded cryptographic key, OWASP A02 Cryptographic Failures): a non-blank test
+				// alone accepts the example key published in this repository - which is 64 characters long, so no
+				// length rule would catch it either - and a publicly known data-at-rest key compromises every
+				// encrypted value. It is exactly as public in a development checkout as in production, this
+				// repository being open source, so enforcement is UNCONDITIONAL: there is no DevelopmentMode,
+				// environment or posture exemption. A development bypass would recreate the defect being removed,
+				// because a deployment would inherit the known-bad key merely by leaving one flag set, and a
+				// warning that startup deliberately ignores is not a control.
+				// Only the setting NAME is reported - never the value, its length or a digest of it - so the
+				// startup failure cannot leak key material into a console or crash report (CWE-532).
 				missingSecrets += $"{Environment.NewLine}  - 'Settings:EncryptionKey' is weak or is the example key published in this repository" +
 					$" (environment variable 'Settings__EncryptionKey')";
 			}
+			else if (!IsAsciiOnly(EncryptionKey))
+			{
+				// THREAT ADDRESSED - review finding CR2-F-09 (CWE-331 insufficient entropy, CWE-176 improper
+				// handling of Unicode encoding), OWASP A02:2021 Cryptographic Failures. The two checks above
+				// measure CHARACTERS, while CryptoUtility.GetValidKey consumes BYTES through an ASCII
+				// projection - and that projection SUBSTITUTES rather than fails, mapping every character
+				// above U+007F to '?'. Acceptance and derivation could therefore disagree completely, and the
+				// gap was measured rather than presumed: a 32-character key of 32 DISTINCT non-ASCII
+				// characters satisfies both the 32-character length floor and the 8-distinct-character variety
+				// floor, yet derives to the single byte 0x3F repeated 32 times. Two different keys of that
+				// shape derive byte-identical AES keys, and the initialisation vector - derived from the same
+				// text - collides with them. The variety floor above was, for such a key, measuring entropy
+				// that the derivation then discarded in full.
+				//
+				// Requiring US-ASCII is what closes the gap, and it closes it BY CONSTRUCTION rather than by
+				// duplicating the projection here: for US-ASCII input one character is exactly one byte, so
+				// the character-based length and variety floors above become byte-exact and the two layers can
+				// no longer disagree. Re-implementing the byte projection in this file was rejected as the
+				// alternative - the derivation is algorithm-dependent (it sizes itself from
+				// SymmetricAlgorithm.LegalKeySizes), so a copy here would be a second thing to keep in step
+				// and would recreate this very finding in a new place.
+				//
+				// This is deliberately scoped to the encryption key and applied to the WHOLE configured value.
+				// It is not applied to the connection string, whose password may legitimately be non-ASCII and
+				// which Npgsql consumes as a string, never as key bytes. Validating the whole value is
+				// marginally stricter than the derivation strictly needs, because a key longer than the
+				// algorithm's key size is truncated before projection - but a non-ASCII character sitting in
+				// the unused tail is a latent trap that starts destroying entropy the moment a key size or
+				// algorithm changes, so refusing it at startup is the fail-safe reading.
+				//
+				// Only the setting NAME and the rule appear below - never the value, its length, the offending
+				// character or its position - so this failure cannot leak key material into a console or a
+				// crash report (CWE-532), consistent with every other diagnostic in this method.
+				missingSecrets += $"{Environment.NewLine}  - 'Settings:EncryptionKey' contains characters outside US-ASCII, which the key derivation" +
+					$" cannot represent and would silently replace, destroying key entropy; supply US-ASCII characters only" +
+					$" (environment variable 'Settings__EncryptionKey')";
+			}
 
-			// The token signing key is NOT demanded from every host. The token issue and refresh routes are
-			// [AllowAnonymous] and are defined in WebVella.Erp.Web, so they exist on ALL seven hosts, yet five of
-			// those hosts legitimately ship no 'Settings:Jwt' section at all; demanding a key from them would stop
-			// them starting, which the preservation requirement "all existing functionality remains operational"
-			// forbids. The routes are DISABLED instead whenever the key is unusable - the second branch the
-			// finding's own resolution offers, "require JWT wherever token routes are exposed OR disable those
-			// routes" (findings H-04 and M-2 - CWE-798 hard-coded credentials, CWE-321 hard-coded cryptographic
-			// key, CWE-20 improper input validation; the hard-coded fallback that used to mask all of this was
-			// removed above).
-			// What this replaced demanded a key only when a Jwt section already existed, and then only that the
-			// value was non-blank. Two consequences, both real:
-			//  - The five hosts with no section passed validation and then faulted inside
-			//    Encoding.UTF8.GetBytes(null) the moment an anonymous caller reached the route - a 500 carrying
-			//    a stack trace rather than a clean refusal.
-			//  - A host configured with this repository's published example key passed unchallenged and issued
-			//    tokens anyone holding that public value could forge.
-			// IsJwtConfigured is already resolved above and the routes consult it, so the remaining job here is to
-			// say so out loud: a host that DOES declare a Jwt section plainly intends to serve tokens, and a
-			// silently disabled authentication feature is its own kind of defect. JwtEndpointsExposed gates the
-			// message so a process that hosts no token routes at all - the console application - is never told
-			// that routes it never had are disabled.
+			// SECURITY H-04 (CWE-798 hard-coded credentials, CWE-321 hard-coded cryptographic key, CWE-20
+			// improper input validation). The token signing key is NOT demanded from every host. The token issue
+			// and refresh routes are [AllowAnonymous] and are defined in WebVella.Erp.Web, so they exist on ALL
+			// seven hosts, yet five of those hosts legitimately ship no 'Settings:Jwt' section at all; demanding
+			// a key from them would stop them starting, which the preservation requirement "all existing
+			// functionality remains operational" forbids. The routes are DISABLED instead whenever the key is
+			// unusable, which is why a non-blank test on an existing section is not sufficient: without this,
+			// a keyless host faults inside Encoding.UTF8.GetBytes(null) the moment an anonymous caller reaches
+			// the route - a 500 carrying a stack trace rather than a clean refusal - and a host carrying the
+			// published example key issues tokens anyone holding that public value can forge.
+			// A host that DOES declare a Jwt section plainly intends to serve tokens, and a silently disabled
+			// authentication feature is its own kind of defect, so the condition below reports it.
+			// JwtEndpointsExposed gates the message so a process that hosts no token routes at all - the console
+			// application - is never told that routes it never had are disabled.
 			if (JwtEndpointsExposed && !IsJwtConfigured && configuration.GetSection("Settings:Jwt").Exists())
 			{
 				Console.Error.WriteLine("warn: WebVella.Erp.ErpSettings[2] SECURITY - a 'Settings:Jwt' section is present but " +
@@ -418,7 +438,7 @@ namespace WebVella.Erp
 		/// Decides whether a token signing key is fit to sign and validate bearer tokens.
 		/// </summary>
 		/// <remarks>
-		/// M-2: this is a pure function on the raw value, deliberately, because the hosts need the same
+		/// SECURITY H-04: this is a pure function on the raw value, deliberately, because the hosts need the same
 		/// verdict at a point where <see cref="Initialize"/> has not run yet. Startup.ConfigureServices
 		/// configures the JwtBearer handler, but Initialize is called later from UseErp during Configure,
 		/// so <see cref="JwtKey"/> is still null while the handler is being registered. A host therefore
@@ -455,9 +475,45 @@ namespace WebVella.Erp
 		}
 
 		/// <summary>
-		/// Length and character-variety floor shared by the non-JWT secrets. Measured in characters
-		/// rather than bytes because these values are consumed as strings, not as HMAC input.
+		/// Reports whether every character of <paramref name="value"/> is inside US-ASCII.
 		/// </summary>
+		/// <remarks>
+		/// Review finding CR2-F-09: this is the guard that makes the character-based floors below
+		/// byte-exact for the encryption key. <c>CryptoUtility</c> derives key and initialisation-vector
+		/// bytes through an ASCII projection that SUBSTITUTES unrepresentable characters with '?' instead
+		/// of failing, so a key measured in characters could carry far less entropy in bytes - measurably
+		/// so: 32 distinct non-ASCII characters collapsed to one distinct byte. For US-ASCII input one
+		/// character is exactly one byte, so requiring it removes the discrepancy at its source. The test
+		/// is a plain per-character bound rather than a round-trip re-encode, because a substituting
+		/// encoder cannot report its own substitutions.
+		/// </remarks>
+		private static bool IsAsciiOnly(string value)
+		{
+			for (var index = 0; index < value.Length; index++)
+			{
+				if (value[index] > 0x7f)
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		/// <summary>
+		/// Length and character-variety floor shared by the non-JWT secrets, measured in characters.
+		/// </summary>
+		/// <remarks>
+		/// An earlier revision of this comment justified the character measurement by asserting that
+		/// "these values are consumed as strings, not as HMAC input". Review finding CR2-F-09 established
+		/// that the assertion was false for the encryption key, which <c>CryptoUtility</c> consumes as
+		/// ASCII BYTES - and the correction is recorded here rather than silently overwritten, because
+		/// that false premise is what allowed acceptance and derivation to diverge. The measurement is
+		/// still in characters, but it is now sound for the encryption key because its caller additionally
+		/// requires <see cref="IsAsciiOnly"/>, under which one character is exactly one byte. Any future
+		/// caller passing a value that is consumed as bytes must impose the same requirement, or measure
+		/// the bytes it actually derives.
+		/// </remarks>
 		private static bool IsAcceptableSecretShape(string value, int minimumLength)
 		{
 			if (string.IsNullOrWhiteSpace(value) || value.Length < minimumLength)
@@ -472,7 +528,7 @@ namespace WebVella.Erp
 		/// Counts distinct characters up to <see cref="MinimumDistinctCharacters"/> and no further.
 		/// </summary>
 		/// <remarks>
-		/// M-2: this is the entropy floor that catches padded placeholders - a key of "aaaa...aaaa" or
+		/// SECURITY C-04 and H-04: this is the entropy floor that catches padded placeholders - a key of "aaaa...aaaa" or
 		/// "0123012301230123..." clears any length test but carries almost no key material. The buffer is
 		/// stack-allocated and can never overflow, because the method returns the moment the floor is
 		/// reached, so at most <see cref="MinimumDistinctCharacters"/> characters are ever remembered.
@@ -518,7 +574,7 @@ namespace WebVella.Erp
 		/// Compares a supplied secret against a known-bad value held only as a SHA-256 digest.
 		/// </summary>
 		/// <remarks>
-		/// M-2: the digest, never the literal, is what lives in this source file - see the constants for
+		/// SECURITY C-04 and H-04: the digest, never the literal, is what lives in this source file - see the constants for
 		/// why. SHA-256 here is a value-identity comparison against a PUBLIC value, not password storage
 		/// and not a confidentiality control, so an unsalted single-pass digest is exactly the right
 		/// primitive and carries none of the objections that apply to hashing credentials.

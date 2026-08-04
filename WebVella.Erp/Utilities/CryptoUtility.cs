@@ -70,7 +70,8 @@ namespace WebVella.Erp.Utilities
         #region <--- Methods --->
 
         /// <summary>
-        /// 	Encrypts the text using the configured encryption key.
+        /// 	Encrypts the text with the configured key resolved through <see cref="CryptKey"/>, which throws
+        /// 	rather than falling back to a compiled-in default when none is configured (C-04).
         /// </summary>
         /// <param name="text"> The text. </param>
         /// <param name="algorithm"> The algorithm. </param>
@@ -81,7 +82,8 @@ namespace WebVella.Erp.Utilities
         }
 
         /// <summary>
-        /// 	Decrypts the cypher text using the configured encryption key.
+        /// 	Decrypts the cypher text with the configured key resolved through <see cref="CryptKey"/>, which
+        /// 	throws rather than falling back to a compiled-in default when none is configured (C-04).
         /// </summary>
         /// <param name="cypherText"> The cypher text. </param>
         /// <param name="algorithm"> The algorithm. </param>
@@ -92,7 +94,8 @@ namespace WebVella.Erp.Utilities
         }
 
         /// <summary>
-        /// 	Encrypts the input data using the configured encryption key.
+        /// 	Encrypts the input data with the configured key resolved through <see cref="CryptKey"/>, which
+        /// 	throws rather than falling back to a compiled-in default when none is configured (C-04).
         /// </summary>
         /// <param name="inputData"> The input data. </param>
         /// <param name="algorithm"> The algorithm. </param>
@@ -103,7 +106,8 @@ namespace WebVella.Erp.Utilities
         }
 
         /// <summary>
-        /// 	Decrypts the input data using the configured encryption key.
+        /// 	Decrypts the input data with the configured key resolved through <see cref="CryptKey"/>, which
+        /// 	throws rather than falling back to a compiled-in default when none is configured (C-04).
         /// </summary>
         /// <param name="inputData"> The input data. </param>
         /// <param name="algorithm"> The algorithm. </param>
@@ -254,6 +258,56 @@ namespace WebVella.Erp.Utilities
 		// the same register. Any such diagnostic here is expected and intentionally left as a warning.
 
         /// <summary>
+        /// 	Projects key or initialisation-vector material to bytes, refusing any character outside US-ASCII
+        /// 	instead of silently substituting it.
+        /// </summary>
+        /// <param name="material"> The key or initialisation-vector text actually about to be consumed. </param>
+        /// <param name="materialName"> Names which material failed, for the diagnostic only. Never the value. </param>
+        /// <returns> The US-ASCII bytes of <paramref name="material"/>. </returns>
+        private static byte[] ToAsciiKeyMaterial(string material, string materialName)
+        {
+            // THREAT ADDRESSED - review finding CR2-F-09 (CWE-331 insufficient entropy, CWE-176 improper
+            // handling of Unicode encoding), OWASP A02:2021 Cryptographic Failures. Both derivation helpers
+            // below used to call Encoding.ASCII.GetBytes directly, and that encoder does not fail on input it
+            // cannot represent - it SUBSTITUTES, mapping every character above U+007F to '?' (0x3F). The
+            // consequence was measured rather than reasoned about, and it is severe: a 32-character key made of
+            // 32 DISTINCT non-ASCII characters derived to 3f repeated 32 times - one distinct byte out of
+            // thirty-two - so the AES key was fully predictable from the key's SHAPE alone. Two entirely
+            // different non-ASCII keys derived byte-identical keys, and because GetValidIV derives the
+            // initialisation vector from the same text, the vector collided too. An ordinary passphrase was
+            // affected as well, not only a contrived one: the measured key "Securite-Cle-2026-WebVella-ERP-x1",
+            // spelled with its three accents, silently lost one byte of key material per accent while
+            // containing no literal '?' of its own.
+            //
+            // Failing is the whole point. A caller who supplies key material this routine cannot represent must
+            // be told, because the alternative is not a lesser key - it is a key an attacker can reconstruct
+            // without seeing it. This mirrors the doctrine already applied at CryptKey above: stop loudly rather
+            // than hand back something the caller would mistake for protection.
+            //
+            // Only the material's ROLE is named. Its value, its length, the offending character and its position
+            // are all withheld, so this failure cannot leak key material into a console, a log file or a crash
+            // report (CWE-532) - the same discipline the CryptKey diagnostic follows.
+            for (int index = 0; index < material.Length; index++)
+            {
+                if (material[index] > 0x7f)
+                {
+                    throw new InvalidOperationException(
+                        $"WebVella ERP cannot derive cryptographic {materialName} material: the supplied value " +
+                        "contains at least one character outside US-ASCII. Such characters cannot be represented " +
+                        "by the ASCII projection this derivation uses and were previously replaced with '?', " +
+                        "which silently destroyed key entropy (OWASP Top 10 review finding CR2-F-09 - CWE-331, " +
+                        "CWE-176). Supply US-ASCII key material only - printable ASCII letters, digits and " +
+                        "symbols. When 'Settings:EncryptionKey' is the source, startup validation reports this " +
+                        "before any data is touched. See docs/security/secure-configuration.md for the accepted " +
+                        "character set, and docs/security/risk-register.md for how a deployment that already " +
+                        "encrypted data under a non-ASCII key recovers it.");
+                }
+            }
+
+            return Encoding.ASCII.GetBytes(material);
+        }
+
+        /// <summary>
         /// 	Gets the valid encode key.
         /// </summary>
         /// <param name="key"> The key. </param>
@@ -277,7 +331,11 @@ namespace WebVella.Erp.Utilities
             else
                 result = key;
 
-            return Encoding.ASCII.GetBytes(result);
+            // CR2-F-09: the sizing above measures CHARACTERS while the projection below consumes BYTES. Refusing
+            // non-ASCII material is what makes those two agree, because for US-ASCII input one character is
+            // exactly one byte - so this call is byte-identical to the previous Encoding.ASCII.GetBytes(result)
+            // for every key that already worked, and already-encrypted data stays readable.
+            return ToAsciiKeyMaterial(result, "key");
         }
 
         /// <summary>
@@ -288,10 +346,13 @@ namespace WebVella.Erp.Utilities
         /// <returns> </returns>
         private static byte[] GetValidIV(String InitVector, int ValidLength)
         {
+            // CR2-F-09: the vector is derived from the key text, so it inherited the same silent substitution -
+            // a non-ASCII key produced an all-'?' vector that collided across different keys. The pad character
+            // is a space, which is itself ASCII, so padding never introduces material this guard would refuse.
             if (InitVector.Length > ValidLength)
-                return Encoding.ASCII.GetBytes(InitVector.Substring(0, ValidLength));
+                return ToAsciiKeyMaterial(InitVector.Substring(0, ValidLength), "initialisation vector");
 
-            return Encoding.ASCII.GetBytes(InitVector.PadRight(ValidLength, ' '));
+            return ToAsciiKeyMaterial(InitVector.PadRight(ValidLength, ' '), "initialisation vector");
         }
 
         /// <summary>

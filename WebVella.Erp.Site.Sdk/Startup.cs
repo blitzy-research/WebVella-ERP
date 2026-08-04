@@ -20,6 +20,29 @@ namespace WebVella.Erp.Site.Sdk
 {
 	public class Startup
 	{
+		// THREAT ADDRESSED - review finding CR2-F-07 (CWE-489 active debug code, CWE-209 generation of an
+		// error message containing sensitive information, CWE-306 missing authentication for a critical
+		// function), OWASP A05 Security Misconfiguration. Two of the three disclosures that finding covers
+		// are configured in ConfigureServices, which - unlike Configure below - was handed no
+		// IWebHostEnvironment, so neither could be made conditional on the environment without one.
+		// Constructor injection is how the framework supplies it to a Startup class (StartupLoader resolves
+		// IWebHostEnvironment, IHostEnvironment and IConfiguration constructor parameters), and it is the
+		// pattern this solution already uses - see WebVella.Erp.Site/Startup.cs, which takes the same
+		// parameter for the same reason.
+		private readonly IWebHostEnvironment environment;
+
+		public Startup(IWebHostEnvironment environment)
+		{
+			this.environment = environment;
+		}
+
+		// Single definition of the environment test used three times below. The comparison idiom is copied
+		// verbatim from the guards Configure already carries, rather than switched to IsDevelopment(), so
+		// that every environment decision in this file reads identically. It fails SECURE: any environment
+		// name that is not exactly "Development" - including one that is misspelled, empty or absent -
+		// yields false and therefore selects the hardened branch.
+		private bool IsDevelopment => string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
+
 		// This method gets called by the runtime. Use this method to add services to the container.
 		public void ConfigureServices(IServiceCollection services)
 		{
@@ -46,16 +69,33 @@ namespace WebVella.Erp.Site.Sdk
 					options.Conventions.AuthorizeFolder("/");
 					options.Conventions.AllowAnonymousToPage("/login");
 
-					// ACCEPTED RISK, NOT AN OVERSIGHT - finding M-09 (CWE-306, missing authentication for a
-					// critical function), OWASP A07 Identification and Authentication Failures. AuthorizeFolder("/")
-					// above is deny-by-default, so the line below is an EXPLICIT exemption: it publishes the SDK
-					// developer page to unauthenticated callers, and this host is the only one of the seven that
-					// grants it. Deliberately RETAINED rather than removed, under Minimal Change guideline 8
-					// ("document out-of-scope concerns but do not fix unless Critical") - it is a Medium that does
-					// not meet the compensating-control test, so removing it here would be unrequested scope and
-					// would break the SDK development workflow that depends on reaching /dev without a session.
-					// Recorded as a recommendation in docs/security/risk-register.md; close it there, not here.
-					options.Conventions.AllowAnonymousToPage("/dev");
+					// THREAT ADDRESSED - review finding CR2-F-07 (CWE-306 missing authentication for a critical
+					// function, CWE-209 generation of an error message containing sensitive information), OWASP
+					// A05 / A07. AuthorizeFolder("/") above is deny-by-default, so the line below is an EXPLICIT
+					// exemption publishing the SDK developer page, and this host is the only one of the seven that
+					// grants it.
+					//
+					// It was previously granted UNCONDITIONALLY and recorded as accepted risk M-09 on the grounds
+					// that an anonymous developer page is a Medium failing the compensating-control test. That
+					// reasoning no longer holds, and the reason it broke is worth stating precisely: /dev renders a
+					// Blazor Server component, and this host configured CircuitOptions.DetailedErrors = true. The
+					// anonymous page was therefore not merely reachable - it was the DELIVERY VEHICLE for full
+					// server exception text, message and stack trace alike, to a caller who had not authenticated.
+					// That composition is an information disclosure rather than a missing-authentication Medium,
+					// and it does meet the compensating-control test.
+					//
+					// The exemption is ENVIRONMENT-GATED rather than deleted, which is both the smaller change and
+					// the one that keeps two requirements true at once. Agent Action Plan section 0.3.2 declined to
+					// REMOVE this line because removal "would break the SDK development workflow that depends on
+					// reaching /dev without a session"; gating preserves that workflow exactly where it is used - a
+					// developer machine running the Development environment - while a deployed host falls back to
+					// the deny-by-default AuthorizeFolder("/") above and answers with the configured LoginPath.
+					// Nothing is left accepted-but-unaddressed: see docs/security/risk-register.md for the closure
+					// of M-09's Production half and the residual it keeps in Development.
+					if (IsDevelopment)
+					{
+						options.Conventions.AllowAnonymousToPage("/dev");
+					}
 				})
 				.AddNewtonsoftJson(options =>
 				{
@@ -64,7 +104,21 @@ namespace WebVella.Erp.Site.Sdk
 
 			services.AddControllersWithViews();
 			services.AddRazorPages().AddRazorRuntimeCompilation();
-			services.AddServerSideBlazor().AddCircuitOptions(options => {  options.DetailedErrors = true; });
+			// THREAT ADDRESSED - review finding CR2-F-07 (CWE-209 generation of an error message containing
+			// sensitive information, CWE-489 active debug code), OWASP A05 Security Misconfiguration.
+			// DetailedErrors was hard-coded true in a host that ships to Production, and
+			// CircuitOptions.DetailedErrors is precisely the switch deciding whether an unhandled exception
+			// inside a Blazor Server component is returned to the browser complete with message and stack
+			// trace, or replaced by an opaque circuit-error identifier. Paired with the anonymous /dev page
+			// above it disclosed internal type names, file paths and call stacks to an unauthenticated caller
+			// - the same class of disclosure finding H-13 closed on the API surface.
+			//
+			// This is the only host in the solution that configures Blazor Server at all, so the value is set
+			// here and nowhere else, and it follows the environment: full detail on a developer machine, none
+			// on a deployed one. It is deliberately NOT read from configuration - a configuration key would
+			// let the disclosure be switched back on in Production by an operator with no way to know what it
+			// exposes, which is how this defect would return.
+			services.AddServerSideBlazor().AddCircuitOptions(options => { options.DetailedErrors = IsDevelopment; });
 			//adds global datetime converter for json.net
 			JsonConvert.DefaultSettings = () => new JsonSerializerSettings
 			{
@@ -85,18 +139,11 @@ namespace WebVella.Erp.Site.Sdk
 						// A02 / A05, and Agent Action Plan section 0.6.1 Class 6, which mandates "an always-secure policy, a
 						// same-site policy, an explicit expiry window and sliding expiration".
 						//
-						// This host used to carry its own copy of those four settings, as did the other six, and the copies
-						// had drifted from the frozen session contract in two ways that mattered: the secure policy
-						// downgraded itself to SameAsRequest whenever the host environment name read "Development", and
-						// sliding expiration was disabled. Seven duplicated copies is the ROOT CAUSE of that drift rather
-						// than merely where it surfaced, so the contract now lives in exactly one place - see
-						// ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie for the full rationale, including why the
-						// Development relaxation was unnecessary and why sliding expiration is safe here only because it is
-						// paired with an absolute session horizon. Six hosts can no longer desynchronise from the seventh
-						// because there is one place left to edit.
-						//
-						// Called LAST in this lambda deliberately: the platform contract must win over anything a host sets,
-						// and nothing above this line is a security attribute - only the cookie name and the sign-in paths.
+						// The four attributes live in ONE place rather than being duplicated per host, because seven copies
+						// are what let them drift apart; see ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie for
+						// the full rationale, including why sliding expiration is safe only when paired with an absolute
+						// session horizon. Called LAST in this lambda deliberately, so the platform contract wins over
+						// anything a host sets; nothing above this line is a security attribute.
 						ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie(options);
 					});
 
@@ -146,42 +193,38 @@ namespace WebVella.Erp.Site.Sdk
 			}
 
 			//Should be before Static files
-			// THREAT ADDRESSED - finding H-08 / M-01 (OWASP A05: Security Misconfiguration):
+			// THREAT ADDRESSED - finding M-01 (OWASP A05: Security Misconfiguration):
 			// SecurityHeadersMiddleware existed but was never inserted into any pipeline, so not one of the
-			// seven mandated security response headers was emitted. It is placed first - ahead of
-			// UseResponseCompression and ahead of BOTH UseStaticFiles calls - because ordering decides which
-			// responses the headers reach: registered after compression or after static files, compressed
-			// responses and static assets would be served bare.
+			// seven mandated security response headers was emitted. It is placed ahead of BOTH UseStaticFiles
+			// calls because UseStaticFiles TERMINATES the pipeline for a matched asset: anything registered
+			// after it never runs for a static-file response, so those responses would ship bare. The default
+			// policy is report-only and HSTS is suppressed in Development; see SecurityHeadersMiddleware.
 			app.UseSecurityHeaders();
 
 			app.UseResponseCompression();
 
 			app.UseCors("AllowNodeJsLocalhost"); //Enable CORS -> should be before static files to enable for it too
 
-			// THREAT ADDRESSED - finding H-08 / H-15, CWE-319 (cleartext transmission of sensitive
-			// information) and CWE-614: no host enforced HTTPS or published an HSTS policy, so a session
-			// could be downgraded to plaintext and its cookie intercepted. Guarded to non-Development
-			// because local development runs over plain HTTP. UseHsts adds the policy to HTTPS responses
-			// only - HstsMiddleware returns without writing a header when Request.IsHttps is false - so the
-			// header is published on the secured responses that FOLLOW the redirect, never on the redirect
-			// itself. Ordering HSTS first is still correct, because the two calls must not be transposed:
-			// UseHttpsRedirection short-circuits a plaintext request, so anything after it never runs for
-			// that request at all.
+			// THREAT ADDRESSED - finding H-15, CWE-319 (cleartext transmission of sensitive information)
+			// and CWE-614: no host enforced HTTPS or published an HSTS policy, so a session could be
+			// downgraded to plaintext and its cookie intercepted. Guarded to non-Development because local
+			// development runs over plain HTTP.
 			//
-			// Ordering is deliberate and load-bearing: this sits AFTER UseCors. The CORS middleware
-			// short-circuits cross-origin preflight, so an OPTIONS request is answered before it can reach
-			// the redirect. That is what avoids the documented failure where HTTPS redirection answers a
-			// preflight with a redirect the browser rejects as invalid. Moving this above UseCors would
-			// reintroduce it.
+			// HSTS must precede the redirect: UseHttpsRedirection short-circuits a plaintext request, so
+			// anything after it never runs for that request. HstsMiddleware itself writes nothing on a
+			// plaintext request, but UseSecurityHeaders() ran earlier and has already attached
+			// Strict-Transport-Security, so the redirect response does carry it - inertly, because a user
+			// agent must ignore the header when it arrives over plaintext (RFC 6797 section 7.2).
 			//
-			// THREAT ADDRESSED - finding F-06: app.UseHsts() alone does NOT publish the mandated policy. It
-			// emits whatever HstsOptions holds, and the framework defaults are thirty days with subdomains
-			// excluded - "max-age=2592000". Because HstsMiddleware assigns the header by indexer and runs
-			// after UseSecurityHeaders(), it overwrote the mandated value rather than agreeing with it. The
-			// exact one-year, subdomain-inclusive values are now configured once in AddErp through
-			// services.AddHsts(), so both writers emit the identical string. This call site must not be
-			// given per-host options, and AddErp's registration must not be removed, or this line silently
-			// reverts to the thirty-day header.
+			// Both sit AFTER UseCors, deliberately: the CORS middleware short-circuits cross-origin
+			// preflight, so an OPTIONS request is answered before it can reach the redirect. Moving them
+			// above UseCors reintroduces the documented failure where redirection answers a preflight with a
+			// redirect the browser rejects as invalid.
+			//
+			// app.UseHsts() alone does not publish the mandated policy: it emits whatever HstsOptions holds,
+			// and the framework default is thirty days without subdomains ("max-age=2592000"). The mandated
+			// one-year, subdomain-inclusive values are configured once in AddErp, so both writers emit the
+			// identical string. Do not give this call site per-host options.
 			if (!string.Equals(env.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
 			{
 				app.UseHsts();
@@ -190,7 +233,24 @@ namespace WebVella.Erp.Site.Sdk
 
 			app.UseStaticFiles(new StaticFileOptions
 			{
-				ServeUnknownFileTypes = true,
+				// THREAT ADDRESSED - review finding CR2-F-07 (CWE-548 exposure of information through static
+				// file serving, CWE-200 exposure of sensitive information to an unauthorized actor), OWASP A05
+				// Security Misconfiguration. This host was the ONLY one of the seven to set this true - the
+				// other six set false, upstream included - so it was a divergence rather than a requirement.
+				// While true, StaticFileMiddleware serves any file under the web root whose extension is absent
+				// from FileExtensionContentTypeProvider, and because DefaultContentType is left unset it serves
+				// that file with no Content-Type at all. Anything a build step, an operator or a future asset
+				// pipeline leaves in the web root - .config, .pem, .bak, .cs, .cshtml, .pdb, all of them
+				// unmapped - was downloadable without a session.
+				//
+				// Verified non-load-bearing before changing rather than assumed. Of the 600 files in this host's
+				// published web root exactly one extension is unmapped, .br (Brotli pre-compression); every .br
+				// and .gz file has an uncompressed sibling of the same name, and no published asset references a
+				// .br URL. Nothing requests one directly either, because this pipeline negotiates compression
+				// through UseResponseCompression above rather than by extension. Every other extension present -
+				// js, css, map, ttf, woff, woff2, eot, png, gif, ico, txt, gz - is mapped, so no asset stops
+				// being served and no request that succeeded before now fails.
+				ServeUnknownFileTypes = false,
 				OnPrepareResponse = ctx =>
 				{
 					const int durationInSeconds = 60 * 60 * 24 * 30 * 12;
@@ -201,21 +261,16 @@ namespace WebVella.Erp.Site.Sdk
 			app.UseStaticFiles(); //Workaround for blazor to work - https://github.com/dotnet/aspnetcore/issues/9588
 			app.UseRouting();
 
-			// THREAT ADDRESSED - finding H-08 / H-16, CWE-307 (improper restriction of excessive
-			// authentication attempts), OWASP A07 Identification and Authentication Failures: activates the
-			// per-remote-address fixed window registered in AddErp.
+			// THREAT ADDRESSED - finding H-16, CWE-307 (improper restriction of excessive authentication
+			// attempts), OWASP A07: activates the per-remote-address fixed window registered in AddErp.
 			// Positioned after both UseStaticFiles calls so static assets are never throttled, and after
 			// UseRouting so endpoint metadata is available to the limiter.
 			//
-			// This is the TRANSPORT-LEVEL layer only, and it is deliberately not the primary control. The
-			// mandated five-attempt account lockout is a separate, per-account mechanism in
-			// WebVella.Erp.Web/Services/LoginThrottleService.cs, consulted from the login page handler; a
-			// volumetric limiter cannot substitute for it because an attacker spread thinly across many
-			// addresses stays under any per-address budget. Consequently the registered permit limit is
-			// deliberately GENEROUS: a single ERP page load fans out into many requests (Razor Pages, the
-			// Blazor hub, API and inline-edit calls), so a tight window would break legitimate interactive
-			// use - a far worse outcome than the marginal benefit, and a breach of the requirement that
-			// existing functionality be preserved exactly. Tune the limit in AddErp, never per host.
+			// TRANSPORT-LEVEL layer only, and deliberately not the primary control: the mandated five-attempt
+			// account lockout lives in WebVella.Erp.Web/Services/LoginThrottleService.cs and is consulted
+			// from the login page handler, because a volumetric limiter cannot stop an attacker spread thinly
+			// across many addresses. The permit limit is therefore deliberately generous - one ERP page load
+			// fans out into many requests - so tune it in AddErp, never per host.
 			app.UseRateLimiter();
 			app.UseAuthentication();
 			app.UseAuthorization();
@@ -228,7 +283,25 @@ namespace WebVella.Erp.Site.Sdk
 
 			app.UseEndpoints(endpoints =>
 			{
-				endpoints.MapBlazorHub(); 
+				// THREAT ADDRESSED - review finding CR2-F-07 (CWE-306 missing authentication for a critical
+				// function), OWASP A05 / A07. MapBlazorHub carries no authorization metadata of its own, so the
+				// circuit endpoint was anonymous even for components hosted on pages that do require a session:
+				// it is a SEPARATE endpoint from the page that starts it, and AuthorizeFolder("/") governs Razor
+				// Pages only. Gating the /dev page alone would therefore have left the hub itself reachable, and
+				// the hub is where component code - and any exception it raises - actually executes.
+				//
+				// Guarded to non-Development for the same reason the /dev exemption is: in Development that page
+				// is deliberately anonymous, and a circuit it cannot open would make it useless. Outside
+				// Development the only Blazor component this platform hosts is
+				// WebVella.Erp.Web/Components/PcApplications/Display.cshtml, which sits under
+				// AuthorizeFolder("/") and is therefore only ever rendered for a caller who already holds the
+				// authentication cookie - the same cookie the browser sends on the hub's negotiate and WebSocket
+				// requests - so requiring authorization here changes nothing for legitimate use.
+				var blazorHub = endpoints.MapBlazorHub();
+				if (!IsDevelopment)
+				{
+					blazorHub.RequireAuthorization();
+				}
 				endpoints.MapRazorPages();
 				endpoints.MapControllerRoute("default", "{controller=Home}/{action=Index}/{id?}");
 			});

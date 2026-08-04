@@ -2,6 +2,9 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Components.Server.Circuits;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
+using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Razor;
@@ -9,14 +12,17 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Threading.RateLimiting;
+using System.Threading.Tasks;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models.AutoMapper;
 using WebVella.Erp.Database;
@@ -60,13 +66,19 @@ namespace WebVella.Erp.Web
 		// ConfigureErpAuthenticationCookie so no host can drift from it.
 		private const double AuthenticationCookieLifetimeMinutes = 1440;
 
+		// Directory holding the Data Protection key ring. Deliberately OPTIONAL: when the key is absent
+		// the framework's own default location stands unchanged, so configuring nothing cannot break a
+		// deployment that already works. Held as a constant for the same reason as the key above - the
+		// lookup and the documentation that names it must not drift apart.
+		private const string DataProtectionKeyDirectoryConfigurationKey = "Settings:DataProtectionKeyDirectory";
+
 		public static IServiceCollection AddErp(this IServiceCollection services)
 		{
 			services.AddSingleton<IErpService, ErpService>();
 			services.AddTransient<AuthService>();
 			services.AddScoped<ErpRequestContext>();
 
-			// THREAT ADDRESSED - finding H-08 / M-01 (OWASP A05: Security Misconfiguration):
+			// THREAT ADDRESSED - finding M-01 (OWASP A05: Security Misconfiguration):
 			// SecurityHeadersMiddleware existed but was never reachable - no host registered its
 			// options and no host inserted it into a pipeline - so not one of the seven mandated
 			// security response headers was actually emitted. Registering the options here, at the
@@ -76,42 +88,29 @@ namespace WebVella.Erp.Web
 			// it; only the report-only/enforcing switch is settable.
 			//
 			// Registration only. The middleware's pipeline POSITION is deliberately NOT set here and must
-			// never be: UseErp runs late in every host pipeline, whereas the headers have to be emitted
-			// ahead of UseResponseCompression and ahead of both UseStaticFiles calls or they never reach
-			// static and compressed responses at all. Each host therefore calls UseSecurityHeaders()
-			// early in its own Configure method. This extension registers; the hosts order.
+			// never be: UseErp runs late in every host pipeline, whereas UseStaticFiles terminates the
+			// pipeline for a matched asset, so the headers have to be emitted ahead of both
+			// UseStaticFiles calls or static-file responses ship bare. Each host therefore calls
+			// UseSecurityHeaders() early in its own Configure method. This extension registers; the
+			// hosts order.
 			//
 			// THREAT ADDRESSED - finding CFG-02 (OWASP A05: Security Misconfiguration): the mandated
-			// report-then-enforce Content-Security-Policy rollout was documented as being under
-			// operator control, but the switch that selects the mode was bound to nothing.
-			// AddOptions<T>() on its own only materialises the type with its compiled defaults, so no
-			// configuration source could move the platform from report-only to enforcing. An operator
-			// following the documented rollout would have set a value that was silently ignored and
-			// would have believed the policy was enforcing when it was still only reporting.
+			// report-then-enforce Content-Security-Policy rollout is operator-controlled, so the switch
+			// selecting the mode must actually be bound - AddOptions<T>() alone materialises the type
+			// with its compiled defaults only, and an operator setting the key would have been silently
+			// ignored while believing the policy was enforcing.
 			//
-			// Exactly ONE member is bound - the report-only/enforce switch - from configuration key
+			// Exactly ONE member is bound - the report-only/enforce switch - from
 			// "SecurityHeaders:ContentSecurityPolicyReportOnly" (environment variable
-			// SecurityHeaders__ContentSecurityPolicyReportOnly, matching the environment-variable
-			// supply model every other platform secret already uses). The policy TEXT is deliberately
-			// left unbindable, so no configuration source - however trusted - can inject
-			// 'unsafe-inline' or "default-src *" and void the header.
+			// SecurityHeaders__ContentSecurityPolicyReportOnly). The policy TEXT stays unbindable so no
+			// configuration source can inject 'unsafe-inline' or "default-src *" and void the header.
 			//
-			// Two failure directions are handled differently, deliberately:
-			//
-			//  - ABSENT or blank: the compiled default - report-only - stands. That is the mandated
-			//    shipping posture, so an unconfigured deployment is correct rather than broken.
-			//
-			//  - PRESENT but not parseable as a boolean: startup is ABORTED. Silently ignoring such a
-			//    value is the very defect this finding is about, and here it is the dangerous
-			//    direction: the operator believes the policy is enforcing while it is still only
-			//    reporting, so the platform would be less protected than its own documentation
-			//    claims. Guessing "enforcing" instead is equally unacceptable - it would block the
-			//    four components that deliberately emit inline script and break the interface. The
-			//    only correct response to an ambiguous security-mode value is to refuse to run, which
-			//    is the same fail-fast posture ErpSettings.ValidateRequiredSecurityConfiguration
-			//    already applies to missing secrets. The supplied value is not echoed, only the key
-			//    name and the accepted values, so a value pasted into the wrong variable cannot leak
-			//    into a log or a console.
+			// The two failure directions differ deliberately: ABSENT or blank keeps the compiled
+			// report-only default, which is the mandated shipping posture; PRESENT but unparseable
+			// ABORTS startup, because either guess is wrong - report-only leaves the policy unenforced
+			// while the operator believes otherwise, and enforcing blocks the four components that
+			// deliberately emit inline script. The supplied value is never echoed, only the key name
+			// and the accepted values, so a value pasted into the wrong variable cannot leak into a log.
 			services.AddOptions<SecurityHeadersOptions>()
 				.Configure<IConfiguration>((securityHeadersOptions, configuration) =>
 				{
@@ -137,18 +136,15 @@ namespace WebVella.Erp.Web
 					securityHeadersOptions.ContentSecurityPolicyReportOnly = contentSecurityPolicyReportOnly;
 				});
 
-			// THREAT ADDRESSED - finding F-06, CWE-319 (cleartext transmission of sensitive information)
+			// THREAT ADDRESSED - finding H-15, CWE-319 (cleartext transmission of sensitive information)
 			// and CWE-614 (sensitive cookie without 'Secure' attribute), OWASP A02 / A05. Every host calls
-			// app.UseHsts(), but no host ever configured HstsOptions - and the framework's defaults are
-			// thirty days with subdomains excluded, not the mandated one year including subdomains.
-			// HstsMiddleware assigns Strict-Transport-Security by indexer, exactly as
-			// SecurityHeadersMiddleware does, so whichever runs LAST decides the wire value. Because
-			// UseSecurityHeaders() must be ordered early - ahead of response compression and both
-			// UseStaticFiles calls - HstsMiddleware always ran after it and always won, and the wire value
-			// on every HTTPS response was "max-age=2592000": the mandated header was written and then
-			// silently overwritten with a weaker one. Configuring the framework's own options here makes
-			// the two writers emit the identical string, so the overwrite is a genuine no-op in either
-			// order and there is exactly ONE exact HSTS value in the application.
+			// app.UseHsts() but none configured HstsOptions, and the framework defaults to thirty days
+			// with subdomains excluded rather than the mandated one year including subdomains.
+			// HstsMiddleware and SecurityHeadersMiddleware both assign Strict-Transport-Security by
+			// indexer, and HstsMiddleware runs later in every host pipeline, so it decided the wire
+			// value: "max-age=2592000" overwrote the mandated one. Pinning the framework's own options
+			// here makes both writers emit the identical string, so there is exactly ONE HSTS value in
+			// the application and the overwrite is a no-op in either order.
 			//
 			// Registered at the platform's single canonical service-registration extension so all seven
 			// hosts inherit it from one edit, matching how the header middleware's own options are
@@ -215,6 +211,70 @@ namespace WebVella.Erp.Web
 			// released with the process.
 			services.AddSingleton<LoginThrottleService>();
 
+			// THREAT ADDRESSED - review finding CR2-F-11 (CWE-522 insufficiently protected credentials,
+			// CWE-565 reliance on cookies without validation and integrity checking), OWASP A05:2021
+			// Security Misconfiguration. Nothing in this repository configured Data Protection at all - a
+			// repository-wide search for AddDataProtection, SetApplicationName, PersistKeysTo or
+			// ProtectKeysWith returned ZERO hits - so the key ring protecting every authentication ticket,
+			// every antiforgery token and every Blazor circuit descriptor was left entirely to framework
+			// defaults. Two of those defaults are the finding, and they fail in opposite directions.
+			//
+			// FIRST, the application discriminator defaults to the CONTENT ROOT PATH. That is a deployment
+			// location, not an identity. Republishing a host to a different directory silently changes the
+			// purpose chain and invalidates every outstanding ticket, while two hosts that happen to share
+			// a content root become mutually decryptable - one host able to accept a ticket minted by the
+			// other, carrying an identity across an application boundary it was never issued for. Binding
+			// the discriminator to the host's application name makes isolation a property of WHICH
+			// APPLICATION this is rather than of where it happens to be installed, and the seven hosts have
+			// seven distinct application names. It is set here, at the platform's single canonical
+			// service-registration extension, so all seven inherit it from one edit.
+			//
+			// SECOND, the default key ring is written unencrypted under the running account's profile - the
+			// live host log reads "keys will not be encrypted at rest". In a container that directory is
+			// frequently not persisted, so every restart mints a fresh ring and logs every user out; where
+			// it IS persisted it is shared with every other application running as that account. An
+			// explicitly configured directory addresses both.
+			//
+			// The persistence half is deliberately OPT-IN while the discriminator half is unconditional,
+			// and the asymmetry is the point: a discriminator is free and cannot break anything, whereas
+			// redirecting the key ring to a path this code invented would move an existing deployment's
+			// keys out from under it and log every user out. Encrypting the ring AT REST needs platform key
+			// material - a certificate - which this registration cannot conjure or safely assume; it is
+			// documented in docs/security/secure-configuration.md and carried as a residual in
+			// docs/security/risk-register.md rather than half-implemented here.
+			services.AddDataProtection();
+
+			services.AddOptions<DataProtectionOptions>()
+				.Configure<IHostEnvironment>((dataProtectionOptions, hostEnvironment) =>
+				{
+					// Guarded rather than assigned unconditionally. An empty application name would produce
+					// an EMPTY discriminator, which is materially WORSE than the default it replaces,
+					// because every application with an empty discriminator shares one purpose chain.
+					// Leaving the framework default in place is the fail-safe direction.
+					if (!string.IsNullOrWhiteSpace(hostEnvironment?.ApplicationName))
+					{
+						dataProtectionOptions.ApplicationDiscriminator = hostEnvironment.ApplicationName;
+					}
+				});
+
+			services.AddOptions<KeyManagementOptions>()
+				.Configure<IConfiguration, ILoggerFactory>((keyManagementOptions, configuration, loggerFactory) =>
+				{
+					string configuredKeyDirectory = configuration?[DataProtectionKeyDirectoryConfigurationKey];
+					if (string.IsNullOrWhiteSpace(configuredKeyDirectory))
+					{
+						return;
+					}
+
+					// Created when absent so a fresh deployment need not pre-create it, and deliberately
+					// NOT wrapped in a catch: a key ring that silently fell back to the profile directory
+					// would leave an operator believing the ring is durable when it is not - the same class
+					// of false assurance as CR2-F-09, where a control measured one thing while the
+					// mechanism consumed another.
+					DirectoryInfo keyDirectory = Directory.CreateDirectory(configuredKeyDirectory);
+					keyManagementOptions.XmlRepository = new FileSystemXmlRepository(keyDirectory, loggerFactory);
+				});
+
 			// THREAT ADDRESSED - finding F8 (session hijacking), CWE-613 (insufficient session
 			// expiration), OWASP A07: the cookie authentication ticket is entirely self-contained, so
 			// signing out only deleted the cookie in the browser that asked for it. A ticket copied
@@ -223,11 +283,16 @@ namespace WebVella.Erp.Web
 			// the user or an administrator could do would stop it. Logging out did not end the session;
 			// it only forgot one copy of it.
 			//
-			// Singleton for the same reason as the throttle above, and not merely for convenience: the
-			// revocation entries live in the service's own in-process store, so a transient or scoped
-			// lifetime would hand every request a brand new, empty store and nothing would ever be seen
-			// as revoked. The container disposes it on shutdown, which releases that store.
-			services.AddSingleton<SessionRevocationService>();
+			// NO REGISTRATION IS NEEDED FOR THE REVOCATION STORE, and its absence here is deliberate.
+			//
+			// F-02: the store used to be an injected singleton, which is precisely what confined the control
+			// to consumers able to resolve a service. The bearer-token validators cannot resolve one - they
+			// are static code with no service provider in reach - so the store is now process-wide static
+			// (Services/SessionRevocationService.cs). Two properties follow, and both are improvements rather
+			// than consequences to be tolerated: there is exactly ONE store per process rather than one per
+			// service provider, and no consumer has to interpret an unresolvable service, which used to be
+			// indistinguishable from "this session is not revoked". Re-adding a registration here would
+			// reintroduce the impression of per-provider state that no longer exists.
 
 			// THREAT ADDRESSED - finding F8, continued. Registering the service is inert on its own; the
 			// control only exists once the identifier is CONSULTED, which has to happen on every
@@ -270,30 +335,48 @@ namespace WebVella.Erp.Web
 					if (validationContext.Principal == null)
 						return;
 
-					// A ticket with no session claim is left alone rather than refused. That is deliberate and
-					// is what makes this control deployable without logging everyone out: tickets minted before
-					// this change carry no claim, and bearer principals never carry one at all.
+					// THREAT ADDRESSED - finding F-01 (CWE-613 insufficient session expiration, CWE-636 not
+					// failing securely), OWASP A07. This pair of checks used to RETURN - accepting the
+					// principal - whenever the ticket carried no parseable session identifier, and that made
+					// revocation opt-in from the ticket's own point of view: any ticket without the claim was
+					// simply never revocable, so "log out everywhere" silently did not apply to it. The two
+					// justifications given have both stopped holding:
+					//   * "tickets minted before this change carry no claim" - AuthService.Authenticate stamps
+					//     the identifier in the same operation that mints the ticket, so a ticket without it is
+					//     not one this build issues. Accepting an unrecognised session shape for ever, to spare
+					//     one re-authentication at deployment, is the wrong trade for a session control;
+					//   * "bearer principals never carry one at all" - they do now (finding F-02), and they are
+					//     refused by their own validators rather than here. This hook is reached for COOKIE
+					//     schemes only, so it is not the place that decides bearer outcomes either way.
+					// FAILING CLOSED instead, with the same rejection the horizon check performs, so the two
+					// controls on this path behave identically. Cost, stated plainly: sessions held from before
+					// this deployment are signed out once. The claim travels inside the encrypted, signed ticket,
+					// so a client can neither strip it to reach this branch nor forge one to avoid it.
 					var sessionClaim = validationContext.Principal.FindFirst(AuthService.CLAIM_SESSION_ID);
-					if (sessionClaim == null || !Guid.TryParse(sessionClaim.Value, out var sessionId))
+					if (sessionClaim == null || !Guid.TryParse(sessionClaim.Value, out var sessionId) || sessionId == Guid.Empty)
+					{
+						validationContext.RejectPrincipal();
+						await SignOutQuietlyAsync(validationContext);
 						return;
+					}
 
-					// GetService, not GetRequiredService: a host that configures cookie authentication without
-					// calling AddErp must not be broken by a hook it never asked for. Where the service IS
-					// registered - every ERP host - an identifier it has never been told about is simply not
-					// revoked, so this cannot refuse a legitimate session.
-					var revocationService = validationContext.HttpContext.RequestServices.GetService<SessionRevocationService>();
-					if (revocationService == null || !revocationService.IsRevoked(sessionId))
+					// F-01: consulted through the process-wide store rather than a resolved service instance. The
+					// previous lookup treated an unresolvable service as "not revoked" - so a host that had not
+					// registered it accepted every revoked ticket while appearing to enforce revocation, and the
+					// absence of the control was indistinguishable from the control passing. The store cannot be
+					// absent, so there is no longer a null case to interpret.
+					if (!SessionRevocationService.IsSessionIdentifierRevoked(sessionId))
 						return;
 
 					// Reject first, then clear the cookie. Ordered this way the CURRENT request is already
 					// unauthenticated even if the sign-out itself fails, so the security outcome does not
 					// depend on the cleanup succeeding.
 					validationContext.RejectPrincipal();
-					await validationContext.HttpContext.SignOutAsync(validationContext.Scheme.Name);
+					await SignOutQuietlyAsync(validationContext);
 				};
 			});
 
-			// THREAT ADDRESSED - finding H-08 / H-16, CWE-307 (improper restriction of excessive
+			// THREAT ADDRESSED - finding H-16, CWE-307 (improper restriction of excessive
 			// authentication attempts) and CWE-770 (allocation without limits), OWASP A07: no
 			// transport-level request throttling existed anywhere in the platform, so a single client
 			// could issue unlimited requests - including unlimited POSTs to the login page and to the
@@ -349,6 +432,23 @@ namespace WebVella.Erp.Web
 			return services;
 		}
 
+		// F-01: the single cookie-clearing step used by both refusals in the ticket-validation hook above, so the
+		// two cannot diverge. The principal is ALREADY rejected before this is called, which is what makes
+		// swallowing safe here: the current request is unauthenticated whether or not the deletion header reaches
+		// the response, and letting an exception escape a validation hook would turn a session control into a 500
+		// on every request that presents a cookie - trading a session finding for an outage.
+		private static async Task SignOutQuietlyAsync(CookieValidatePrincipalContext validationContext)
+		{
+			try
+			{
+				await validationContext.HttpContext.SignOutAsync(validationContext.Scheme.Name);
+			}
+			catch (Exception)
+			{
+				// Deliberately silent - see above. Rejection has already taken effect.
+			}
+		}
+
 		public static IApplicationBuilder UseErp(this IApplicationBuilder app, List<JobType> additionalJobTypes = null, string configFolder = null)
 		{
 			using (var secCtx = SecurityContext.OpenSystemScope())
@@ -392,7 +492,7 @@ namespace WebVella.Erp.Web
 						configPath = lowerCaseConfigPath;
 
 					// SECURITY - findings C-04, H-04 and H-05 (CWE-798 use of hard-coded credentials, CWE-321
-					// use of a hard-coded cryptographic key; review finding M-2, CWE-20 improper input
+					// use of a hard-coded cryptographic key, CWE-20 improper input
 					// validation), OWASP A05 Security Misconfiguration.
 					// THREAT: this is the single initialization path that feeds ErpSettings for every one of the
 					// seven hosts, and it consumed the JSON file and nothing else. Config.json was therefore the
