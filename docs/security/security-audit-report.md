@@ -1,109 +1,587 @@
-# Security Audit Report
+# Audit Report
 
-Audit of the WebVella ERP platform against the [OWASP Top 10 (2021)](https://owasp.org/Top10/)
-taxonomy. Findings are classified by the engagement severity matrix (Critical, High, Medium, Low)
-and each one is recorded in the mandated eight-field format: **FINDING, SEVERITY, CWE, LOCATION,
-DESCRIPTION, IMPACT, EVIDENCE, REMEDIATION**.
+Audit of the WebVella ERP platform against the OWASP Top 10 (2021). The platform is a .NET 10 /
+ASP.NET Core modular monolith on PostgreSQL: nineteen projects, roughly seven hundred C# source files
+and three hundred and ninety-five Razor views, with seven independently hosted site applications
+sharing a common core library and web framework. The audit covered all ten OWASP categories, A01
+through A10, and in addition dependency vulnerability scanning, secrets detection, security response
+headers, TLS and transport configuration, input validation and output encoding, error handling and
+information disclosure, rate limiting and denial-of-service protection, cross-origin resource sharing
+policy, file upload security, and API security. It produced **fifty-three findings**. Every Critical
+and every High finding is remediated; every Medium and Low finding is documented with a recommended
+fix.
 
-The companion documents are the [remediation log](remediation-log.md), the
-[risk register](risk-register.md), the [secure configuration guide](secure-configuration.md) and the
-[credential migration guide](credential-migration.md).
+## Result summary
+
+| Severity | Count | Disposition | State |
+| --- | --- | --- | --- |
+| Critical | 5 | Immediate remediation required | All five remediated |
+| High | 20 | Remediation required | All twenty remediated |
+| Medium | 18 | Document with fix guidance | All eighteen documented; nine also remediated, each because it is a compensating control for a confirmed Critical or High, is mandated by a fix implementation standard, or was closed as an unavoidable by-product of a Critical or High fix in the same method |
+| Low | 10 | Document for a future sprint | All ten documented; three closed incidentally by work a higher-severity class required |
+| **Total** | **53** | | |
+
+Each of the fifty-three carries its own eight-field record in [Part 1](#part-1-the-audit-inventory),
+under an identifier in the ranges `C-01`–`C-05`, `H-01`–`H-20`, `M-01`–`M-18` and `L-01`–`L-10`. The
+governing rule for the Medium and Low bands is the severity matrix reproduced below: those bands are
+*documented*, and are remediated only where one of the three tests named in the table above is met.
+Which test each remediated Medium meets is stated in its own record, and the reasoning behind every
+decision not to fix is in the [risk register](risk-register.md) rather than repeated here.
 
 ## How to read this report
 
-The report carries **three finding inventories**, and they are complementary rather than alternative.
-All are reproduced in full because they answer different questions.
+The report carries **three finding inventories**. They are complementary rather than alternative, and
+all three are reproduced because they answer different questions.
 
 | Part | Inventory | Question it answers |
 | --- | --- | --- |
-| [Part 1](#part-1-audit-inventory) | The audit of the platform as found | *What is wrong with the platform?* |
+| [Part 1](#part-1-the-audit-inventory) | The fifty-three findings of the audit itself | *What is wrong with the platform?* |
 | [Part 2](#part-2-post-remediation-review-inventory) | The review of the controls as delivered | *Does the remediation actually work on a live request path?* |
-| [Part 3](#part-3-remaining-inventory-findings-documented-for-completeness) | The identifiers neither part wrote up | *Where is every remaining finding recorded?* |
+| [Part 3](#part-3-product-vulnerabilities-first-discovered-by-reviewing-the-remediation) | Product vulnerabilities the audit had not reached | *What did reviewing the fixes reveal about the product?* |
 
-**The two parts number their findings independently, so an identifier alone is not unique.** Part 1
-generally uses the two-digit form (`H-01`) and Part 2 the single-digit form (`H-1`), but that is a
-convention rather than a rule and it does not hold everywhere: `H-10` and `H-11` occur in both parts
-with entirely different subjects, and several source comments write a Part 2 identifier in zero-padded
-form. Always resolve an identifier through the [identifier index](#identifier-index) below rather than
-by its shape. Where a Part 2 record supersedes a Part 1 record it says so explicitly.
+**Only Part 1 is the audit inventory, and only its identifiers count towards the fifty-three.** Parts
+2 and 3 number their findings in their own namespaces, so an identifier alone is not unique: Part 1
+uses the zero-padded two-digit form (`H-08`) and Part 2 the single-digit form (`H-8`), but several
+source comments write a Part 2 identifier in zero-padded form, and `H-10` and `H-11` occur in both
+parts with entirely different subjects. Always resolve an identifier through the
+[identifier index](#identifier-index) below rather than by its shape.
 
 Part 2 exists because a control that compiles is not a control that runs. Five helpers had been added
 to the codebase — the hashing utility, the SQL identifier validator, the deserialisation binder, the
 response-headers middleware and the login throttle — and at the point of review **none of them was
 reachable from any live path**. Part 2 is severity-rated on the vulnerability that remained open, not
-on the quality of the unused helper. Every one of those five is now wired, and the wiring is recorded
-in the [remediation log](remediation-log.md).
+on the quality of the unused helper. All five are now wired, and the wiring is recorded in the
+[remediation log](remediation-log.md).
+
+The companion documents are the [remediation log](remediation-log.md), which records what changed and
+the verification performed per vulnerability class; the [risk register](risk-register.md), which
+records accepted risks, declined changes and standing recommendations; the
+[secure configuration guide](secure-configuration.md), which is the operator guidance; and the
+[credential migration guide](credential-migration.md), which covers the password-hash migration.
+
+## Methodology
+
+The engagement followed the prescribed sequence, and each stage completed before the next began:
+
+```text
+Discovery -> Scan -> Classify -> Prioritize -> Remediate -> Validate -> Document -> Deliver
+```
+
+Discovery was an exhaustive sweep of the tracked tree: every `.cs`, `.cshtml`, `.razor`, `.csproj`,
+`.json`, `.config`, `.props`, `.targets`, `.yml`, `.md` and script file, plus the solution file. No
+directory was excluded and no ignore file exists in the checkout. Automated scanning ran before manual
+review wherever tooling permitted, and the substitutions made where it did not are disclosed in full
+below. Classification used the engagement's own severity matrix rather than an external scoring
+system, because that matrix is prescriptive: it names the vulnerability classes that belong in each
+tier.
+
+```text
+Critical: RCE, authentication bypass, data breach exposure, privilege escalation to admin
+          -> Immediate remediation required
+High:     SQL injection, XSS (stored), IDOR with sensitive data, session hijacking
+          -> Remediation required
+Medium:   XSS (reflected), CSRF, information disclosure, weak cryptography
+          -> Document with fix guidance
+Low:      Missing security headers, verbose errors, minor misconfigurations
+          -> Document for future sprint
+```
+
+Because that matrix is prescriptive rather than advisory, it decides two classifications that a
+generic scoring system would have decided differently, and both are worth stating plainly:
+
+* **Unsalted password hashing is Critical, not Medium.** The matrix places *data breach exposure* in
+  the Critical tier, and a password column stored as unsalted single-pass digests is recoverable
+  wholesale. It is deliberately **not** filed under the Medium tier's *weak cryptography*, because the
+  consequence is disclosure of every credential rather than a theoretical algorithm weakness. That is
+  finding `C-03`.
+* **Missing security response headers belong to the Low tier, not the Medium tier.** The matrix names
+  *missing security headers* in the Low tier explicitly, where a generic scoring system would have
+  rated the absence of a content-security policy as Medium. This report nonetheless files the header
+  absence as `M-01` at Medium, and that record states why: the headers are the compensating control
+  that bounds several other findings inside a browser, which is the condition under which the matrix
+  itself calls for a Medium to be remediated rather than only documented. The tier the matrix assigns
+  is stated here so that the departure is visible rather than silent.
+
+The [vulnerability disclosure policy](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/SECURITY.md)
+reproduces the same matrix and the same two consequences, so a reported vulnerability and an audit
+finding can be compared directly.
+
+Categorisation against OWASP is recorded on every finding using the A01–A10 taxonomy. Every finding is
+written up in exactly these eight fields, in this order:
+
+```text
+FINDING
+SEVERITY
+CWE
+LOCATION
+DESCRIPTION
+IMPACT
+EVIDENCE
+REMEDIATION
+```
+
+`LOCATION` carries a verified path and a line locator. `EVIDENCE` carries the construct actually
+observed — the code shape or configuration value read from the tree — rather than a paraphrase of it.
+Every locator in Part 1 was read from the audit baseline, the last commit before any remediation
+landed; every locator describing a delivered control was read from the tree at this commit.
+
+One convention governs the `CWE` field, and it exists so that no identifier is presented as more
+authoritative than it is. Where a weakness maps cleanly onto a published entry, that entry is named and
+linked, and where two entries apply both are named. Where no entry applies, the field carries an em
+dash rather than an invented number — `M-01`, `M-03` and `L-07` are the cases. Where the closest
+published entry describes the weakness by analogy rather than exactly, the identifier is written with
+an explicit `-adjacent` hedge, as at `H-19`, `M-16`, `L-03`, `L-05`, `L-08` and `L-10`; the hedge is
+part of the claim and is not to be hardened into a bare identifier by a later editor. A small number of
+records supply a mapping that the engagement's own inventory left blank — `M-10` is the clearest case,
+where `[AllowAnonymous]` on a resource endpoint maps to CWE-306 by textbook definition. Those are the
+report's own classification, offered because leaving the field empty would have been less useful than
+naming the obvious entry, and they are never presented as having been handed over with the requirement.
+
+### How each remediation traces to a fix implementation standard
+
+The engagement supplies six fix implementation standards and treats them as binding acceptance
+criteria rather than as advice. Every `REMEDIATION` field in Part 1 names the standard it answers to,
+and this table is the index so that the coverage can be checked rather than taken on trust.
+
+| Standard | Findings whose remediation it governs |
+| --- | --- |
+| **Injection Prevention** — parameterised queries, context-appropriate output encoding, allowlist validation | `H-06`, `H-07`, `H-08` (the upload type allow-list), `H-09`, `H-10`, `H-17`, `M-18` |
+| **Authentication Hardening** — 12-character minimum, five-attempt lockout, secure session attributes, constant-time comparison | `C-01`, `C-03`, `H-02`, `H-03`, `H-15`, `H-16`, `M-03`, `M-04`, `M-05`, `M-13` |
+| **Authorization Enforcement** — deny by default, validate on every request, object-level checks, log authorization failures | `C-02`, `C-05`, `H-08` (the ownership checks), `H-13`, `H-14`, `M-12` |
+| **Cryptographic Standards** — TLS 1.2 or better, no embedded key material, work-factored password hashing, CSPRNG | `C-03`, `C-04`, `H-04`, `H-05`, `H-11`, `M-06` |
+| **Dependency Updates** — patch known Critical and High advisories, pin versions, replace end-of-life components | `H-01`, `H-18`, `H-19`, `H-20`, `L-07` |
+| **Security Headers** — the seven headers with their exact values | `M-01`, and `H-12` as its precondition |
+
+Two boundaries on that table are stated rather than glossed. First, a standard describes the shape of a
+remediation for a vulnerability class **confirmed present**; it is not a mandate to add a control where
+no finding was confirmed. That is why multi-factor authentication (`M-14`), password expiry and history,
+authenticated-encryption adoption and a health endpoint (`L-05`) are recorded as recommendations rather
+than built. Second, the documented-only findings are not governed by a fix standard at all — their
+governing rule is the severity matrix's own disposition, *document with fix guidance* for a Medium and
+*document for a future sprint* for a Low. Each such record therefore carries a concrete recommended fix
+in its `REMEDIATION` field and a cross-reference to the [risk register](risk-register.md), which is
+where the reasoning for not fixing it is held.
+
+## Tooling, research channel and substitutions
+
+Three constraints shaped how this audit was evidenced. All three are disclosed rather than concealed,
+because the reliability of the claims in this report rests on them.
+
+**The `web_search` facility returns empty results in this environment.** Proceeding on unverified
+recollection would have been indefensible for advisory data and package versions, so external
+verification was performed instead by direct retrieval from authoritative sources: the **GitHub
+Advisory REST API** for every advisory identifier, severity, CWE and first-patched version cited
+anywhere in this report; the **NuGet flat-container API** for every upgrade target and every licence
+and dependency-metadata claim; and direct documentation fetches for the framework guidance and the
+password-storage guidance. Every dependency claim in this report rests on those retrievals.
+
+**Direct retrieval of the OWASP Top 10 category pages returned nothing parseable.** This is immaterial
+to the result but must not be papered over: the engagement requirements enumerate the A01–A10 taxonomy
+in full, and **that enumeration is the authority used** for every categorisation in this report. No
+claim here should be read as implying the category pages themselves were read.
+
+**Three of the named external scanners could not be installed** in this environment — a static
+analysis engine, a container and dependency scanner, and a secrets scanner. Their substitutes are named
+per gate below, with the pass criterion each substitute actually enforces. No statement in this report
+should be read as claiming that a scanner which was not installed was run.
+
+The toolchain is the **.NET SDK 10.0.302**. It is now pinned in
+[`global.json`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/global.json) as
+`"version": "10.0.302"` with `"rollForward": "disable"` — an exact pin. An earlier revision used
+`"latestPatch"`, on the reasoning that holding the feature band was enough because the audit-mode
+default and the analyzer rule set are chosen by the band; that reasoning does not hold, because a patch
+release can change an analyzer rule's default severity or the audit defaults within a band, and the
+gate's verdict would then depend on whichever patch a machine happened to have. That is exactly the
+non-reproducibility condition finding `L-07` records.
+
+## Validation gates
+
+The engagement specifies five gates:
+
+```text
+- SAST scan: 0 Critical, 0 High
+- Dependency scan: 0 Critical/High CVEs
+- Secrets scan: 0 hardcoded credentials
+- Existing test suite: 100% pass rate
+- Manual verification of all Critical/High fixes
+```
+
+Three of the five cannot be executed with the tooling they imply. What was done instead, and what each
+substitute actually proves, is set out gate by gate.
+
+**Gate 1 — static analysis.** The named external scanner is not installable. *Substitute:* the .NET
+analyzers, enabled repository-wide by
+[`Directory.Build.props`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/Directory.Build.props),
+so that the security rule families relevant to the confirmed findings execute on every compilation —
+hard-coded encryption key, disabled certificate validation, SQL and query construction, insecure
+deserialisation, cross-site scripting and file canonicalisation, regular-expression injection, cookie
+security, disabled token-validation checks, non-random initialisation vector, and weak or broken
+hashing algorithms. *Pass criterion:* **zero diagnostics in those families across the remediated
+files** — not zero repository-wide. Analyzer diagnostics deliberately remain **warnings**; only the
+dependency codes are promoted to errors. Enabling the analyzers across roughly seven hundred source
+files surfaces a large pre-existing backlog — the solution build reports 3,044 warnings, none escalated
+— and promoting that to errors would demand precisely the mass refactor the engagement's modification
+boundaries forbid.
+
+**Gate 2 — dependency scan.** *Satisfied.* Solution-wide restore with auditing at all-dependency mode
+and the dependency diagnostics promoted to build errors, corroborated by
+`dotnet list package --vulnerable --include-transitive`. The gate mechanism is worth naming exactly:
+`Directory.Build.props` sets `NuGetAudit=true`, `NuGetAuditMode=all` and `NuGetAuditLevel=low`, appends
+`NU1900;NU1901;NU1902;NU1903;NU1904;NU1905` to `WarningsAsErrors`, and sets `EnableNETAnalyzers=true`
+with `AnalysisLevel=latest-recommended`. `NU1901` through `NU1904` are the low, moderate, high and
+critical advisory diagnostics; `NU1900` and `NU1905` are promoted alongside them so that an audit which
+cannot be performed — an unreachable source, or a configured audit source serving no advisory data —
+fails the build rather than passing quietly, which is the failure mode a gate must not have.
+
+Two properties of that configuration are deliberate rather than inherited. `NuGetAuditMode=all` is set
+**explicitly** because **MimeKit 4.14.0 is transitive through MailKit**, and `direct` mode would never
+have reported `GHSA-g7hc-96xr-gvvx` at all. And the gate is expressed in **MSBuild rather than in a
+repository-root editor configuration file** because each of the four existing `.editorconfig` files
+declares `root = true`, so a root editor-config would not reach the subtrees they own, whereas
+`Directory.Build.props` is inherited by every project through directory location.
+
+*The decisive precondition:* the `H-19` casing repair had to land **before** any dependency-audit
+verification. Until it did, the core project — the one owning the platform's only High-severity
+advisory — silently dropped out of the restore graph and the audit **falsely reported clean**. Every
+dependency claim in this report is contingent on that repair, which is why it is the first
+vulnerability class in the remediation order.
+
+*Result:* no vulnerable package in any of the nineteen tracked projects. That result takes **three**
+commands rather than one, because two projects are not solution members:
+`dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive` covers the seventeen solution
+members, and one per-project invocation covers each of `WebVella.Erp.WebAssembly/Server` and
+`WebVella.Erp.WebAssembly/Shared`. The [residual coverage gap](#residual-coverage-gap) records why. Had
+the licensing escalation on the object-mapping library gone to its documented fallback, the pass
+criterion would have been redefined as **no unsuppressed** High or Critical, with the single suppression
+accompanied by a recorded risk acceptance; it did not, so the criterion stands unqualified.
+
+**Gate 3 — secrets scan.** The named external scanner is not installable. *Substitute:* a signature
+sweep over the tracked tree for connection strings, signing keys, mail passwords, encryption keys and
+the literal seeded password, asserting that all eight `Config.json` files carry empty secret values,
+that `WebVella.Erp/Utilities/CryptoUtility.cs` no longer contains a default key constant, and that the
+provisioning code no longer assigns a literal password. *Plus the negative test that makes it
+meaningful:* the application must **fail fast with an actionable message** when a required secret is
+absent, which is what proves the silent fallback was genuinely removed rather than merely relocated.
+The compiled-in token-signing default at `WebVella.Erp/ErpSettings.cs:L118` is inside this gate's
+scope, not outside it — see `H-04`, which is the evidence that blanking the configuration files would
+not have been sufficient on its own.
+
+**Gate 4 — existing test suite: vacuous by construction, and stated as such.** There is **no test
+project, no test file and no test-framework package reference in any of the nineteen projects**; the
+only artefact whose name suggests testing is a JavaScript minifier folder, and `dotnet test` discovers
+nothing. **No test suite was run, and no reader should infer that one was.** *Substitute:* solution-wide
+restore plus an analyzer-enabled build, both required to succeed with zero errors, together with the
+manual verification checklist recorded in the [remediation log](remediation-log.md). Creating a test
+suite is explicitly out of scope — it is the feature work the engagement's modification boundaries
+forbid — so the gate is reported as vacuous rather than silently dropped or silently claimed as passed.
+
+**Gate 5 — manual verification of all Critical and High fixes.** *Satisfied.* The executed checklist
+lives in the [remediation log](remediation-log.md), with one entry per vulnerability class, including
+the two highest-risk verifications in the engagement: that a legacy credential still authenticates and
+is transparently rehashed, and that a full-record round-trip update does not overwrite a stored hash
+with the redaction sentinel.
+
+### The mandated response headers
+
+The engagement specifies seven headers with exact values. All seven are emitted by
+`WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs` with these values, byte for byte:
+
+```text
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+X-XSS-Protection: 0
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: geolocation=(), microphone=(), camera=()
+```
+
+The value of the content-security policy is preserved exactly as specified. Only its **delivery mode**
+is staged: it ships under `Content-Security-Policy-Report-Only` first, with the enforced value
+configurable, because four components in the platform deliberately emit inline script or
+author-supplied markup and enforcing the policy on first deployment would break them. That is the one
+place in this engagement where a mandated control could not be enforced immediately without violating
+the requirement that existing functionality be preserved, and it is recorded as an accepted risk with a
+report-then-enforce path in the [risk register](risk-register.md) rather than resolved by weakening the
+mandated value.
+
+### Additional acceptance criteria
+
+* All nineteen projects build. `dotnet restore WebVella.ERP3.sln` exits 0 with no `NU19xx` diagnostic,
+  and `dotnet build WebVella.ERP3.sln` exits 0 with **0 errors**.
+* No controller route, verb or response envelope changed, with one deliberate exception: the removal of
+  stack-trace text from two error bodies, which is itself the remediation for `H-13`.
+* No schema definition statement was emitted at any point. The single migration in this work changes
+  rows, not columns.
+* The login-latency increase caused by the deliberate high-iteration key derivation is measured and
+  recorded as an **accepted, pre-declared** trade-off confined to the authentication path, rather than
+  treated as a regression discovered late. The measurement is in `C-03`.
 
 ## State of the remediation at this commit
 
-Measured against the tree at this commit, not asserted:
+Measured against the tree at this commit rather than asserted.
 
 | Area | State |
 | --- | --- |
-| Solution restore and build | `dotnet restore WebVella.ERP3.sln` exit 0 with zero `NU19xx`; `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-incremental` exit 0, **0 errors**, 3,044 analyzer warnings, none escalated - the figure read 3,096 while a repository-root `.globalconfig` armed additional rules and was re-measured after that file was removed |
-| Dependency gate | **No vulnerable package in any of the 19 tracked projects**, `AutoMapper` resolving at `15.1.3`. The result takes **three** commands, not one: `dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive` covers the **17** solution members, and one `dotnet list <proj> package --vulnerable --include-transitive` covers each of the two WebAssembly projects that are not members. This row has now said each of those things in turn. The single-command claim rested on enrolling the two projects in the solution, and review finding `GATE-01` established that the enrolment was not an authorised edit to `WebVella.ERP3.sln` — AAP 0.6.1 Class 1 authorises the H-19 casing repair and nothing else. The enrolment is reverted, `dotnet sln list` returns 17, and the three-command shape is restored. The workflow runs all three, plus a `TargetFramework` assertion per gated project (finding H-18) that a solution-level command cannot make |
-| Build gate reach | All **six** gate properties evaluate on **19 of 19** projects from `Directory.Build.props` — `NuGetAudit`, `NuGetAuditMode=all`, `NuGetAuditLevel=low`, the `NU1900`-`NU1905` promotion, `EnableNETAnalyzers` and `AnalysisLevel=latest-recommended`. A seventh property, `AnalysisLevelSecurity=latest-all`, and a repository-root `.globalconfig` were added by a later revision and have both since been **removed** under review finding `GATE-03`, which established that the plan of record freezes the analyzer gate at the first six; the workflow now asserts the absence of both on every run. Property coverage never depended on solution membership, because `Directory.Build.props` is inherited by **directory location** — which is why it still reaches all 19 even though only 17 are solution members. What membership affects is *command* coverage, and that is closed by three explicitly gated workflow steps rather than by editing the solution |
-| Target frameworks | **19 of 19** projects on `net10.0`; no project remains on an end-of-life framework |
-| Credential storage | PBKDF2-HMAC-SHA256, 600,000 iterations, per-credential 16-byte CSPRNG salt, fixed-time verification, legacy values upgraded on next authentication — wired on all four call sites |
-| Closed since this table was written | `AllowAnyOrigin()` is applied at **no** host. This row has been corrected twice, and both superseded readings are stated so the progression is auditable: it first said "two hosts", then "one host — `WebVella.Erp.Site.Project`". Both hosts have since been narrowed to explicit origin allow-lists and both now read `Settings:Cors:AllowedOrigins`. A supplied list wins, an explicitly empty list denies every origin, and an absent key denies every origin outside Development; in Development only, Site falls back to its three documented localhost origins while Project adds `http://localhost:2202` as a fourth. Verify with `git grep -n 'AllowAnyOrigin' -- '*.cs'`, which now returns explanatory comments only and no applied policy. `RISK-013` is closed in the [risk register](risk-register.md) |
-| Closed since this table was written | The shipped `Config.json` files no longer carry a live connection string, encryption key, token signing key, storage connection string or mail password, and all eight set `"DevelopmentMode": "false"`; `WebVella.Erp.Site/web.config` sets `Production`; and the seeded administrator credential in `WebVella.Erp/ERPService.cs` is no longer a literal. `RISK-021` is closed for the tracked configuration files. **One availability defect that this scrub itself exposed has also been closed** (review finding `F30`): every configuration builder asked for a lower-case `config.json` while the build copies the capital-`C` `Config.json`, and because the JSON provider is deliberately **non-optional** it threw on a case-sensitive filesystem *before* the environment provider could supply any of the now-externalised secrets — so the very mechanism that replaced the embedded values could not be reached. All four builder sites now prefer `Config.json` and fall back to the lower-case name only when it is the sole file present (`RISK-049`); `WebVella.Erp.ConsoleApp` additionally resolves the file against `AppContext.BaseDirectory` instead of a Windows-only drive-letter expression, which is why it could not start on Linux at all rather than merely needing a copied file |
-| Closed since the row below was written | The **password bounds** and the **guest-role create grants** in `WebVella.Erp/ERPService.cs` are no longer as this table described them. `PasswordMinLength` is **12** and `PasswordMaxLength` is **128**, closing M-13; the Guest CREATE grants on the user and role entities and the Guest READ grant on the user entity are removed from the seed, closing C-02 and C-05, and `RevokeGuestRecordPermissions4` carries the same revocation to already-provisioned installations rather than leaving them exposed. The Guest READ grant on the *role* entity, which an earlier revision of this row recorded as deliberately retained because the login page needed it, has since been removed from the **seed** as well (review finding `F17`) — but the version 5 migration that carried that removal to already-provisioned installations, `MigrateSecurityDefaults5`, has been **withdrawn** under review finding `AAP-SCOPE-01`. The frozen AAP specifies a version-**4** migration head covering the Critical and High findings, and states that unrelated Medium findings are documented rather than remediated unless they are a compensating control; `F17` is a Medium and did not meet that test, so advancing the ladder to 5 for it exceeded the plan. The accurate end state is therefore **three of the four grants, not four**: the two Guest CREATE grants and the Guest READ grant on the *user* entity are removed from the seed *and* revoked on existing installations by `RevokeGuestRecordPermissions4`; the Guest READ grant on the *role* entity is removed from the seed only, so a fresh installation does not have it while an existing one keeps it. `F17` remains an open, documented Medium — see `risk-register.md` `RISK-050`. One side effect is recorded rather than left to be discovered: an installation that replays SDK patch `20201221` loses the role-entity grant anyway, because that patch restates the entity's full permission set from source, which no longer contains it. The demo credential in the Blazor WebAssembly client page `Client/Pages/Index.razor.cs` is also **removed**; that page now defers to the real `/login` page, and `grep -c 'erp@webvella.com' WebVella.Erp.WebAssembly/Client/Pages/Index.razor.cs` returns 0 |
-| Closed, having previously been recorded as open | `H-07` — the rich-text editor upload callback. An earlier revision of this index listed it here as "still open, and **not** by design … the one **High**-severity finding in this report that carries no remediation at this commit". That is no longer the case: the callback index is validated with `int.TryParse` and carried as an `int`, the URL and message are encoded with `JavaScriptEncoder.Default`, and the second sink no longer echoes exception text. Its record in [Part 3](#part-3-remaining-inventory-findings-documented-for-completeness) carries the detail. **No High-severity finding in this report is now unremediated.** |
+| Solution restore and build | `dotnet restore WebVella.ERP3.sln` exit 0 with zero `NU19xx`; `dotnet build WebVella.ERP3.sln -c Debug` exit 0, **0 errors**, 3,044 analyzer warnings, none escalated. The figure read 3,096 while a repository-root `.globalconfig` armed additional rules, and was re-measured after that file was removed |
+| Dependency gate | **No vulnerable package in any of the nineteen tracked projects**, with the object-mapping library resolving at `15.1.3`. Reached by three commands, not one, because seventeen of the nineteen projects are solution members — see the [residual coverage gap](#residual-coverage-gap) |
+| Build gate reach | All six gate properties evaluate on **19 of 19** projects from `Directory.Build.props`, which is inherited by directory location and therefore does not depend on solution membership. A seventh property and a repository-root `.globalconfig` were added by a later revision and both have since been removed, because the plan of record freezes the analyzer gate at those six; the workflow now asserts the absence of both on every run |
+| Target frameworks | **19 of 19** projects on `net10.0`. No project remains on an end-of-life framework |
+| Credential storage | PBKDF2-HMAC-SHA256, 600,000 iterations, a per-credential 16-byte CSPRNG salt, fixed-time verification, and legacy values upgraded on next authentication — wired on all four call sites |
+| Cross-origin policy | `AllowAnyOrigin()` is applied at **no** host. This row previously read "two hosts", then "one host"; both hosts have since been narrowed to explicit origin allow-lists sourced from `Settings:Cors:AllowedOrigins`. A supplied list wins, an explicitly empty list denies every origin, and an absent key denies every origin outside Development |
+| Shipped configuration | The eight `Config.json` files no longer carry a live connection string, encryption key, token signing key, storage connection string or mail password, and all eight set `"DevelopmentMode": "false"`; `WebVella.Erp.Site/web.config` sets `Production`; and the seeded administrator credential is no longer a literal |
+| Seed and migration | Password bounds are 12 and 128. The two Guest CREATE grants and the Guest READ grant on the user entity are removed from the seed **and** revoked on already-provisioned installations by the version-4 migration. The Guest READ grant on the *role* entity is removed from the seed only — the version-5 migration that would have carried it to existing installations was withdrawn as outside the frozen scope, so it remains an open documented Medium in the [risk register](risk-register.md) |
+| Highest-severity open item | None in the code. One **open owner decision** remains: the licence posture of the patched object-mapping library. The advisory is closed; what those patched versions are licensed under is not a question an automated remediation may settle. See `H-01` and the [risk register](risk-register.md) |
+
+## Findings proven not applicable
+
+Two areas were investigated thoroughly and found to carry no exposure. They are recorded so that no
+speculative finding enters this report, and so that a later reader does not mistake their absence for an
+oversight.
+
+**A10:2021 — Server-Side Request Forgery does not apply.** Every `HttpClient` in the repository is
+browser-side Blazor WebAssembly code. The single server-side construction of a URI from data is
+prefix-guarded and resolved through the database rather than the network:
+`WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs:L539` guards on
+`src.StartsWith("/fs")`, `:L543` constructs `new Uri(src)` only to take its `AbsolutePath` at `:L544`
+and strip the prefix at `:L548-L549`, and `:L551-L552` then resolve the value through
+`DbFileRepository.Find(src)` with the bytes read at `:L556`. **No network call is ever made.** Recorded
+as `L-09` so the investigation is evidenced rather than merely claimed.
+
+**Filesystem path traversal on the file endpoints is bounded.** File storage is database-backed, route
+segments cannot contain a path separator, and the path is lower-cased at
+`WebVella.Erp.Web/Controllers/WebApiController.cs:L3274` before the repository lookup at `:L3276`.
+Finding `H-08` is therefore scoped correctly to file type, size and authorization rather than to
+filesystem escape, and its record says so.
+
+## Eliminated false-positive classes
+
+Four classes of apparent finding were investigated and eliminated. Each is named explicitly, because
+reporting any of them would have put a false finding into this report — and in one case a false *High*.
+
+**One — the fifteen XML-commented package references are not in the build graph.** All nineteen
+manifests were parsed with XML comments stripped, so that a commented entry could never be mistaken for
+a live reference. Fifteen `PackageReference` elements exist only inside comments:
+
+| Owning manifest | Commented-out package references |
+| --- | --- |
+| `WebVella.Erp/WebVella.Erp.csproj` (8) | `Microsoft.AspNetCore.Http.Abstractions` 2.2.0; `Microsoft.Extensions.Caching.Abstractions` 10.0.0; `Microsoft.Extensions.Caching.Memory` 10.0.0; `Microsoft.Extensions.Configuration.Json` 10.0.0; `Microsoft.Extensions.Hosting.Abstractions` 10.0.0; `Microsoft.Extensions.Logging` 10.0.0; `Microsoft.Extensions.Logging.Console` 10.0.0; `Microsoft.Extensions.Logging.Debug` 10.0.0 |
+| `WebVella.Erp.Web/WebVella.Erp.Web.csproj` (4) | `Microsoft.AspNetCore.Mvc.ViewFeatures` 2.2.0; `Microsoft.AspNetCore.StaticFiles` 2.2.0; **`SixLabors.ImageSharp` 3.1.6** — which carries a genuine High out-of-bounds-write advisory that **does not apply to this build**; `SixLabors.ImageSharp.Drawing` 2.1.5 |
+| `WebVella.Erp.Site/WebVella.Erp.Site.csproj` (3) | `Microsoft.AspNetCore.ResponseCompression` 2.2.0; `System.Linq` 4.3.0; `System.Threading` 4.3.0 |
+
+An earlier pass had provisionally treated four end-of-life ASP.NET Core 2.2.0 entries, two 4.3.0 system
+entries and the image-processing package as live High findings. All of them are commented out, so none
+applies to this build, and reporting them would have placed false High findings in this report. The
+hygiene observation that fifteen dead entries remain in the manifests is recorded at its true weight as
+`L-02`.
+
+**Two — roughly fifty-five raw-output occurrences render server-generated markup and are not sinks.**
+The census is exact and reproducible: **128** `Html.Raw(` occurrences across **69** `.cshtml` files, of
+which `Html.Raw(action)` appears **49** times and `Html.Raw(record["action"])` **6** times — **55**
+together. All seven builder sites that produce those values were inspected, and every one interpolates
+only identifiers; for example
+`WebVella.Erp.Plugins.SDK/Pages/data_source/list.cshtml.cs:L70` builds an anchor whose only
+interpolations are a record identifier and an already-URL-encoded return URL. A search across all
+builder sites for interpolation of a database text field returned **zero** matches. Encoding these would
+risk breaking working screens for no security benefit, so they are excluded from remediation rather than
+reported. One apparent contradiction is resolved honestly rather than left to look like an inconsistency:
+`Html.Raw(` in `.cs` files is **0**; the single `.cs` occurrence referred to elsewhere is
+`helper.Raw(input)` inside `WebVella.Erp.Web/Utils/HtmlHelperExtension.cs:L11`, which is finding `M-18`.
+In the SDK data-source listing specifically, `:L25` is the excluded `record["action"]` site, while
+`:L39`, `:L43` and `:L47` already use auto-encoded plain expressions.
+
+**Three — the permissive cross-origin policy affected two hosts, not seven.** `WebVella.Erp.Site.Crm`,
+`.Mail`, `.MicrosoftCDM`, `.Next` and `.Sdk` already used a restrictive named policy and were never
+permissive. Framing `H-14` as a platform-wide condition would have overstated it by five hosts.
+
+**Four — server-side request forgery is proven not applicable**, on the evidence set out above.
+
+## The complete anonymous attack surface
+
+Enumerated so that no unauthenticated entry point is overlooked. Class-level authorization is confirmed
+present at `WebVella.Erp.Web/Controllers/WebApiController.cs:L36` and
+`WebVella.Erp.Web/Controllers/ApiControllerBase.cs:L9`, both `[Authorize]`, so only explicit exemptions
+are reachable without credentials:
+
+* the login-page conventions across all seven hosts — legitimate;
+* the error page — legitimate;
+* the developer page, finding `M-09`;
+* the project plugin's resource read, finding `M-10`;
+* the stylesheet endpoint at `WebApiController.cs:L1038`;
+* the bearer-token **issue** endpoint at `:L4273` and the token **refresh** endpoint at `:L4292`. The
+  refresh endpoint is what made `H-02` exploitable, and both are where `H-13`'s unconditional stack
+  traces were returned to an unauthenticated caller.
+
+A further twelve `[AllowAnonymous]` exemptions exist only inside commented-out code and are therefore
+unreachable; they are recorded under `L-01` rather than treated as live surface.
+
+## Escalations, corrections and drift
+
+### Two escalations corrected upward rather than softened
+
+* **The two error paths at `WebApiController.cs:L4287` and `:L4306` were ungated by any development-mode
+  check.** Flipping the environment marker would not have fixed them; the code had to change. An audit
+  that had filed these as configuration findings would have been wrong. See `H-13`.
+* **The download path at `:L3323` served uploaded content inline from the application's own origin.**
+  That turns an upload weakness into a stored-scripting one, which is a higher-severity condition than
+  either half suggests on its own, and it is why the remediation for `H-08` had to close the download
+  side and not only the upload side.
+
+### A correction to the platform's own specification
+
+The platform's developer documentation states that field permissions are resolved per field during read
+and write projection. **The code disproves it.** Enforcement exists only in the presentation layer, at
+`WebVella.Erp.Web/Components/PcFieldBase/PcFieldBase.cs:L605-L610`, where `canRead` starts `false` and is
+set true only if the role appears in `entityField.Permissions.CanRead` — so an empty read-permission list
+means denial at render time and nothing whatever at the data layer. There is no per-field resolution in
+the data layer at all. The correction is recorded here, in the audit report, rather than by editing the
+developer documentation, because rewriting unrelated pages is outside the change boundary this engagement
+sets; the drift itself is finding `L-08`.
+
+### Why the broader field-permission fix was declined
+
+Enforcing field permissions across all twenty-three field types and every projection would ripple through
+the entire read path, and because the presentation base treats an empty read permission as denial, a
+blanket port would hide fields wholesale on existing installations. `C-02` was therefore fixed surgically:
+administrator-only permissions assigned to the password field, plus redaction of encrypted-flagged values
+from read projections, which closes the Critical without touching the general mechanism. The residual
+general gap is documented in the [risk register](risk-register.md).
+
+### Documentation drift deferred into this report
+
+Four drift items were identified by other work in this engagement, declined there as outside the change
+boundary, and routed here. All four are part of finding `L-08`.
+
+1. **`README.md:L12`** carries an `MIT` licence badge — the shields.io image path itself reads
+   `img.shields.io/badge/MIT-green` — while `LICENSE.txt` is the Apache License 2.0 and every packable
+   project declares `<PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>`. That expression
+   was verified at `WebVella.Erp/WebVella.Erp.csproj:L14` at the audit baseline and stands at `:L32` at
+   this commit, the manifest having grown above it during remediation; the other three are unmoved at
+   `WebVella.Erp.Web/…:L13`, `WebVella.Erp.Plugins.Mail/…:L10` and `WebVella.Erp.Plugins.SDK/…:L10`.
+   Real drift; documented, not fixed.
+2. **`README.md:L18`** states that the platform "targets ASP.NET Core 9" with "PostgreSQL 16", while the
+   manifests showed 17 × `net10.0` and 2 × `net7.0` at the audit baseline and 19 × `net10.0` now.
+   Documented, not fixed.
+3. **`catalog-info.yaml`** — its `description` at L5–L6 reads "WebVella ERP monolith decomposition —
+   cloud-native microservices, serverless architecture, and OWASP security audit", which describes work
+   this repository does not contain. **Verified at this commit: that description is still present, and the
+   identical sentence is still present at `docs/index.md:L3`.** An earlier revision of this report recorded
+   both as corrected; they are not, and the observation is stated as measured rather than as expected. The
+   stale `PR #2: Serverless Microservices Rewrite` link at L28–L30 is **retained** as a historical pointer,
+   on the reasoning that a link to a pull request records history rather than asserting anything about the
+   current tree — verified present at this commit. Its `Blitzy Documentation` link at L31–L33 points at
+   `…/tree/master/blitzy/documentation`, a directory that does not exist in the tracked tree; creating it
+   was declined.
+4. **The developer documentation set** carries historical claims — ".NET Core 2.1", "Visual Studio
+   Community 2017", "ASP.NET Core 9, PostgreSQL 16, Bootstrap CSS 4". Documented, not fixed: those pages
+   are untouched by this engagement.
+
+Also under `L-08`:
+[`LIBRARIES.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/LIBRARIES.md) was a
+zero-byte file despite being linked from `README.md:L35` as the third-party inventory, and is populated in
+this change set; `WebVella.Erp/WebVella.Erp.csproj:L19` declares a `<RepositoryUrl>` pointing at the
+upstream repository rather than this fork; `WebVella.Erp.Site/JWT_README.txt:L3` cites the bearer
+authentication package at `6.0.3` where the actual reference is `10.0.1`; and that same inventory
+document states a finding count for this report that was accurate when it was written and is now
+understated, because this report has since completed the eight-field records for the nine identifiers
+that had previously been cross-referenced to companion documents instead. The count that governs is the
+one in the [result summary](#result-summary) above: fifty-three.
+
+Whole-file line totals are deliberately **not** cited for `README.md` or `catalog-info.yaml`; two
+independent counts differ by one because of a trailing-newline artefact, so only the specific line
+locators above — each verified directly — are given.
 
 ## Identifier index
 
-Every finding identifier cited from source, project, build or workflow files, and where it resolves.
-The census was taken from the tree at this commit rather than from the plan, which is how the
-zero-padded aliases in the third group were found.
+Where each finding identifier cited from source, project, build or workflow files resolves. The census
+below was taken from the tree at this commit rather than from the plan, and it is stated as measured.
 
-### Cited identifiers that resolve to Part 1
+**Thirty-one distinct Part 1 identifiers are cited in tracked non-documentation files**, most of them in
+`THREAT ADDRESSED` comments at the point of fix, which is what makes a record in Part 1 mandatory for
+each of them rather than a cross-reference to a companion document. The most heavily cited are `C-02`
+(46 citations), `C-01` (39), `H-04` (40), `H-06` (38), `C-04` (36), `H-19` (31), `H-05` (25), `H-10` (22),
+`M-13` (22), `C-05` (20) and `H-08` (20). Selected resolutions:
 
 | Identifier | Cited from | Subject |
 | --- | --- | --- |
+| `C-01` | `ERPService.cs`, `PasswordUtil.cs`, `AuthService.cs`, `login.cshtml.cs`, `ErpUserPreferences.cs`, `security-scan.yml` | Hardcoded default administrator password in provisioning |
+| `C-02` | `RecordManager.cs`, `SecurityManager.cs`, `DbRecordRepository.cs`, `SdkPlugin.20201221.cs`, `ProjectPlugin.20211012.cs` | Credential hash readable by non-administrator roles |
 | `C-03` | `PasswordUtil.cs`, `SecurityManager.cs`, `RecordManager.cs`, `DbRecordRepository.cs` | Unsalted single-pass MD5 credential storage |
 | `C-04` | `CryptoUtility.cs`, `ErpSettings.cs` | Hardcoded encryption key with a silent fallback |
+| `C-05` | `ERPService.cs`, `SdkPlugin.20201221.cs`, `ProjectPlugin.20211012.cs` | Guest role granted create permission on user and role entities |
 | `H-04` | `ErpSettings.cs`, `WebVella.Erp.Site/Startup.cs`, `WebVella.Erp.Site.Project/Startup.cs` | Weak default token signing key |
 | `H-05` | `ErpSettings.cs` | Plaintext database credentials in shipped configuration |
+| `H-08` | `WebApiController.cs`, at eighteen sites across the upload, download, move and delete paths | Unrestricted file upload chaining into inline execution |
 | `H-09` | `DbIdentifier.cs`, `DbEntityRepository.cs`, `DbRecordRepository.cs`, `DbRelationRepository.cs`, `DbRepository.cs`, `EqlBuilder.Sql.cs`, `CodeGenService.cs`, `security-scan.yml` | SQL identifier injection through string concatenation |
 | `H-10` | `ErpSerializationBinder.cs`, `DbEntityRepository.cs`, `DbRelationRepository.cs`, `JobProfile.cs`, `JobDataService.cs`, `NotificationContext.cs`, `CodeGenService.cs` | Unsafe polymorphic deserialisation |
+| `H-12` | `web.config` and the `Config.json` files | Development mode enabled in every shipped configuration |
 | `H-15` | the seven host `Startup.cs` files | No HTTPS enforcement, no HSTS, insecure cookie attributes |
 | `H-16` | `LoginThrottleService.cs`, `login.cshtml.cs`, `WebApiController.cs`, `ErpMvcExtensions.cs` | No account lockout on repeated failed logins |
-| `H-19` | `WebVella.ERP3.sln`, all 15 project manifests, `security-scan.yml` | Case-mismatched project references broke the dependency scan |
-| `M-01` (in `SecurityHeadersMiddleware.cs`) | `SecurityHeadersMiddleware.cs:L16` | No security response headers |
+| `H-18` | `security-scan.yml` | Two projects targeted an end-of-life framework |
+| `H-19` | `WebVella.ERP3.sln`, all fifteen affected manifests, `security-scan.yml` | Case-mismatched project references broke the dependency scan |
+| `M-01` | the seven host `Startup.cs` files, `ErpMvcExtensions.cs:L98`, `SecurityHeadersMiddleware.cs:L15` and `:L89` | No security response headers |
 | `M-04` | `AuthService.cs` | Local time used for token timestamps |
+| `M-13` | `PasswordUtil.cs`, `SecurityManager.cs`, `RecordManager.cs`, `DbRecordRepository.cs`, `ERPService.cs` | Password length bounds of 6 to 24 characters |
+| `L-01` | `login.cshtml.cs:L279` | Dead security code, left in place deliberately |
 | `L-07` | `global.json` | No lock file and an unpinned SDK version |
 
 ### Cited identifiers that resolve to Part 2
 
-| Identifier as cited | Part 2 record | Subject |
-| --- | --- | --- |
-| `H-1` | `H-1` | Open redirect and script-scheme injection through the return-URL parameter |
-| `M-2` | `M-2` | Secret validation accepted known published defaults |
-| `M-5` | `M-5` | Output helper performed replacement, not encoding |
+Only two Part 2 identifiers are cited from source at this commit:
 
-### Zero-padded aliases — cited in Part 1 form but resolving to Part 2
-
-These are the collisions the shape convention does not catch. They are recorded here rather than
-renamed, because renaming them would mean rewriting source comments that are otherwise correct.
-
-| Identifier as cited | Cited from | Actually resolves to | Subject |
+| Identifier as cited | Part 2 record | Cited from | Subject |
 | --- | --- | --- | --- |
-| `H-08` | the seven host `Startup.cs` files | Part 2 `H-8` | Security headers middleware invoked by no host |
-| `M-01` (in `ErpSerializationBinder.cs`) | `ErpSerializationBinder.cs:L76`, `:L380`, `:L694`, `:L879` — the four `SECURITY M-01` markers in the file | Part 2 `M-1` | Deserialisation allow-list too broad, and its resource bounds |
-| `L-01` | `SecurityHeadersMiddleware.cs` | Part 2 `L-1` | Mandated policy publicly replaceable; report-only with nowhere to report |
+| `H-1` | `H-1` | `page/manage-custom.cshtml.cs:L101`, `page/manage.cshtml.cs:L149`, `BaseErpPageModel.cs:L81` | Open redirect and script-scheme injection through the return-URL parameter |
+| `M-5` | `M-5` | `ckeditor/ImageFinder.cshtml`, `ckeditor/ImageFinder.cshtml.cs:L191` | Output helper performed replacement, not encoding |
 
-### Cited identifiers recorded in Part 3
+### The collision hazard, restated as measured
 
-| Identifier | Cited from | Where it is recorded |
-| --- | --- | --- |
-| `L-10` | `.github/workflows/security-scan.yml:L3` | [Part 3](#part-3-remaining-inventory-findings-documented-for-completeness). *No CI/CD pipeline existed* — a Low-severity observation about the repository rather than a defect in the application, closed by the existence of the file that cites it. |
+An earlier revision of this index recorded three zero-padded aliases — source comments writing `H-08`,
+`M-01` and `L-01` while meaning Part 2's `H-8`, `M-1` and `L-1`. **Re-verified at this commit, those
+aliases no longer exist.** `H-08` is cited only in `WebApiController.cs`, where it means the Part 1 upload
+finding; `M-01` is cited in the host pipelines and the headers middleware, where it means the Part 1
+header finding, and the deserialisation binder cites `H-10` throughout rather than any `M-0` identifier;
+and `L-01` is cited once, at `login.cshtml.cs:L279`, where it means the Part 1 dead-code finding. The
+correction is recorded rather than the stale table left standing.
 
+The hazard itself has not gone away, and it is not a naming preference: **`H-10` and `H-11` occur in both
+Part 1 and Part 2 with entirely different subjects.** In Part 1, `H-10` is unsafe polymorphic
+deserialisation and `H-11` is the SMTP certificate bypass; in Part 2 they are two projects outside the
+solution and the object-mapping licence conflict. Resolve an identifier through this index, not through
+its shape.
 
-## Part 1 — Audit inventory
+## Part 1: The audit inventory
 
-Findings against the platform as found, in the mandated eight-field format.
+All fifty-three findings against the platform as found, grouped by severity band and recorded in
+the mandated eight-field format. Within a band the records are in identifier order.
 
 ### Critical severity findings
+
+#### C-01 — Hardcoded default administrator password in provisioning
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | System provisioning created the platform's first administrator account with a hardcoded three-character password compiled into the source. |
+| **SEVERITY** | Critical. The severity matrix places *authentication bypass* and *privilege escalation to admin* in the Critical tier, and this is both at once: the credential of the highest-privileged account in every default installation is public knowledge, so no bypass technique is even required. |
+| **CWE** | [CWE-798: Use of Hard-coded Credentials](https://cwe.mitre.org/data/definitions/798.html) and [CWE-1392: Use of Default Credentials](https://cwe.mitre.org/data/definitions/1392.html). |
+| **LOCATION** | `WebVella.Erp/ERPService.cs:L467`, inside the first-user seed block spanning `:L462-L475`. |
+| **DESCRIPTION** | The provisioning routine that runs once against an empty database created a user with `SystemIds.FirstUserId`, the administrator role, and the literal password `"erp"`. Nothing prompted for a value, nothing generated one, and nothing marked the account as requiring a credential change. The matching e-mail address is published in the platform's own setup instructions, so both halves of the credential were public. Maps to **OWASP A07:2021 — Identification and Authentication Failures**. |
+| **IMPACT** | Any installation provisioned from this source could be signed into as administrator by anyone who had read the repository. Administrator access in this platform is not merely elevated data access: it carries entity and field definition, permission assignment, and — through the page-component code hooks and the runtime script evaluator — server-side code execution. The finding therefore reaches remote code execution by way of a published password. |
+| **EVIDENCE** | At the audit baseline the seed block read `user["id"] = SystemIds.FirstUserId;` at `:L464`, first and last name at `:L465-L466`, then **`user["password"] = "erp";` at `:L467`**, `user["email"] = "erp@webvella.com"` at `:L468`, `user["username"] = "administrator"` at `:L469`, a fixed `created_on` of 2010-10-10 at `:L470`, `user["enabled"] = true` at `:L471`, and `recMan.CreateRecord("user", user)` at `:L473`. |
+| **REMEDIATION** | Traces to the **Authentication Hardening** standard. The literal is gone. `ERPService.ResolveInitialAdministratorPassword` (`:L1263`) takes an operator-supplied value from `Settings:InitialAdministratorPassword` — the environment variable `Settings__InitialAdministratorPassword` — and validates it against the password policy; where no value is supplied it generates a 20-character password from a cryptographically secure random source, with every character class represented, and surfaces it exactly once in the provisioning log with an explicit warning that supplying the setting instead avoids writing a credential to a captured log. The account is flagged `password_change_required` through `ErpUserPreferences.PasswordChangeRequired`, which the login page enforces at `WebVella.Erp.Web/Pages/login.cshtml.cs:L234` and the bearer path refuses at `WebVella.Erp.Web/Services/AuthService.cs:L543`. Seed correction alone would have protected only new installations, so `RevokeSeedAdministratorCredential4` (`:L2245`), inside the version-4 migration gated at `:L1061`, invalidates the shipped credential on already-provisioned deployments. Operator steps are in the [credential migration guide](credential-migration.md). |
+
+#### C-02 — Credential hash readable by Guest and Regular roles; password-field permissions never assigned
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | The user entity granted record-read to the Guest and Regular roles while the password field carried no field permissions at all, so the stored credential hash was readable by unauthenticated and ordinary callers through any route that projected the user record. |
+| **SEVERITY** | Critical. *Data breach exposure* is a Critical-tier condition in the severity matrix, and the data exposed is the credential column itself. Combined with `C-03` — the digest being an unsalted single MD5 pass — reading the column was equivalent to reading the passwords. |
+| **CWE** | [CWE-200: Exposure of Sensitive Information to an Unauthorized Actor](https://cwe.mitre.org/data/definitions/200.html) and [CWE-522: Insufficiently Protected Credentials](https://cwe.mitre.org/data/definitions/522.html). |
+| **LOCATION** | `WebVella.Erp/ERPService.cs:L79-L81` for the record grants and `:L204-L218` for the password field definition. The only enforcement anywhere was presentational, at `WebVella.Erp.Web/Components/PcFieldBase/PcFieldBase.cs:L605-L610`. |
+| **DESCRIPTION** | The user-entity permission block at `:L72-L83` granted `CanRead` to three roles including Guest, while restricting `CanUpdate` and `CanDelete` to Administrator — so the sensitive operations were protected and the read was not. The password field was defined with `Encrypted = true` but **no permissions assignment whatsoever**, and an unassigned permission list is empty rather than restrictive. Because the platform resolves field permissions only in the presentation layer, an empty list denied the field at render time and constrained nothing at the data layer, which is where the query-language and API routes read. Maps to **OWASP A01:2021 — Broken Access Control** and **A02:2021 — Cryptographic Failures**. |
+| **IMPACT** | Any caller able to read a user record obtained every stored password hash. With Guest holding the read grant, that included unauthenticated callers on any anonymous route reaching a user projection. The hashes were unsalted MD5, so exfiltration was equivalent to credential recovery: weak and moderate passwords fall to precomputed tables immediately, and identical passwords produce identical digests, turning the column into a password-reuse map across accounts. |
+| **EVIDENCE** | At the audit baseline `:L77` added the Guest role to `CanCreate`, `:L79` added Guest to `CanRead`, `:L80` Regular and `:L81` Administrator, while `:L82` and `:L83` were Administrator-only. The `InputPasswordField` block at `:L202-L222` — `new InputPasswordField()` at `:L204`, the field identifier at `:L205`, `Name = "password"` at `:L206`, `Required = true` at `:L211`, `Unique = false` at `:L212`, `Searchable = false` at `:L213`, `Auditable = false` at `:L214`, `System = true` at `:L215`, `MinLength = 6` at `:L216`, `MaxLength = 24` at `:L217`, `Encrypted = true` at `:L218` and `CreateField` at `:L220` — contains no permissions assignment, confirmed by reading the block in full. The presentation base reads `var canRead = false;` at `PcFieldBase.cs:L605` and sets it true only `if (entityField.Permissions.CanRead.Any(x => x == role.Id))` at `:L610`. |
+| **REMEDIATION** | Traces to the **Authorization Enforcement** standard, applied surgically rather than by porting field permissions into every projection. Two moves. The password field is now assigned administrator-only permissions in the seed — `password.Permissions.CanRead` and `.CanUpdate` each receiving only `SystemIds.AdministratorRoleId`, at `ERPService.cs:L329-L335` — and the Guest read grant on the user entity is removed. Second, and independently of role, the value of any field carrying the encrypted flag is **redacted from read projections**: `RecordManager.EncryptedFieldRedactedValue` (`:L42`) is substituted for the stored value at `:L2283`, so a hash does not leave the server through the record or query path at all. The write path recognises the sentinel and leaves the stored hash untouched (`:L904`, `:L1630`, `:L2432`, `:L2607`), which is what prevents a client that round-trips a full user record from overwriting a credential with the marker — the highest-risk ripple in this engagement, and one that carries its own line on the manual verification checklist. Credential resolution opts back in explicitly and only from inside the core assembly, because without that opt-in every login would fail. `MigrateSecurityDefaults4` carries the permission corrections to already-provisioned installations. Why the general mechanism was left alone is recorded under [escalations, corrections and drift](#why-the-broader-field-permission-fix-was-declined) and in the [risk register](risk-register.md). |
 
 #### C-03 — Passwords stored as an unsalted, single-pass MD5 digest
 
@@ -146,7 +624,6 @@ dependency it does not otherwise need. A plaintext length bound of 128 character
 four entry points before any scan, encode, digest or derivation work is performed, so an oversized
 submission to the anonymous login endpoint is refused for the cost of one integer comparison.
 
-
 ##### Verification of the C-03 primitive
 
 | Check | Result |
@@ -168,11 +645,24 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | A 256-bit encryption key was compiled into the source as a constant, and the key accessor fell back to it silently whenever configuration supplied no key. |
 | **SEVERITY** | Critical — the key is published in the source repository, so any data it protects is readable by anyone who can read the code, which is a data-breach exposure. |
 | **CWE** | [CWE-798: Use of Hard-coded Credentials](https://cwe.mitre.org/data/definitions/798.html) and [CWE-321: Use of Hard-coded Cryptographic Key](https://cwe.mitre.org/data/definitions/321.html) |
-| **LOCATION** | `WebVella.Erp/Utilities/CryptoUtility.cs` — the `defaultCryptKey` constant and the fallback branch in the key accessor. |
-| **DESCRIPTION** | The constant `defaultCryptKey = "BC93B776…"` was present in source, and the accessor read `if (string.IsNullOrWhiteSpace(ErpSettings.EncryptionKey)) { cryptKey = defaultCryptKey; }`. A deployment that never configured a key therefore encrypted with a value published in a public repository, and did so **without any signal that it had done so**. Maps to **OWASP A02:2021 — Cryptographic Failures**. |
+| **LOCATION** | `WebVella.Erp/Utilities/CryptoUtility.cs:L16` — the `defaultCryptKey` constant — and the fallback branch in the key accessor at `:L29-L30`, reached from the `CryptKey` property at `:L23` through the null check at `:L27`. The same 64-hex value also appears, byte-identically, in all eight `Config.json` files. |
+| **DESCRIPTION** | The constant `defaultCryptKey = "BC93B776A428…"` — 64 hexadecimal characters — was present in source at `:L16`, and the accessor read `if (string.IsNullOrWhiteSpace(ErpSettings.EncryptionKey)) { cryptKey = defaultCryptKey; }`. A deployment that never configured a key therefore encrypted with a value published in a public repository, and did so **without any signal that it had done so**. Maps to **OWASP A02:2021 — Cryptographic Failures**. |
 | **IMPACT** | Anyone holding the ciphertext and the source recovers the plaintext. The silent fallback is what makes this Critical rather than merely poor practice: an operator had no way to discover the condition, because the platform started normally and encrypted successfully with a known key. |
-| **EVIDENCE** | The constant and the fallback branch are both present verbatim at the pre-audit revision. |
-| **REMEDIATION** | **Both halves were changed, because removing only the constant would have relocated the defect rather than closed it.** The constant is deleted, and the fallback is replaced by an `InvalidOperationException` naming the missing setting, the environment variable that supplies it, the legacy misspelled key name that is still honoured, and the finding identifier — so the failure is actionable rather than cryptic. Fail-fast validation was additionally added at settings initialisation so a missing key aborts startup rather than surfacing at the first encryption. The residual weakness in the same file — the deterministic initialisation vector — is a separate Medium finding recorded as `M-08` and accepted as `RISK-006`. |
+| **EVIDENCE** | At the audit baseline the file read `private const string defaultCryptKey = "BC93B776A428…";` at `:L16` and `private static string cryptKey;` at `:L17`; the `CryptKey` property at `:L23` tested `if (string.IsNullOrEmpty(cryptKey))` at `:L27`, and the fallback at `:L29-L30` read `if (string.IsNullOrWhiteSpace(ErpSettings.EncryptionKey)) { cryptKey = defaultCryptKey; }`. The same 64-hex value appears **byte-identically in all eight** `Config.json` files, so it was compromised in two independent ways — once as a compiled-in constant and once as shipped configuration. The literal is truncated here deliberately; **the full value remains in repository history and is therefore permanently compromised, so rotation is mandatory rather than optional.** |
+| **REMEDIATION** | **Both halves were changed, because removing only the constant would have relocated the defect rather than closed it.** The constant is deleted, and the fallback is replaced by an `InvalidOperationException` naming the missing setting, the environment variable that supplies it, the legacy misspelled key name that is still honoured, and the finding identifier — so the failure is actionable rather than cryptic. Fail-fast validation was additionally added at settings initialisation so a missing key aborts startup rather than surfacing at the first encryption. The residual weakness in the same file — the deterministic initialisation vector — is a separate Medium finding recorded as `M-08` and accepted as `RISK-006`. Traces to the **Cryptographic Standards** clause forbidding embedded key material. |
+
+#### C-05 — Guest role granted create permission on user and role entities
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | The provisioning seed granted the Guest role permission to create records in both the user entity and the role entity. |
+| **SEVERITY** | Critical. *Privilege escalation to admin* is a Critical-tier condition in the severity matrix. Create permission on the two entities that define identity and privilege is the shortest possible path to it, and the grant was held by the role that unauthenticated callers occupy. |
+| **CWE** | [CWE-269: Improper Privilege Management](https://cwe.mitre.org/data/definitions/269.html) and [CWE-732: Incorrect Permission Assignment for Critical Resource](https://cwe.mitre.org/data/definitions/732.html). |
+| **LOCATION** | `WebVella.Erp/ERPService.cs:L77` for the user entity and `:L363` for the role entity. A related Guest read grant on the role entity sits at `:L366`. |
+| **DESCRIPTION** | Provisioning built the record-permission sets for the user and role entities and added `SystemIds.GuestRoleId` to `CanCreate` on both. The Guest role is the role an unauthenticated caller carries, so the platform shipped with anonymous create permission over its own identity and privilege tables. The seed is otherwise deliberate about restriction — update and delete on both entities are Administrator-only — which makes the create grants look like a development convenience that was never withdrawn rather than a considered decision. Maps to **OWASP A01:2021 — Broken Access Control**. |
+| **IMPACT** | A caller reaching a record-create route without credentials could insert user rows and role rows. Creating a role is creating a privilege set; creating a user and associating it with a privileged role is a complete escalation to administrator, and administrator in this platform reaches server-side code execution through the page-component code hooks. The grant also violates deny-by-default at the exact place where deny-by-default matters most. |
+| **EVIDENCE** | At the audit baseline `:L77` read `userEntity.RecordPermissions.CanCreate.Add(SystemIds.GuestRoleId);` and `:L363` read `roleEntity.RecordPermissions.CanCreate.Add(SystemIds.GuestRoleId);`, each immediately followed by the equivalent Administrator grant. `:L366` additionally read `roleEntity.RecordPermissions.CanRead.Add(SystemIds.GuestRoleId);`. |
+| **REMEDIATION** | Traces to the **Authorization Enforcement** standard's deny-by-default clause. Both Guest `CanCreate` grants are removed from the seed, as is the Guest `CanRead` grant on the user entity that `C-02` covers. Because a seed correction protects only new installations, `RevokeGuestRecordPermissions4` (`:L2379`, with the per-entity overload at `:L2428`) revokes the same grants on already-provisioned deployments inside the version-4 migration. Two consequences are recorded rather than left to be discovered. First, the Guest **read** grant on the *role* entity is removed from the seed only: the migration that would have carried that removal to existing installations was withdrawn as outside the frozen scope of this engagement, because it is a Medium rather than a compensating control for a Critical, so a fresh installation does not have that grant while an existing one keeps it — an open documented Medium in the [risk register](risk-register.md). Second, two plugin patches restate the affected entities' full permission sets from source, so replaying them re-grants what the seed no longer contains; both patches now carry the correction, and the interaction is recorded in the [remediation log](remediation-log.md). |
 
 ### High severity findings
 
@@ -187,7 +677,7 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **DESCRIPTION** | The core library pinned `AutoMapper` with the exact-version notation `[14.0.0]`. Advisory [GHSA-rvv3-g6hj-g44x](https://github.com/advisories/GHSA-rvv3-g6hj-g44x) / CVE-2026-32933 affects every version below `15.1.1` (and, separately, the `16.0.0` line below `16.1.1`), classifying the defect as uncontrolled recursion (CWE-674). The advisory maps to **OWASP A06:2021 — Vulnerable and Outdated Components**. Because the pin used exact-version notation, no transitive resolution could lift the platform onto a patched version. |
 | **IMPACT** | A mapping graph that recurses without bound exhausts the stack and terminates the hosting process, so the exposure is availability loss (denial of service) rather than disclosure or code execution. Every one of the seven site hosts and the console application resolves its object mapping through this single package, so the affected component sits on the request path of the whole platform. Real-world exploitability in this codebase is low and is assessed in full in the [risk register](risk-register.md): all mappings are statically declared in source, and no user-controlled mapping configuration or type graph reaches the configuration builder, so the recursion path is reachable only through a self-referential mapping the developers themselves would have to author. |
 | **EVIDENCE** | Reproduced with the toolchain's own dependency audit against the affected version: `dotnet restore` reports `warning NU1903: Package 'AutoMapper' 14.0.0 has a known high severity vulnerability, https://github.com/advisories/GHSA-rvv3-g6hj-g44x`, and `dotnet list package --vulnerable` reports the row `AutoMapper  [14.0.0]  14.0.0  High  https://github.com/advisories/GHSA-rvv3-g6hj-g44x`. Package metadata confirms the licence change described under REMEDIATION: `automapper.nuspec` declares `<license type="expression">MIT</license>` at 14.0.0 and `<license type="file">LICENSE.md</license>` at 15.1.3, where that licence file names the Reciprocal Public License 1.5. |
-| **REMEDIATION** | The pin was raised to `[15.1.3]` — the newest release on the **lowest patched major**, chosen to minimise behavioural drift while still clearing the advisory. The upgrade requires exactly one code change: from 15.x the `MapperConfiguration` constructor takes an `ILoggerFactory`, so `ErpAutoMapper.Initialize` now supplies `NullLoggerFactory.Instance` (from the `Microsoft.AspNetCore.App` framework reference already present at `WebVella.Erp/WebVella.Erp.csproj:L61`, so **no new package dependency was added**). A no-op factory is used deliberately: the platform performs no AutoMapper logging, and introducing real logging would exceed the remediation scope. The `Initialize` signature and the `ErpAutoMapper.Mapper` field are unchanged, so both call sites and all mapping declarations, profiles and projection sites keep compiling untouched. Verification and the residual licensing decision are recorded in the [remediation log](remediation-log.md) and the [risk register](risk-register.md). |
+| **REMEDIATION** | The pin was raised to `[15.1.3]` — the newest release on the **lowest patched major**, chosen to minimise behavioural drift while still clearing the advisory. The upgrade requires exactly one code change: from 15.x the `MapperConfiguration` constructor takes an `ILoggerFactory`, so `ErpAutoMapper.Initialize` now supplies `NullLoggerFactory.Instance` (from the `Microsoft.AspNetCore.App` framework reference already present at `WebVella.Erp/WebVella.Erp.csproj:L61`, so **no new package dependency was added**). A no-op factory is used deliberately: the platform performs no AutoMapper logging, and introducing real logging would exceed the remediation scope. The `Initialize` signature and the `ErpAutoMapper.Mapper` field are unchanged, so both call sites and all mapping declarations, profiles and projection sites keep compiling untouched. Verification and the residual licensing decision are recorded in the [remediation log](remediation-log.md) and the [risk register](risk-register.md). Traces to the **Dependency Updates** standard's clause on packages with known Critical or High advisories. |
 
 ##### Verification of the H-01 fix
 
@@ -200,7 +690,6 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | Scan trustworthiness precondition | The project-reference path casing defect (finding H-19) is already fixed, so `WebVella.Erp` is genuinely present in the restore graph and the clean result is not a silent omission. Verified with `grep -rn 'WebVella\.ERP\\' --include=*.csproj . WebVella.ERP3.sln` returning nothing. |
 | Runtime verification | A host and the console application both start, initialise mapping and serve traffic; interactive login succeeds (`POST /login` → `302`) and the authenticated pages render, exercising the `EntityRecord` → `ErpUser` projection that the login path depends on. No `AutoMapperConfigurationException`, no `NullReferenceException` and no mapping error in either process. |
 
-
 #### H-02 — Token lifetime validation disabled
 
 | Field | Value |
@@ -208,11 +697,11 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | Bearer-token validation was configured with lifetime validation switched off, so an expired token continued to be accepted indefinitely, and validation failures were swallowed without a trace. |
 | **SEVERITY** | High — session hijacking. A captured token never stops working. |
 | **CWE** | [CWE-613: Insufficient Session Expiration](https://cwe.mitre.org/data/definitions/613.html) and [CWE-347: Improper Verification of Cryptographic Signature](https://cwe.mitre.org/data/definitions/347.html) |
-| **LOCATION** | `WebVella.Erp.Web/Services/AuthService.cs` — the token validation parameters, and the surrounding `catch`. |
+| **LOCATION** | `WebVella.Erp.Web/Services/AuthService.cs:L127-L136` — the token validation parameters — and the surrounding `catch` at `:L139-L142`. The anonymous refresh route that makes it reachable is `WebVella.Erp.Web/Controllers/WebApiController.cs:L4292-L4295`. |
 | **DESCRIPTION** | The validation parameters omitted `ValidateLifetime`, which defaults the handler into accepting any expiry, and the `catch (Exception)` around validation returned without recording anything. Compounding it, the token refresh endpoint is anonymous, so an indefinitely valid token was also indefinitely renewable. Maps to **OWASP A07:2021 — Identification and Authentication Failures**. |
 | **IMPACT** | A token obtained once — from a log, a proxy, a browser history or a shared device — authenticates forever, so revocation by expiry does not exist. Silent failure handling additionally means an attacker probing with forged tokens leaves no evidence. |
 | **EVIDENCE** | The pre-audit parameters contained no `ValidateLifetime` and no `ClockSkew`; the exception handler discarded the exception object entirely (`catch (Exception)`). |
-| **REMEDIATION** | `ValidateLifetime = true` with an explicit `ClockSkew` of one minute — explicit rather than default, because the framework default of five minutes silently extends every token's usable life. Validation failures are now logged, with a one-minute rate limit on the log write so a token-flooding attempt cannot itself become a log-volume denial of service, and with the log write wrapped so that a logging failure can never turn into an authentication failure. **Corrected by review finding `F7`:** at the time this record was first written the explicit skew existed only in the platform's own validator — both hosts' `AddJwtBearer` registrations omitted `ClockSkew` and therefore kept IdentityModel's five-minute default, so an expired bearer principal could stay authorized around four minutes longer than this record implied. All three validators now read one member, `AuthService.JwtClockSkew`, so they cannot drift apart. **Also narrowed by review finding `F11`:** the outer catch was still `catch (Exception)`, which converted any defect inside validation into "invalid token" and wrote an audit record asserting a credential rejection that had never been judged. It now catches only `SecurityTokenException` and `ArgumentException`, and anything else propagates into the error pipeline. |
+| **REMEDIATION** | `ValidateLifetime = true` with an explicit `ClockSkew` of one minute — explicit rather than default, because the framework default of five minutes silently extends every token's usable life. Validation failures are now logged, with a one-minute rate limit on the log write so a token-flooding attempt cannot itself become a log-volume denial of service, and with the log write wrapped so that a logging failure can never turn into an authentication failure. **Corrected by review finding `F7`:** at the time this record was first written the explicit skew existed only in the platform's own validator — both hosts' `AddJwtBearer` registrations omitted `ClockSkew` and therefore kept IdentityModel's five-minute default, so an expired bearer principal could stay authorized around four minutes longer than this record implied. All three validators now read one member, `AuthService.JwtClockSkew`, so they cannot drift apart. **Also narrowed by review finding `F11`:** the outer catch was still `catch (Exception)`, which converted any defect inside validation into "invalid token" and wrote an audit record asserting a credential rejection that had never been judged. It now catches only `SecurityTokenException` and `ArgumentException`, and anything else propagates into the error pipeline. Traces to the **Authentication Hardening** standard's secure-session clause. |
 
 #### H-03 — Authentication ticket expiry set 100 years ahead
 
@@ -221,11 +710,11 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | The authentication cookie ticket was issued with an expiry 100 years in the future. |
 | **SEVERITY** | High — session hijacking. |
 | **CWE** | [CWE-613: Insufficient Session Expiration](https://cwe.mitre.org/data/definitions/613.html) |
-| **LOCATION** | `WebVella.Erp.Web/Services/AuthService.cs` — the authentication properties built at sign-in. |
+| **LOCATION** | `WebVella.Erp.Web/Services/AuthService.cs:L44`, inside the `AuthenticationProperties` initialiser built at sign-in spanning `:L41-L47`. |
 | **DESCRIPTION** | `ExpiresUtc = DateTimeOffset.UtcNow.AddYears(100)`. A stolen cookie therefore remained valid for the lifetime of the deployment and beyond. Maps to **OWASP A07:2021**. |
 | **IMPACT** | Effectively unbounded session lifetime: a cookie captured from a shared or compromised machine grants access permanently, and signing out on one device does not invalidate a copy taken from another. |
 | **EVIDENCE** | The `AddYears(100)` call is present verbatim at the pre-audit revision. |
-| **REMEDIATION** | Replaced with a bounded lifetime expressed as a named constant of 1 440 minutes — one day — chosen to align with the cookie expiry window rather than invented, so the ticket and the cookie cannot disagree about when the session ends. |
+| **REMEDIATION** | Replaced with a bounded lifetime expressed as a named constant of 1 440 minutes — one day — chosen to align with the cookie expiry window rather than invented, so the ticket and the cookie cannot disagree about when the session ends. Traces to the **Authentication Hardening** standard's secure-session clause. |
 
 #### H-04 — Weak default token signing key compiled into the settings
 
@@ -234,11 +723,11 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | When no token signing key was configured, the platform substituted the compiled-in literal `"ThisIsMySecretKey"`. |
 | **SEVERITY** | High — anyone knowing the default can mint valid tokens for any account, which is authentication bypass. |
 | **CWE** | [CWE-798: Use of Hard-coded Credentials](https://cwe.mitre.org/data/definitions/798.html) and [CWE-321: Use of Hard-coded Cryptographic Key](https://cwe.mitre.org/data/definitions/321.html) |
-| **LOCATION** | `WebVella.Erp/ErpSettings.cs` — the signing-key assignment. |
-| **DESCRIPTION** | `JwtKey = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Key"]) ? "ThisIsMySecretKey" : configuration["Settings:Jwt:Key"];`. The fallback is both guessable and published. Maps to **OWASP A02:2021**. |
+| **LOCATION** | `WebVella.Erp/ErpSettings.cs:L118` — the signing-key assignment, with the issuer and audience defaults at `:L119-L120`. The shipped values are at `WebVella.Erp.Site/Config.json:L25` and `WebVella.Erp.Site.Project/Config.json:L19-L20`, and a fourth occurrence of the literal is in the tracked tree at `WebVella.Erp.Site/JWT_README.txt:L12`. |
+| **DESCRIPTION** | `JwtKey = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Key"]) ? "ThisIsMySecretKey" : configuration["Settings:Jwt:Key"];`. The fallback is both guessable and published. **The weakness is entropy, not length, and the distinction matters because the naive reading of it is wrong.** The two shipped values are 51 characters long — the phrase `ThisIsMySecretKey…` repeated three times — which is comfortably longer than the 256-bit minimum that HS256 wants, and HS256 is the algorithm actually in use (`SecurityAlgorithms.HmacSha256Signature` at `WebVella.Erp.Web/Services/AuthService.cs:L156`). So no claim of insufficient key length is made here, and none should be inferred. What is defective is that a thrice-repeated English phrase carries near-zero entropy, and that both it and the shorter 17-character compiled-in default are published in a public repository, which reduces the work of forging a token to reading the tree. Maps to **OWASP A02:2021**. |
 | **IMPACT** | A token signed with a known key is indistinguishable from a legitimate one, so an attacker forges a token carrying any identity and any role, including administrator. This is privilege escalation to administrator with no credential required. |
-| **EVIDENCE** | The conditional with the literal fallback is present verbatim at the pre-audit revision. |
-| **REMEDIATION** | The fallback is deleted — the key is now read straight from configuration and nothing is substituted — and fail-fast validation aborts startup with an actionable message when a signing key is required but absent. The validation is conditional on the `Settings:Jwt` section existing, so hosts that issue no tokens are not forced to configure a key they never use. The message names the setting, the environment variable that supplies it, and the finding, so an operator can act on it without reading the source. |
+| **EVIDENCE** | The conditional with the literal fallback is present verbatim at the pre-audit revision, and the shipped 51-character value was read from both `Config.json` files at that same revision and confirmed to be the same phrase repeated three times. Both are truncated here deliberately; the full values remain in repository history and are therefore permanently compromised, so rotation of the signing key is mandatory and is not optional on the strength of the code fix alone. |
+| **REMEDIATION** | The fallback is deleted — the key is now read straight from configuration and nothing is substituted — and fail-fast validation aborts startup with an actionable message when a signing key is required but absent. The validation is conditional on the `Settings:Jwt` section existing, so hosts that issue no tokens are not forced to configure a key they never use. The message names the setting, the environment variable that supplies it, and the finding, so an operator can act on it without reading the source. Traces to the **Cryptographic Standards** clause forbidding embedded key material. |
 
 #### H-05 — Plaintext database credentials in eight shipped configuration files
 
@@ -247,11 +736,11 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | Every shipped `Config.json` carries a live PostgreSQL connection string, including the database user name and password, and one also carries the mail account password. |
 | **SEVERITY** | High — a repository read is enough to obtain database credentials for any deployment that kept the shipped values. |
 | **CWE** | [CWE-798: Use of Hard-coded Credentials](https://cwe.mitre.org/data/definitions/798.html) |
-| **LOCATION** | All eight `Config.json` files: `WebVella.Erp.Site`, `WebVella.Erp.Site.Crm`, `WebVella.Erp.Site.Mail`, `WebVella.Erp.Site.MicrosoftCDM`, `WebVella.Erp.Site.Next`, `WebVella.Erp.Site.Project`, `WebVella.Erp.Site.Sdk` and `WebVella.Erp.ConsoleApp`. |
-| **DESCRIPTION** | The connection string, the encryption key, the token signing key and the mail password are all present as literal values in files that are tracked in version control. Each file carries them at different line positions, so no uniform patch applies. Maps to **OWASP A05:2021 Security Misconfiguration**. |
+| **LOCATION** | All eight `Config.json` files, at per-file locators, which is why the scrub had to be performed file by file rather than by a uniform patch. Connection string and encryption key at `:L4` and `:L5` in `WebVella.Erp.Site`, and at `:L3` and `:L4` in each of `WebVella.Erp.Site.Crm`, `.Mail`, `.MicrosoftCDM`, `.Next`, `.Project`, `.Sdk` and `WebVella.Erp.ConsoleApp`. `WebVella.Erp.Site:L13` and `:L11` in four of the others additionally exposed an internal UNC path. |
+| **DESCRIPTION** | The database connection string and the encryption key are present as literal values in files tracked in version control, and two of the eight additionally carry the token signing key (finding `H-04`). Each file carries them at different line positions, so no uniform patch applies. **One correction is stated rather than inherited:** the mail password is **not** among them. `EmailSMTPPassword` is the empty string in **all eight** files — verified at `WebVella.Erp.Site:L18`, `WebVella.Erp.Site.Sdk:L18`, `WebVella.Erp.ConsoleApp:L17` and `:L16` in the remaining five — so this finding is scoped to the connection strings and the encryption key, and any claim that a live SMTP credential was published would be false. Maps to **OWASP A05:2021 Security Misconfiguration**. |
 | **IMPACT** | Direct database access with the application's own privileges, which bypasses every application-level authorisation control the platform implements. Where the values were reused across environments, one leak compromises all of them. |
-| **EVIDENCE** | The literal values are present verbatim in all eight files at the pre-audit revision. |
-| **REMEDIATION** | **Fixed.** An earlier revision of this row said "partially remediated; the scrub itself is a later stage" and that the finding "remains open"; both are retracted - the scrub has landed. All eight shipped configuration files now carry **empty** values for the connection string, encryption key, token signing key and mail password, and the files are retained rather than deleted because the JSON configuration source is not optional and deleting them stops every host from starting. The precondition that made scrubbing safe rather than fatal landed first, in the required order: startup now fails fast, with an actionable message naming each missing setting and its environment variable, when a required secret is absent. Two further changes are required before the values can be removed, and both are deliberately out of this stage: the configuration provider chain must be extended beyond its single JSON source, because there is currently no other channel by which an operator could supply a secret; and the files must then be scrubbed rather than deleted, because the JSON source is not optional and deleting them stops every host from starting. Both have landed, so this finding is closed **in the working tree**. One thing must still not be read into it: scrubbing the working tree does **not** remove these values from committed history, so every secret that was ever committed must be treated as compromised and rotated. The rotation instruction is in [the secure configuration guide](secure-configuration.md). |
+| **EVIDENCE** | The literal values are present verbatim in all eight files at the audit baseline, and the distribution is exact rather than approximate. **Seven** of the eight carry a live connection string to the internal host `192.168.x.x:5436`, which is internal network-topology disclosure in its own right; the eighth, `WebVella.Erp.Site`, points its live string at `localhost:5432` and carries the internal host only in the commented-out string above it at `:L3`. The `User Id`/`Password` pair is `test/test` in **six** files and `dev/dev` in **two** — `WebVella.Erp.Site:L4` and `WebVella.Erp.Site.Project:L3`. The encryption key `BC93B776A428…`, 64 hexadecimal characters, is **byte-identical in all eight**. The values are truncated here deliberately, and the truncation changes nothing about their status: **the full values remain in repository history and are therefore permanently compromised, so rotation is mandatory rather than optional.** One value present in the same files is deliberately **not** reported as a secret — `CloudBlobStorageConnectionString` in the SDK host at `:L13` is a local disk path, not a credential. |
+| **REMEDIATION** | **Fixed.** An earlier revision of this row said "partially remediated; the scrub itself is a later stage" and that the finding "remains open"; both are retracted - the scrub has landed. All eight shipped configuration files now carry **empty** values for the connection string, encryption key, token signing key and mail password, and the files are retained rather than deleted because the JSON configuration source is not optional and deleting them stops every host from starting. The precondition that made scrubbing safe rather than fatal landed first, in the required order: startup now fails fast, with an actionable message naming each missing setting and its environment variable, when a required secret is absent. Two further changes are required before the values can be removed, and both are deliberately out of this stage: the configuration provider chain must be extended beyond its single JSON source, because there is currently no other channel by which an operator could supply a secret; and the files must then be scrubbed rather than deleted, because the JSON source is not optional and deleting them stops every host from starting. Both have landed, so this finding is closed **in the working tree**. One thing must still not be read into it: scrubbing the working tree does **not** remove these values from committed history, so every secret that was ever committed must be treated as compromised and rotated. The rotation instruction is in [the secure configuration guide](secure-configuration.md). Traces to the **Cryptographic Standards** clause forbidding embedded key material, and to the **Dependency Updates** standard's pin-and-externalise discipline as applied to configuration. |
 
 #### H-06 — Cross-site scripting through unencoded output
 
@@ -260,11 +749,37 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | The raw-output helper is used at 128 sites across 69 Razor views. Three of them emit an unencoded, caller-supplied return URL into an `href` attribute; a further set render database text without encoding, including navigation and menu content that appears on every page of every host. |
 | **SEVERITY** | High — stored cross-site scripting in navigation content executes for every user who loads any page. |
 | **CWE** | [CWE-79: Improper Neutralization of Input During Web Page Generation](https://cwe.mitre.org/data/definitions/79.html), and [CWE-601: URL Redirection to Untrusted Site](https://cwe.mitre.org/data/definitions/601.html) for the return-URL sinks |
-| **LOCATION** | Reflected: `WebVella.Erp.Plugins.SDK/Pages/page/create.cshtml`, `.../manage.cshtml` and `.../manage-custom.cshtml`. Stored: the shared navigation and menu views (`WebVella.Erp.Web/Pages/Shared/NavItem.cshtml`, `.../NavMenu.cshtml`, `WebVella.Erp.Web/Components/SiteMenu/SiteMenu.cshtml`), the SDK data-source listing, and the Project plugin widget views. The stored sinks' **root cause is not in those views at all**: the markup they render raw is composed in `WebVella.Erp.Web/Models/BaseErpPageModel.cs` (five sink blocks) and in the three Project widget builders `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs`, `.../PcProjectWidgetTimesheet/PcProjectWidgetTimesheet.cs` and `.../PcProjectWidgetTaskDistribution/PcProjectWidgetTaskDistribution.cs` (four sink lines). That is where the fix landed. |
+| **LOCATION** | Reflected: `WebVella.Erp.Plugins.SDK/Pages/page/create.cshtml:L16`, `.../manage.cshtml:L21` and `.../manage-custom.cshtml:L18`. Stored, highest blast radius first: `WebVella.Erp.Web/Pages/Shared/NavItem.cshtml:L13` and `:L30`, `WebVella.Erp.Web/Pages/Shared/NavMenu.cshtml:L13` and `:L35`, and `WebVella.Erp.Web/Components/SiteMenu/SiteMenu.cshtml:L22`, all of which render on every page of every host; then `WebVella.Erp.Plugins.SDK/Pages/data_source/list.cshtml:L28`, `:L31`, `:L34` and `:L50`; then the six Project widget views — `PcProjectWidgetTimesheet/Design.cshtml:L18` and `Display.cshtml:L18`, `PcProjectWidgetTasksQueue/Design.cshtml:L55-L56` and `Display.cshtml:L54-L55`, and `PcProjectWidgetTaskDistribution/Design.cshtml:L41` and `Display.cshtml:L41`. The stored sinks' **root cause is not in those views at all**: the markup they render raw is composed in `WebVella.Erp.Web/Models/BaseErpPageModel.cs` (five sink blocks) and in the three Project widget builders `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs`, `.../PcProjectWidgetTimesheet/PcProjectWidgetTimesheet.cs` and `.../PcProjectWidgetTaskDistribution/PcProjectWidgetTaskDistribution.cs` (four sink lines). That is where the fix landed. |
 | **DESCRIPTION** | Most of the 128 sites are **not** vulnerable and were proven so rather than assumed: roughly 55 render markup the server itself constructs from identifiers only, and four are by-design raw channels whose whole purpose is to emit author-supplied markup or script. Classifying every site by its argument was essential, because treating all 128 as defects would have produced a large volume of false findings. Maps to **OWASP A03:2021 Injection**. |
 | **IMPACT** | Script executing on the application's own origin can read the session, act as the victim, and — because the navigation renders everywhere — reach every authenticated user of the platform. |
-| **EVIDENCE** | The three reflected sinks emit the unencoded model property while sibling pages in the same area already use its encoded counterpart, which is what localised the defect. A headless-browser run confirmed the exploit: HTML encoding alone stops attribute breakout but a `javascript:` scheme URL still executes when the link is activated, because the browser decodes entities *before* parsing the scheme. |
-| **REMEDIATION** | **Closed — the reflected and the stored sinks are both remediated; only the four by-design channels remain accepted.** Encoding was the wrong control for the reflected sinks and was replaced by validation: the return URL is now accepted only if it is a same-site local URL, and anything else falls back to a safe default. The same policy was applied to the two companion redirect sinks in the page models, which were a second, unencoded path to the same weakness. The stored sinks were then closed **where the markup is composed, not where it is rendered**, because composition is where the untrusted values enter it. In `WebVella.Erp.Web/Models/BaseErpPageModel.cs` the four `MenuItem.Content` composition sites — the multi-node area link, the two sitemap node links, the single-node area link and the site-page anchor — now HTML-encode every interpolated label and title, admit a node URL only when it is a local path, a fragment or an explicit `http`/`https` absolute URL (rejecting control characters and protocol-relative `//host` forms), constrain an icon class to letters, digits, spaces, hyphens and underscores, and percent-escape the site-page name before it becomes a path segment. The three `PcProjectWidget*` component builders no longer assemble markup at all: they publish structured text, image-path, icon-class and colour fields, and their six Design and Display views render literal `<img>`, `<i>` and `<a>` elements so Razor's automatic encoding applies to every value. The raw-output helper therefore remains in the navigation, menu and site-menu views — removing it would break the deliberate icon markup those views carry and the dropdown rewrite `NavItem` performs on the composed string — but it now has nothing executable left to emit, so the per-sink triage previously planned for those views is no longer required. The four by-design channels are still never encoded; they are covered by the compensating control of restricting markup authoring to privileged roles plus the content-security policy, and remain recorded as accepted risk under `RISK-023`, which is confined to those four channels alone. Additionally, the platform's only escaping utility — a case-sensitive string replacement, trivially defeated by altered casing — was replaced by the framework encoder; see M-18. **One further sink of this class was found after this record was written and is closed separately: see `P-23`.** It is not one of the 128 raw-output sites at all — it is the platform's single `WvSelectOption` conversion boundary, from which the third-party select component concatenates a stored option's `icon_class` and `color` into a `class` and a `style` attribute. |
+| **EVIDENCE** | The three reflected sinks emit the unencoded model property while sibling pages in the same area already use its encoded counterpart, which is what localised the defect. **The three navigation and menu sinks are `IsHtml`-guarded, not unconditional, and the guarded construct is quoted rather than paraphrased because the naive wording would be a false claim.** `NavItem.cshtml:L11` reads `@if (navItem.IsHtml)` and `:L13` `@Html.Raw(navItem.Content)`, while the `else` at `:L15` reaches `:L17` `@navItem.Content`, which Razor auto-encodes; the same pattern repeats at `:L28`, `:L30` and `:L32`. `NavMenu.cshtml:L11` reads `@if (menu.IsHtml)` with `@Html.Raw(menu.Content)` at `:L13` and the encoded `@menu.Content` at `:L17`, repeating at `:L33`, `:L35` and `:L37`. `SiteMenu.cshtml:L20` reads `@if (menuItem.IsHtml)` with `@Html.Raw(menuItem.Content)` at `:L22` and the encoded `@menuItem.Content` at `:L26`. These three therefore resolve to a **by-design opt-in markup channel whose safe auto-encoded path is already present in the `else` branch**; the residual is a **privileged-author** stored-scripting channel — whoever can set `IsHtml` true — carrying the same compensating control as the four by-design raw channels recorded in the [risk register](risk-register.md). The blast-radius statement stands unchanged: these views render on every page of every host, which is what keeps them the top sink of this finding. The genuine text sinks are elsewhere, and their remediation is subtractive — the raw wrapper is deleted so the plain Razor expression auto-encodes — while the icon value at `data_source/list.cshtml:L28` is triaged as a markup channel rather than encoded. A headless-browser run confirmed the exploit: HTML encoding alone stops attribute breakout but a `javascript:` scheme URL still executes when the link is activated, because the browser decodes entities *before* parsing the scheme. |
+| **REMEDIATION** | **Closed — the reflected and the stored sinks are both remediated; only the four by-design channels remain accepted.** Encoding was the wrong control for the reflected sinks and was replaced by validation: the return URL is now accepted only if it is a same-site local URL, and anything else falls back to a safe default. The same policy was applied to the two companion redirect sinks in the page models, which were a second, unencoded path to the same weakness. The stored sinks were then closed **where the markup is composed, not where it is rendered**, because composition is where the untrusted values enter it. In `WebVella.Erp.Web/Models/BaseErpPageModel.cs` the four `MenuItem.Content` composition sites — the multi-node area link, the two sitemap node links, the single-node area link and the site-page anchor — now HTML-encode every interpolated label and title, admit a node URL only when it is a local path, a fragment or an explicit `http`/`https` absolute URL (rejecting control characters and protocol-relative `//host` forms), constrain an icon class to letters, digits, spaces, hyphens and underscores, and percent-escape the site-page name before it becomes a path segment. The three `PcProjectWidget*` component builders no longer assemble markup at all: they publish structured text, image-path, icon-class and colour fields, and their six Design and Display views render literal `<img>`, `<i>` and `<a>` elements so Razor's automatic encoding applies to every value. The raw-output helper therefore remains in the navigation, menu and site-menu views — removing it would break the deliberate icon markup those views carry and the dropdown rewrite `NavItem` performs on the composed string — but it now has nothing executable left to emit, so the per-sink triage previously planned for those views is no longer required. The four by-design channels are still never encoded; they are covered by the compensating control of restricting markup authoring to privileged roles plus the content-security policy, and remain recorded as accepted risk under `RISK-023`, which is confined to those four channels alone. Additionally, the platform's only escaping utility — a case-sensitive string replacement, trivially defeated by altered casing — was replaced by the framework encoder; see M-18. **One further sink of this class was found after this record was written and is closed separately: see `P-23`.** It is not one of the 128 raw-output sites at all — it is the platform's single `WvSelectOption` conversion boundary, from which the third-party select component concatenates a stored option's `icon_class` and `color` into a `class` and a `style` attribute. Traces to the **Injection Prevention** standard's context-appropriate-output-encoding clause. |
+
+#### H-07 — Script injection through the rich-text editor upload callback
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Script injection through the rich-text editor upload callback |
+| **SEVERITY** | High |
+| **CWE** | CWE-79, CWE-94 (OWASP A03:2021) |
+| **LOCATION** | `WebVella.Erp.Web/Controllers/WebApiController.cs` — as audited, `:L4014` (source) flowing to `:L4029` and `:L4036` (sinks). Post-remediation the same code is at `:L4516` (source), `:L4526` (the validation gate) and `:L3819-L3826` (`BuildCKEditorCallback`, which now owns both surviving interpolations) |
+| **DESCRIPTION** | The `UploadFileManagerCKEditor` action reads the editor's callback index straight from the query string into a local string and then concatenates that string into a `<script>` body returned to the browser. Neither sink validates the value and neither encodes it for a script context. The second sink additionally concatenates `ex.Message` into the same script. |
+| **IMPACT** | An attacker who can cause a victim's browser to issue the upload request with a crafted `CKEditorFuncNum` value controls a JavaScript expression that executes on the application's own origin, inside an authenticated session. The exception sink also discloses server-side error text to the browser. |
+| **EVIDENCE** | `string CKEditorFuncNum = HttpContext.Request.Query["CKEditorFuncNum"].ToString();` at `:L4014`, reaching `... callFunction(" + CKEditorFuncNum + ", ...` at `:L4029` and `:L4036`; `:L4036` also interpolates `ex.Message`. That was the state when the inventory was taken; the trailing sentence of this field previously read "Measured at this commit — the finding is open; no remediation has been applied", which contradicted the remediation field directly below it and is superseded. **The finding is closed**: the callback index is now integer-parsed before use, both sinks are encoded with `JavaScriptEncoder.Default`, the exception sink no longer echoes `ex.Message`, and all three emissions are funnelled through a single `BuildCKEditorCallback(int, string, string)` helper so a future sink cannot bypass the encoding. |
+| **REMEDIATION** | **Fixed.** Every value now sits in a context it cannot escape. The callback index is parsed with `int.TryParse(..., NumberStyles.Integer, CultureInfo.InvariantCulture, ...)` and the request is rejected outright when it does not parse; thereafter it is carried as an `int`, so the bare — and therefore unquotable — numeric position holds no attacker-controlled text at all, which is why integer validation is both sufficient and lossless for what is simply a numeric callback index. The URL and message are emitted inside JavaScript string literals through `JavaScriptEncoder.Default`, which escapes the double quote to `\u0022` and also the backslash, the apostrophe, CR, LF, U+2028, U+2029 and `<` to `\u003C`, so neither the string literal nor the enclosing `</script>` element can be terminated. The echoed `ex.Message` is replaced by a fixed internal-error string while the exception continues to be logged server-side. All three sinks are funnelled through one helper, `BuildCKEditorCallback(int, string, string)`, whose signature makes the fix structural: the index cannot be a string at that boundary. `grep -c 'JavaScriptEncoder'` on the controller returns **2**, both inside that helper, and the fixed string is `INTERNAL_ERROR_MESSAGE` at `:L46`. No new dependency was required — the same encoder already backs the replaced output helper in `WebVella.Erp.Web/Utils/HtmlHelperExtension.cs`. The markup, the content type and the CKEditor callback contract are unchanged, so the editor behaves exactly as before. Verify with `grep -n 'BuildCKEditorCallback' WebVella.Erp.Web/Controllers/WebApiController.cs` — the declaration at `:L4310` and four call sites (`:L5224`, `:L5239`, `:L5255`, `:L5268`), with the `int.TryParse` guard at `:L5203`. Traces to the **Injection Prevention** standard's allowlist-validation and output-encoding clauses. |
+
+#### H-08 — Unrestricted file upload chaining into inline execution
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Four upload actions accepted any file type and any size, stored the caller-supplied file name without sanitisation, and the download action then served the stored bytes **inline from the application's own origin** with no content-disposition — so an uploaded markup or vector file became stored script. Two adjacent file actions performed no object-level authorization at all. |
+| **SEVERITY** | High. Two High-tier conditions in the severity matrix are met: *stored cross-site scripting*, reached by the upload-to-inline-download chain, and *insecure direct object reference over sensitive data*, in the unauthorised move and delete actions. |
+| **CWE** | [CWE-434: Unrestricted Upload of File with Dangerous Type](https://cwe.mitre.org/data/definitions/434.html), with the direct-object-reference half recorded as [CWE-639: Authorization Bypass Through User-Controlled Key](https://cwe.mitre.org/data/definitions/639.html). |
+| **LOCATION** | Uploads at `WebVella.Erp.Web/Controllers/WebApiController.cs:L3962`, `:L4009`, `:L4041` and `:L4134`; caller-supplied file names consumed at `:L3977`, `:L4022`, `:L4061` and `:L4151`; the inline download at `:L3323`; the move action at `:L3355-L3368`; the catch-all delete action at `:L3370-L3383`. |
+| **DESCRIPTION** | None of the four upload actions constrained extension, media type or size, and all four read the whole stream into memory before any size was known. The file name arrived from the caller and was concatenated straight into a storage path. Separately, the download action returned the stored bytes with a resolved MIME type and **no content-disposition header**, which is what turns a permissive upload into a scripting vulnerability rather than merely a storage-hygiene one: markup or SVG served inline executes on this application's origin, with this application's cookies. The move and delete actions fetched the target file and acted on it without ever asking whether the caller owned it, and the delete action was reachable through a catch-all route matching any path. Maps to **OWASP A04:2021 — Insecure Design** and **A03:2021 — Injection**. |
+| **IMPACT** | An authenticated caller of any role could upload an HTML or SVG document and obtain a URL on the application's own origin that executes script in the browser of any user who opened it — stored cross-site scripting with session-scoped consequences, including credential-bearing requests made as the victim. The absent size bound made a single request a memory-exhaustion primitive. The unauthorised move and delete actions let any authenticated caller relocate or destroy any other user's file given only its path, which is a direct object reference over data the platform treats as private. |
+| **EVIDENCE** | At the audit baseline the two editor uploads built their storage path as `var tempPath = "tmp/" + Guid.NewGuid() + "/" + upload.FileName;` (`:L3977`, `:L4022`) and the two multi-file uploads took the name from `ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName` (`:L4061`, `:L4151`), with no extension, media-type or length check on any path. The download action read `return File(file.GetBytes(), mimeType);` at `:L3323` — no disposition argument, so the browser renders in place. The move action fetched `fsRepository.Find(source)` and called `Move` with no authorization between them; the delete action was declared `[AcceptVerbs(new[] { "DELETE" }, Route = "{*filepath}")]` at `:L3370` and likewise called `Find` then `Delete`. That the omission was an oversight rather than a constraint is visible two dozen lines away, where `:L4056` reads `var currentUser = AuthService.GetUser(User);` — a user handle was already available in the same region. |
+| **REMEDIATION** | Traces to the **Injection Prevention** standard's allowlist-validation clause and the **Authorization Enforcement** standard's object-level clause, and both halves of the chain are closed together because constraining either alone leaves it intact. Uploads now enforce an extension **allow-list** (`ALLOWED_UPLOAD_EXTENSIONS`), a 25 MiB size cap (`MAX_UPLOAD_SIZE_BYTES`, chosen to sit below the framework's own default request-body limit so it can never be the surprising bound), a content-type check, and a 200-character file-name bound with sanitisation before the name reaches a storage path. The allow-list is derived from the file types the platform already classifies rather than invented, with two deliberate exclusions that are the whole point of the finding: `.html` and `.htm`, which the platform's own document list contains and which are the exact payload of the scripting chain; and `.svg`, kept absent because an SVG is an XML document that can carry a script element while the content-type provider maps it to an image media type — which is precisely why the extension, not the declared media family, has to be the authority. On the download side, anything outside a narrow inline set is forced to an **attachment** disposition, backed by the `nosniff` header from the response-header work. The move and delete actions now resolve the caller and refuse when the target does not belong to them, and refuse outright when the target does not resolve. **The finding is deliberately bounded**: filesystem path traversal is *not* achievable here, because storage is database-backed, route segments cannot contain a path separator, and the path is lower-cased at `:L3274` before lookup — so `H-08` is scoped to type, size and authorization, not to filesystem escape. Widening the allow-list is recorded as an owner decision in the [risk register](risk-register.md). |
 
 #### H-09 — SQL identifier injection through string concatenation
 
@@ -277,7 +792,7 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **DESCRIPTION** | PostgreSQL cannot bind an identifier as a parameter, so identifiers are necessarily interpolated. Every *value* in this layer is already parameterised, which confines the exposure precisely to identifier interpolation — one of the six sites concatenates an entity name straight into a `DROP TABLE` statement. Maps to **OWASP A03:2021 — Injection**. |
 | **IMPACT** | An identifier containing a statement separator would execute additional SQL with the platform's own database privileges. Reachability is constrained by the platform's own entity-name validation, but that validation is a different layer with a different purpose, so relying on it is relying on a control nobody declared. |
 | **EVIDENCE** | The concatenations are present verbatim. **This cell previously recorded zero `CA2100` and zero `CA23xx` diagnostics and read that silence as corroboration that values are parameterised. Both halves of that were wrong and are corrected here.** The silence was an artefact of the analysis level: neither rule is enabled by `AnalysisLevel=latest-recommended`, so it could not have corroborated anything. **A third correction is now needed, and it returns this cell to its first position.** `AnalysisLevelSecurity=latest-all` — under which `CA2100` reported at 20 sites and `CA2326`/`CA2328` at 20 and 9 — has been **removed** under review finding `GATE-03`, together with the `.globalconfig` that tuned it. Those rules do not execute again, so their silence is once more the silence of a rule that is not running and carries no signal in either direction. The parameterisation claim rests where it always actually rested: on direct reading of the data layer, where every *value* is bound through `NpgsqlParameter` and only identifiers are interpolated. The nineteen individually justified allow-list entries that covered those sites are no longer adjudicated by any automated gate; they are inventoried by hand in `risk-register.md` under `RISK-052`, which is the honest cost of the frozen gate shape. The `CA2327`-reports-zero corroboration is withdrawn for the same reason — see the deserialisation finding below. |
-| **REMEDIATION** | A single audited helper — `DbIdentifier` — validates against a strict allow-list (a leading lower-case letter, then only lower-case letters, digits and single underscores, anchored at both ends) and double-quotes the result, failing hard on rejection rather than sanitising, because a silent repair would reintroduce the exposure while making the finding read as closed. One reviewable implementation is used rather than six local patches. **The helper is now attached at every concatenation site** - an earlier revision of this row said it "has no callers yet", which is retracted. It is applied well beyond the six sites the finding enumerated: the record, entity and relation repositories, the EQL SQL builder, the SDK code-generation service and an SDK migration all route identifiers through it. `Validate` and `Quote` are used deliberately differently - `Validate` where the bare name is needed, such as inside a string literal compared against `pg_tables`, and `Quote` where the identifier is emitted into the statement itself. |
+| **REMEDIATION** | A single audited helper — `DbIdentifier` — validates against a strict allow-list (a leading lower-case letter, then only lower-case letters, digits and single underscores, anchored at both ends) and double-quotes the result, failing hard on rejection rather than sanitising, because a silent repair would reintroduce the exposure while making the finding read as closed. One reviewable implementation is used rather than six local patches. **The helper is now attached at every concatenation site** - an earlier revision of this row said it "has no callers yet", which is retracted. It is applied well beyond the six sites the finding enumerated: the record, entity and relation repositories, the EQL SQL builder, the SDK code-generation service and an SDK migration all route identifiers through it. `Validate` and `Quote` are used deliberately differently - `Validate` where the bare name is needed, such as inside a string literal compared against `pg_tables`, and `Quote` where the identifier is emitted into the statement itself. Traces to the **Injection Prevention** standard's allowlist-validation clause. |
 
 #### H-10 — Unsafe polymorphic deserialisation
 
@@ -290,7 +805,7 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **DESCRIPTION** | Type handling was enabled in its permissive modes, which instructs the deserialiser to honour a type name embedded in the data. Maps to **OWASP A08:2021 — Software and Data Integrity Failures**. |
 | **IMPACT** | An attacker able to influence a persisted payload chooses which type is constructed during deserialisation, which is the standard route from data tampering to code execution via a gadget type reachable in the loaded assemblies. |
 | **EVIDENCE** | The permissive type-handling settings were present at all fourteen sites the audit enumerated. Two things are now recorded that the original evidence could not state. **First, the site count is 20, not 14, and the discrepancy is a counting artefact rather than a missed exposure**: a repository-wide search for `TypeNameHandling` returns more hits than there are settings, because several are mentions inside comments. Restricted to lines that actually *assign* the property, `git grep -n 'TypeNameHandling *=' -- '*.cs'` returns **20**, of which **19 attach `ErpSerializationBinder.Instance` on the same line**; the twentieth, `WebVella.Erp/Database/DbEntityRepository.cs:246`, attaches it on the next line of the same object initialiser. **Second, a claim made here is withdrawn.** This cell previously argued that the closure was *machine-checked* by an analyzer that was armed and silent: `CA2327` fires precisely when `TypeNameHandling` is not `None` *and* no `SerializationBinder` is set, it raised **zero** diagnostics across all 19 projects, and a throwaway probe carrying an identical initialiser with the binder omitted *did* raise it alongside `CA2326`. The probe result stands and the reasoning was sound **while the rule was enabled**. It no longer is: `CA2327` was reached through `AnalysisLevelSecurity=latest-all`, which review finding `GATE-03` removed along with the `.globalconfig` that accompanied it, because the plan of record freezes the analyzer gate at `EnableNETAnalyzers` plus `AnalysisLevel=latest-recommended`. A rule that does not execute cannot be silent in the evidentiary sense — it is simply absent — so the strongest available evidence is again the enumeration above: **20** assigning lines, 19 attaching `ErpSerializationBinder.Instance` on the same line and the twentieth on the next line of the same object initialiser, verified by reading each site. That is weaker than a machine check, and saying so is the point of recording the withdrawal rather than deleting the paragraph. Carried in `risk-register.md` as `RISK-051`. |
-| **REMEDIATION** | A serialisation binder with an explicit type allow-list, exposed as a singleton and failing hard on any type outside the list. Resolution is an **exact lookup** in the allow-list map — never a namespace or assembly-name prefix test, which is the shape that admitted the behaviour-carrying types described below — and the resolved type is re-validated before it is returned, with delegate and `IDisposable` gadget shapes refused at **two** independent points: once while the map is built and once on the resolution path, so a type that somehow reached the map could still not be constructed. **Removing type handling outright was rejected**: already-persisted job arguments and entity and relation payloads carry type discriminators and would fail to deserialise, breaking existing installations — so constraining the binder preserves round-tripping while closing the weakness. `BindToName` is intentionally left unrestricted, because constraining serialisation *output* protects nothing and would break writing. **The binder is now attached at every site.** For `JobProfile.cs` this was measured rather than assumed, and the measurement is the evidence that the finding is closed there: with the binder absent, a `$type` nested in `JobResultWrapper.Result` — a member declared `dynamic` — **instantiated `System.Diagnostics.Process`**; with the binder attached, the same payload is refused with a `JsonSerializationException`. Eight further gadget discriminators are refused at an `object` target, each against a control confirming the default binder resolved them. Every legitimate payload at all five consumers reached through the four sites deserialises **byte-identically with and without the binder**, which is what demonstrates that constraining resolution preserved existing installations. **The allow-list has since been narrowed a second time, and that narrowing is part of this finding's closure rather than an enhancement.** Review finding `F-03` observed that the list, while no longer a name prefix, still admitted "service/repository/background types", and that was correct: built by scanning five namespaces *and their descendants*, it admitted a measured **268** types, of which **38 carry behaviour rather than data** — seven repositories, thirteen object-mapping profiles, eight converters, three attributes, two ambient contexts, two managers, a job pool, a job data service and an exception. That breadth was **verified reachable, not merely theoretical**: because `JobResultWrapper.Result` is declared `dynamic`, `DbRecordRepository`, `JobPool`, `JobManager` and `JobDataService` were all successfully instantiated through a discriminator in the `jobs.result` column, and two of them through a value nested in a dynamic record as well. The namespace scan is replaced by an explicit `typeof` inventory of **45** persisted types — the transitive closure, over data members only, of what the deserialisation sites actually read — so behaviour-carrying types admitted falls from 38 to **zero** while all nine round-trip shapes continue to pass and the 27 permitted framework types are unchanged. A latent break was closed in the same edit: `CurrencySymbolPlacement`, which a currency field genuinely reaches, sat outside all five scanned namespaces and was being refused. Two counts in this record are also corrected by measurement: the binder is attached at **20** sites rather than the fourteen originally enumerated — the six additional ones are four serialise-only settings in `JobDataService.cs` and two in `NotificationContext.cs`, the latter covering the PostgreSQL `NOTIFY` payload — and the permissive type handling those six sites carry was present before remediation, so the original site census undercounted the surface. See the remediation log for the full transcript, the before-and-after measurements and the recorded deviation from the planned rule-based mechanism. |
+| **REMEDIATION** | A serialisation binder with an explicit type allow-list, exposed as a singleton and failing hard on any type outside the list. Resolution is an **exact lookup** in the allow-list map — never a namespace or assembly-name prefix test, which is the shape that admitted the behaviour-carrying types described below — and the resolved type is re-validated before it is returned, with delegate and `IDisposable` gadget shapes refused at **two** independent points: once while the map is built and once on the resolution path, so a type that somehow reached the map could still not be constructed. **Removing type handling outright was rejected**: already-persisted job arguments and entity and relation payloads carry type discriminators and would fail to deserialise, breaking existing installations — so constraining the binder preserves round-tripping while closing the weakness. `BindToName` is intentionally left unrestricted, because constraining serialisation *output* protects nothing and would break writing. **The binder is now attached at every site.** For `JobProfile.cs` this was measured rather than assumed, and the measurement is the evidence that the finding is closed there: with the binder absent, a `$type` nested in `JobResultWrapper.Result` — a member declared `dynamic` — **instantiated `System.Diagnostics.Process`**; with the binder attached, the same payload is refused with a `JsonSerializationException`. Eight further gadget discriminators are refused at an `object` target, each against a control confirming the default binder resolved them. Every legitimate payload at all five consumers reached through the four sites deserialises **byte-identically with and without the binder**, which is what demonstrates that constraining resolution preserved existing installations. **The allow-list has since been narrowed a second time, and that narrowing is part of this finding's closure rather than an enhancement.** Review finding `F-03` observed that the list, while no longer a name prefix, still admitted "service/repository/background types", and that was correct: built by scanning five namespaces *and their descendants*, it admitted a measured **268** types, of which **38 carry behaviour rather than data** — seven repositories, thirteen object-mapping profiles, eight converters, three attributes, two ambient contexts, two managers, a job pool, a job data service and an exception. That breadth was **verified reachable, not merely theoretical**: because `JobResultWrapper.Result` is declared `dynamic`, `DbRecordRepository`, `JobPool`, `JobManager` and `JobDataService` were all successfully instantiated through a discriminator in the `jobs.result` column, and two of them through a value nested in a dynamic record as well. The namespace scan is replaced by an explicit `typeof` inventory of **45** persisted types — the transitive closure, over data members only, of what the deserialisation sites actually read — so behaviour-carrying types admitted falls from 38 to **zero** while all nine round-trip shapes continue to pass and the 27 permitted framework types are unchanged. A latent break was closed in the same edit: `CurrencySymbolPlacement`, which a currency field genuinely reaches, sat outside all five scanned namespaces and was being refused. Two counts in this record are also corrected by measurement: the binder is attached at **20** sites rather than the fourteen originally enumerated — the six additional ones are four serialise-only settings in `JobDataService.cs` and two in `NotificationContext.cs`, the latter covering the PostgreSQL `NOTIFY` payload — and the permissive type handling those six sites carry was present before remediation, so the original site census undercounted the surface. See the remediation log for the full transcript, the before-and-after measurements and the recorded deviation from the planned rule-based mechanism. Traces to the **Injection Prevention** standard's allowlist-validation clause, applied to deserialisable types rather than to input strings. |
 
 #### H-11 — SMTP certificate validation unconditionally bypassed
 
@@ -299,11 +814,11 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | The mail plugin installs a certificate-validation callback that returns `true` unconditionally at five sites, so every SMTP connection accepts any certificate. |
 | **SEVERITY** | High — transport authentication is removed entirely, which makes an active machine-in-the-middle attack on mail delivery trivial. |
 | **CWE** | [CWE-295: Improper Certificate Validation](https://cwe.mitre.org/data/definitions/295.html) |
-| **LOCATION** | `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` at four sites, and `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` at one. |
+| **LOCATION** | `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs:L145`, `:L288`, `:L417` and `:L559`, plus `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs:L791` — five sites, and exactly five. |
 | **DESCRIPTION** | The callback is not conditional on environment, configuration or host — it always accepts. Maps to **OWASP A02:2021 Cryptographic Failures**. |
 | **IMPACT** | An attacker who can intercept the connection reads every outbound message and the SMTP credentials used to send it. This compounds with M-17, because exception detail is e-mailed before it is persisted, and with the mail-library injection advisories recorded as H-20. |
 | **EVIDENCE** | Corroborated by the analyzer gate independently of manual review: at the pre-remediation revision `CA5359` (do not disable certificate validation) reported diagnostics at **exactly these five sites** on every build. At this commit the rule reports **none**, because a callback is installed only when the configuration-gated policy member allows it and the callback yields that member rather than a literal `true`. The diagnostic disappearing is itself evidence that the unconditional accept is gone. |
-| **REMEDIATION** | **Remediated, and closed at all five sites.** The always-true callback was first replaced by an explicit configuration flag defaulting to secure, so a self-signed development server stays usable without an insecure default shipping to production; the flag was then narrowed so it is honoured **only** in Development posture. `SmtpService.AllowInvalidRemoteCertificates` yields `true` only when `Settings:EmailSMTPAllowInvalidCertificates` parses as `true` **and** `ErpSettings.DevelopmentMode` is set; otherwise it yields `false` and, when the setting was nevertheless enabled, reports the refusal once per process on standard error. Because that one member gates every callback site, the four `SmtpService.cs` sites and the one `SmtpInternalService.cs` site are covered by the same change, and `ErpSettings.DevelopmentMode` defaults to `false` so the policy fails closed before configuration is initialised. No analyzer diagnostic was suppressed to reach this state — `CA5359` stopped firing because the construct it reports is gone. **One consequence of enabling validation had to be remediated in turn**, and is recorded rather than smoothed over: MailKit checks certificate revocation by default and none of the five sites configured it, so a relay whose certificate is entirely valid but whose chain names no reachable CRL distribution point — an internal CA that publishes none, or a host whose egress filtering blocks the fetch — became unreachable, failing with a chain status of nothing but `unable to get certificate CRL`. Because the accept-any opt-out is deliberately inert in production it was no remedy, so all five sites now assign `client.CheckCertificateRevocation` from a second policy member, `SmtpService.CheckRemoteCertificateRevocation`, which reads `Settings:EmailSMTPCheckCertificateRevocation` and **defaults to checking**: only an explicit boolean `false` disables it, and absent, blank, `true` and unparseable values all leave it enabled. That member carries no posture gate, deliberately — disabling revocation still leaves the trust chain, validity dates, key usage and host name enforced, a far narrower relaxation than accepting any certificate, and a control that is inert in production cannot remedy a production outage. Operator guidance is in the [secure configuration guide](secure-configuration.md); the residuals — a Development installation still accepting any certificate, by design, and an installation that has knowingly disabled revocation checking — are recorded as `RISK-033` and `RISK-060` in the [risk register](risk-register.md). |
+| **REMEDIATION** | **Remediated, and closed at all five sites.** The always-true callback was first replaced by an explicit configuration flag defaulting to secure, so a self-signed development server stays usable without an insecure default shipping to production; the flag was then narrowed so it is honoured **only** in Development posture. `SmtpService.AllowInvalidRemoteCertificates` yields `true` only when `Settings:EmailSMTPAllowInvalidCertificates` parses as `true` **and** `ErpSettings.DevelopmentMode` is set; otherwise it yields `false` and, when the setting was nevertheless enabled, reports the refusal once per process on standard error. Because that one member gates every callback site, the four `SmtpService.cs` sites and the one `SmtpInternalService.cs` site are covered by the same change, and `ErpSettings.DevelopmentMode` defaults to `false` so the policy fails closed before configuration is initialised. No analyzer diagnostic was suppressed to reach this state — `CA5359` stopped firing because the construct it reports is gone. **One consequence of enabling validation had to be remediated in turn**, and is recorded rather than smoothed over: MailKit checks certificate revocation by default and none of the five sites configured it, so a relay whose certificate is entirely valid but whose chain names no reachable CRL distribution point — an internal CA that publishes none, or a host whose egress filtering blocks the fetch — became unreachable, failing with a chain status of nothing but `unable to get certificate CRL`. Because the accept-any opt-out is deliberately inert in production it was no remedy, so all five sites now assign `client.CheckCertificateRevocation` from a second policy member, `SmtpService.CheckRemoteCertificateRevocation`, which reads `Settings:EmailSMTPCheckCertificateRevocation` and **defaults to checking**: only an explicit boolean `false` disables it, and absent, blank, `true` and unparseable values all leave it enabled. That member carries no posture gate, deliberately — disabling revocation still leaves the trust chain, validity dates, key usage and host name enforced, a far narrower relaxation than accepting any certificate, and a control that is inert in production cannot remedy a production outage. Operator guidance is in the [secure configuration guide](secure-configuration.md); the residuals — a Development installation still accepting any certificate, by design, and an installation that has knowingly disabled revocation checking — are recorded as `RISK-033` and `RISK-060` in the [risk register](risk-register.md). Traces to the **Cryptographic Standards** transport clause. |
 
 #### H-12 — Development mode enabled in every shipped configuration
 
@@ -312,11 +827,37 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | All eight shipped `Config.json` files enable development mode, and one host's deployment manifest additionally forces the environment to `Development`. |
 | **SEVERITY** | High — development mode turns on the developer exception page, which returns stack traces, source excerpts and configuration to any client that triggers an error. |
 | **CWE** | [CWE-489: Active Debug Code](https://cwe.mitre.org/data/definitions/489.html) and [CWE-209: Generation of Error Message Containing Sensitive Information](https://cwe.mitre.org/data/definitions/209.html) |
-| **LOCATION** | All eight `Config.json` files, plus `WebVella.Erp.Site/web.config` where `ASPNETCORE_ENVIRONMENT` is set to `Development`. |
+| **LOCATION** | All eight `Config.json` files — `WebVella.Erp.Site:L10`, `WebVella.Erp.ConsoleApp:L9`, and `:L8` in each of `.Crm`, `.Mail`, `.MicrosoftCDM`, `.Next`, `.Project` and `.Sdk` — plus `WebVella.Erp.Site/web.config:L10`, where `ASPNETCORE_ENVIRONMENT` is set to `Development`. What the flag gates is `WebVella.Erp.Web/Controllers/ApiControllerBase.cs:L49`, and what the environment marker gates is `WebVella.Erp.Site/Startup.cs:L147-L149`. |
 | **DESCRIPTION** | The environment marker is what selects the developer exception page in each host's pipeline, so the shipped defaults expose internal detail on any unhandled error in a production deployment that kept them. Maps to **OWASP A05:2021 Security Misconfiguration**. |
 | **IMPACT** | Stack traces disclose file paths, type and method names, framework versions and query text, which materially shortens the reconnaissance phase of an attack against every other finding in this report. |
 | **EVIDENCE** | The development-mode flag is present in all eight files and the environment variable is set in the deployment manifest at the pre-audit revision. |
-| **REMEDIATION** | **Fixed.** An earlier revision of this row said "not yet remediated" and that the finding "remains open"; both are retracted. All eight shipped configuration files now set `"DevelopmentMode": "false"` explicitly, and the setting is evaluated as `IsNullOrWhiteSpace(value) ? false : bool.Parse(value)`, so removing the key would resolve to `false` as well — there is no state in which a missing value silently enables development behaviour; and `WebVella.Erp.Site/web.config` sets `ASPNETCORE_ENVIRONMENT` to `Production`. Note the residual operational hazard: an environment variable outranks the file, so a stray `Settings__DevelopmentMode=true` re-enables development behaviour - audit the environment, not only the files. Flipping the flags was a two-line change per file, but it must land with the provider-chain extension so that hosts remain startable. Two related error paths are worth separating out, because a configuration change alone will **not** fix them: two API error responses concatenate stack-trace text unconditionally, with no environment check at all, so those require a code change and are tracked with their own finding. The flags are flipped, so this finding is closed. |
+| **REMEDIATION** | **Fixed.** An earlier revision of this row said "not yet remediated" and that the finding "remains open"; both are retracted. All eight shipped configuration files now set `"DevelopmentMode": "false"` explicitly, and the setting is evaluated as `IsNullOrWhiteSpace(value) ? false : bool.Parse(value)`, so removing the key would resolve to `false` as well — there is no state in which a missing value silently enables development behaviour; and `WebVella.Erp.Site/web.config` sets `ASPNETCORE_ENVIRONMENT` to `Production`. Note the residual operational hazard: an environment variable outranks the file, so a stray `Settings__DevelopmentMode=true` re-enables development behaviour - audit the environment, not only the files. Flipping the flags was a two-line change per file, but it must land with the provider-chain extension so that hosts remain startable. Two related error paths are worth separating out, because a configuration change alone will **not** fix them: two API error responses concatenate stack-trace text unconditionally, with no environment check at all, so those require a code change and are tracked with their own finding. The flags are flipped, so this finding is closed. Traces to the **Security Headers** and secure-configuration discipline, in that a production posture is the precondition for every response-level control this remediation adds. |
+
+#### H-13 — Unconditional stack-trace disclosure on anonymous endpoints
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | The two bearer-token endpoints returned the exception message concatenated with the full stack trace in the response body, to unauthenticated callers, with no environment or development-mode condition guarding either site. |
+| **SEVERITY** | High. Not merely verbose errors — which the matrix would place at Low — but unconditional internal disclosure on the two routes that are reachable **without credentials**, feeding directly into exploitation of the token weaknesses recorded as `H-02`. |
+| **CWE** | [CWE-209: Generation of Error Message Containing Sensitive Information](https://cwe.mitre.org/data/definitions/209.html). |
+| **LOCATION** | `WebVella.Erp.Web/Controllers/WebApiController.cs:L4287` and `:L4306`. |
+| **DESCRIPTION** | Both token actions wrapped their work in a catch-all, logged the exception server-side, and then assigned the exception text **and its stack trace** to the response message. The controller elsewhere gets this right: `WebVella.Erp.Web/Controllers/ApiControllerBase.cs:L49-L58` guards the same disclosure behind `if (ErpSettings.DevelopmentMode)` and otherwise returns `"An internal error occurred!"`. These two sites simply had no guard. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
+| **IMPACT** | An unauthenticated caller could provoke a failure and read the internal call stack: namespaces, class and method names, file layout and framework versions, and whatever the exception message itself carried. That is reconnaissance handed to the attacker at the precise place they are already probing — the credential and token surface. It also weakens `H-02`: distinguishing a signature failure from an expiry failure by their exception text is exactly the oracle a token attack wants. |
+| **EVIDENCE** | At the audit baseline both sites read `response.Message = e.Message + e.StackTrace;` — at `:L4287` inside the `catch (Exception e)` opened at `:L4283`, and at `:L4306` inside the catch opened at `:L4302`. Each already logged server-side immediately before, at `:L4285` and `:L4304`, through `new LogService().Create(Diagnostics.LogType.Error, …)`. The actions they belong to are `[AllowAnonymous]`, declared at `:L4273` and `:L4292`. |
+| **REMEDIATION** | **This is one of two findings escalated upward rather than softened.** Because neither site was guarded by any development-mode check, flipping the environment marker to `Production` — which `H-12` does — would **not** have fixed them; the code had to change. Both now return a generic message and retain the server-side log record, so no diagnostic capability is lost, mirroring the already-correct guarded pattern at `ApiControllerBase.cs:L49-L57`. The remediation then went considerably further than the two sites the audit had found: a review pass established that the same disclosure persisted at thirty-six further response sinks in this controller, ten of them concatenating the stack trace as well, and every one now routes through a single `SafeErrorMessage` helper. A solution-wide sweep found thirteen more unguarded sinks outside this controller — two in the record manager, one in the query builder, seven in the SDK administration controller and three in the project plugin's controller — and closed all of them, leaving no unguarded exception-text response sink anywhere in the tree. The widening is tracked in the [risk register](risk-register.md) and the [remediation log](remediation-log.md). Traces to the **Authorization Enforcement** standard's log-failures-rather-than-disclose-them clause. |
+
+#### H-14 — Permissive cross-origin policy at two hosts
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Two of the seven hosts registered a default cross-origin policy allowing any origin, any method and any header, and applied it to the whole pipeline. |
+| **SEVERITY** | High. An any-origin policy on an authenticated application removes the browser's own boundary against cross-site reads, which is the enabling condition for session-scoped attacks the matrix places in the High tier. |
+| **CWE** | [CWE-942: Permissive Cross-domain Policy with Untrusted Domains](https://cwe.mitre.org/data/definitions/942.html). |
+| **LOCATION** | `WebVella.Erp.Site/Startup.cs:L58-L64`, applied at `:L164`; `WebVella.Erp.Site.Project/Startup.cs:L50-L55`, applied at `:L149`. |
+| **DESCRIPTION** | Both hosts called `services.AddCors` with a default policy composed of `AllowAnyOrigin()`, `AllowAnyMethod()` and `AllowAnyHeader()`, then enabled it with `app.UseCors()` early enough to cover static files. In both files a restrictive named policy already existed **in commented form immediately above** the permissive one, naming specific localhost origins with credentials allowed — so the restrictive shape the fix needed was already present in the source, unused. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
+| **IMPACT** | Any web page on any origin could issue cross-origin requests to these hosts and read the responses. Because a wildcard origin cannot be combined with credentialed requests, the exposure is bounded to what an uncredentialed request returns — but on these hosts that still includes anonymous routes, and it removes the cross-origin boundary that would otherwise contain a scripting payload delivered from elsewhere. It also broadens the reach of every other finding that depends on a browser making a request the user did not intend. |
+| **EVIDENCE** | At the audit baseline `WebVella.Erp.Site/Startup.cs:L58-L64` read `services.AddCors(options => { options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()); });`, with `app.UseCors();` at `:L164` carrying the comment that it should precede static files so it applies to them too. `WebVella.Erp.Site.Project/Startup.cs:L50-L55` was byte-identical in shape, applied at `:L149`. The commented restrictive policies sat at `Site` `:L54-L57` and `Site.Project` `:L46-L49`. |
+| **REMEDIATION** | Both hosts now register an explicit origin allow-list read from configuration at `Settings:Cors:AllowedOrigins`. A supplied list wins in every environment; an explicitly empty list denies every origin, which is legal and matches nothing; and an absent key denies every origin outside Development, where each host falls back to its own documented localhost origins. A repository-wide search for a live, non-commented `AllowAnyOrigin()` across all seven host pipelines now returns **zero** occurrences — the only remaining occurrences are explanatory comments. **The scope of this finding is two hosts, not seven, and that matters**: `WebVella.Erp.Site.Crm`, `.Mail`, `.MicrosoftCDM`, `.Next` and `.Sdk` already used a restrictive named policy and were never permissive, so overstating the finding platform-wide would have been one of the false-positive classes this report eliminates. One sequencing constraint was binding: HTTPS redirection breaks cross-origin preflight with an invalid-redirect error, so the allow-list and the redirection introduced by `H-15` had to land in the same change and be verified together. Operator configuration is in the [secure configuration guide](secure-configuration.md). Traces to the **Authorization Enforcement** standard's deny-by-default clause, applied at the origin boundary. |
 
 #### H-15 — No HTTPS enforcement, no HSTS, and insecure cookie attributes
 
@@ -325,7 +866,7 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | Eight of the nine applications enforced nothing about transport security: no HTTP Strict Transport Security, no redirection from plaintext, and authentication cookies without the `Secure` and `SameSite` attributes. |
 | **SEVERITY** | High — an attacker positioned on the network downgrades the connection and reads the session cookie, which is session hijacking. |
 | **CWE** | [CWE-319: Cleartext Transmission of Sensitive Information](https://cwe.mitre.org/data/definitions/319.html) and [CWE-614: Sensitive Cookie in HTTPS Session Without 'Secure' Attribute](https://cwe.mitre.org/data/definitions/614.html) |
-| **LOCATION** | Cookie options in each host's `Startup.cs`; only `WebVella.Erp.WebAssembly/Server/Program.cs` used the framework's HSTS middleware. |
+| **LOCATION** | Cookie options at `WebVella.Erp.Site/Startup.cs:L93-L101` and the equivalent block in each of the other six hosts; only `WebVella.Erp.WebAssembly/Server/Program.cs:L18` and `:L21` used the framework's HSTS and HTTPS-redirection middleware. |
 | **DESCRIPTION** | The cookie authentication options set no `SecurePolicy`, no `SameSite` value, no explicit expiry window and no sliding expiration, and no host redirected plaintext requests or advertised a strict-transport policy. Maps to **OWASP A02:2021** and **A05:2021**. |
 | **IMPACT** | A cookie without `Secure` is transmitted over plaintext, so a single downgraded request discloses it; without `SameSite` it is also attached to cross-site requests. Combined with the unbounded ticket lifetime recorded as H-03, a cookie captured once remained valid indefinitely. |
 | **EVIDENCE** | The cookie options block is present without any of those attributes at the pre-audit revision, and a search for HSTS or HTTPS redirection across the seven site hosts returns nothing. |
@@ -338,11 +879,24 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | Failed authentication attempts were neither counted nor limited, at any layer. |
 | **SEVERITY** | High. |
 | **CWE** | [CWE-307: Improper Restriction of Excessive Authentication Attempts](https://cwe.mitre.org/data/definitions/307.html) |
-| **LOCATION** | Both credential-verification entry points: `WebVella.Erp.Web/Pages/login.cshtml.cs` and the anonymous bearer-token route `GetJwtToken` in `WebVella.Erp.Web/Controllers/WebApiController.cs`. The plan named only the first; the second is a second credential oracle and is throttled too. The service introduced to close it is `WebVella.Erp.Web/Services/LoginThrottleService.cs`. |
+| **LOCATION** | Both credential-verification entry points: `WebVella.Erp.Web/Pages/login.cshtml.cs:L92`, inside the synchronous `OnPost` declared at `:L62`, with the generic failure branch at `:L100-L105`; and the anonymous bearer-token route `GetJwtToken` at `WebVella.Erp.Web/Controllers/WebApiController.cs:L4273`. The plan named only the first; the second is a second credential oracle and is throttled too. The service introduced to close it is `WebVella.Erp.Web/Services/LoginThrottleService.cs`. |
 | **DESCRIPTION** | Nothing in the platform recorded a failed attempt, so an attacker could submit unlimited guesses against a known e-mail address at whatever rate the server would serve. Maps to **OWASP A07:2021**. |
 | **IMPACT** | Credential stuffing and password guessing are unbounded. The exposure was worse before `C-03`, because the fast unsalted digest made server-side verification nearly free; the new key-derivation cost is itself a partial mitigation, but a cost is not a limit. |
 | **EVIDENCE** | A repository-wide search of the pre-audit revision finds no attempt counter, no lockout state and no rate limiter. The one artefact whose name suggested it — an authentication cache — was entirely commented out. |
-| **REMEDIATION** | A throttle service implementing the mandated five-attempt lockout with a fifteen-minute window, keyed on both the account and the client address, and backed by the platform's existing in-process cache so that **no schema change and no new dependency** is introduced — the least invasive control available. Every member is non-throwing by construction, so the throttle can never itself break the login path, and key components are length-bounded and normalised defensively. Its single-instance scope is a real limitation and is documented rather than hidden: behind a load balancer, each instance counts separately. **The service is now wired into the login page** - an earlier revision of this row said it "has no callers yet", which is retracted. `login.cshtml.cs` calls `TryBeginAttempt` before authenticating, then `RegisterFailedAttempt`, `RegisterSuccess` or `AbandonAttempt` on the corresponding outcome. Wiring reaches **both** credential entry points, not only the one this finding named: the anonymous bearer-token route in `WebApiController` follows the identical reserve-then-finalise sequence, and the token-refresh route — which presents no username to count against — uses the address-only `IsAddressRefusing` / `RegisterAddressFailure` pair. The framework's transport-level rate limiter is additionally enabled in all seven host pipelines, so the two controls layer rather than substitute for one another. |
+| **REMEDIATION** | A throttle service implementing the mandated five-attempt lockout with a fifteen-minute window, keyed on both the account and the client address, and backed by the platform's existing in-process cache so that **no schema change and no new dependency** is introduced — the least invasive control available. Every member is non-throwing by construction, so the throttle can never itself break the login path, and key components are length-bounded and normalised defensively. Its single-instance scope is a real limitation and is documented rather than hidden: behind a load balancer, each instance counts separately. **The service is now wired into the login page** - an earlier revision of this row said it "has no callers yet", which is retracted. `login.cshtml.cs` calls `TryBeginAttempt` before authenticating, then `RegisterFailedAttempt`, `RegisterSuccess` or `AbandonAttempt` on the corresponding outcome. Wiring reaches **both** credential entry points, not only the one this finding named: the anonymous bearer-token route in `WebApiController` follows the identical reserve-then-finalise sequence, and the token-refresh route — which presents no username to count against — uses the address-only `IsAddressRefusing` / `RegisterAddressFailure` pair. The framework's transport-level rate limiter is additionally enabled in all seven host pipelines, so the two controls layer rather than substitute for one another. Traces to the **Authentication Hardening** standard's five-failed-attempt lockout clause. |
+
+#### H-17 — Regular-expression denial of service in the credential query
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | The credential-resolution query matched the supplied e-mail address with PostgreSQL's case-insensitive **regular-expression** operator, passing the caller's input as the pattern, on the one route reachable without credentials. |
+| **SEVERITY** | High. The matrix places injection in the High tier, and this is injection into a regular-expression evaluator rather than into SQL structure: the attacker controls the pattern the database engine compiles and runs, on an anonymous endpoint. |
+| **CWE** | [CWE-1333: Inefficient Regular Expression Complexity](https://cwe.mitre.org/data/definitions/1333.html) and [CWE-625: Permissive Regular Expression](https://cwe.mitre.org/data/definitions/625.html). |
+| **LOCATION** | `WebVella.Erp/Api/SecurityManager.cs:L85`, inside the system-scope block opened at `:L82`. |
+| **DESCRIPTION** | Authentication opened a system scope that bypasses permission checks, computed the MD5 digest of the submitted password at `:L84`, and then issued a query whose predicate was `email ~* @email AND password = @password`. The `~*` operator is a case-insensitive regular-expression match, not an equality comparison, so the login form's e-mail field was a pattern input to the database's regular-expression engine. Two further observations belong here rather than in a separate finding. First, `password = @password` sat **inside the SQL predicate**, which is exactly why a salted hash format was impossible without restructuring the query — the enabling constraint behind `C-03`. Second, an exact case-insensitive address comparison **already existed** in application code immediately afterwards, at `:L90`, which is what made dropping the permissive pattern semantically safe rather than a behaviour change. Maps to **OWASP A03:2021 — Injection**. |
+| **IMPACT** | An unauthenticated caller could submit a crafted pattern in the e-mail field and consume database CPU on the login path — catastrophic backtracking against the user table, with no authentication required and no rate limit in place, since `H-16` establishes that none existed. Because the login route is the entry point every user needs, exhausting it is a denial of service against the whole platform rather than one feature. Separately, the permissive matching meant an address containing regular-expression metacharacters could match rows the caller did not name, which the application-code check happened to catch but which the query itself did not prevent. |
+| **EVIDENCE** | At the audit baseline `:L82` read `using (var ctx = SecurityContext.OpenSystemScope())`, `:L84` read `var encryptedPassword = PasswordUtil.GetMd5Hash(password);`, and `:L85` read `new EqlCommand("SELECT *, $user_role.* FROM user WHERE email ~* @email AND password = @password", …)` with the two `EqlParameter` values supplied at `:L86`. The redundant exact comparison followed at `:L90`: `if (((string)rec["email"]).ToLowerInvariant() == email.ToLowerInvariant())`. |
+| **REMEDIATION** | Traces to the **Injection Prevention** standard's allowlist-validation clause. The predicate no longer carries a caller-controlled pattern: the address is wrapped by `BuildExactEmailPattern`, which anchors it and delegates metacharacter escaping to the framework's own `Regex.Escape` rather than open-coding it, so the value can only ever match itself. The `password = @password` term is **gone** — verification moved into application code, which is the change that made salted hashing possible at all — and a page bound limits the candidate rows the lookup can return. The exact case-insensitive comparison at the application layer is retained as the authoritative address match. One consequence was closed in the same change rather than left open: moving verification out of the query would have created a user-enumeration timing channel, so a non-existent address still costs one key derivation through `PasswordUtil.PerformDummyVerification`. The restructure is documented in the [credential migration guide](credential-migration.md) and the [remediation log](remediation-log.md). |
 
 #### H-18 — Two projects targeted an end-of-life framework
 
@@ -351,11 +905,11 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | Two projects targeted .NET 7, which reached end of support on 14 May 2024 and therefore receives no security patches. |
 | **SEVERITY** | High — an unsupported runtime cannot be patched, so any future advisory against it is permanently unfixed. |
 | **CWE** | [CWE-1104: Use of Unmaintained Third Party Components](https://cwe.mitre.org/data/definitions/1104.html) |
-| **LOCATION** | `WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj` and `WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.csproj` |
+| **LOCATION** | `WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj:L4` and `WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.csproj:L4` — the `TargetFramework` element in each — with the hosting package pinned to the same end-of-life line at `Server.csproj:L10` |
 | **DESCRIPTION** | Both projects declared `<TargetFramework>net7.0</TargetFramework>` while the other seventeen projects in the repository targeted `net10.0`, and the Server project additionally pinned `Microsoft.AspNetCore.Components.WebAssembly.Server` to `7.0.13` — a package line on the same unsupported branch. Maps to **OWASP A06:2021 — Vulnerable and Outdated Components**. |
 | **IMPACT** | This is not a specific exploitable defect; it is the absence of a route to fix one. Because the branch is out of support, a future advisory against the .NET 7 runtime or its ASP.NET Core packages would have no patched version to move to, so the exposure would become permanent rather than temporary. |
 | **EVIDENCE** | At the pre-audit revision, `<TargetFramework>net7.0</TargetFramework>` appears at line 4 of both project files and the hosting package is pinned at `7.0.13`. |
-| **REMEDIATION** | Both projects retargeted to `net10.0` and the hosting package lifted to `10.0.1`, bringing them onto the same supported target the other seventeen projects already use. No source change was required in either project. |
+| **REMEDIATION** | Both projects retargeted to `net10.0` and the hosting package lifted to `10.0.1`, bringing them onto the same supported target the other seventeen projects already use. No source change was required in either project. Traces to the **Dependency Updates** standard's replace-end-of-life clause. |
 
 #### H-19 — Case-mismatched project references broke the dependency scan
 
@@ -364,11 +918,11 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | Fifteen project references named the core project's directory as `WebVella.ERP` while the directory on disk is `WebVella.Erp`, so solution-wide restore failed on any case-sensitive filesystem and the core project silently dropped out of the dependency-audit graph. |
 | **SEVERITY** | High. This is a build defect whose *security* consequence is that the vulnerability scan reported falsely clean, which is worse than reporting a finding: it produced confident, wrong assurance. |
 | **CWE** | CWE-1104-adjacent — the effect is unaudited components rather than a code weakness. |
-| **LOCATION** | `WebVella.ERP3.sln` and fourteen project files. The already-correct reference at `WebVella.Erp.Site/WebVella.Erp.Site.csproj` is the in-repository template the fix follows. |
+| **LOCATION** | Fifteen sites: `WebVella.ERP3.sln:L23`, plus a `ProjectReference` element in each of `WebVella.Erp.ConsoleApp:L22`, `WebVella.Erp.Plugins.Crm:L15`, `WebVella.Erp.Plugins.Mail:L33`, `WebVella.Erp.Plugins.MicrosoftCDM:L17`, `WebVella.Erp.Plugins.Next:L15`, `WebVella.Erp.Plugins.Project:L57`, `WebVella.Erp.Plugins.SDK:L45`, `WebVella.Erp.Site.Crm:L21`, `WebVella.Erp.Site.Mail:L20`, `WebVella.Erp.Site.MicrosoftCDM:L17`, `WebVella.Erp.Site.Next:L19`, `WebVella.Erp.Site.Project:L23`, `WebVella.Erp.Site.Sdk:L19` and `WebVella.Erp.Web:L119`. The already-correct reference at `WebVella.Erp.Site/WebVella.Erp.Site.csproj:L44` is the in-repository template the fix follows. |
 | **DESCRIPTION** | MSBuild resolves the path literally, so on Linux the reference could not be found and restore failed with `MSB3202`. Because the core project owns the platform's only High-severity package advisory, its absence from the graph meant the advisory was never reported. Maps to **OWASP A06:2021** and **A08:2021**. |
 | **IMPACT** | Every dependency-scan result obtained before this fix was unfounded, including any "no vulnerable packages" statement. The single host whose reference was already correct restored successfully, which is exactly what made the defect easy to miss: a per-project scan passed while the solution-wide scan failed. |
 | **EVIDENCE** | The upper-cased segment appeared at fifteen sites; solution restore failed with `MSB3202` on a case-sensitive filesystem; the correct spelling was already present at one host, proving the fifteen were the outliers. |
-| **REMEDIATION** | All fifteen paths corrected to match the on-disk casing — a no-op on case-insensitive filesystems and a repair on case-sensitive ones. Every one of the fourteen corrected project files now carries an identically worded comment naming the threat, so the constraint cannot be undone by a well-meaning edit; the solution file is excluded because its format tolerates no comment syntax. Verified: `grep -rn 'WebVella\.ERP\\'` returns nothing, and `MSB3202` and `MSB9008` counts are zero across a full solution rebuild. **This class was sequenced first**, because every subsequent dependency claim in this report depends on it. |
+| **REMEDIATION** | All fifteen paths corrected to match the on-disk casing — a no-op on case-insensitive filesystems and a repair on case-sensitive ones. Every one of the fourteen corrected project files now carries an identically worded comment naming the threat, so the constraint cannot be undone by a well-meaning edit; the solution file is excluded because its format tolerates no comment syntax. Verified: `grep -rn 'WebVella\.ERP\\'` returns nothing, and `MSB3202` and `MSB9008` counts are zero across a full solution rebuild. **This class was sequenced first**, because every subsequent dependency claim in this report depends on it. Traces to the **Dependency Updates** standard, as the precondition without which none of its clauses can be verified. |
 
 #### H-20 — Mail and MIME libraries carried published advisories
 
@@ -377,18 +931,13 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **FINDING** | The mail plugin depended on a version of `MailKit` affected by a STARTTLS response-injection advisory, and transitively on a version of `MimeKit` affected by a CRLF-injection advisory. |
 | **SEVERITY** | High. Both advisories are rated Moderate by their publisher, but they compound in this codebase: the plugin handles user-influenced recipient addresses *and* disables transport certificate validation at five sites (finding `H-11`, owned by a later class), so an injection defect meets an absent certificate check on the same path. |
 | **CWE** | [CWE-74: Improper Neutralization of Special Elements in Output](https://cwe.mitre.org/data/definitions/74.html) for the transport advisory and [CWE-93: Improper Neutralization of CRLF Sequences](https://cwe.mitre.org/data/definitions/93.html) for the MIME advisory. |
-| **LOCATION** | `WebVella.Erp.Plugins.Mail/WebVella.Erp.Plugins.Mail.csproj` — the `MailKit` package reference. `MimeKit` is not referenced directly; it resolves through `MailKit`. |
-| **DESCRIPTION** | `MailKit` was referenced at `4.14.1`. Advisory [GHSA-9j88-vvj5-vhgr](https://github.com/advisories/GHSA-9j88-vvj5-vhgr) / CVE-2026-41319 describes STARTTLS response injection through an unflushed stream buffer, enabling an authentication-mechanism downgrade, and is first patched at `4.16.0`. The resolved `MimeKit` was `4.14.0`; advisory [GHSA-g7hc-96xr-gvvx](https://github.com/advisories/GHSA-g7hc-96xr-gvvx) / CVE-2026-30227 describes CRLF injection in a quoted local part, enabling SMTP command injection and message forgery, and is first patched at `4.15.1`. |
+| **LOCATION** | `WebVella.Erp.Plugins.Mail/WebVella.Erp.Plugins.Mail.csproj:L28` — the `MailKit` package reference. `MimeKit` is not referenced directly; it resolves transitively through `MailKit`. |
+| **DESCRIPTION** | `MailKit` was referenced at `4.14.1`. Advisory [GHSA-9j88-vvj5-vhgr](https://github.com/advisories/GHSA-9j88-vvj5-vhgr) / CVE-2026-41319 describes STARTTLS response injection through an unflushed stream buffer, enabling an authentication-mechanism downgrade, and is first patched at `4.16.0`. The resolved `MimeKit` was `4.14.0`; advisory [GHSA-g7hc-96xr-gvvx](https://github.com/advisories/GHSA-g7hc-96xr-gvvx) / CVE-2026-30227 describes CRLF injection in a quoted local part, enabling SMTP command injection and message forgery, and is first patched at `4.15.1`. Maps to **OWASP A06:2021 — Vulnerable and Outdated Components**. |
 | **IMPACT** | Response injection during the STARTTLS handshake lets a network-positioned attacker influence which authentication mechanism is negotiated, which is a downgrade toward weaker or plaintext authentication of the mail credential. CRLF injection in an address lets a caller who can influence a recipient string inject additional SMTP commands, forging messages from the platform's own mail identity. |
 | **EVIDENCE** | Reproduced with the toolchain's own dependency audit before the change: `dotnet list package --vulnerable --include-transitive` for the mail project reported both the `MailKit` and the `MimeKit` rows. |
-| **REMEDIATION** | **One line closed both.** `MailKit` was raised to `4.17.0`, whose package metadata depends on `MimeKit 4.17.0`, so the transitive dependency is lifted past its own first-patched version without a second manifest entry. Verified after the change: `dotnet list package --include-transitive` reports `MailKit 4.17.0` and `MimeKit 4.17.0`, and the vulnerability listing reports neither. Adding an explicit `MimeKit` reference was deliberately avoided — it would have pinned a transitive dependency for no benefit, which is more change than the fix requires. |
+| **REMEDIATION** | **One line closed both.** `MailKit` was raised to `4.17.0`, whose package metadata depends on `MimeKit 4.17.0`, so the transitive dependency is lifted past its own first-patched version without a second manifest entry. Verified after the change: `dotnet list package --include-transitive` reports `MailKit 4.17.0` and `MimeKit 4.17.0`, and the vulnerability listing reports neither. Adding an explicit `MimeKit` reference was deliberately avoided — it would have pinned a transitive dependency for no benefit, which is more change than the fix requires. Traces to the **Dependency Updates** standard's clause on packages with known advisories. |
 
 ### Medium severity findings
-
-The first two findings below sit in the same file as `C-03` and were closed by the same edit. They are
-recorded separately because they are distinct weaknesses with distinct identifiers, and because one of
-them is closed on the live path today while the other is closed in the code as written — a difference
-this report states rather than blurs. The third is documented only, per the severity matrix.
 
 #### M-01 — No security response headers
 
@@ -397,11 +946,24 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | The platform emitted none of the security response headers the engagement mandates. |
 | **SEVERITY** | Medium — *missing security headers* sits in the Low tier of the severity matrix, but the absence of a content-security policy and of frame and content-type protections is what makes several other findings exploitable in a browser, so it is recorded here as the compensating control it is. |
 | **CWE** | — (missing hardening control rather than a code weakness) |
-| **LOCATION** | The seven host pipelines. The middleware introduced to close it is `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`. |
+| **LOCATION** | The seven host pipelines. Only `WebVella.Erp.WebAssembly/Server/Program.cs:L18` and `:L21` emitted anything, and that was transport security alone. The middleware introduced to close it is `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`, registered at `WebVella.Erp.Web/ErpMvcExtensions.cs:L98`. |
 | **DESCRIPTION** | Only one project — the WebAssembly server — used any header middleware at all, and that was transport security alone. None of the seven site hosts emitted a content-security policy, frame options, content-type options, referrer policy or permissions policy. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
 | **IMPACT** | Without `X-Content-Type-Options: nosniff` an uploaded file served with a benign type can be re-interpreted as script; without `X-Frame-Options` the interface can be framed for clickjacking; without a content-security policy an injected script has no second line of defence. These headers are what bound the damage when another control fails. |
 | **EVIDENCE** | A repository-wide search of the pre-audit revision finds header middleware in exactly one project, emitting transport security only. |
 | **REMEDIATION** | A middleware emitting all seven mandated headers with the exact mandated values. **The content-security policy ships in report-only mode**, with the enforced value configurable: four components in the platform deliberately emit inline script or author-supplied markup, so enforcing the policy immediately would break working features and violate the requirement that existing functionality be preserved. The value is never weakened — only its delivery mode is staged, and the report-then-enforce path is documented. The middleware writes headers before the response starts and does not overwrite a header a host has already set, so a host with a stricter policy keeps it. **The middleware is now registered and ordered in all seven pipelines** - an earlier revision of this row said it "has no callers yet", which is retracted. It sits ahead of response compression and ahead of both static-file middlewares in every host, and all seven headers were verified **on the wire** against a published host on a dynamic response and on two static assets. The delivery switch binds from configuration — one key, `SecurityHeaders:ContentSecurityPolicyReportOnly` (environment variable `SecurityHeaders__ContentSecurityPolicyReportOnly`), which fails safe to report-only on an absent, blank or unparseable value — so advancing the rollout to enforcement requires no code change. It is the **only** member of the options type bound from configuration; the policy text itself is a `public const`, so no configuration source can weaken it. There is **no** violation-report endpoint: the collector and its `report-uri` directive were removed in full, which is why the emitted value stays byte-identical to the mandated policy and why `Invoke` has exactly one path through it — verified as zero `return` statements and exactly one `await next(context)`. |
+
+#### M-02 — No antiforgery validation on the MVC API surface
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | No antiforgery validation on the MVC API surface |
+| **SEVERITY** | Medium |
+| **CWE** | CWE-352 (OWASP A01:2021) |
+| **LOCATION** | `WebVella.Erp.Web/Controllers/WebApiController.cs` — the whole controller, whose class-level `[Authorize]` is at `:L36`; contrast `WebVella.Erp.Web/Pages/login.cshtml.cs:L64`, which does validate |
+| **DESCRIPTION** | No antiforgery attribute or global filter exists anywhere in the solution: a repository-wide search for `ValidateAntiForgeryToken`, `AutoValidateAntiforgeryToken`, `IgnoreAntiforgeryToken` and `AddAntiforgery` in `*.cs` returns nothing. The state-changing MVC API endpoints therefore accept cookie-authenticated requests with no request-bound token. The finding is correctly narrowed to the MVC surface: Razor Pages validate antiforgery by convention, which is why the login page is not affected. |
+| **IMPACT** | A cookie-authenticated user who visits a hostile page can be made to issue state-changing API calls. The residual risk is reduced but not removed by the `SameSite=Lax` cookie policy the remediation added, which blocks cross-site *form* posts of the session cookie for unsafe methods. |
+| **EVIDENCE** | `grep -rn 'ValidateAntiForgeryToken\|AutoValidateAntiforgeryToken\|IgnoreAntiforgeryToken\|AddAntiforgery' --include=*.cs .` returns no match at this commit. |
+| **REMEDIATION** | Documented, deliberately not enforced. Existing JavaScript clients post without a verification token, so switching on validation would break working functionality — which the preservation requirement forbids. The zero-breakage half of the control (the `SameSite` and `Secure` cookie attributes) has been applied. Enforcement should be staged: emit the token in the layout, attach it from the platform's own AJAX helper, then enable `AutoValidateAntiforgeryToken` once telemetry shows no untokened callers remain. |
 
 #### M-03 — Sign-in call not awaited
 
@@ -410,11 +972,11 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | The cookie sign-in call was invoked without being awaited, so the returned task was abandoned. |
 | **SEVERITY** | Medium. |
 | **CWE** | — (unobserved asynchronous operation) |
-| **LOCATION** | `WebVella.Erp.Web/Services/AuthService.cs` — the sign-in call, and its single caller `WebVella.Erp.Web/Pages/login.cshtml.cs`. |
-| **DESCRIPTION** | `httpContextAccesor.HttpContext.SignInAsync(...)` was called and its task discarded, so the sign-in could still be in flight when the response began, and any exception it raised was never observed. |
+| **LOCATION** | `WebVella.Erp.Web/Services/AuthService.cs:L50` — the sign-in call — and its single caller at `WebVella.Erp.Web/Pages/login.cshtml.cs:L62`. The suppression that hid the compiler warning is at `AuthService.cs:L119` and `:L161`. |
+| **DESCRIPTION** | `httpContextAccesor.HttpContext.SignInAsync(...)` was called and its task discarded, so the sign-in could still be in flight when the response began, and any exception it raised was never observed. Maps to **OWASP A07:2021 — Identification and Authentication Failures**. |
 | **IMPACT** | A race between writing the authentication cookie and completing the response, which manifests as an intermittent failure to be logged in after a correct credential, and — the security-relevant half — swallows any error raised while establishing the session, so a failed sign-in can be indistinguishable from a successful one. |
 | **EVIDENCE** | The un-awaited call is present verbatim at the pre-audit revision. |
-| **REMEDIATION** | The call is awaited, which necessarily makes the method asynchronous and propagates to its single caller — the login page handler, which becomes `async Task<IActionResult>`. That propagation is why the login page appears in this class's change set: it is compile-mandated, not opportunistic, and reverting it would break the build. **The sign-*out* counterpart was left in place at the time and has since been closed by review finding `F8`:** `Logout()` discarded the task returned by `SignOutAsync` in exactly the same way, which was recorded as observed and out of that finding's cited range. It is now `async Task LogoutAsync()`, awaited at both of its handlers, which additionally orders the server-side session revocation before the response is written rather than racing it. |
+| **REMEDIATION** | The call is awaited, which necessarily makes the method asynchronous and propagates to its single caller — the login page handler, which becomes `async Task<IActionResult>`. Traces to the **Authentication Hardening** standard's secure-session clause. That propagation is why the login page appears in this class's change set: it is compile-mandated, not opportunistic, and reverting it would break the build. **The sign-*out* counterpart was left in place at the time and has since been closed by review finding `F8`:** `Logout()` discarded the task returned by `SignOutAsync` in exactly the same way, which was recorded as observed and out of that finding's cited range. It is now `async Task LogoutAsync()`, awaited at both of its handlers, which additionally orders the server-side session revocation before the response is written rather than racing it. |
 
 #### M-04 — Local time used for token timestamps
 
@@ -423,11 +985,11 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | Token expiry was computed from local server time rather than UTC. |
 | **SEVERITY** | Medium. |
 | **CWE** | [CWE-613: Insufficient Session Expiration](https://cwe.mitre.org/data/definitions/613.html) |
-| **LOCATION** | `WebVella.Erp.Web/Services/AuthService.cs` — the token construction. |
-| **DESCRIPTION** | `expires: DateTime.Now.AddMinutes(...)`. Token expiry claims are defined in UTC, so on any host not set to UTC the effective lifetime was shifted by the offset. |
+| **LOCATION** | `WebVella.Erp.Web/Services/AuthService.cs:L158` — the token construction — against the correct `DateTime.UtcNow` used six lines earlier at `:L152`. |
+| **DESCRIPTION** | `expires: DateTime.Now.AddMinutes(...)`. Token expiry claims are defined in UTC, so on any host not set to UTC the effective lifetime was shifted by the offset. Maps to **OWASP A07:2021 — Identification and Authentication Failures**. |
 | **IMPACT** | West of UTC the token expires *later* than intended — silently extending session lifetime, which is the security-relevant direction; east of UTC it expires early, which is a functional defect. Either way the configured lifetime is not the actual one, and a daylight-saving transition changes it again. |
 | **EVIDENCE** | The `DateTime.Now` call is present verbatim at the pre-audit revision. |
-| **REMEDIATION** | Changed to `DateTime.UtcNow`, so the claim means what it says regardless of host timezone. |
+| **REMEDIATION** | Changed to `DateTime.UtcNow`, so the claim means what it says regardless of host timezone. Traces to the **Authentication Hardening** standard's secure-session clause, since a token lifetime that shifts with the host's offset is not a bounded session. |
 
 #### M-05 — Password hash comparison was not constant time
 
@@ -436,11 +998,11 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | The legacy hash comparison used an ordinal string comparer, which stops at the first differing character, so its duration revealed how many leading characters of the stored digest were already correct. |
 | **SEVERITY** | Medium — *weak cryptography* under the engagement severity matrix. |
 | **CWE** | [CWE-208: Observable Timing Discrepancy](https://cwe.mitre.org/data/definitions/208.html) |
-| **LOCATION** | `WebVella.Erp/Utilities/PasswordUtil.cs` — `VerifyMd5Hash`, at `L28-L29` of the pre-audit revision. |
-| **DESCRIPTION** | `return (0 == StringComparer.OrdinalIgnoreCase.Compare(hashOfInput, hash));` short-circuits on the first mismatching character. The same member also returned **true** for an empty password against an empty stored digest, because both operands collapsed to `string.Empty`. |
+| **LOCATION** | `WebVella.Erp/Utilities/PasswordUtil.cs:L28-L29` — inside `VerifyMd5Hash`, declared at `:L25`. |
+| **DESCRIPTION** | `return (0 == StringComparer.OrdinalIgnoreCase.Compare(hashOfInput, hash));` short-circuits on the first mismatching character. The same member also returned **true** for an empty password against an empty stored digest, because both operands collapsed to `string.Empty`. Maps to **OWASP A02:2021 — Cryptographic Failures**. |
 | **IMPACT** | A timing oracle lets an attacker who can measure response latency reconstruct a stored digest one character at a time, reducing recovery from a search over the whole digest space to a linear walk. The empty-against-empty case is the more direct defect: an account with no stored credential would authenticate with no password. Scope is bounded, and the bound is stated plainly: at the pre-audit revision this member had **no callers**, so neither weakness was reachable — the live credential comparison happened inside the SQL predicate at `SecurityManager.cs:L85`. It becomes reachable, and therefore matters, exactly when credential resolution is switched onto `VerifyPassword`. |
 | **EVIDENCE** | The pre-audit member body is the two lines quoted above; a search of that revision finds no caller of `VerifyMd5Hash` outside the file. |
-| **REMEDIATION** | The comparison is now `CryptographicOperations.FixedTimeEquals` over equal-length byte spans, which inspects every byte regardless of where the values diverge. Casing is normalised before the comparison to preserve the case-insensitive tolerance the previous code had — normalising is not secret-dependent branching, so it does not reintroduce the oracle — and length is checked first on purpose, because fixed-time comparison is only fixed-time across equal-length spans and a length difference is not a secret that can be probed for. Absent input now fails closed on both sides, so the empty-against-empty case can no longer authenticate. **A second, distinct timing discrepancy at the *caller* level was subsequently identified as review finding `F28` and closed in a later pass.** Closing `M-05` inside the comparison did not close it: `SecurityManager.GetUser(email, password)` returned before any key derivation whenever the submitted password exceeded the 128-character bound, while an absent or legacy row still performed a 600,000-iteration dummy derivation — so latency alone answered *does this account exist*. The bound is now enforced **before** the lookup, and the dummy derivation is driven by an `out bool keyDerivationPerformed` fact reported by the verifier rather than predicted from the stored value's shape, so exactly one derivation happens on every credential path regardless of row or hash shape. Measured against a live database, the four failing paths are now indistinguishable: modern 123.0 ms, legacy 121.4 ms, corrupt 122.0 ms, absent 120.9 ms, and every over-long submission returns in 0.0 ms without touching the database. |
+| **REMEDIATION** | Traces to the **Authentication Hardening** standard's constant-time-comparison clause. The comparison is now `CryptographicOperations.FixedTimeEquals` over equal-length byte spans, which inspects every byte regardless of where the values diverge. Casing is normalised before the comparison to preserve the case-insensitive tolerance the previous code had — normalising is not secret-dependent branching, so it does not reintroduce the oracle — and length is checked first on purpose, because fixed-time comparison is only fixed-time across equal-length spans and a length difference is not a secret that can be probed for. Absent input now fails closed on both sides, so the empty-against-empty case can no longer authenticate. **A second, distinct timing discrepancy at the *caller* level was subsequently identified as review finding `F28` and closed in a later pass.** Closing `M-05` inside the comparison did not close it: `SecurityManager.GetUser(email, password)` returned before any key derivation whenever the submitted password exceeded the 128-character bound, while an absent or legacy row still performed a 600,000-iteration dummy derivation — so latency alone answered *does this account exist*. The bound is now enforced **before** the lookup, and the dummy derivation is driven by an `out bool keyDerivationPerformed` fact reported by the verifier rather than predicted from the stored value's shape, so exactly one derivation happens on every credential path regardless of row or hash shape. Measured against a live database, the four failing paths are now indistinguishable: modern 123.0 ms, legacy 121.4 ms, corrupt 122.0 ms, absent 120.9 ms, and every over-long submission returns in 0.0 ms without touching the database. |
 
 #### M-06 — Shared mutable hash instance used from concurrent requests
 
@@ -450,10 +1012,23 @@ this report states rather than blurs. The third is documented only, per the seve
 | **SEVERITY** | Medium. |
 | **CWE** | [CWE-362: Concurrent Execution using Shared Resource with Improper Synchronization](https://cwe.mitre.org/data/definitions/362.html) |
 | **LOCATION** | `WebVella.Erp/Utilities/PasswordUtil.cs:L9` of the pre-audit revision. |
-| **DESCRIPTION** | `private static MD5 md5Hash = MD5.Create();` was held for the process lifetime and used from `GetMd5Hash` without any synchronisation. Two concurrent calls could interleave inside `ComputeHash` and corrupt each other's digest. |
+| **DESCRIPTION** | `private static MD5 md5Hash = MD5.Create();` was held for the process lifetime and used from `GetMd5Hash` without any synchronisation. Two concurrent calls could interleave inside `ComputeHash` and corrupt each other's digest. Maps to **OWASP A02:2021 — Cryptographic Failures**. |
 | **IMPACT** | An interleaved computation yields a digest belonging to neither input. On a credential path that produces a spurious authentication failure at best, and a non-deterministic stored value at worst — a correctness and availability defect on a security-critical path, not merely a race in incidental code. Unlike `M-05`, this one was genuinely reachable: `GetMd5Hash` had, and still has, four live call sites across credential resolution and the two record write paths. |
 | **EVIDENCE** | The single shared instance is the declaration quoted above; `GetMd5Hash` referenced it directly. Live callers at `SecurityManager.cs:L84`, `RecordManager.cs:L2017`, `DbRecordRepository.cs:L554` and `:L1856`. |
-| **REMEDIATION** | The shared instance was removed and replaced with the static one-shot `MD5.HashData(...)`, which keeps no shared state, is correct under concurrency and needs no lock. **Closed on the live path**, because the replacement sits in the member those four callers already use. |
+| **REMEDIATION** | Traces to the **Cryptographic Standards** block, which presumes a primitive that produces a correct digest before any question of algorithm strength arises. The shared instance was removed and replaced with the static one-shot `MD5.HashData(...)`, which keeps no shared state, is correct under concurrency and needs no lock. **Closed on the live path**, because the replacement sits in the member those four callers already use. |
+
+#### M-07 — Unbounded script-evaluation cache holding compiled delegates
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Unbounded script-evaluation cache holding compiled delegates |
+| **SEVERITY** | Medium |
+| **CWE** | CWE-770, CWE-94 |
+| **LOCATION** | `WebVella.Erp.Web/Services/CodeEvalService.cs:L13` (the cache) and `:L46` (the unbounded insert) |
+| **DESCRIPTION** | Compiled page-component scripts are memoised in a `private static readonly Dictionary<string, object>` keyed by a digest of the script text. Nothing removes an entry: the file contains no `Remove`, `Clear` or eviction call of any kind, and the dictionary is not a size-bounded cache. Maps to **OWASP A08:2021 — Software and Data Integrity Failures**. |
+| **IMPACT** | Each distinct script text permanently retains a compiled object and its loaded assembly, so a workload that generates many script variants grows process memory without bound and cannot release it. Because the cache holds executable delegates keyed only by content digest, it also lengthens the lifetime of any code a privileged author has injected. |
+| **EVIDENCE** | `private static readonly Dictionary<string, object> scriptObjects = new Dictionary<string, object>();` at `:L13`; `scriptObjects[md5Key] = scriptObject;` at `:L46`; `grep -c 'Remove\|Clear\|Evict\|MemoryCache'` over the 62-line file returns **0**. |
+| **REMEDIATION** | Documented, deliberately not changed — it is a resource-exhaustion concern rather than a confirmed Critical or High, and the minimal-change rule keeps it out of the remediation. The recommended fix is to replace the dictionary with a size-bounded `MemoryCache` carrying a `SizeLimit` and a per-entry `Size`, exactly as `WebVella.Erp.Web/Services/LoginThrottleService.cs` now does, so eviction is automatic and the cardinality bound is explicit. |
 
 #### M-08 — Deterministic initialisation vector in the symmetric encryption helpers
 
@@ -462,11 +1037,89 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | The initialisation vector used by the symmetric encryption helpers is derived from the encryption key, so it is identical for every operation and the same plaintext always produces the same ciphertext. |
 | **SEVERITY** | Medium — *weak cryptography* under the engagement severity matrix, which directs Medium findings to documentation with fix guidance rather than to remediation. |
 | **CWE** | [CWE-329: Generation of Predictable IV with CBC Mode](https://cwe.mitre.org/data/definitions/329.html) |
-| **LOCATION** | `WebVella.Erp/Utilities/CryptoUtility.cs` — the key and initialisation-vector derivation helpers |
+| **LOCATION** | `WebVella.Erp/Utilities/CryptoUtility.cs:L99`, `:L115`, `:L131` and `:L146` — the four `algorithm.IV = GetValidIV(key, …)` assignments — and the derivation helper itself, which digests the key text at `:L182` |
 | **DESCRIPTION** | The vector is computed from the key rather than generated per operation, and the cipher mode is unauthenticated. A deterministic vector removes semantic security: an observer of two ciphertexts can tell whether the underlying plaintexts were equal. The mandated cryptographic standards name AES-256-GCM, an authenticated mode, which this construction is not. Maps to **OWASP A02:2021 — Cryptographic Failures**. |
 | **IMPACT** | Equality between encrypted values leaks, which for low-entropy plaintexts is close to leaking the values themselves, and an unauthenticated mode gives no detection of ciphertext tampering. The impact is bounded, and the bound is stated plainly rather than used to dismiss the finding: **the symmetric encrypt and decrypt members have no callers anywhere in the repository**, so no data is protected by this construction today. It is latent, not live. |
 | **EVIDENCE** | The derivation helpers compute the vector from the key material; a repository-wide search finds no caller of the symmetric encrypt or decrypt members. |
 | **REMEDIATION** | **Documented, deliberately not changed** — the disposition is recorded as `RISK-006` in the [risk register](risk-register.md), which carries the reasoning and the recommended fix. In short: the finding is Medium and latent, and changing the derivation or moving to an authenticated mode would make every already-persisted ciphertext undecryptable, which the requirement that existing functionality remain operational forbids. Recommended fix when a caller is first introduced — generate a fresh cryptographically random vector per operation, store it alongside the ciphertext, and prefer AES-256-GCM. Doing this *before* the first caller exists costs nothing, because there is no persisted ciphertext to migrate; afterwards it requires a re-encryption migration. Any `CA5389`, `CA5390` or `CA5401` diagnostic on that region is expected and is left visible as a warning rather than suppressed. |
+
+#### M-09 — Anonymous access to a developer page
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Anonymous access to a developer page |
+| **SEVERITY** | Medium |
+| **CWE** | CWE-306 |
+| **LOCATION** | `WebVella.Erp.Site.Sdk/Startup.cs` — cited as `:L48`; the exemption now sits inside an `if (IsDevelopment)` block, so the locator has moved and is re-measured below |
+| **DESCRIPTION** | The SDK host's Razor Pages conventions exempt `/dev` from authorization alongside the legitimate `/login` exemption, so the developer page is reachable without credentials on that host. Maps to **OWASP A01:2021 — Broken Access Control**. |
+| **IMPACT** | An unauthenticated visitor reaches a developer-oriented page on the SDK host. The exposure is limited to that one host and to whatever that page renders, but it is an authentication bypass for the page in question and it widens the anonymous attack surface enumerated in this report. |
+| **EVIDENCE** | `options.Conventions.AllowAnonymousToPage("/dev");` at `:L48`, immediately after the legitimate `AllowAnonymousToPage("/login")` at `:L47`. **Superseded measurement:** an earlier revision of this row read "Measured at this commit — the exemption is still present", which was true when written. The exemption is now granted only when the environment is `Development`; measured against a published Production host, anonymous `GET /dev` answers **302** to `/login?returnUrl=%2Fdev` with `content-length: 0`, and against a Development host it answers **200**. |
+| **REMEDIATION** | **Production half fixed; Development half remains a documented decline.** An earlier revision of this row read "Documented, deliberately not changed … a Medium that does not act as a compensating control for any confirmed Critical or High". That reasoning was sound when written and is now **superseded**, and the reason it broke is worth stating precisely rather than quietly overwriting: it assessed the exemption *in isolation*, and the exemption is not in isolation. `/dev` renders a Blazor Server component and this host set `CircuitOptions.DetailedErrors = true`, so the anonymous page was the **delivery vehicle** for full server exception text to an unauthenticated caller — a composition that does meet the compensating-control test. Under review finding `CR2-F-07` the exemption is now **environment-gated rather than deleted**, which is both the smaller change and the one that keeps two requirements true at once: Agent Action Plan section 0.3.2 declined removal because it "would break the SDK development workflow that depends on reaching `/dev` without a session", and gating preserves that workflow exactly where it is used while a deployed host falls back to the deny-by-default `AuthorizeFolder("/")`. The two disclosures the page could reach are closed with it — `DetailedErrors` now follows the environment, and the Blazor hub, which is a **separate endpoint** carrying no authorization metadata of its own, requires authentication outside Development. The residual is that the page is still anonymous **in Development**, which is deliberate and is recorded as `RISK-113` in [the risk register](risk-register.md). Full treatment in [the remediation log](remediation-log.md). |
+
+#### M-10 — Anonymous resource-read endpoint on the project plugin
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Anonymous resource-read endpoint on the project plugin |
+| **SEVERITY** | Medium |
+| **CWE** | CWE-306, CWE-200 |
+| **LOCATION** | `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs:L462` |
+| **DESCRIPTION** | A single action carries `[AllowAnonymous]`, overriding the class-level authorization that otherwise protects the API surface, and serves a project resource read without authentication. Maps to **OWASP A01:2021 — Broken Access Control**. |
+| **IMPACT** | Project resource data is readable without credentials. The scope is one read action rather than the controller, and no write path is exposed, but it is an unauthenticated data read that no requirement asks for. |
+| **EVIDENCE** | `[AllowAnonymous]` at `:L462` is the only such attribute in the file; class-level authorization is confirmed present on the API surface at `WebVella.Erp.Web/Controllers/ApiControllerBase.cs:L9`. |
+| **REMEDIATION** | **Partly remediated, and the remaining half is still a documented decline.** The anonymous exemption itself is unchanged, on the same governing rule as M-09 — it is a Medium that compensates for no confirmed Critical or High. What *has* changed, under review finding `F27`, is everything the exemption could be used to reach. The action served whatever resource name a caller supplied; it now admits exactly the two resource names the shipped page markup requests, through a case-insensitive map whose **value** — never the caller's string — is what reaches the resource lookup. An unlisted name is answered with the same empty script the blank-name case already returned, and **nothing is logged**, because logging refusals from an anonymous, unauthenticated, unthrottled endpoint is itself the log-volume and mail-amplification vector. A genuine packaging fault on an admitted name is recorded once per canonical name per process, under a fixed source string, with `LogNotificationStatus.DoNotNotify`, and is no longer re-thrown into the error pipeline. Verified live: sixty consecutive refusals — including traversal, a script tag, a CRLF log-injection payload and a 4,000-character name — added **zero** `system_log` rows, and a reflection-injected packaging fault driven forty-three times produced exactly **one** record. The recommended remaining fix is unchanged: remove the attribute, or move the action behind an explicit read-only policy that logs access. |
+
+#### M-11 — Synchronous IO enabled for every request
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Synchronous IO enabled for every request |
+| **SEVERITY** | Medium |
+| **CWE** | CWE-400 |
+| **LOCATION** | `WebVella.Erp.Web/Middleware/ErpMiddleware.cs:L27` |
+| **DESCRIPTION** | The platform middleware sets `AllowSynchronousIO = true` on the request's synchronous-IO feature for every request, re-enabling blocking reads and writes that the server disables by default. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
+| **IMPACT** | Blocking IO on request-processing threads makes thread-pool starvation reachable under load, which is a denial-of-service amplifier rather than a direct vulnerability. |
+| **EVIDENCE** | `syncIOFeature.AllowSynchronousIO = true;` at `:L27` — the only occurrence in the solution. |
+| **REMEDIATION** | Documented, deliberately not changed. Removing the switch would break the synchronous manager code paths the platform is built on, and rewriting them is exactly the refactor the change scope forbids. The recommended fix is to convert the synchronous read and write paths to their async counterparts and then delete the switch, tracked as engineering work rather than as remediation. |
+
+#### M-12 — Login auditing is unreachable dead code
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Login auditing is unreachable dead code |
+| **SEVERITY** | Medium |
+| **CWE** | CWE-778 (OWASP A09:2021) |
+| **LOCATION** | `WebVella.Erp.Web/Security/WebSecurityUtil.cs:L31-L95` — the entire region is commented out |
+| **DESCRIPTION** | The historical login, token-login, logout and authenticate helpers — including the last-login update that would have produced an authentication audit trail — exist only as a contiguous commented-out block spanning lines 31 to 95. No live code path records authentication outcomes through them. |
+| **IMPACT** | Without an authentication audit trail, credential-stuffing and password-spraying campaigns leave no first-class record, which delays detection and makes post-incident reconstruction dependent on transport-level logs. |
+| **EVIDENCE** | Every `public static` member in the file (`Login` at `:L27`, `LoginWithToken` at `:L55`, `Logout` at `:L86`, `Authenticate` at `:L92`) is inside the comment; the commented run measured at lines 31-95. |
+| **REMEDIATION** | **Fixed.** An earlier revision of this row said "documented, not remediated", correctly distinguishing rate-limit bookkeeping from an audit record; **a real audit record has since been added** and that verdict is retracted. `login.cshtml.cs` now calls `WriteAuthenticationAuditRecord` on all three outcomes - lockout refusal, authentication failure and authentication success - each writing a row to `system_log`. Three properties of it are load-bearing. It writes through the **core** `WebVella.Erp.Diagnostics.Log` writer, which performs a parameterized insert and nothing else, and deliberately **not** through `WebVella.Erp.Web.Services.LogService`, whose wrapper mails the entry *before* persisting it - routing a per-attempt record on an anonymous endpoint through that path would have turned the login form into an attacker-triggered mail flood and amplified M-17. `LogNotificationStatus.DoNotNotify` is passed explicitly rather than left to the parameter default. The whole write is wrapped so that a datastore fault during the insert can never fail a login, and the submitted username is length-bounded so the audit trail cannot itself become a storage-amplification vector. Only the submitted identity and the source address are recorded - never the password, request body, headers, cookies or antiforgery token. The earlier observation that the throttle is not an audit record remains true and is why both exist. Verified at runtime: neither the page nor the throttle service contains any `LogService` call, and after a successful sign-in the `last_logged_in` column of `rec_user` was unchanged. The recommended fix is a `system_log` write on both outcomes at that same entry point, carrying the account, the remote address and the result but never the submitted password; the platform's existing `LogService` already provides the write path. The dead block is deliberately left in place because deleting it is hygiene rather than remediation; it is also recorded as part of L-01. |
+
+#### M-13 — Password length bounds of 6 to 24 characters
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | The password field was provisioned with a minimum length of 6 and a maximum of 24 characters — and the bounds were metadata only, enforced by nothing. |
+| **SEVERITY** | Medium — *weak cryptography* in the matrix's sense, as a credential-policy weakness rather than an exploitable defect on its own. **Remediated rather than only documented**, because the mandated Authentication Hardening standard sets a 12-character minimum explicitly, and because the bound is a direct compensating control for `C-03`: a work-factored hash protects a weak password far less than a strong one. |
+| **CWE** | [CWE-521: Weak Password Requirements](https://cwe.mitre.org/data/definitions/521.html). |
+| **LOCATION** | `WebVella.Erp/ERPService.cs:L216` and `:L217`, inside the password field definition at `:L202-L222`. |
+| **DESCRIPTION** | Provisioning set `MinLength = 6` and `MaxLength = 24`. The **ceiling** is the more consequential half: a 24-character limit forbids passphrases outright, so it actively prevents the strongest credentials users would otherwise choose. And the bounds turned out to be declarative only — every consumer of the field's `MinLength` and `MaxLength` in the entity manager is commented out, so nothing in the platform rejected a one-character password. Maps to **OWASP A07:2021 — Identification and Authentication Failures**. |
+| **IMPACT** | Six-character passwords are recoverable by exhaustive search at negligible cost, and with `C-03`'s unsalted MD5 storage they were recoverable instantly from a leaked column. Because nothing enforced the minimum, the effective floor was one character. The ceiling meanwhile prevented users from compensating: an operator who wanted a 40-character passphrase for an administrator account could not have one. With no account lockout either — finding `H-16` — an online guessing attack faced no barrier at all. |
+| **EVIDENCE** | At the audit baseline `:L216` read `password.MinLength = 6;` and `:L217` read `password.MaxLength = 24;`. A review pass then established the enforcement gap by inspection: the `MinLength`/`MaxLength` consumers in the entity manager are commented out, so the metadata bound nothing. |
+| **REMEDIATION** | Traces to the **Authentication Hardening** standard's complexity clause. The bounds are now 12 and 128, sourced from `PasswordUtil.MinPasswordLength` and `MaxPasswordLength` through the `PasswordMinLength` and `PasswordMaxLength` constants at `ERPService.cs:L50` and `:L63` and applied at `:L302-L303`, so the field definition and the validator cannot drift apart. More importantly the bounds are now **enforced** rather than declared: a single validator, `PasswordUtil.ValidatePasswordPolicy`, is applied at every boundary where a human chooses a credential — both `SecurityManager.SaveUser` branches (`:L951`, `:L1035`), the initial-administrator resolution in `ERPService`, and the generic record-write path through `RecordManager` (`:L2435`, `:L2628`) and `DbRecordRepository` (`:L752`), which is what the record API reaches. It is deliberately **not** applied inside the hashing primitive or on the legacy rehash path, because doing so would lock out existing users whose credentials predate the policy — the reasoning is recorded in the [risk register](risk-register.md), and the migration behaviour in the [credential migration guide](credential-migration.md). |
+
+#### M-14 — No multi-factor authentication
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | No multi-factor authentication |
+| **SEVERITY** | Medium |
+| **CWE** | CWE-308 (OWASP A07:2021) |
+| **LOCATION** | Architectural. **No line locator exists, and none is invented**: the finding is the absence of a construct rather than the presence of a defective one. The locator is the search itself — a repository-wide search for two-factor, MFA, TOTP or authenticator terms across every `*.cs` file returns nothing |
+| **DESCRIPTION** | The platform authenticates with a single factor: an e-mail address and a password, plus an optional persistent cookie. There is no second-factor enrolment, challenge or recovery mechanism anywhere in the codebase, and no external identity provider is integrated. |
+| **IMPACT** | A single leaked or guessed credential is sufficient for full account takeover, including for the administrator account. The remediation reduces the likelihood of guessing (work-factored hashing, a five-attempt lockout, rate limiting) but cannot compensate for a credential compromised elsewhere. |
+| **EVIDENCE** | `grep -rniE 'two.?factor\|mfa\|totp\|authenticator' --include=*.cs .` returns no match at this commit. |
+| **REMEDIATION** | Documented, deliberately not built. Adding a second factor is feature work with schema, enrolment, recovery and user-interface consequences, which the no-feature-additions boundary excludes. The recommended path is to adopt the framework's own two-factor primitives behind an opt-in policy for administrator accounts first, and it is carried as a standing recommendation in the risk register rather than as remediation. |
 
 #### M-15 — Client library loaded from a content delivery network without an integrity attribute
 
@@ -475,11 +1128,24 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | A client-side library is loaded from a third-party content delivery network with no subresource-integrity attribute, and the repository's browser-side assets are unversioned. |
 | **SEVERITY** | Medium — a compromise of the delivery network, or of the account that publishes to it, executes attacker-chosen script on the application's origin. Documented with fix guidance; not remediated. |
 | **CWE** | [CWE-829: Inclusion of Functionality from Untrusted Control Sphere](https://cwe.mitre.org/data/definitions/829.html) |
-| **LOCATION** | Browser-side assets — the repository contains 188 `.js` and 5 `.css` files and no client-side package manifest. |
+| **LOCATION** | `WebVella.Erp.Plugins.SDK/Pages/entity/data.cshtml:L124-L125` — a stylesheet and a script loaded from a public content delivery network, neither carrying an `integrity` attribute. More broadly, the repository contains 188 `.js` and 5 `.css` files and no client-side package manifest. |
 | **DESCRIPTION** | Without an integrity attribute the browser accepts whatever the network returns. Because there is no client-side package manifest, the assets also have no recorded versions, so a compromised file cannot be detected by comparison. Maps to **OWASP A08:2021 Software and Data Integrity Failures**. |
 | **IMPACT** | Script from a compromised delivery network runs with the same authority as the application's own script, so it can read the session and act as the user. |
 | **EVIDENCE** | The script reference carries no `integrity` or `crossorigin` attribute, and no client-side package manifest exists anywhere in the repository. |
 | **REMEDIATION** | **Documented, not changed.** Recommended fix: add an `integrity` hash and a `crossorigin` attribute to every externally hosted reference, or vendor the library into the repository so its bytes are version-controlled; then introduce a client-side package manifest so the browser-side assets carry recorded versions. The content-security policy this remediation introduces is a partial compensating control once it is enforced rather than report-only, because `default-src 'self'` refuses third-party origins outright. |
+
+#### M-16 — Legacy timestamp behaviour enabled on every host
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Legacy timestamp behaviour enabled on every host |
+| **SEVERITY** | Medium |
+| **CWE** | CWE-1254-adjacent (correctness of a security-relevant value) |
+| **LOCATION** | All seven hosts: `WebVella.Erp.Site/Startup.cs:L40`, `WebVella.Erp.Site.Crm/Startup.cs:L27`, `WebVella.Erp.Site.Mail/Startup.cs:L27`, `WebVella.Erp.Site.MicrosoftCDM/Startup.cs:L29`, `WebVella.Erp.Site.Next/Startup.cs:L30`, `WebVella.Erp.Site.Project/Startup.cs:L34`, `WebVella.Erp.Site.Sdk/Startup.cs:L27` |
+| **DESCRIPTION** | Each host sets the data provider's legacy timestamp switch, which changes how timestamp values are mapped between the database and the application — in particular how offsets and kinds are interpreted. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
+| **IMPACT** | Security-relevant timestamps such as token issue and expiry, lockout windows and audit times are only as trustworthy as their time-zone handling. Inconsistent interpretation can shift a comparison across a boundary, which is why the remediation moved token timestamps to UTC explicitly rather than relying on this switch. |
+| **EVIDENCE** | `AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);` measured at all seven locations listed above. |
+| **REMEDIATION** | Documented, deliberately not changed. Turning the switch off changes how *already stored* timestamps are read and risks data corruption across every existing deployment, which the preservation requirement forbids. The remediation instead removed the dependence on it where it mattered, by making token timestamps explicitly UTC in `WebVella.Erp.Web/Services/AuthService.cs`. The recommended fix is a migration that normalises stored values, after which the switch can be removed host by host. |
 
 #### M-17 — Exception details e-mailed off-box before they are persisted
 
@@ -488,7 +1154,7 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | The logging service sends an exception notification by e-mail before writing the record to the database, so internal detail leaves the host on a channel the platform does not control. |
 | **SEVERITY** | Medium — information disclosure to an external mail relay. Documented with fix guidance; not remediated as such, although both of the conditions that made its exposure sharp have since been removed — see the remediation field. |
 | **CWE** | [CWE-532: Insertion of Sensitive Information into Log File](https://cwe.mitre.org/data/definitions/532.html) and [CWE-209: Generation of Error Message Containing Sensitive Information](https://cwe.mitre.org/data/definitions/209.html) |
-| **LOCATION** | `WebVella.Erp.Web/Services/LogService.cs` — the notification path in both create overloads. |
+| **LOCATION** | `WebVella.Erp.Web/Services/LogService.cs:L41-L52` and `:L64-L76` — the notification path in both create overloads. The payload shape is bounded at `WebVella.Erp/Diagnostics/Log.cs:L81-L114`. |
 | **DESCRIPTION** | The serialised log payload carries the message, the source, the exception detail and the request URL. It does **not** carry request headers, cookies or the request body, which bounds the exposure materially. Maps to **OWASP A05:2021**. |
 | **IMPACT** | Exception text and the requested URL reach whatever mail infrastructure is configured, including any intermediate relay. Before the mail transport's certificate validation was restored, that path was also not authenticated, so the content was exposed to an active network attacker as well. |
 | **EVIDENCE** | The notification call precedes the persistence call in both overloads, and the payload shape is fixed by the log record type, which serialises the URL but no header, cookie or body. |
@@ -501,13 +1167,26 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | The platform's single output-escaping helper defended against exactly one literal string, `</script>`, by rewriting it — so any other spelling passed through untouched. |
 | **SEVERITY** | Medium. It is remediated rather than merely documented because the defective encoder stands directly at a cross-site-scripting sink, which makes it a compensating control for a confirmed High finding rather than an isolated quality issue. |
 | **CWE** | [CWE-116: Improper Encoding or Escaping of Output](https://cwe.mitre.org/data/definitions/116.html) |
-| **LOCATION** | `WebVella.Erp.Web/Utils/HtmlHelperExtension.cs` |
+| **LOCATION** | `WebVella.Erp.Web/Utils/HtmlHelperExtension.cs:L6-L12`, the whole of a fourteen-line file: the class at `:L6`, the helper at `:L8`, and the substitution itself at `:L11`. |
 | **DESCRIPTION** | The helper performed `.Replace("</script>", "</s\\cript>")` on its input before emitting it raw. The replacement is case-sensitive and whitespace-sensitive, so `</SCRIPT>`, `</script >` and `</script\n>` — all of which a browser accepts as a closing script tag — were not rewritten. A repository-wide search found no other encoder of any kind: no `HtmlEncoder`, no `HtmlEncode`, no anti-XSS library. Maps to **OWASP A03:2021 — Injection**. |
 | **IMPACT** | Any value emitted through this helper into a script block could terminate that block and open an attacker-controlled one, which is stored cross-site scripting with the encoder's own blessing. Because it was the only escaping utility in the codebase, its weakness set the platform's effective escaping standard. |
 | **EVIDENCE** | The single-string replacement is present verbatim at the pre-audit revision; searches for `HtmlEncoder`, `WebUtility.HtmlEncode` and `HttpUtility.HtmlEncode` return nothing anywhere in the repository. |
-| **REMEDIATION** | Replaced with the framework's `JavaScriptEncoder`, applied to **every** `<` rather than to one spelling of one tag, so no casing or spacing variant survives. Behaviour is preserved for legitimate content: a browser parsing a JavaScript string literal converts the escape back to `<`, so rendered output is unchanged while breakout becomes impossible. The escape is computed once into a static field rather than per call, keeping the helper on its original hot path. |
+| **REMEDIATION** | Traces to the **Injection Prevention** standard's context-appropriate-output-encoding clause. Replaced with the framework's `JavaScriptEncoder`, applied to **every** `<` rather than to one spelling of one tag, so no casing or spacing variant survives. Behaviour is preserved for legitimate content: a browser parsing a JavaScript string literal converts the escape back to `<`, so rendered output is unchanged while breakout becomes impossible. The escape is computed once into a static field rather than per call, keeping the helper on its original hot path. |
 
 ### Low severity findings
+
+#### L-01 — Dead security code retained in the tree
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Three complete security classes and one wholly commented-out method body remain in the web framework, unreachable from any live path, together with twelve `[AllowAnonymous]` exemptions that exist only inside comments. |
+| **SEVERITY** | Low — a *minor misconfiguration* in the matrix's sense. Unreachable code is not exploitable, so the exposure is to future misuse rather than to a present attacker. |
+| **CWE** | [CWE-561: Dead Code](https://cwe.mitre.org/data/definitions/561.html). |
+| **LOCATION** | `WebVella.Erp.Web/Security/AuthorizeAttribute.cs` (146 lines), `WebVella.Erp.Web/Security/AuthCache.cs` (61 lines), `WebVella.Erp.Web/Security/AuthToken.cs` (146 lines), and the commented block at `WebVella.Erp.Web/Security/WebSecurityUtil.cs:L40-L85`. |
+| **DESCRIPTION** | The three classes implement a superseded authorization and token scheme — a custom authorization attribute, an authentication cache and a token type — and nothing constructs or references any of them. In `WebSecurityUtil` the entire region from `:L37` to `:L90` is `//`-commented line by line, including the two calls that would have recorded a successful sign-in. Twelve further `[AllowAnonymous]` attributes appear across the tree only inside commented code, so they grant nothing. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
+| **IMPACT** | No present exposure: none of it executes. The risk is that a future maintainer reads a commented `AllowAnonymous`, or an authorization attribute that looks like the platform's own, and reintroduces a scheme that was abandoned for a reason — or, worse, assumes that the commented login-audit calls mean auditing exists. That second confusion is real enough to be its own finding: `M-12` records that login auditing was unreachable precisely because it lives inside this dead region. |
+| **EVIDENCE** | Verified at this commit: the three files are present at the paths above with those line counts and no callers. `WebSecurityUtil.cs` carries `//            new SecurityManager().UpdateUserLastLoginTime(userId);` at `:L50` and the same call again at `:L76`, both inside the commented span, so the cited region lies entirely within dead code. A tree-wide count of commented `[AllowAnonymous]` occurrences confirms the twelve exemptions grant nothing. |
+| **REMEDIATION** | **Documented, not fixed** — deliberately, and the reasoning is the engagement's own: removing unreachable code is hygiene rather than remediation, and the modification boundaries forbid refactoring beyond what a security fix requires. The dead files and the commented region are therefore left exactly as they are, and recorded here so their status is unambiguous. The recommended fix for a future sprint is deletion of the three classes and the commented region in a single change that touches nothing else, after confirming with a solution-wide reference search that the absence of callers still holds. One naming trap is recorded because it has already caused confusion: the dead cache is `Security/AuthCache.cs`, while `WebVella.Erp.Web/Utils/Cache.cs` is a **different, live** 54-line memory-cache wrapper that is now the backing store for the login throttle introduced by `H-16`. The two must not be conflated. Tracked in the [risk register](risk-register.md). |
 
 #### L-02 — Fifteen package references exist only inside XML comments
 
@@ -515,12 +1194,25 @@ this report states rather than blurs. The third is documented only, per the seve
 | --- | --- |
 | **FINDING** | Fifteen `PackageReference` entries are commented out in the project manifests. They are not restored, not compiled against and not shipped. |
 | **SEVERITY** | Low — a repository-hygiene issue with no runtime exposure. Documented for a future sprint. |
-| **CWE** | Not applicable — no weakness is present; the entry exists to record why these references were **excluded** from the findings. |
-| **LOCATION** | Across the project manifests. |
+| **CWE** | — not applicable; no weakness is present, and none is invented. The entry exists to record why these references were **excluded** from the findings. |
+| **LOCATION** | `WebVella.Erp/WebVella.Erp.csproj:L51` and `:L52-L58`; `WebVella.Erp.Web/WebVella.Erp.Web.csproj:L136`, `:L137` and `:L139-L140`; `WebVella.Erp.Site/WebVella.Erp.Site.csproj:L51-L52` and `:L56`. |
 | **DESCRIPTION** | Recorded because the alternative is worse than the clutter: several of the commented entries name versions that carry genuine published advisories, including an image-processing package with an out-of-bounds-write advisory and four end-of-life framework packages. Because they are not in the build graph, **none of those advisories applies to this build**, and reporting them would have put false High-severity findings into this report. Maps to **OWASP A06:2021** only in the sense of preventing a misclassification. |
 | **IMPACT** | None at runtime. The risk is analytical: a future reader, or a scanner that parses manifests textually rather than resolving them, may mistake these for live references and either raise false findings or, worse, uncomment one. |
 | **EVIDENCE** | All fifteen entries are inside XML comments; the dependency audit reports no advisory for any of them, and the full inventory with versions is recorded in the third-party inventory document. |
 | **REMEDIATION** | **Documented, not changed.** Removing them is code hygiene rather than remediation, and the minimal-change boundary forbids refactoring beyond security fixes. Recommended fix for a future sprint: delete the commented entries, since version-control history already preserves them. Until then, treat the inventory document as the authority on which references are live. |
+
+#### L-03 — Packaging script references manifests that do not exist
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Packaging script references manifests that do not exist |
+| **SEVERITY** | Low |
+| **CWE** | CWE-1104-adjacent (unmaintained build tooling) |
+| **LOCATION** | `create-nuget-pkgs.bat:L2-L5` |
+| **DESCRIPTION** | The packaging script invokes `nuget pack` against four `.nuspec` manifests. No `.nuspec` file exists anywhere in the repository, so the script cannot succeed as written; it also spells one path `WebVella.Erp.Plugins.Sdk` where the folder on disk is `WebVella.Erp.Plugins.SDK`. Maps to **OWASP A08:2021 — Software and Data Integrity Failures**, as a defect in the release path rather than in the application. |
+| **IMPACT** | None directly — the script is already non-functional, so it cannot ship a mispackaged artifact. The concern is that a broken release path invites an ad-hoc manual one, which is how unreviewed content reaches a published package. |
+| **EVIDENCE** | Four `nuspec` references at `:L2`, `:L3`, `:L4` and `:L5`; `find . -name '*.nuspec'` returns **0** files. |
+| **REMEDIATION** | Documented, deliberately not changed. Repairing it is neither a security fix nor permitted under the minimal-change rule. The recommended fix is to delete the script and rely on `dotnet pack`, which the projects already support through their `PackageLicenseExpression` and related metadata. |
 
 #### L-04 — Large binary committed to the repository
 
@@ -528,12 +1220,38 @@ this report states rather than blurs. The third is documented only, per the seve
 | --- | --- |
 | **FINDING** | A large binary artefact is tracked in the repository. |
 | **SEVERITY** | Low — no runtime exposure. Documented for a future sprint. |
-| **CWE** | Not applicable — a supply-chain hygiene observation rather than a weakness. |
-| **LOCATION** | Tracked binary content, recorded in the third-party inventory document. |
+| **CWE** | — not applicable; a supply-chain hygiene observation rather than a weakness, so no identifier is asserted. |
+| **LOCATION** | `ExternalLibraries/libwkhtmltox.dll` — 29,765,120 bytes, roughly 28.4 MiB. **No line locator exists, and none is invented**: the artefact is binary, so its path and its exact byte size are the locator. It is recorded in the third-party inventory document. |
 | **DESCRIPTION** | A committed binary cannot be reviewed, its provenance is not recorded, and it is not covered by the dependency audit, because that audit resolves package references rather than files. Maps loosely to **OWASP A08:2021**. |
 | **IMPACT** | If the binary were ever replaced with a modified copy, nothing in the build or the audit would notice. The exposure is bounded by the fact that it is not executed as part of the application's request path. |
 | **EVIDENCE** | The artefact is present and tracked; no checksum or provenance record accompanies it. |
 | **REMEDIATION** | **Documented, not changed.** Deleting it is repository hygiene, not security remediation, and doing so could break whatever consumes it. Recommended fix for a future sprint: establish the artefact's provenance, record a checksum, and either move it to a package reference or to large-file storage so its integrity is verifiable. |
+
+#### L-05 — No health endpoint and no rollback tooling
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | No health endpoint and no rollback tooling |
+| **SEVERITY** | Low |
+| **CWE** | CWE-1059-adjacent (operational observability) |
+| **LOCATION** | Repository-wide. **No line locator exists, and none is invented**: the finding is an absence. No `AddHealthChecks`, `MapHealthChecks` or health route exists in any of the nineteen projects |
+| **DESCRIPTION** | There is no liveness or readiness endpoint, no smoke-test script and no documented rollback procedure. Deployment verification therefore depends on a human loading a page. Maps to **OWASP A09:2021 — Security Logging and Monitoring Failures**. |
+| **IMPACT** | A security change that fails closed — the deliberate fail-fast on a missing encryption key, for example — is indistinguishable from an unrelated outage without a health signal, which lengthens time to detect and time to roll back. |
+| **EVIDENCE** | `grep -rn 'AddHealthChecks\|MapHealthChecks\|/health' --include=*.cs .` returns no match at this commit. |
+| **REMEDIATION** | Documented, deliberately not built — it is feature work outside the remediation scope. The recommended fix is a single `AddHealthChecks()`/`MapHealthChecks("/health")` pair per host that reports database reachability and the presence of the required secrets, so that a fail-fast start is immediately distinguishable from a crash. The rollback procedure for the credential change specifically is documented in the credential migration guide. |
+
+#### L-06 — Inert TypeScript build configuration in seven projects
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Inert TypeScript build configuration in seven projects |
+| **SEVERITY** | Low |
+| **CWE** | CWE-1164 (irrelevant code) |
+| **LOCATION** | Seven manifests: `WebVella.Erp/WebVella.Erp.csproj:L8` and `:L67-L68`, `WebVella.Erp.Site/WebVella.Erp.Site.csproj:L10-L11` and `:L72`, and the equivalent property groups in `WebVella.Erp.Site.Crm`, `.Mail`, `.Next`, `.Project` and `.Sdk` |
+| **DESCRIPTION** | Seven manifests carry TypeScript build properties although the repository contains no TypeScript sources and no TypeScript compiler is invoked. The properties are evaluated and then have no effect. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
+| **IMPACT** | None directly. Dead build configuration is a supply-chain hygiene concern: it misleads a reader about what the build does, and a future toolchain change could give an inert property a real effect nobody reviewed. |
+| **EVIDENCE** | `grep -rln 'TypeScriptCompileBlocked\|TypeScriptToolsVersion' --include=*.csproj .` returns exactly the seven manifests listed above. |
+| **REMEDIATION** | Documented, deliberately not changed, on the no-refactoring-beyond-security rule. The recommended fix is to delete the properties from all seven manifests in a single hygiene change, verifying afterwards that `dotnet build` output is byte-comparable. |
 
 #### L-07 — No lock file and an unpinned SDK version
 
@@ -542,13 +1260,52 @@ this report states rather than blurs. The third is documented only, per the seve
 | **FINDING** | `global.json` pinned no SDK version — the version key was commented out — so the toolchain floated, and the repository has no package lock file. |
 | **SEVERITY** | Low — *minor misconfiguration* under the severity matrix. Its consequence is not a vulnerability but a loss of reproducibility in the very gates that detect vulnerabilities. |
 | **CWE** | — |
-| **LOCATION** | `global.json` |
+| **LOCATION** | `global.json:L3`, where the version key was commented out in a five-line, 45-byte file. |
 | **DESCRIPTION** | The dependency-audit default behaviour and the analyzer rule set both vary by SDK version, so an unpinned toolchain means two developers, or a developer and a pipeline, can legitimately obtain different scan results from the same source. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
 | **IMPACT** | A gate whose result depends on the machine is not a gate. Without the pin, a "clean scan" claim is unverifiable by anyone else. |
 | **EVIDENCE** | The pre-audit file contained `//"version": "7.0.103"` — commented out — and no `rollForward` policy; no `packages.lock.json` exists anywhere in the repository. |
-| **REMEDIATION** | The SDK is pinned to `10.0.302` with **`rollForward: disable`**. An earlier revision set `latestPatch` and defended it as follows, quoted so the reasoning is not lost: both halves of the gate are selected by the SDK *feature band*, `latestPatch` holds the pin on the `10.0.3xx` band, and `disable` was rejected on availability grounds because it renders the repository unbuildable the moment this exact patch is superseded, for every developer and for CI simultaneously, in exchange for a guarantee the feature band already provides. Review findings `GATE-02` and `CR2-F-13` reversed that weighing - and the `latestPatch` interlude was itself a regression of `M-6`, which `disable` had already closed. The premise was wrong in one decisive respect: a **patch** is enough to add an analyzer rule, move a default severity or change an audit default, and every Gate 1 baseline in this remediation was measured against one exact SDK. A silent change of gate verdict is worse than a loud build failure, because nobody investigates what they cannot see. The availability cost is real, is accepted as a deliberate fail-closed, and is bounded by naming the required version in the workflow's SDK setup step, in `SECURITY.md` and in the secure-configuration guide. **The lock-file half is deliberately not done**: adding one changes restore behaviour for every project and every contributor, which is materially more invasive than the finding warrants, and the exact-version pins already present on the two most security-relevant packages give the same guarantee where it matters most. Recorded as remaining guidance rather than silently dropped. |
+| **REMEDIATION** | Traces to the **Dependency Updates** standard's pin-versions clause, applied to the toolchain rather than to a package. The SDK is pinned to `10.0.302` with **`rollForward: disable`**. An earlier revision set `latestPatch` and defended it as follows, quoted so the reasoning is not lost: both halves of the gate are selected by the SDK *feature band*, `latestPatch` holds the pin on the `10.0.3xx` band, and `disable` was rejected on availability grounds because it renders the repository unbuildable the moment this exact patch is superseded, for every developer and for CI simultaneously, in exchange for a guarantee the feature band already provides. Review findings `GATE-02` and `CR2-F-13` reversed that weighing - and the `latestPatch` interlude was itself a regression of `M-6`, which `disable` had already closed. The premise was wrong in one decisive respect: a **patch** is enough to add an analyzer rule, move a default severity or change an audit default, and every Gate 1 baseline in this remediation was measured against one exact SDK. A silent change of gate verdict is worse than a loud build failure, because nobody investigates what they cannot see. The availability cost is real, is accepted as a deliberate fail-closed, and is bounded by naming the required version in the workflow's SDK setup step, in `SECURITY.md` and in the secure-configuration guide. **The lock-file half is deliberately not done**: adding one changes restore behaviour for every project and every contributor, which is materially more invasive than the finding warrants, and the exact-version pins already present on the two most security-relevant packages give the same guarantee where it matters most. Recorded as remaining guidance rather than silently dropped. |
 
-## Part 2 — Post-remediation review inventory
+#### L-08 — Service-catalogue and documentation drift
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | Service-catalogue and documentation drift |
+| **SEVERITY** | Low |
+| **CWE** | CWE-1059-adjacent (documentation inconsistency) |
+| **LOCATION** | `catalog-info.yaml:L5-L6` for the component description, `:L28-L30` for the stale pull-request link and `:L31-L33` for the link to an absent directory; `README.md:L12`, `:L18` and `:L35`; `docs/index.md:L3`; `WebVella.Erp/WebVella.Erp.csproj:L19`; `WebVella.Erp.Site/JWT_README.txt:L3` |
+| **DESCRIPTION** | The service catalogue descriptor advertises capabilities the repository does not contain: its description names cloud-native microservices and a serverless architecture alongside the security audit, and it links a pull request titled *Serverless Microservices Rewrite*. No container definition, orchestration manifest or serverless artifact exists anywhere in the tree. The four further drift items deferred into this report by other work in this engagement — the licence badge, the framework claim, the catalogue description and pull-request links, and the developer documentation's historical claims — are enumerated under [documentation drift deferred into this report](#documentation-drift-deferred-into-this-report). Maps to **OWASP A05:2021 — Security Misconfiguration**. |
+| **IMPACT** | Inaccurate catalogue metadata misdirects a reader about the platform's actual shape and attack surface, and an inventory that overstates what exists is a weak basis for risk decisions. |
+| **EVIDENCE** | The `metadata.description` field and the `links` entries in `catalog-info.yaml`, read against a repository that contains no Dockerfile, no compose file and no infrastructure manifest. |
+| **REMEDIATION** | Documented, deliberately not rewritten beyond what the audit required: the descriptor's security-audit claim is now true, because this report exists and is referenced from the documentation navigation. Correcting the microservices and serverless claims is the owner's editorial call on their own catalogue entry, not a security fix. |
+
+#### L-09 — No server-side request forgery surface
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | No server-side request forgery surface |
+| **SEVERITY** | Low (informational — investigated and found not applicable) |
+| **CWE** | CWE-918 (OWASP A10:2021) — not present |
+| **LOCATION** | Every `HttpClient` in the repository is under `WebVella.Erp.WebAssembly/Client/`; the one server-side URI construction is `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs:L539-L556` |
+| **DESCRIPTION** | A10:2021 was investigated deliberately rather than assumed absent. Every outbound HTTP client in the codebase is browser-side Blazor WebAssembly code, so its requests originate from the user's browser and not from the server. No server-side code constructs an outbound request from user-controlled input. |
+| **IMPACT** | None. This record exists so that the absence is evidenced rather than silently omitted, and so a future change that introduces a server-side outbound call is recognised as entering new territory. |
+| **EVIDENCE** | `grep -rln 'new HttpClient(' --include=*.cs .` returns nothing; every `HttpClient` reference resolves to `WebVella.Erp.WebAssembly/Client/ApiService/*` or `WebVella.Erp.WebAssembly/Client/Utilities/HttpExt.cs`. |
+| **REMEDIATION** | No remediation required, and **no fix implementation standard applies**, because no finding was confirmed — this record exists to evidence an investigation rather than a defect. If a server-side outbound call is ever introduced, it must validate the destination against an allow-list of hosts and schemes, refuse redirects to private address ranges, and be recorded as a new finding against this category. |
+
+#### L-10 — No CI/CD pipeline existed
+
+| Field | Value |
+| --- | --- |
+| **FINDING** | No CI/CD pipeline existed |
+| **SEVERITY** | Low |
+| **CWE** | CWE-1053-adjacent (missing build-time verification) |
+| **LOCATION** | `.github/FUNDING.yml` was the only file the directory contained. **No line locator exists, and none is invented**: the finding is an absence — there was no `.github/workflows` directory, no Dockerfile and no compose file anywhere in the tree. The file created to close it cites the identifier at `.github/workflows/security-scan.yml:L3` |
+| **DESCRIPTION** | Before this change the repository had no continuous-integration pipeline of any kind, so nothing verified the build, the dependency audit or the analyzer set on a push. The validation objective had nowhere to live. Maps to **OWASP A08:2021 — Software and Data Integrity Failures**. |
+| **IMPACT** | Without an automated gate, every security property asserted in this report would depend on a developer choosing to run the commands locally, and a regression — a reintroduced advisory or a reintroduced path-casing defect — could merge unnoticed. |
+| **EVIDENCE** | The finding identifier is cited from `.github/workflows/security-scan.yml:L3`, the file created to close it. |
+| **REMEDIATION** | **Closed, and since extended.** It answers to the engagement's automated-validation objective rather than to a fix implementation standard, since the defect was the absence of a gate rather than a weakness in the application. `.github/workflows/security-scan.yml` runs, in order: check out the repository; set up the pinned .NET SDK; assert the project graph is complete and correctly cased; assert solution membership matches the declared coverage model — every tracked project in exactly one of the solution and the explicitly-gated list; restore with dependency auditing; build with analyzers enabled and enforce the `.globalconfig` severities; list vulnerable packages including transitive dependencies; restore, build and list vulnerable packages for the two explicitly gated WebAssembly projects, whose build step also asserts each one's `TargetFramework` (finding H-18); Gate 1, failing on unreviewed security analyzer diagnostics; a positive control in which a deliberate security defect must be reported; the tracked-tree secret sweep with a repository-history audit; a Linux startup smoke test of the published artifacts; a negative control that must observe `error NU1903`; and the evidence publication. Counted from the parsed file, that is **16 named steps: 3 `uses:` actions, each pinned to a reviewed commit SHA, and 13 `run:` blocks.** Every `run:` block was extracted from the parsed YAML and `bash -n` checked, and each behaved as specified in both directions where a negative case exists. Three corrections to earlier revisions of this row, recorded rather than quietly overwritten because each was asserted as measured: it once claimed a *test-suite step*, which the workflow has never contained and could not usefully contain because no test project exists anywhere in the 19 projects (Gate 4 is vacuous, as recorded in the methodology section); it once reported "8 / 8" `run:` steps; and it then reported "10 steps — 7 `run:` and 3 `uses:`" and later "12 named steps … 9 `run:` blocks". Every one of those counts was stale by the time it was written; the current figures were re-counted from the parsed YAML at this commit. |
+
+## Part 2: Post-remediation review inventory
 
 Findings against the controls as delivered. Identifiers in this part use the single-digit form and
 form their own namespace.
@@ -564,7 +1321,7 @@ have recorded five fixes where there were none. Several findings below are there
 *"the control exists but nothing calls it"* — which is why they are severity-rated on the
 vulnerability that remained open, not on the quality of the unused helper.
 
-### Critical severity findings
+### Critical severity review findings
 
 #### CR-1 — Password hashing helpers unreachable; unsalted MD5 live on every real path
 
@@ -579,7 +1336,7 @@ vulnerability that remained open, not on the quality of the unused helper.
 | **EVIDENCE** | The digest helper had zero external callers, while MD5 remained live at four sites. The security analyzers flag the primitive directly: `CA5351` (do not use broken cryptographic algorithms) fired on the MD5 usage before remediation and does not fire after it. |
 | **REMEDIATION** | **Fixed.** Replaced with PBKDF2-HMAC-SHA256 at **600,000** iterations, a 128-bit cryptographically random salt per password, a versioned self-describing payload, and constant-time verification. Legacy MD5 values are still accepted and are transparently re-hashed on each user's next successful login, so no user is locked out and no reset is forced. Verification moved out of the SQL predicate into application code — the enabling change, not a cleanup. All three write paths route through the new primitive. No schema change was needed: the payload Base64-encodes to 84 characters in a `varchar(500)` column. See [the credential migration guide](credential-migration.md). |
 
-### High severity findings
+### High severity review findings
 
 #### H-1 — Open redirect and script-scheme injection through the return-URL parameter
 
@@ -724,7 +1481,7 @@ vulnerability that remained open, not on the quality of the unused helper.
 | **EVIDENCE** | Reproduced with the toolchain's own audit against the pre-remediation pin: `dotnet list package --vulnerable --include-transitive` reported `AutoMapper [14.0.0] 14.0.0 High https://github.com/advisories/GHSA-rvv3-g6hj-g44x` in **16 of 19 projects**. Licensing verified against the package registry rather than assumed: the `.nuspec` of all five patched releases was read, and all five declare a licence **file** resolving to the Reciprocal Public License 1.5, while `14.0.0` declares `<license type="expression">MIT</license>`. Separately, `15.1.3` declares **five** dependencies against `14.0.0`'s one, including a four-package `Microsoft.IdentityModel.*` chain at `8.14.0` — **behind** the `8.15.0` this solution already references directly. Re-measured at this commit, `dotnet list WebVella.Erp/WebVella.Erp.csproj package --include-transitive` shows that chain resolving at `8.14.0` alongside `Microsoft.IO.RecyclableMemoryStream 1.3.2`, `Microsoft.Win32.SystemEvents 10.0.1`, `NetBox 2.3.5` and `NodaTime 3.2.2`, and `--vulnerable` reports **no vulnerable package in any of the 17 solution projects**, with the two tracked projects outside the solution listed by their own dedicated steps and equally clean — **zero advisory rows across all 19**. An intermediate revision recorded this as one solution-wide command covering all 19, which held only while both WebAssembly projects were enrolled; that enrollment was reverted under `CR2-F-06`. |
 | **REMEDIATION** | **Split, and only one half is closed: the advisory is closed by upgrade; the licensing consequence is OPEN, pending owner ratification, and is now mechanically blocked from shipping while it stays open.** An earlier revision of this record opened with the word *Decided* and described the licensing consequence as "formally accepted as a recorded residual". That framing was withdrawn under `CR2-F-04`: an automated remediation may close an advisory, but it may not decide — and must not appear to have decided — what licence a product declares to third parties. Recording the question as settled was absorption wearing the vocabulary of disclosure. The two halves of this finding are separable and have been separated. *The advisory:* the pin is raised to `[15.1.3]`, the newest release on the lowest patched major, and the one code change the upgrade requires — supplying `NullLoggerFactory.Instance` to the 15.x `MapperConfiguration` constructor at the repository's single construction site — is in place. `dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive` now reports **no vulnerable package in any of the 17 solution projects**, and two dedicated per-project listings report the same for the two tracked projects outside the solution — **zero advisory rows across all 19, by two routes rather than one** (see `RISK-030` and `CR2-F-06`; an intermediate revision claimed a single command because both had been enrolled). **No audit suppression is declared anywhere**: `Directory.Build.props` contains no `NuGetAuditSuppress` element, and the gate is green because the graph is clean rather than because a diagnostic is silenced. *The licence:* every patched release is under the Reciprocal Public License 1.5 while the product declares Apache-2.0 and publishes to nuget.org, so the reciprocal source-disclosure obligation is a real and irreversible change to the product's licensing posture. **The disposition is recorded once, in `RISK-001`, as OPEN — pending owner ratification — and the tree is left in the only state an agent may leave it in: the advisory closed, the declared licence expression unchanged, and the contradiction between the two visible at both sites in `WebVella.Erp/WebVella.Erp.csproj` rather than resolved in either direction.** Because "visible" is not the same as "cannot ship", the openness is also enforced mechanically. A target named `ErpAssertAutoMapperLicenceDecisionRecorded` runs `BeforeTargets="GenerateNuspec"` and fails packaging with `error ERPLIC001` while an RPL-licensed `AutoMapper` version is pinned and no owner decision is recorded; recording `declined-rpl-1.5` while an RPL version is still pinned fails with `ERPLIC002`; any value other than the two recognised ones fails with `ERPLIC003`, so a typo cannot be read as consent; and a failure to read the pin at all fails with `ERPLIC004`, so the gate cannot be disabled by moving the manifest it reads. **It is declared in `Directory.Build.props`, not in the project file, and that placement is itself a measured correction:** four manifests in this repository declare the same `Apache-2.0` expression and publish to nuget.org — `WebVella.Erp`, `WebVella.Erp.Web`, `WebVella.Erp.Plugins.Mail` and `WebVella.Erp.Plugins.SDK` — and the other three each carry a `ProjectReference` to the core, so each ships a dependency reaching `AutoMapper`. With the target in the core manifest alone, packing each of the other three exited **0** and produced a package with no diagnostic; the emitted `WebVella.Erp.Web.nuspec` was read and carries `<license type="expression">Apache-2.0</license>` beside a `WebVella.Erp` dependency. Measured in ten directions across all four manifests, 26 invocations in total: `restore`, `build`, `publish`, `dotnet list package` and every CI gate step are unaffected and emit no `ERPLIC` diagnostic; `dotnet pack` fails with `ERPLIC001` and produces no package for **4 of 4**; `declined-rpl-1.5` fails with `ERPLIC002` for 4 of 4; an unrecognised value fails with `ERPLIC003` for 4 of 4; an unreadable core manifest fails with `ERPLIC004`; and packaging succeeds only once an owner supplies the decision property or declares the pinned version permissive — both of which are reviewable edits rather than side effects. Publishing is the one irrevocable action, because a package version cannot be recalled from nuget.org once a consumer has resolved it, so it is the one action gated. Three verified facts frame the decision without settling it. *First, there is no permissive escape:* the advisory's affected ranges are `< 15.1.1` and `>= 16.0.0, < 16.1.1`, so the lowest patched version is `15.1.1`; `14.0.0` is the last `14.x` release, there is no `14.0.1`, and the `.nuspec` of `15.0.0`, `15.1.1` and `15.1.3` each declare a licence **file** resolving to the Reciprocal Public License 1.5. Every patched version is reciprocal-licensed. *Second, the reversal path is no longer compatible with the gate it would have to pass through.* Retaining `[14.0.0]` requires suppressing `NU1903`, and because `AutoMapper` is present transitively in 16 project graphs a project-scoped suppression is insufficient — measured at exactly 15 residual `NU1903` errors. A repository-wide suppression, the only placement that works, is inherited by the CI negative-control probe as well, because `Directory.Build.props` is directory-scoped: the probe deliberately pins `AutoMapper 14.0.0` and *requires* its restore to fail, so suppression would disable the one step that proves Gate 2 can fail at all. That was verified by evaluating the probe's inherited properties and confirming its restore still fails with `error NU1903`. *Third, the reciprocity obligation is already satisfied in substance for this repository,* whose source is public; what is not settled is narrowly the licence **declared** to third-party package consumers. **No audit suppression is declared anywhere**, so the gate remains green because the graph is clean. |
 
-### Medium severity findings
+### Medium severity review findings
 
 #### M-1 — Deserialisation allow-list too broad
 
@@ -817,7 +1574,7 @@ vulnerability that remained open, not on the quality of the unused helper.
 | **EVIDENCE** | A link audit found exactly three absent targets, all others resolving; the site navigation contained a single home entry, so every security page was unreachable. |
 | **REMEDIATION** | **Fixed.** Each false claim was **withdrawn explicitly rather than silently edited**, and replaced with quoted command output and reproduction commands. Security-relevant transitives and a version-skew section were added, including the four-package chain that the reverted upgrade would have introduced. The licensing escalation became a **recorded decision**. The three absent documents were created, all links repaired, and a security section wired into the navigation. `mkdocs build --strict` passes. |
 
-### Low severity findings
+### Low severity review findings
 
 #### L-1 — Mandated policy publicly replaceable; report-only with nowhere to report
 
@@ -841,10 +1598,14 @@ lost nor mistaken for regressions. Each is tracked in [the risk register](risk-r
   token configuration guidance referencing the signing key, in addition to the eight configuration
   files enumerated by the audit. Found by the secrets sweep; recorded under the secret-management
   finding so the enumeration is complete.
-* **Stack-trace disclosure on the bearer-token route is live and unconditional.** A failed token
-  request was confirmed to return exception text, including a method trace, to an **anonymous**
-  caller. Because the path is not guarded by any environment check, setting the environment to
-  Production does **not** suppress it — it requires a code change.
+* **~~Stack-trace disclosure on the bearer-token route is live and unconditional.~~ Closed, and it has
+  its own record.** A failed token request was confirmed to return exception text, including a method
+  trace, to an **anonymous** caller, and because the path was not guarded by any environment check,
+  setting the environment to Production did **not** suppress it — a code change was required. That
+  observation is what escalated the condition into finding `H-13` in Part 1, where the remediation and
+  its subsequent widening to every response sink in the tree are recorded. It is retained here because
+  the runtime confirmation is the evidence, and because the reasoning that a configuration change would
+  not have been sufficient was established at this point rather than assumed later.
 * **~~A permissive `Access-Control-Allow-Origin: *` is live on one host.~~ Closed — it is live on
   none.** Originally confirmed on the login response of two hosts across three independent verification
   runs, then narrowed to one. Both hosts now serve an explicit origin allow-list and retain
@@ -900,229 +1661,11 @@ lost nor mistaken for regressions. Each is tracked in [the risk register](risk-r
   unconstrained stored type — **not** stored cross-site scripting. Tracked as `RISK-033` in
   [the risk register](risk-register.md).
 
-## Part 3 — Remaining inventory: findings documented for completeness
+## Part 3: Product vulnerabilities first discovered by reviewing the remediation
 
-Part 1 records the findings the audit wrote up in full, and Part 2 the post-remediation review. A census of the engagement's finding identifiers against this documentation set showed that fifteen identifiers had no eight-field record anywhere, so they are recorded here in the same mandated format. Nothing in this part is new analysis of the platform's *design* — each entry was re-measured against the tree at this commit, and where a measurement contradicts an earlier expectation the measurement is what is written down.
-
-Only one of the fifteen is above Medium: **H-07**, and it is recorded first for that reason. It was open and unremediated when this part was written and is now **closed**; the record below has been regenerated against the tree rather than left describing the earlier state. The rest are Medium and Low findings whose disposition is *document with fix guidance* under the engagement's severity matrix, plus two informational records — L-09, which evidences a category that was investigated and found not to apply, and L-10, which is closed by the workflow this change adds.
-
-### Identifiers documented elsewhere rather than here
-
-For completeness in the other direction: nine identifiers carry no eight-field record because their full treatment lives in a companion document. They are not missing.
-
-| Identifier | Subject | Where it is documented |
-| --- | --- | --- |
-| `C-01` | Hardcoded default administrator password in provisioning | [credential migration guide](credential-migration.md) |
-| `C-02` | Credential hash readable by non-administrator roles | [credential migration guide](credential-migration.md) |
-| `C-05` | Guest role granted create permission on user and role entities | [credential migration guide](credential-migration.md) |
-| `H-08` | Unrestricted file upload chaining into inline execution | cited in source as `H-08` but resolving to Part 2 `H-8`; see the [identifier index](#identifier-index) |
-| `H-13` | Unconditional stack-trace disclosure on anonymous endpoints — **now closed, and subsequently widened far past the two anonymous paths**. Both bearer-token paths return a generic message outside Development and retain their server-side log record. Review finding `F26` then established that the same disclosure persisted at thirty-six further response sinks in `WebVella.Erp.Web/Controllers/WebApiController.cs`, ten of them concatenating `ex.StackTrace` as well; every one now routes through a single `SafeErrorMessage` helper. A solution-wide sweep found thirteen more unguarded sinks outside that controller — two in `RecordManager`, one in `EqlBuilder`, seven in the SDK `AdminController` and three in the Project plugin's `ProjectController` — and closed every one, leaving no unguarded exception-text response sink anywhere in the tree | [risk register](risk-register.md), `RISK-014` |
-| `H-14` | Permissive cross-origin policy at two hosts — **now closed**; both hosts serve an explicit origin allow-list | [secure configuration guide](secure-configuration.md) and the `RISK-013` entry in the [risk register](risk-register.md) |
-| `H-17` | Regular-expression denial of service in the credential query | [remediation log](remediation-log.md) and the [credential migration guide](credential-migration.md) |
-| `M-13` | Password length bounds of 6 to 24 characters — **raised to 12–128 and, in a later pass, actually enforced.** The bounds were metadata only: every `MinLength`/`MaxLength` consumer in `EntityManager.cs` is commented out, so nothing rejected a one-character password. Review finding `F25` established that, and a single validator — `PasswordUtil.ValidatePasswordPolicy` — is now applied at every boundary where a human *chooses* a credential: both `SecurityManager.SaveUser` branches, `ERPService.ResolveInitialAdministratorPassword`, and the generic record-write path `RecordManager.CreateRecord`/`UpdateRecord` reaches through `POST api/v3/{culture}/record/user`. Deliberately **not** applied inside the hashing primitive or on the legacy rehash path — see `RISK-046` | [credential migration guide](credential-migration.md) |
-| `L-01` | Dead security code | cited in source as `L-01` but resolving to Part 2 `L-1`; the dead-code observation is carried in the [secure configuration guide](secure-configuration.md) |
-
-#### H-07 — Script injection through the rich-text editor upload callback
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Script injection through the rich-text editor upload callback |
-| **SEVERITY** | High |
-| **CWE** | CWE-79, CWE-94 (OWASP A03:2021) |
-| **LOCATION** | `WebVella.Erp.Web/Controllers/WebApiController.cs` — as audited, `:L4014` (source) flowing to `:L4029` and `:L4036` (sinks). Post-remediation the same code is at `:L4516` (source), `:L4526` (the validation gate) and `:L3819-L3826` (`BuildCKEditorCallback`, which now owns both surviving interpolations) |
-| **DESCRIPTION** | The `UploadFileManagerCKEditor` action reads the editor's callback index straight from the query string into a local string and then concatenates that string into a `<script>` body returned to the browser. Neither sink validates the value and neither encodes it for a script context. The second sink additionally concatenates `ex.Message` into the same script. |
-| **IMPACT** | An attacker who can cause a victim's browser to issue the upload request with a crafted `CKEditorFuncNum` value controls a JavaScript expression that executes on the application's own origin, inside an authenticated session. The exception sink also discloses server-side error text to the browser. |
-| **EVIDENCE** | `string CKEditorFuncNum = HttpContext.Request.Query["CKEditorFuncNum"].ToString();` at `:L4014`, reaching `... callFunction(" + CKEditorFuncNum + ", ...` at `:L4029` and `:L4036`; `:L4036` also interpolates `ex.Message`. That was the state when the inventory was taken; the trailing sentence of this field previously read "Measured at this commit — the finding is open; no remediation has been applied", which contradicted the remediation field directly below it and is superseded. **The finding is closed**: the callback index is now integer-parsed before use, both sinks are encoded with `JavaScriptEncoder.Default`, the exception sink no longer echoes `ex.Message`, and all three emissions are funnelled through a single `BuildCKEditorCallback(int, string, string)` helper so a future sink cannot bypass the encoding. |
-| **REMEDIATION** | **Fixed.** Every value now sits in a context it cannot escape. The callback index is parsed with `int.TryParse(..., NumberStyles.Integer, CultureInfo.InvariantCulture, ...)` and the request is rejected outright when it does not parse; thereafter it is carried as an `int`, so the bare — and therefore unquotable — numeric position holds no attacker-controlled text at all, which is why integer validation is both sufficient and lossless for what is simply a numeric callback index. The URL and message are emitted inside JavaScript string literals through `JavaScriptEncoder.Default`, which escapes the double quote to `\u0022` and also the backslash, the apostrophe, CR, LF, U+2028, U+2029 and `<` to `\u003C`, so neither the string literal nor the enclosing `</script>` element can be terminated. The echoed `ex.Message` is replaced by a fixed internal-error string while the exception continues to be logged server-side. All three sinks are funnelled through one helper, `BuildCKEditorCallback(int, string, string)`, whose signature makes the fix structural: the index cannot be a string at that boundary. `grep -c 'JavaScriptEncoder'` on the controller returns **2**, both inside that helper, and the fixed string is `INTERNAL_ERROR_MESSAGE` at `:L46`. No new dependency was required — the same encoder already backs the replaced output helper in `WebVella.Erp.Web/Utils/HtmlHelperExtension.cs`. The markup, the content type and the CKEditor callback contract are unchanged, so the editor behaves exactly as before. Verify with `grep -n 'BuildCKEditorCallback' WebVella.Erp.Web/Controllers/WebApiController.cs` — the declaration at `:L4310` and four call sites (`:L5224`, `:L5239`, `:L5255`, `:L5268`), with the `int.TryParse` guard at `:L5203`. |
-
-#### M-02 — No antiforgery validation on the MVC API surface
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | No antiforgery validation on the MVC API surface |
-| **SEVERITY** | Medium |
-| **CWE** | CWE-352 (OWASP A01:2021) |
-| **LOCATION** | `WebVella.Erp.Web/Controllers/WebApiController.cs` (the whole controller); contrast `WebVella.Erp.Web/Pages/login.cshtml.cs` |
-| **DESCRIPTION** | No antiforgery attribute or global filter exists anywhere in the solution: a repository-wide search for `ValidateAntiForgeryToken`, `AutoValidateAntiforgeryToken`, `IgnoreAntiforgeryToken` and `AddAntiforgery` in `*.cs` returns nothing. The state-changing MVC API endpoints therefore accept cookie-authenticated requests with no request-bound token. The finding is correctly narrowed to the MVC surface: Razor Pages validate antiforgery by convention, which is why the login page is not affected. |
-| **IMPACT** | A cookie-authenticated user who visits a hostile page can be made to issue state-changing API calls. The residual risk is reduced but not removed by the `SameSite=Lax` cookie policy the remediation added, which blocks cross-site *form* posts of the session cookie for unsafe methods. |
-| **EVIDENCE** | `grep -rn 'ValidateAntiForgeryToken\|AutoValidateAntiforgeryToken\|IgnoreAntiforgeryToken\|AddAntiforgery' --include=*.cs .` returns no match at this commit. |
-| **REMEDIATION** | Documented, deliberately not enforced. Existing JavaScript clients post without a verification token, so switching on validation would break working functionality — which the preservation requirement forbids. The zero-breakage half of the control (the `SameSite` and `Secure` cookie attributes) has been applied. Enforcement should be staged: emit the token in the layout, attach it from the platform's own AJAX helper, then enable `AutoValidateAntiforgeryToken` once telemetry shows no untokened callers remain. |
-
-#### M-07 — Unbounded script-evaluation cache holding compiled delegates
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Unbounded script-evaluation cache holding compiled delegates |
-| **SEVERITY** | Medium |
-| **CWE** | CWE-770, CWE-94 |
-| **LOCATION** | `WebVella.Erp.Web/Services/CodeEvalService.cs:L13` (the cache) and `:L46` (the unbounded insert) |
-| **DESCRIPTION** | Compiled page-component scripts are memoised in a `private static readonly Dictionary<string, object>` keyed by a digest of the script text. Nothing removes an entry: the file contains no `Remove`, `Clear` or eviction call of any kind, and the dictionary is not a size-bounded cache. |
-| **IMPACT** | Each distinct script text permanently retains a compiled object and its loaded assembly, so a workload that generates many script variants grows process memory without bound and cannot release it. Because the cache holds executable delegates keyed only by content digest, it also lengthens the lifetime of any code a privileged author has injected. |
-| **EVIDENCE** | `private static readonly Dictionary<string, object> scriptObjects = new Dictionary<string, object>();` at `:L13`; `scriptObjects[md5Key] = scriptObject;` at `:L46`; `grep -c 'Remove\|Clear\|Evict\|MemoryCache'` over the 62-line file returns **0**. |
-| **REMEDIATION** | Documented, deliberately not changed — it is a resource-exhaustion concern rather than a confirmed Critical or High, and the minimal-change rule keeps it out of the remediation. The recommended fix is to replace the dictionary with a size-bounded `MemoryCache` carrying a `SizeLimit` and a per-entry `Size`, exactly as `WebVella.Erp.Web/Services/LoginThrottleService.cs` now does, so eviction is automatic and the cardinality bound is explicit. |
-
-#### M-09 — Anonymous access to a developer page
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Anonymous access to a developer page |
-| **SEVERITY** | Medium |
-| **CWE** | CWE-306 |
-| **LOCATION** | `WebVella.Erp.Site.Sdk/Startup.cs` — cited as `:L48`; the exemption now sits inside an `if (IsDevelopment)` block, so the locator has moved and is re-measured below |
-| **DESCRIPTION** | The SDK host's Razor Pages conventions exempt `/dev` from authorization alongside the legitimate `/login` exemption, so the developer page is reachable without credentials on that host. |
-| **IMPACT** | An unauthenticated visitor reaches a developer-oriented page on the SDK host. The exposure is limited to that one host and to whatever that page renders, but it is an authentication bypass for the page in question and it widens the anonymous attack surface enumerated in this report. |
-| **EVIDENCE** | `options.Conventions.AllowAnonymousToPage("/dev");` at `:L48`, immediately after the legitimate `AllowAnonymousToPage("/login")` at `:L47`. **Superseded measurement:** an earlier revision of this row read "Measured at this commit — the exemption is still present", which was true when written. The exemption is now granted only when the environment is `Development`; measured against a published Production host, anonymous `GET /dev` answers **302** to `/login?returnUrl=%2Fdev` with `content-length: 0`, and against a Development host it answers **200**. |
-| **REMEDIATION** | **Production half fixed; Development half remains a documented decline.** An earlier revision of this row read "Documented, deliberately not changed … a Medium that does not act as a compensating control for any confirmed Critical or High". That reasoning was sound when written and is now **superseded**, and the reason it broke is worth stating precisely rather than quietly overwriting: it assessed the exemption *in isolation*, and the exemption is not in isolation. `/dev` renders a Blazor Server component and this host set `CircuitOptions.DetailedErrors = true`, so the anonymous page was the **delivery vehicle** for full server exception text to an unauthenticated caller — a composition that does meet the compensating-control test. Under review finding `CR2-F-07` the exemption is now **environment-gated rather than deleted**, which is both the smaller change and the one that keeps two requirements true at once: Agent Action Plan section 0.3.2 declined removal because it "would break the SDK development workflow that depends on reaching `/dev` without a session", and gating preserves that workflow exactly where it is used while a deployed host falls back to the deny-by-default `AuthorizeFolder("/")`. The two disclosures the page could reach are closed with it — `DetailedErrors` now follows the environment, and the Blazor hub, which is a **separate endpoint** carrying no authorization metadata of its own, requires authentication outside Development. The residual is that the page is still anonymous **in Development**, which is deliberate and is recorded as `RISK-113` in [the risk register](risk-register.md). Full treatment in [the remediation log](remediation-log.md). |
-
-#### M-10 — Anonymous resource-read endpoint on the project plugin
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Anonymous resource-read endpoint on the project plugin |
-| **SEVERITY** | Medium |
-| **CWE** | CWE-306, CWE-200 |
-| **LOCATION** | `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs:L462` |
-| **DESCRIPTION** | A single action carries `[AllowAnonymous]`, overriding the class-level authorization that otherwise protects the API surface, and serves a project resource read without authentication. |
-| **IMPACT** | Project resource data is readable without credentials. The scope is one read action rather than the controller, and no write path is exposed, but it is an unauthenticated data read that no requirement asks for. |
-| **EVIDENCE** | `[AllowAnonymous]` at `:L462` is the only such attribute in the file; class-level authorization is confirmed present on the API surface at `WebVella.Erp.Web/Controllers/ApiControllerBase.cs:L9`. |
-| **REMEDIATION** | **Partly remediated, and the remaining half is still a documented decline.** The anonymous exemption itself is unchanged, on the same governing rule as M-09 — it is a Medium that compensates for no confirmed Critical or High. What *has* changed, under review finding `F27`, is everything the exemption could be used to reach. The action served whatever resource name a caller supplied; it now admits exactly the two resource names the shipped page markup requests, through a case-insensitive map whose **value** — never the caller's string — is what reaches the resource lookup. An unlisted name is answered with the same empty script the blank-name case already returned, and **nothing is logged**, because logging refusals from an anonymous, unauthenticated, unthrottled endpoint is itself the log-volume and mail-amplification vector. A genuine packaging fault on an admitted name is recorded once per canonical name per process, under a fixed source string, with `LogNotificationStatus.DoNotNotify`, and is no longer re-thrown into the error pipeline. Verified live: sixty consecutive refusals — including traversal, a script tag, a CRLF log-injection payload and a 4,000-character name — added **zero** `system_log` rows, and a reflection-injected packaging fault driven forty-three times produced exactly **one** record. The recommended remaining fix is unchanged: remove the attribute, or move the action behind an explicit read-only policy that logs access. |
-
-#### M-11 — Synchronous IO enabled for every request
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Synchronous IO enabled for every request |
-| **SEVERITY** | Medium |
-| **CWE** | CWE-400 |
-| **LOCATION** | `WebVella.Erp.Web/Middleware/ErpMiddleware.cs:L27` |
-| **DESCRIPTION** | The platform middleware sets `AllowSynchronousIO = true` on the request's synchronous-IO feature for every request, re-enabling blocking reads and writes that the server disables by default. |
-| **IMPACT** | Blocking IO on request-processing threads makes thread-pool starvation reachable under load, which is a denial-of-service amplifier rather than a direct vulnerability. |
-| **EVIDENCE** | `syncIOFeature.AllowSynchronousIO = true;` at `:L27` — the only occurrence in the solution. |
-| **REMEDIATION** | Documented, deliberately not changed. Removing the switch would break the synchronous manager code paths the platform is built on, and rewriting them is exactly the refactor the change scope forbids. The recommended fix is to convert the synchronous read and write paths to their async counterparts and then delete the switch, tracked as engineering work rather than as remediation. |
-
-#### M-12 — Login auditing is unreachable dead code
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Login auditing is unreachable dead code |
-| **SEVERITY** | Medium |
-| **CWE** | CWE-778 (OWASP A09:2021) |
-| **LOCATION** | `WebVella.Erp.Web/Security/WebSecurityUtil.cs:L31-L95` — the entire region is commented out |
-| **DESCRIPTION** | The historical login, token-login, logout and authenticate helpers — including the last-login update that would have produced an authentication audit trail — exist only as a contiguous commented-out block spanning lines 31 to 95. No live code path records authentication outcomes through them. |
-| **IMPACT** | Without an authentication audit trail, credential-stuffing and password-spraying campaigns leave no first-class record, which delays detection and makes post-incident reconstruction dependent on transport-level logs. |
-| **EVIDENCE** | Every `public static` member in the file (`Login` at `:L27`, `LoginWithToken` at `:L55`, `Logout` at `:L86`, `Authenticate` at `:L92`) is inside the comment; the commented run measured at lines 31-95. |
-| **REMEDIATION** | **Fixed.** An earlier revision of this row said "documented, not remediated", correctly distinguishing rate-limit bookkeeping from an audit record; **a real audit record has since been added** and that verdict is retracted. `login.cshtml.cs` now calls `WriteAuthenticationAuditRecord` on all three outcomes - lockout refusal, authentication failure and authentication success - each writing a row to `system_log`. Three properties of it are load-bearing. It writes through the **core** `WebVella.Erp.Diagnostics.Log` writer, which performs a parameterized insert and nothing else, and deliberately **not** through `WebVella.Erp.Web.Services.LogService`, whose wrapper mails the entry *before* persisting it - routing a per-attempt record on an anonymous endpoint through that path would have turned the login form into an attacker-triggered mail flood and amplified M-17. `LogNotificationStatus.DoNotNotify` is passed explicitly rather than left to the parameter default. The whole write is wrapped so that a datastore fault during the insert can never fail a login, and the submitted username is length-bounded so the audit trail cannot itself become a storage-amplification vector. Only the submitted identity and the source address are recorded - never the password, request body, headers, cookies or antiforgery token. The earlier observation that the throttle is not an audit record remains true and is why both exist. Verified at runtime: neither the page nor the throttle service contains any `LogService` call, and after a successful sign-in the `last_logged_in` column of `rec_user` was unchanged. The recommended fix is a `system_log` write on both outcomes at that same entry point, carrying the account, the remote address and the result but never the submitted password; the platform's existing `LogService` already provides the write path. The dead block is deliberately left in place because deleting it is hygiene rather than remediation; it is also recorded as part of L-01. |
-
-#### M-14 — No multi-factor authentication
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | No multi-factor authentication |
-| **SEVERITY** | Medium |
-| **CWE** | CWE-308 (OWASP A07:2021) |
-| **LOCATION** | Architectural — no location; a repository-wide search for two-factor, MFA, TOTP or authenticator terms in `*.cs` returns nothing |
-| **DESCRIPTION** | The platform authenticates with a single factor: an e-mail address and a password, plus an optional persistent cookie. There is no second-factor enrolment, challenge or recovery mechanism anywhere in the codebase, and no external identity provider is integrated. |
-| **IMPACT** | A single leaked or guessed credential is sufficient for full account takeover, including for the administrator account. The remediation reduces the likelihood of guessing (work-factored hashing, a five-attempt lockout, rate limiting) but cannot compensate for a credential compromised elsewhere. |
-| **EVIDENCE** | `grep -rniE 'two.?factor\|mfa\|totp\|authenticator' --include=*.cs .` returns no match at this commit. |
-| **REMEDIATION** | Documented, deliberately not built. Adding a second factor is feature work with schema, enrolment, recovery and user-interface consequences, which the no-feature-additions boundary excludes. The recommended path is to adopt the framework's own two-factor primitives behind an opt-in policy for administrator accounts first, and it is carried as a standing recommendation in the risk register rather than as remediation. |
-
-#### M-16 — Legacy timestamp behaviour enabled on every host
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Legacy timestamp behaviour enabled on every host |
-| **SEVERITY** | Medium |
-| **CWE** | CWE-1254-adjacent (correctness of a security-relevant value) |
-| **LOCATION** | All seven hosts: `WebVella.Erp.Site/Startup.cs:L40`, `WebVella.Erp.Site.Crm/Startup.cs:L27`, `WebVella.Erp.Site.Mail/Startup.cs:L27`, `WebVella.Erp.Site.MicrosoftCDM/Startup.cs:L29`, `WebVella.Erp.Site.Next/Startup.cs:L30`, `WebVella.Erp.Site.Project/Startup.cs:L34`, `WebVella.Erp.Site.Sdk/Startup.cs:L27` |
-| **DESCRIPTION** | Each host sets the data provider's legacy timestamp switch, which changes how timestamp values are mapped between the database and the application — in particular how offsets and kinds are interpreted. |
-| **IMPACT** | Security-relevant timestamps such as token issue and expiry, lockout windows and audit times are only as trustworthy as their time-zone handling. Inconsistent interpretation can shift a comparison across a boundary, which is why the remediation moved token timestamps to UTC explicitly rather than relying on this switch. |
-| **EVIDENCE** | `AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);` measured at all seven locations listed above. |
-| **REMEDIATION** | Documented, deliberately not changed. Turning the switch off changes how *already stored* timestamps are read and risks data corruption across every existing deployment, which the preservation requirement forbids. The remediation instead removed the dependence on it where it mattered, by making token timestamps explicitly UTC in `WebVella.Erp.Web/Services/AuthService.cs`. The recommended fix is a migration that normalises stored values, after which the switch can be removed host by host. |
-
-#### L-03 — Packaging script references manifests that do not exist
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Packaging script references manifests that do not exist |
-| **SEVERITY** | Low |
-| **CWE** | CWE-1104-adjacent (unmaintained build tooling) |
-| **LOCATION** | `create-nuget-pkgs.bat:L2-L5` |
-| **DESCRIPTION** | The packaging script invokes `nuget pack` against four `.nuspec` manifests. No `.nuspec` file exists anywhere in the repository, so the script cannot succeed as written; it also spells one path `WebVella.Erp.Plugins.Sdk` where the folder on disk is `WebVella.Erp.Plugins.SDK`. |
-| **IMPACT** | None directly — the script is already non-functional, so it cannot ship a mispackaged artifact. The concern is that a broken release path invites an ad-hoc manual one, which is how unreviewed content reaches a published package. |
-| **EVIDENCE** | Four `nuspec` references at `:L2`, `:L3`, `:L4` and `:L5`; `find . -name '*.nuspec'` returns **0** files. |
-| **REMEDIATION** | Documented, deliberately not changed. Repairing it is neither a security fix nor permitted under the minimal-change rule. The recommended fix is to delete the script and rely on `dotnet pack`, which the projects already support through their `PackageLicenseExpression` and related metadata. |
-
-#### L-05 — No health endpoint and no rollback tooling
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | No health endpoint and no rollback tooling |
-| **SEVERITY** | Low |
-| **CWE** | CWE-1059-adjacent (operational observability) |
-| **LOCATION** | Repository-wide — no `AddHealthChecks`, `MapHealthChecks` or health route exists in any of the 19 projects |
-| **DESCRIPTION** | There is no liveness or readiness endpoint, no smoke-test script and no documented rollback procedure. Deployment verification therefore depends on a human loading a page. |
-| **IMPACT** | A security change that fails closed — the deliberate fail-fast on a missing encryption key, for example — is indistinguishable from an unrelated outage without a health signal, which lengthens time to detect and time to roll back. |
-| **EVIDENCE** | `grep -rn 'AddHealthChecks\|MapHealthChecks\|/health' --include=*.cs .` returns no match at this commit. |
-| **REMEDIATION** | Documented, deliberately not built — it is feature work outside the remediation scope. The recommended fix is a single `AddHealthChecks()`/`MapHealthChecks("/health")` pair per host that reports database reachability and the presence of the required secrets, so that a fail-fast start is immediately distinguishable from a crash. The rollback procedure for the credential change specifically is documented in the credential migration guide. |
-
-#### L-06 — Inert TypeScript build configuration in seven projects
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Inert TypeScript build configuration in seven projects |
-| **SEVERITY** | Low |
-| **CWE** | CWE-1164 (irrelevant code) |
-| **LOCATION** | `WebVella.Erp/WebVella.Erp.csproj`, `WebVella.Erp.Site/WebVella.Erp.Site.csproj`, `WebVella.Erp.Site.Crm/...csproj`, `WebVella.Erp.Site.Mail/...csproj`, `WebVella.Erp.Site.Next/...csproj`, `WebVella.Erp.Site.Project/...csproj`, `WebVella.Erp.Site.Sdk/...csproj` |
-| **DESCRIPTION** | Seven manifests carry TypeScript build properties although the repository contains no TypeScript sources and no TypeScript compiler is invoked. The properties are evaluated and then have no effect. |
-| **IMPACT** | None directly. Dead build configuration is a supply-chain hygiene concern: it misleads a reader about what the build does, and a future toolchain change could give an inert property a real effect nobody reviewed. |
-| **EVIDENCE** | `grep -rln 'TypeScriptCompileBlocked\|TypeScriptToolsVersion' --include=*.csproj .` returns exactly the seven manifests listed above. |
-| **REMEDIATION** | Documented, deliberately not changed, on the no-refactoring-beyond-security rule. The recommended fix is to delete the properties from all seven manifests in a single hygiene change, verifying afterwards that `dotnet build` output is byte-comparable. |
-
-#### L-08 — Service-catalogue and documentation drift
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | Service-catalogue and documentation drift |
-| **SEVERITY** | Low |
-| **CWE** | CWE-1059-adjacent (documentation inconsistency) |
-| **LOCATION** | `catalog-info.yaml` — the component description and the pull-request links |
-| **DESCRIPTION** | The service catalogue descriptor advertises capabilities the repository does not contain: its description names cloud-native microservices and a serverless architecture alongside the security audit, and it links a pull request titled *Serverless Microservices Rewrite*. No container definition, orchestration manifest or serverless artifact exists anywhere in the tree. |
-| **IMPACT** | Inaccurate catalogue metadata misdirects a reader about the platform's actual shape and attack surface, and an inventory that overstates what exists is a weak basis for risk decisions. |
-| **EVIDENCE** | The `metadata.description` field and the `links` entries in `catalog-info.yaml`, read against a repository that contains no Dockerfile, no compose file and no infrastructure manifest. |
-| **REMEDIATION** | Documented, deliberately not rewritten beyond what the audit required: the descriptor's security-audit claim is now true, because this report exists and is referenced from the documentation navigation. Correcting the microservices and serverless claims is the owner's editorial call on their own catalogue entry, not a security fix. |
-
-#### L-09 — No server-side request forgery surface
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | No server-side request forgery surface |
-| **SEVERITY** | Low (informational — investigated and found not applicable) |
-| **CWE** | CWE-918 (OWASP A10:2021) — not present |
-| **LOCATION** | Every `HttpClient` in the repository is under `WebVella.Erp.WebAssembly/Client/` |
-| **DESCRIPTION** | A10:2021 was investigated deliberately rather than assumed absent. Every outbound HTTP client in the codebase is browser-side Blazor WebAssembly code, so its requests originate from the user's browser and not from the server. No server-side code constructs an outbound request from user-controlled input. |
-| **IMPACT** | None. This record exists so that the absence is evidenced rather than silently omitted, and so a future change that introduces a server-side outbound call is recognised as entering new territory. |
-| **EVIDENCE** | `grep -rln 'new HttpClient(' --include=*.cs .` returns nothing; every `HttpClient` reference resolves to `WebVella.Erp.WebAssembly/Client/ApiService/*` or `WebVella.Erp.WebAssembly/Client/Utilities/HttpExt.cs`. |
-| **REMEDIATION** | No remediation required. If a server-side outbound call is ever introduced, it must validate the destination against an allow-list of hosts and schemes, refuse redirects to private address ranges, and be recorded as a new finding against this category. |
-
-#### L-10 — No CI/CD pipeline existed
-
-| Field | Value |
-| --- | --- |
-| **FINDING** | No CI/CD pipeline existed |
-| **SEVERITY** | Low |
-| **CWE** | CWE-1053-adjacent (missing build-time verification) |
-| **LOCATION** | `.github/` contained only `FUNDING.yml`; there was no `.github/workflows` directory |
-| **DESCRIPTION** | Before this change the repository had no continuous-integration pipeline of any kind, so nothing verified the build, the dependency audit or the analyzer set on a push. The validation objective had nowhere to live. |
-| **IMPACT** | Without an automated gate, every security property asserted in this report would depend on a developer choosing to run the commands locally, and a regression — a reintroduced advisory or a reintroduced path-casing defect — could merge unnoticed. |
-| **EVIDENCE** | The finding identifier is cited from `.github/workflows/security-scan.yml:L3`, the file created to close it. |
-| **REMEDIATION** | **Closed, and since extended.** `.github/workflows/security-scan.yml` runs, in order: check out the repository; set up the pinned .NET SDK; assert the project graph is complete and correctly cased; assert solution membership matches the declared coverage model — every tracked project in exactly one of the solution and the explicitly-gated list; restore with dependency auditing; build with analyzers enabled and enforce the `.globalconfig` severities; list vulnerable packages including transitive dependencies; restore, build and list vulnerable packages for the two explicitly gated WebAssembly projects, whose build step also asserts each one's `TargetFramework` (finding H-18); Gate 1, failing on unreviewed security analyzer diagnostics; a positive control in which a deliberate security defect must be reported; the tracked-tree secret sweep with a repository-history audit; a Linux startup smoke test of the published artifacts; a negative control that must observe `error NU1903`; and the evidence publication. Counted from the parsed file, that is **16 named steps: 3 `uses:` actions, each pinned to a reviewed commit SHA, and 13 `run:` blocks.** Every `run:` block was extracted from the parsed YAML and `bash -n` checked, and each behaved as specified in both directions where a negative case exists. Three corrections to earlier revisions of this row, recorded rather than quietly overwritten because each was asserted as measured: it once claimed a *test-suite step*, which the workflow has never contained and could not usefully contain because no test project exists anywhere in the 19 projects (Gate 4 is vacuous, as recorded in the methodology section); it once reported "8 / 8" `run:` steps; and it then reported "10 steps — 7 `run:` and 3 `uses:`" and later "12 named steps … 9 `run:` blocks". Every one of those counts was stale by the time it was written; the current figures were re-counted from the parsed YAML at this commit. |
-
-
-## Part 4 — Product vulnerabilities first discovered by reviewing the remediation
-
-The findings in Parts 1 to 3 came from the audit of the product. The findings below came from a **code
-review of the remediation itself**, and each one is a genuine product vulnerability that the original
-audit had not reached. They are recorded in the same eight-field format and are **not** a separate class
+The findings in Parts 1 and 2 came from the audit of the product and from the review of the delivered
+controls. The findings below came from a **code review of the remediation itself**, and each one is a
+genuine product vulnerability that the original audit had not reached. They are recorded in the same eight-field format and are **not** a separate class
 of finding — a vulnerability found by reviewing a fix is still a vulnerability in the product.
 
 They are presented separately for one reason only: so that a reader can see how much of the platform's
@@ -1141,6 +1684,8 @@ boundary**. The guard that closed the first four paths lived in a plugin, and th
 a plugin that references it, so that guard was structurally incapable of covering the widest path of the
 five. The reusable lesson is in the count it got wrong — it enumerated *the paths that had been fixed* rather
 than *the sinks that consume the value*.
+
+### Review-discovered product vulnerabilities
 
 #### P-01 — Every stored password hash readable through the public query-language route
 
@@ -1298,8 +1843,6 @@ than *the sinks that consume the value*.
 | **EVIDENCE** | Measured against the built assembly before any change, not reasoned about. A 32-character key of 32 **distinct** non-ASCII characters satisfied `IsAcceptableSecretShape` and `HasSufficientCharacterVariety` and derived to `3f` repeated 32 times — **one** distinct byte where the variety floor demanded eight. A second, different key of the same shape derived **byte-identically**, and `GetValidIV` collapsed and collided with it. A realistic mixed passphrase, `Sécurité-Clé-2026-WebVella-ERP-x1`, lost one byte of key material per accent while containing no literal `?` of its own. The substitution granularity was established as **per UTF-16 code unit**, not per Unicode scalar: `U+1F600` derived to `3f3f` while the single-code-unit `U+4E2D` derived to `3f` — which is what makes the byte count always equal the character count, and therefore makes recovery length-preserving and exact. |
 | **REMEDIATION** | **Fixed at both halves, by making the two layers agree rather than by duplicating one inside the other.** `CryptoUtility` routes all three projection sites through one helper that refuses non-ASCII material instead of substituting it, and `ErpSettings` requires the configured encryption key to be US-ASCII, under which one character is exactly one byte and the existing character-measured floors become byte-exact. Re-implementing the byte projection inside `ErpSettings` was rejected as the alternative: the derivation sizes itself from `SymmetricAlgorithm.LegalKeySizes`, so a copy would be a second thing to keep in step and would recreate this very finding in a new place. The false comment was **corrected in place rather than silently overwritten**, because that premise is what allowed the divergence. Both diagnostics name only the setting and the rule — never the value, its length, the offending character or its position — so neither can leak key material into a console or a crash report. Backward compatibility was verified by capture and re-derivation, not asserted: for an all-ASCII key the derived key bytes, the derived initialisation vector and the resulting ciphertext are **byte-identical** before and after the change, and ciphertext written before it still decrypts. Scoped deliberately to the encryption key and not to the connection string, whose password may legitimately be non-ASCII and which Npgsql consumes as a string rather than as key bytes. Recorded as review finding `CR2-F-09`; the recovery path for a deployment that already encrypted data under a non-ASCII key is `RISK-114`, and the accepted character set is documented in the secure configuration guide. |
 
-
-
 #### P-13 — Two co-hosted hosts shared one authentication cookie name with no application-scoped key isolation
 
 | Field | Value |
@@ -1391,7 +1934,6 @@ than *the sinks that consume the value*.
 | **EVIDENCE** | Measured before the fix was applied, not after: the real analyzer log carried node prefixes up to `17>`, `6240` CA diagnostic lines, all paths absolute and none backslashed. Adding the normalisation moved the counts from `pairs=42 unreviewed=42 stale=21` to `pairs=21 unreviewed=0 stale=0`, and collapsed the all-category set from `1324` to `650` pairs by removing per-node duplicates. Gate 1 then passed with 21 accepted residuals and zero unreviewed. The count is identical whether or not the two non-solution projects' output has been appended, confirming they contribute no Security-category diagnostic. |
 | **REMEDIATION** | **Fixed.** A normalisation step strips the indentation and the optional `<n>>` node prefix from the file field, under a comment recording that it is load-bearing rather than cosmetic and describing the exact failure it replaced. Because a silent regression here would restore the original condition — every comparison missing, invisibly — a fail-closed guard now rejects the parsed file if any record still begins with a node prefix or stray whitespace, with an error telling the reader to fix the normalisation rather than the allow-list. The guard was verified to fire on both `CA2100 2>path` and a double-spaced `CA2100  path`, and to stay silent on a well-formed record. Reported here as an additional fix beyond the review's findings. |
 
-
 #### P-20 — A licence posture no engineer may settle was disclosed but not made unshippable
 
 | Field | Value |
@@ -1404,7 +1946,6 @@ than *the sinks that consume the value*.
 | **IMPACT** | Publishing a package that declares Apache-2.0 over a dependency graph reaching RPL-1.5 code states a licence the package does not carry, to every downstream consumer, and a package version cannot be recalled from nuget.org once consumers have resolved it. The reputational and legal exposure falls on the repository owner, who had not been asked. The second-order impact is worse than the first: a remediation that settles owner questions in order to make its own gates green teaches the reader that "recorded" and "decided" are interchangeable. |
 | **EVIDENCE** | The contradiction was read directly rather than inferred: the manifest comment said `RISK-001, OPEN, OWNER DECISION REQUIRED` while the register's Status field said *Decided*. Nothing blocked packaging: `dotnet pack` on the core project exited **0** and produced a `.nupkg`. The bypass was then measured too — with the first fix placed in the core manifest only, `dotnet pack` on `WebVella.Erp.Web`, `WebVella.Erp.Plugins.Mail` and `WebVella.Erp.Plugins.SDK` each exited **0** and produced a package with no diagnostic, and the emitted `WebVella.Erp.Web.nuspec` was opened and carries `<license type="expression">Apache-2.0</license>` beside a `WebVella.Erp` dependency, which itself depends on `AutoMapper`. Four manifests declare that expression; three of them reference the core. Registry facts unchanged and re-confirmed: `14.0.0` is the last MIT release, there is no `14.0.1`, and the advisory fix begins at `15.1.1`. |
 | **REMEDIATION** | **Fixed as an escalation, not as a decision — and enforced rather than asserted.** The declared expression was **not** rewritten, no `PackageLicenseFile` was substituted for it, and the pin was **not** reverted, because each of those would be the agent answering the owner's question by another route. Instead: (1) both sites in the manifest carry a comment naming the threat, stating why only the owner may settle it, and pointing at the gate; (2) the target `ErpAssertAutoMapperLicenceDecisionRecorded` in `Directory.Build.props` runs `BeforeTargets="GenerateNuspec"` and fails packaging with `ERPLIC001` until a decision is recorded in `ErpAutoMapperLicenceDecision`, with `ERPLIC002` refusing a declination that leaves the RPL pin in place, `ERPLIC003` refusing any unrecognised value so a typo cannot read as consent, and `ERPLIC004` refusing to pass when the pin cannot be read at all; (3) all six documents now record the disposition as **open, pending owner ratification**, each stating what it previously claimed and why that was withdrawn; and (4) `RISK-001` carries both options with the exact execution steps for each, plus the fourth path — publish as-is because the build was green — named explicitly as the one now closed. Verified in ten directions across all four packable manifests, 26 invocations: `restore`, `build`, `publish`, `dotnet list package` and all 13 CI gate steps stay silent and green; `dotnet pack` fails for 4 of 4 unresolved, 4 of 4 on a declination that is not complete, and 4 of 4 on a typo; an unreadable pin fails closed; and the gate self-disables when the pinned version is declared permissive, so it stops applying the moment it stops being true. |
-
 
 #### P-21 — Stored cross-site scripting through every text value on the shared page header
 
@@ -1444,3 +1985,75 @@ than *the sinks that consume the value*.
 | **IMPACT** | An administrator who can edit a select field's options — the same tier that can already author a raw HTML block — could execute script in the browser of every user who subsequently viewed any record or list showing that field, on **every** host in the deployment, including hosts that do not contain the plugin the earlier fixes belonged to. |
 | **EVIDENCE** | Reproduced before the change against a live database with the `task` entity's `priority` option poisoned, at the level of raw response bytes and then in a browser. The HTML parser produced `["class","onmouseover","\"","style"]` on an element the application only ever gave two attributes; the injected `color:red` computed as `rgb(255,0,0)`; and Chrome's own Content-Security-Policy engine logged *"Executing inline event handler"* against the live page, which it emits only when it has classified an attribute as an inline handler and reached its execution stage. The task-details page carried **1** such element, the SDK entity data-list **4** — one per affected row — on both a Project host and a host without the Project plugin. **One correction to the reported finding is recorded rather than smoothed over:** the payload as originally reported cannot actually fire, because its trailing ` x="` fragment leaves the handler body `alert('R3ICON3') x=` as invalid JavaScript (`SyntaxError: Unexpected identifier 'x'`), and the truncated class collapses the element to a 17.5 × 0 px box that no coordinate can hit. Exploitability was therefore established by control rather than by the original payload: reproducing the same server-side concatenation with those three characters removed produces a **callable** handler and a **real** browser dialog, while HTML-encoding the same value produces two attributes and no handler at all. A second weaponised fixture — valid handler body, real glyph class, hoverable box — was then seeded so the post-fix signal could not be ambiguous. |
 | **REMEDIATION** | **Fixed at the boundary, with the guard relocated so it could reach it.** `SafeStyleValue` was **moved** — not copied — from `WebVella.Erp.Plugins.Project/Services/` to `WebVella.Erp.Web/Utils/`, keeping exactly one audited implementation, since duplicating security logic across two assemblies is the very pattern that produced the original miss; its three plugin call sites now consume it through a `using` and behave identically. `ToWvSelectOption` routes `Color` through `SafeStyleValue.CssColor` and `IconClass` through `SafeStyleValue.IconClass`. A rejected value becomes an empty string and the component then emits **no `<i>` element at all**, which is byte-identical to how an option with no icon and no colour has always rendered — the rejected state is an existing state of the product, not an invented fallback. The same edit closes a **second** sink that correct server-side encoding could not: the component's inline-edit path writes both values into `data-icon`/`data-color`, and the select2 script reads the **decoded** attribute back out of the DOM and re-inserts it as markup; because the value is emptied before it is ever written, what the script reads back is already safe. `SelectOption.Label` is raw at the same sink and is **deliberately left so** — the component already encodes it in edit mode, so encoding at the boundary would double-encode every legitimate label containing `&`, `'`, `<` or `>`, and a label has no constrainable shape for an allow-list; that residual, with two recommended fixes, is `RISK-127`. Verified with the payload **still seeded**: every hostile token count fell from `onmouseover==4` / 4 live handlers to **0** on both hosts; `[onmouseover]` is 0 in display mode, in select2 edit mode and with the dropdown open; 340 and 756 dispatched pointer events plus real-mouse hovers over the weaponised option produced **0** dialogs; a `MutationObserver` armed before page scripts recorded **0** `on*` sightings; and CSP `script-src-attr` violations were **0** across 205 captured violations. That the guard discriminates rather than blanket-strips was proven twice: with the dropdown open select2 still injected a real `<i class="fa fa-fw fas fa-fw fa-arrow-circle-down" style="color:#4CAF50">` for the legitimate option, and with the fixture restored all six task rows render their real glyph and colour with `::before` codepoints U+F0AA, U+F056 and U+F0AB and every computed colour matching its inline style. The stale *"four independent render paths"* claim in the helper's own remarks, and a matching *"three sibling render paths"* comment in the tasks-queue widget, were both corrected, so no wrong path count survives in the source. |
+
+## Residual coverage gap
+
+Stated plainly rather than implied away, because the alternative is a reader believing the automated gate
+covers all nineteen projects uniformly. It does not, and the reason is structural.
+
+**Two projects are not members of the solution.** `WebVella.Erp.WebAssembly/Server` and
+`WebVella.Erp.WebAssembly/Shared` are absent from `WebVella.ERP3.sln`; only the Client project appears
+there. Measured at this commit: the solution file contains nineteen `Project(` entries but only
+**seventeen** `.csproj` members, the other two entries being solution folders, and a search of the
+solution for either WebAssembly Server or Shared returns nothing. A solution-level restore, build or
+vulnerability listing therefore **never reaches those two projects**, and neither would a workflow that
+drove the solution alone.
+
+Two things follow, and they pull in opposite directions, so both are recorded.
+
+*What is closed.* Gate reach does not depend on solution membership, because `Directory.Build.props` is
+inherited by **directory location**: all six gate properties evaluate on 19 of 19 projects. Command
+coverage is closed deliberately rather than by editing the solution — the security workflow drives the
+solution once and then drives each of the two non-member projects by name, restoring, building and
+listing vulnerable packages for each, and additionally asserting each one's `TargetFramework` per project,
+which is an assertion a solution-level command cannot make. That is why the dependency result quoted in
+[Gate 2](#validation-gates) takes three commands rather than one.
+
+*Why the projects were not simply enrolled.* An earlier revision added them to `WebVella.ERP3.sln` and
+then described one dependency graph three different ways in consequence. The enrolment was withdrawn: the
+change boundary for this engagement authorises the `H-19` casing repair to the solution file and nothing
+else, and enrolling two projects is a structural change to the build graph rather than a security fix.
+Adding them remains the right long-term answer and is recorded as a recommendation in the
+[risk register](risk-register.md), not performed here.
+
+**One defect in this area is now closed, and the correction is stated as measured rather than repeated
+from expectation.** At the audit baseline `WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj:L14`
+declared `<ProjectReference Include="..\Client\WebVella.Erp.WebAssembly.Client.csproj" />` — **a file that
+does not exist**. The real Client manifest is
+`WebVella.Erp.WebAssembly/Client/WebVella.Erp.WebAssembly.csproj`, with no `.Client` suffix, which the
+solution file had always referenced correctly. The Server project was therefore not merely unscanned but
+**structurally unbuildable**, and an earlier revision of this report recorded it as such. Re-verified at
+this commit: the reference now reads `..\Client\WebVella.Erp.WebAssembly.csproj` and the project builds —
+exit 0, **0 errors**. It was repaired by the same change that retargeted both projects off the end-of-life
+framework for `H-18`. What remains open is only the solution membership described above.
+
+## Before and after evidence
+
+Every Critical and High finding is evidenced by tool output or by an exact file-and-line locator, never by
+narrative assertion. The **before** construct for each is in its own record in
+[Part 1](#part-1-the-audit-inventory), read from the audit baseline; the **after** state is the changed
+construct plus the gate output that demonstrates closure. What follows is the evidence chain per class,
+so that a reader can reproduce it rather than take it on trust.
+
+| Class of finding | Before — how it was reproduced | After — what demonstrates closure |
+| --- | --- | --- |
+| Dependency advisories (`H-01`, `H-20`) | A live reproduction was available for the mail advisories immediately: listing vulnerable packages **for the mail project alone** reported both the MailKit and MimeKit advisories, because both are reachable from a single-project restore. The object-mapping advisory behaves differently and the difference is the whole point of `H-19` — it surfaces only on a **solution-wide** restore, and only after the casing repair. The transcript of the negative control is recorded in the dependency inventory: `error NU1903: Warning As Error: Package 'AutoMapper' 14.0.0 has a known high severity vulnerability` | `dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive` reports nothing, plus one per-project invocation for each of the two non-member projects. `NU1901`–`NU1904` are build errors, so a regression cannot merely warn |
+| Build-graph integrity (`H-19`) | A solution-wide restore failed on a case-sensitive filesystem while a per-project restore of `WebVella.Erp.Site` succeeded — the contrast that proved the defect, since that host's reference was the one already-correct instance | `dotnet restore WebVella.ERP3.sln` exits 0 with zero `NU19xx`, and `dotnet build WebVella.ERP3.sln` exits 0 with 0 errors. The core project is back in the graph, which is what makes every row above it meaningful |
+| End-of-life framework (`H-18`) | Manifest census: 17 × `net10.0`, 2 × `net7.0` | Census re-run: **19 × `net10.0`**, asserted per project by the workflow rather than inferred |
+| Secrets (`C-01`, `C-04`, `H-04`, `H-05`) | The literal values read directly from the eight `Config.json` files, from `CryptoUtility.cs:L16`, from `ErpSettings.cs:L118` and from `ERPService.cs:L467`, at the locators in each record | The Gate 3 signature sweep over the tracked tree, plus the **negative test**: start-up fails fast with an actionable message when a required secret is absent, which is what proves the fallback was removed rather than relocated. Every truncated literal quoted in this report **remains in repository history and is therefore permanently compromised — rotation is mandatory, not optional** |
+| Credential storage (`C-03`, `H-17`, and `M-05`, `M-06` closed with them) | The primitive read from `PasswordUtil.cs` and the predicate read from `SecurityManager.cs:L85` | The stored format is salted and non-deterministic, verification is fixed-time, the SQL predicate carries no password term, and all four call sites route through the new primitive. Cost measured rather than asserted, and the ratio rather than the absolute value is the finding. The analyzer independently reported the old primitive as `CA5351` |
+| Authorization (`C-02`, `C-05`) | The grants and the absent field permissions read from `ERPService.cs` at the locators in each record | Administrator-only field permissions in the seed, encrypted-field values redacted from read projections, the version-4 migration carrying both to existing installations, and the two plugin patches corrected so replaying them cannot re-grant what the seed removed |
+| Session and token (`H-02`, `H-03`, and `M-03`, `M-04` with them) | The `TokenValidationParameters` initialiser and the hundred-year ticket read from `AuthService.cs` | Bounded ticket lifetime, lifetime validation asserted with explicit clock skew, the sign-in call awaited, UTC timestamps, and validation failures logged rather than swallowed |
+| Output encoding (`H-06`, `H-07`, and `M-18` with them) | The exact census — 128 `Html.Raw(` occurrences across 69 files, classified rather than counted, with 55 excluded as server-generated markup and the genuine sinks enumerated per file and line | The raw wrapper removed at the confirmed text sinks so Razor's automatic encoding applies, the reflected sinks switched to the already-existing encoded property, the editor callback validated as an integer and both script sinks encoded, and the defective encoder replaced. Three of these were found or confirmed by driving the remediated build in a real browser, which is recorded in [Part 3](#part-3-product-vulnerabilities-first-discovered-by-reviewing-the-remediation) |
+| Transport, headers and origin (`H-11`, `H-14`, `H-15`, and `M-01` with them) | The always-true certificate callback at five sites, the any-origin policy at two hosts, and the cookie options block — all read at their locators | All seven mandated headers emitted with the mandated values on both a dynamic and a static response; zero live `AllowAnyOrigin()` anywhere; secure cookie attributes with an explicit expiry window; transport security and redirection guarded to non-Development; certificate validation secure by default with an explicit opt-in |
+| Injection and deserialisation (`H-09`, `H-10`) | The six concatenated identifiers and the twenty `TypeNameHandling` sites, each read at its locator | Every one of the six identifiers validated and quoted through one audited helper; the binder attached at all fourteen in-scope sites, with the six out-of-scope sites named in `H-10` rather than quietly counted as covered |
+| File pipeline (`H-08`) | The four unconstrained uploads, the four unsanitised names, the dispositionless download, and the two unauthorised actions, each at its locator | Extension allow-list, size cap, content-type check and name sanitisation on upload; attachment disposition on download; ownership enforced on move and delete; and an explicit refusal when the target does not resolve |
+| Brute force (`H-16`) | The single synchronous login entry point with no attempt counter anywhere in the tree | A throttle service over the existing in-process cache consulted at that entry point, framework rate limiting in each host pipeline, and the single-instance scope of the throttle documented rather than hidden |
+| Error handling (`H-12`, `H-13`) | The two unconditional `e.Message + e.StackTrace` assignments at `:L4287` and `:L4306`, and `DevelopmentMode` true in all eight configurations | Generic messages with the server-side log retained, extended to every response sink in the tree; `"DevelopmentMode": "false"` in all eight files and `Production` in `web.config` |
+
+For the code findings the closing evidence is the analyzer families reporting clean across the remediated
+files together with the corresponding line of the manual verification checklist in the
+[remediation log](remediation-log.md). For the two findings whose remediation carries the greatest risk of
+doing harm — the credential rehash and the redaction sentinel — the checklist entries are explicit: a
+legacy credential must still authenticate and be transparently upgraded, and a full-record round-trip
+update must not overwrite a stored hash with the sentinel.
