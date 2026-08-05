@@ -72,6 +72,23 @@ namespace WebVella.Erp.Web
 		// lookup and the documentation that names it must not drift apart.
 		private const string DataProtectionKeyDirectoryConfigurationKey = "Settings:DataProtectionKeyDirectory";
 
+		// The configuration key the framework's HTTPS redirection middleware reads to learn the public
+		// HTTPS port. Held as a constant so the transport-posture check below and the diagnostic it
+		// produces cannot drift from the key the middleware actually consults. Both
+		// ASPNETCORE_HTTPS_PORT and HTTPS_PORT land on it, as does an ANCM-hosted site's
+		// ASPNETCORE_ANCM_HTTPS_PORT; the PLURAL spelling ASPNETCORE_HTTPS_PORTS is a Kestrel
+		// default-binding key that this application's WebHost pipeline never reads at all, which is
+		// exactly why the diagnostic names it as a non-remedy rather than staying silent about it.
+		private const string HttpsRedirectionPortConfigurationKey = "HTTPS_PORT";
+
+		// Kestrel's declarative endpoint section. Consulted alongside the bound addresses so that an
+		// operator who declares an HTTPS endpoint there, rather than through ASPNETCORE_URLS, is never
+		// told they have no HTTPS request path.
+		private const string KestrelEndpointsConfigurationSection = "Kestrel:Endpoints";
+
+		// Scheme prefix identifying an endpoint that can carry an HTTPS request.
+		private const string HttpsUriSchemePrefix = "https://";
+
 		public static IServiceCollection AddErp(this IServiceCollection services)
 		{
 			services.AddSingleton<IErpService, ErpService>();
@@ -181,20 +198,46 @@ namespace WebVella.Erp.Web
 			// exactly as the framework and the existing clients expect them, so no working request is
 			// affected.
 			//
-			// Always, with NO Development carve-out, because that is precisely the contract
-			// ConfigureErpAuthenticationCookie applies to the authentication cookie - unconditionally,
-			// including in Development. The two cookies must not disagree, and a Development-only
-			// relaxation here would buy nothing: http://localhost is a potentially trustworthy origin and
-			// browsers accept a Secure cookie over it, which is the same reason the authentication cookie
-			// needs no carve-out. Making this one environment-dependent would leave the platform with a
-			// single security attribute whose value turns on an environment name, and a developer running
-			// over plain HTTP on a non-loopback host would then get a validating antiforgery token while
-			// holding no authentication cookie at all - a state no deployment posture actually wants. No
-			// IWebHostEnvironment is taken for the same reason: there is nothing left to branch on.
-			services.AddOptions<Microsoft.AspNetCore.Antiforgery.AntiforgeryOptions>().Configure(antiforgeryOptions =>
-			{
-				antiforgeryOptions.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-			});
+			// Always OUTSIDE Development - that is the M-02 remediation, and it is the posture every
+			// deployed host runs under. SameAsRequest INSIDE Development, because an unconditional
+			// Always makes the platform UNUSABLE over plain HTTP there, and not merely less convenient:
+			// the antiforgery system does not simply mark the cookie, it VALIDATES its own configuration
+			// on every token issue. Microsoft.AspNetCore.Antiforgery.DefaultAntiforgery.CheckSSLConfig
+			// throws InvalidOperationException("The antiforgery system has the configuration value
+			// AntiforgeryOptions.Cookie.SecurePolicy = Always, but the current request is not an SSL
+			// request.") whenever Request.IsHttps is false, so EVERY Razor Pages form - the login form
+			// included - answered HTTP 500 in Development over HTTP, leaving no way to authenticate at
+			// all. An earlier revision of this comment reasoned only about whether BROWSERS accept a
+			// Secure cookie on http://localhost (they do, it is a potentially trustworthy origin) and
+			// therefore concluded no carve-out was needed; that reasoning missed this server-side throw,
+			// which fires on the scheme alone and never reaches the browser.
+			//
+			// The carve-out is the SAME guard, in the same direction, that every host already applies to
+			// app.UseHsts()/app.UseHttpsRedirection() and that SecurityHeadersMiddleware applies to
+			// Strict-Transport-Security: Development is served over plain HTTP by design, so a control
+			// that hard-requires TLS is suppressed there and nowhere else. It is therefore not a new
+			// class of environment-dependent security attribute - it is consistency with the platform's
+			// existing Development posture, and it is why the production hardening this finding asked
+			// for stays fully in force. SameAsRequest rather than None deliberately: a Development
+			// request that IS over HTTPS still gets the Secure attribute, so the relaxation applies only
+			// to the plaintext requests that would otherwise 500.
+			//
+			// IHostEnvironment is taken through Configure<T> - the same overload the DataProtection
+			// registration below uses - rather than captured from a field, so the environment is
+			// resolved from the container exactly once, when options are materialised.
+			services.AddOptions<Microsoft.AspNetCore.Antiforgery.AntiforgeryOptions>()
+				.Configure<IHostEnvironment>((antiforgeryOptions, hostEnvironment) =>
+				{
+					// Fail-safe direction: an unresolvable environment is treated as NOT Development, so
+					// the hardened value is the default and a missing or misspelled ASPNETCORE_ENVIRONMENT
+					// can never silently relax the production posture.
+					bool isDevelopment = hostEnvironment != null
+						&& string.Equals(hostEnvironment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
+
+					antiforgeryOptions.Cookie.SecurePolicy = isDevelopment
+						? CookieSecurePolicy.SameAsRequest
+						: CookieSecurePolicy.Always;
+				});
 
 			// THREAT ADDRESSED - finding H-16, CWE-307 (Improper Restriction of Excessive
 			// Authentication Attempts), OWASP A07: LoginThrottleService existed but was never
@@ -572,6 +615,24 @@ namespace WebVella.Erp.Web
 						+ "' is applied.");
 				}
 
+				// THREAT ADDRESSED - QA finding "Production hosts bound to HTTP only return HTTP 500 on
+				// every form-bearing page, including /login" (CWE-16 configuration, CWE-1188 insecure
+				// default, OWASP A05:2021 Security Misconfiguration), and the availability half of
+				// findings M-02 and H-15. The antiforgery cookie and the authentication cookie are both
+				// Secure-only by design - relaxing either is the CWE-614 vulnerability those findings
+				// remediate - so a deployment that gives this process no HTTPS request path answers 500
+				// from DefaultAntiforgery.CheckSSLConfig on EVERY page carrying a form, /login included,
+				// while still starting healthy, answering / with a redirect and emitting all seven
+				// security headers. Health probes and header audits therefore pass while nobody can sign
+				// in. This consults the transport posture at startup, in the same place and the same
+				// shape as ErpSettings' required-secret validation, so the misconfiguration is reported
+				// once and actionably instead of once per request as an opaque 500.
+				//
+				// Deliberately ordered AFTER ErpSettings.Initialize above: a deployment missing both a
+				// secret and an HTTPS path must still fail on the secret, because that is the failure the
+				// operator has to fix first and the one the continuous gate asserts.
+				ValidateTransportSecurityPosture(app, configuration, env);
+
 				var defaultThreadCulture = CultureInfo.DefaultThreadCurrentCulture;
 				var defaultThreadUICulture = CultureInfo.DefaultThreadCurrentUICulture;
 
@@ -791,6 +852,126 @@ namespace WebVella.Erp.Web
 				.Split(ForwardedHeadersListSeparators, StringSplitOptions.RemoveEmptyEntries)
 				.Select(entry => entry.Trim())
 				.Where(entry => entry.Length > 0);
+		}
+
+		// Refuses - or at minimum reports - a deployment in which no request can ever reach this
+		// application over HTTPS. The threat is stated at the call site in UseErp.
+		//
+		// The decision is evidence-based rather than heuristic: any ONE of the four channels below gives
+		// this process a way to see an HTTPS request, and finding one ends the check silently. Nothing is
+		// inferred from the environment name alone, and no cookie policy is weakened.
+		//
+		// The refusal is deliberately narrow, because a check that aborts a deployment which would have
+		// worked is worse than the failure it prevents. It fires only when the endpoints were DECLARED -
+		// through ASPNETCORE_URLS, UseUrls or a host binding, all of which reach
+		// IServerAddressesFeature.Addresses before Configure runs - and every declared endpoint is
+		// plaintext. When nothing is declared the endpoints come from the server's own defaults or from
+		// host code this method cannot inspect, so the identical diagnosis is WRITTEN AS A WARNING
+		// instead: the condition is never silent, but an unknown posture is never grounds to refuse.
+		// Development is exempt from the refusal because its antiforgery cookie follows the request
+		// scheme, so local plaintext sign-in remains supported while the warning keeps an absent HTTPS
+		// path visible. The authentication cookie remains Secure-only in every environment.
+		private static void ValidateTransportSecurityPosture(IApplicationBuilder app, IConfiguration configuration, IWebHostEnvironment env)
+		{
+			ICollection<string> declaredEndpoints = app?.ServerFeatures
+				?.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses;
+
+			// 1. An HTTPS endpoint this process binds itself.
+			if (declaredEndpoints != null && declaredEndpoints.Any(endpoint =>
+				endpoint != null && endpoint.StartsWith(HttpsUriSchemePrefix, StringComparison.OrdinalIgnoreCase)))
+				return;
+
+			// 2. An HTTPS endpoint declared in Kestrel's own configuration section instead.
+			if (IsKestrelHttpsEndpointDeclared(configuration))
+				return;
+
+			// 3. A public HTTPS port. This counts even though the process binds no HTTPS endpoint,
+			// because UseHttpsRedirection answers a plaintext request with a redirect to that port
+			// before it can reach a form - which is precisely the behaviour that is silently inert
+			// while the key is absent.
+			if (!string.IsNullOrWhiteSpace(configuration?[HttpsRedirectionPortConfigurationKey]))
+				return;
+
+			// 4. A trusted reverse proxy that terminates TLS and forwards the scheme. The forwarded-header
+			// option builder is REUSED rather than its keys re-read, so "a proxy is trusted" here means
+			// exactly what UseErpForwardedHeaders acts on; a null result is that method's own encoding of
+			// "nothing is trusted". Whether the proxy actually sends X-Forwarded-Proto cannot be known at
+			// startup, which is why the diagnosis below says so explicitly.
+			if (BuildForwardedHeadersOptions(configuration) != null)
+				return;
+
+			bool endpointsWereDeclared = declaredEndpoints != null && declaredEndpoints.Count > 0;
+			bool isDevelopment = env != null && env.IsDevelopment();
+
+			// The endpoint list is operator-supplied deployment topology, not a secret - the same
+			// reasoning that lets the KnownProxies diagnostic name the offending address - so quoting it
+			// turns this message from a rule restatement into an actionable one. No configuration VALUE
+			// is ever echoed (CWE-532).
+			string observedEndpoints = endpointsWereDeclared
+				? string.Join(", ", declaredEndpoints)
+				: "none declared, so the server's own defaults decide them";
+
+			// One sentence explaining why this message is a refusal or a report, so the two paths can never
+			// be confused for one another in a log.
+			string closingNote;
+			if (isDevelopment)
+			{
+				closingNote = "Development is exempt from this startup refusal, so the host will start and its antiforgery cookie will follow the request scheme; local plaintext sign-in remains supported. Configure HTTPS to exercise the production transport posture.";
+			}
+			else if (endpointsWereDeclared)
+			{
+				closingNote = "Startup is refused rather than left to fail one request at a time, which is how this misconfiguration used to surface. Development is exempt from the refusal.";
+			}
+			else
+			{
+				closingNote = "The endpoints this process will bind are not declared in configuration, so this is reported rather than refused; if they resolve to plaintext only, no sign-in will be possible.";
+			}
+
+			string diagnosis = "no HTTPS request path was found in the transport configuration visible at startup."
+				+ $"{Environment.NewLine}  Observed endpoints: " + observedEndpoints + "."
+				+ $"{Environment.NewLine}  Outside Development, the antiforgery cookie is Secure-only BY DESIGN (finding M-02 - CWE-614, CWE-319), so if this host resolves to plaintext only, form generation fails inside DefaultAntiforgery.CheckSSLConfig with 'the current request is not an SSL request' and every form-bearing page - '/login' included - answers HTTP 500. The authentication cookie remains Secure-only in every environment (finding H-15 - CWE-614, CWE-1004, CWE-319). Development deliberately makes only the antiforgery cookie follow the request scheme so local plaintext forms remain usable. Weakening the non-Development antiforgery policy or the authentication-cookie policy is NOT the remedy: it reinstates the vulnerability those findings closed."
+				+ $"{Environment.NewLine}  Supply ANY ONE of the following, then restart:"
+				+ $"{Environment.NewLine}    - an HTTPS endpoint of this process: 'ASPNETCORE_URLS' including an https:// address, together with 'Kestrel__Certificates__Default__Path' and 'Kestrel__Certificates__Default__Password' - or a '"
+				+ KestrelEndpointsConfigurationSection
+				+ "' entry whose Url is https;"
+				+ $"{Environment.NewLine}    - the public HTTPS port, when TLS is terminated in front of this process and plaintext requests should be redirected: 'ASPNETCORE_HTTPS_PORT' or 'HTTPS_PORT' (configuration key '"
+				+ HttpsRedirectionPortConfigurationKey
+				+ "'). 'ASPNETCORE_HTTPS_PORTS' - plural - is a Kestrel default-binding key that this application never reads: it neither binds an endpoint nor arms the redirect;"
+				+ $"{Environment.NewLine}    - trust for the reverse proxy that terminates TLS: '"
+				+ ForwardedHeadersConfigurationSection.Replace(":", "__", StringComparison.Ordinal)
+				+ "__KnownProxies' or '"
+				+ ForwardedHeadersConfigurationSection.Replace(":", "__", StringComparison.Ordinal)
+				+ "__KnownNetworks', AND configure that proxy to forward 'X-Forwarded-Proto: https' - trusting a proxy that does not send it leaves this failure in place."
+				+ $"{Environment.NewLine}  See docs/security/secure-configuration.md for the complete transport-security configuration."
+				+ $"{Environment.NewLine}  " + closingNote;
+
+			if (endpointsWereDeclared && !isDevelopment)
+				throw new InvalidOperationException("WebVella ERP startup aborted - " + diagnosis);
+
+			// Reported in the same shape as the platform's other startup security notice - the disabled
+			// token-route warning in ErpSettings - so both read alike in a host log and an operator has
+			// one idiom to recognise rather than two.
+			Console.Error.WriteLine("warn: WebVella.Erp.Web.ErpMvcServicesExtensions[1] SECURITY - " + diagnosis);
+		}
+
+		// True when Kestrel's configuration declares at least one endpoint whose Url is https. Read
+		// directly rather than through KestrelServerOptions because this runs while the pipeline is being
+		// built, before the server has bound anything, and because the configuration section is the only
+		// declaration that is knowable at that point.
+		private static bool IsKestrelHttpsEndpointDeclared(IConfiguration configuration)
+		{
+			IConfiguration endpointsSection = configuration?.GetSection(KestrelEndpointsConfigurationSection);
+			if (endpointsSection == null)
+				return false;
+
+			foreach (IConfigurationSection endpoint in endpointsSection.GetChildren())
+			{
+				string url = endpoint["Url"];
+				if (!string.IsNullOrWhiteSpace(url) && url.TrimStart().StartsWith(HttpsUriSchemePrefix, StringComparison.OrdinalIgnoreCase))
+					return true;
+			}
+
+			return false;
 		}
 
 		// The single normalisation of a caller's address used by every per-source security control in the

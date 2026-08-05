@@ -104,27 +104,28 @@ deployed. Read them as complementary sections of a single log rather than as alt
 >   command reaches** — that is, command coverage, not property inheritance. Inheritance and membership
 >   now coincide.
 >
-> **The current state, stated once here so it is not in doubt:** `WebVella.ERP3.sln` now enumerates
-> **19** `.csproj` entries, matching the 19 tracked manifests exactly, so every solution-scoped command
-> reaches every project and the workflow asserts that membership on every run. The per-project restore,
-> build and advisory steps are retained on top of solution coverage because they additionally assert each
-> project's resolved `TargetFramework`, which a successful solution build cannot rule out on its own.
+> **The current state, stated once here so it is not in doubt:** `WebVella.ERP3.sln` enumerates **17**
+> `.csproj` entries, and the two WebAssembly projects remain explicit non-members because this plan
+> authorises no solution edit beyond the H-19 casing correction. Dedicated restore, build and advisory
+> steps cover those two and additionally assert each resolved `TargetFramework`. The workflow therefore
+> enforces the governing arithmetic: **17 solution members + 2 explicitly gated non-members = 19
+> tracked manifests**.
 
-> **A note on the `WebVella.Erp.Site.Project` cross-origin allow-list — read this before trusting any
-> statement below about which origins that host permits. SUPERSEDED, and this note governs.** That
-> host's allow-list is no longer a literal list in `Startup.cs`. It is read from
+> **A note on the Site and Site.Project cross-origin allow-lists — read this before trusting any
+> statement below about which origins those hosts permit. SUPERSEDED, and this note governs.** Both
+> allow-lists are read from
 > `Settings:Cors:AllowedOrigins` — environment form `Settings__Cors__AllowedOrigins`, a `,`- or
 > `;`-delimited string — and it resolves in three distinguishable states: a supplied value always wins;
-> a supplied but empty value is an explicit allow-nothing; an absent key falls back to the four origins
-> named in this host's own commented-out policy **only** when `ASPNETCORE_ENVIRONMENT` is `Development`,
-> and denies every origin otherwise.
+> a supplied but empty value is an explicit allow-nothing; an absent key falls back **only** when
+> `ASPNETCORE_ENVIRONMENT` is `Development` — three localhost origins for `WebVella.Erp.Site`, and those
+> three plus `http://localhost:2202` for `WebVella.Erp.Site.Project` — and denies every origin otherwise.
 >
 > **How to read the "all four listed origins are echoed back" statements below.** They were accurate
 > measurements when written, and they remain accurate for a `Development` host with the key absent —
 > which is the configuration they were measured in. They are **not** a description of a shipped
 > production deployment, where an absent key denies every origin by design. Wherever one of them reads
-> as unconditional, this note overrides it: the environment and the key are part of the result.
-> `WebVella.Erp.Site` is unaffected and still names its three origins in source.
+> as unconditional, this note overrides it: the environment and the key are part of the result. The same
+> resolution now governs `WebVella.Erp.Site`, using its three-origin Development fallback.
 >
 > **The history, because this one reversed too.** The literal four-origin list landed first. It was then
 > replaced by a configuration-sourced list whose only reachable value was an empty array, because no
@@ -1763,10 +1764,10 @@ method, and M-04 only becomes exploitable slack *because* lifetime validation is
 - **The anonymous refresh endpoint itself is not changed here.** Enforcing lifetime validation is what
   removes the indefinite-renewal property; whether that endpoint should require authentication at all
   is a separate question recorded against the finding rather than decided here.
-- **Cookie attributes are not set in this class, and were closed by a later one.** `Secure`,
+- **Authentication-cookie attributes are not set in this class, and were closed by a later one.** `Secure`,
   `SameSite`, an explicit expiry window and sliding expiration are host pipeline configuration and
   belonged with the transport class. **That class has since landed and H-15's cookie half is closed:**
-  all seven hosts now obtain `SecurePolicy=Always` (unconditionally), `SameSite=Lax`,
+  all seven hosts now obtain authentication-cookie `SecurePolicy=Always` (unconditionally), `SameSite=Lax`,
   `ExpireTimeSpan=1440`, `SlidingExpiration=true` and `AllowRefresh=true` from a single shared
   configurator, bounded by a 7-day absolute session horizon. See the HTTP-pipeline class entry.
 - **The commented-out login audit block elsewhere in the framework is left in place.** It is
@@ -3235,7 +3236,7 @@ The middleware existed but **no host called it**, so not one header was ever emi
 | --- | --- |
 | `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs` | The mandated policy made **immutable** (`public const`, compiler-enforced — it previously had a public setter that could silently weaken it). An intermediate revision also added a `/csp-violation-report` collection endpoint handled inside the middleware ahead of routing; **that endpoint and its `report-uri` directive were subsequently removed** — see *§ The violation-report collector was removed* below. The emitted policy is now byte-identical to the mandated value, and the middleware has exactly one path through `Invoke`, so every response receives all seven headers |
 | `WebVella.Erp.Web/ErpMvcExtensions.cs` | Options registered at the single canonical registration point, so all seven hosts inherit them from one edit |
-| 7 × `WebVella.Erp.Site*/Startup.cs` | `UseSecurityHeaders` inserted **early** — ahead of response compression and both static-file middlewares; `UseHsts` then `UseHttpsRedirection` guarded to non-Development and placed **after** CORS; cookie hardening, later revised by the HTTP-pipeline class to the frozen contract now in force — `SecurePolicy=Always` unconditionally, `SameSite=Lax`, `ExpireTimeSpan` 1440 minutes, `SlidingExpiration=true`, `AllowRefresh=true`, all supplied from a **single** shared configurator so the seven hosts cannot drift, and bounded by a 7-day absolute horizon; rate limiter added and positioned so static assets are not throttled |
+| 7 × `WebVella.Erp.Site*/Startup.cs` | `UseSecurityHeaders` inserted **early** — ahead of response compression and both static-file middlewares; `UseHsts` then `UseHttpsRedirection` guarded to non-Development and placed **after** CORS; authentication-cookie hardening, later revised by the HTTP-pipeline class to the frozen contract now in force — `SecurePolicy=Always` unconditionally, `SameSite=Lax`, `ExpireTimeSpan` 1440 minutes, `SlidingExpiration=true`, `AllowRefresh=true`, all supplied from a **single** shared configurator so the seven hosts cannot drift, and bounded by a 7-day absolute horizon; rate limiter added and positioned so static assets are not throttled |
 
 **Two ordering constraints are load-bearing**, not stylistic. Headers must precede compression and
 static files or they are absent from exactly the responses most likely to carry attacker-controlled
@@ -5753,10 +5754,10 @@ profile or — as this repository shipped — a tracked `web.config`. A deployme
 signal that would reveal the mistake is the very signal the exception suppresses. The control was
 conditional on a value the threat model cannot trust.
 
-`SecurePolicy = Always` is now unconditional in all seven hosts, with no environment test anywhere near
-a `SecurePolicy` assignment, and **no `SecurePolicy` assignment anywhere in the repository selects
-`SameAsRequest`**. Local development uses the HTTPS launch profile, which the platform already ships
-with a development certificate, so nothing is lost.
+The authentication cookie's `SecurePolicy = Always` is now unconditional in all seven hosts, with no
+environment test in its shared configurator. The antiforgery cookie is configured separately: it stays
+`Always` outside Development and uses `SameAsRequest` in Development so local plaintext forms do not
+trip the framework's server-side SSL check. A Development request over HTTPS still receives `Secure`.
 
 The HTTPS-redirection guard remains environment-conditional, and that asymmetry is intentional rather
 than an oversight: redirection *rewrites URLs* and can strand a developer or break a cross-origin
@@ -6095,8 +6096,9 @@ changed the behaviour without touching `Configure` — the smallest change that 
   the finding cites and is outside this finding's scope; narrowing it was deliberately not attempted under
   the minimal-change constraint.
 - **Five hosts' CORS policies were not touched.** They already used a restrictive named policy, and
-  changing them would be change without security effect. Their hard-coded localhost origins — like those
-  of the two hosts fixed here — remain a deployment task recorded in the risk register.
+  changing them would be change without security effect. Their hard-coded localhost origins remain a
+  deployment task recorded in the risk register. The two hosts fixed here have since both become
+  configuration-driven through `Settings:Cors:AllowedOrigins`, with host-specific Development fallbacks.
 
 ## Response header operability and the violation collector's bounds
 
@@ -7549,7 +7551,7 @@ narrower list would have thought to name.
 | Dependency gate | `dotnet list … package --vulnerable --include-transitive` | all 19 projects report no vulnerable packages |
 | Allow-list — `Development`, key absent | `OPTIONS` preflight and a real JSON `POST` to all four Project routes, from six origins | the four development origins each echoed in `Access-Control-Allow-Origin` with `Vary: Origin`; the two hostile origins received neither header |
 | Allow-list — `Development`, key supplied | a `;`-delimited two-origin list with surrounding spaces, only one of them a default | only the two supplied origins echoed, the four defaults **not** added as well, and entry trimming exercised by the spaces |
-| Allow-list — `Development`, key supplied empty | the same host with the variable exported as an empty string | **no** origin echoed, the four defaults included — the explicit allow-nothing is honoured even in `Development` |
+| Allow-list — `Development`, key supplied empty | the same host with the variable exported as an empty string | **no** origin echoed, the four defaults excluded — the explicit allow-nothing is honoured even in `Development` |
 | Allow-list — `Production`, key absent | the four development origins plus a hostile one | **none** echoed. Deny-by-default is intact where it matters |
 | Allow-list — `Production`, key supplied | a `,`-delimited list of one external origin and one localhost origin | both echoed, everything else refused — a real deployment is configurable without a rebuild |
 | Matching is exact | `http://localhost:2202/`, `HTTP://LOCALHOST:2202`, `https://localhost:2202`, `http://127.0.0.1:2202` and the literal `null` origin | each refused while `http://localhost:2202` is allowed — scheme, host, port, case and trailing slash all matter, and the host is matched literally rather than resolved |
@@ -8627,5 +8629,251 @@ only against a dated attestation and the browser scenario is executed outside th
 exercise itself is recorded separately; the matrix records only what evidence the gate holds.
 
 This section is the thirty-fourth `## ` heading of this log; the preceding count was thirty-three, and it
+is restated here because the section that changes the count is the only one that can. Reproduce with
+`grep -c '^## ' docs/security/remediation-log.md`.
+
+
+## The shared page header and the list-description builder made to encode (`MAJOR-1`, `F-AA`)
+
+This class closes the last two output-encoding gaps in the presentation layer and completes the coverage of
+the `H-06` guard. Both were found by QA testing the remediation at runtime rather than by reading it, and
+both are pre-existing product defects that earlier classes had passed over.
+
+The first is the one that matters. `WvPageHeader` renders the banner at the top of roughly **fifty**
+administrative screens, and it wrote every text value it received — the area label, the area sub-label, the
+title, the subtitle and each page-switch item label — through `AppendHtml`, which does not encode. Those
+values are database text. The consequence was visible one click apart: a data source named
+`QaXss1<script>alert('DS1')</script>` rendered as inert text on the SDK **list** screen, which an earlier
+class had remediated, and then **executed a real `alert` dialog** on the **details** screen, which no class
+had reached. It is recorded as `P-21` in [the audit report](security-audit-report.md).
+
+The second is why the first could not be fixed by encoding everything.
+`PageUtils.GenerateListPageDescription` composes the header's `description` as genuine markup — an inline
+`ul`/`li` list wrapping a bold `sorted by` and `filtered by` — and interpolates two values straight off the
+query string into it. So the header has **one** sink that must stay raw and seven that must not, and the
+reflected values have to be encoded at the builder, because by the time the composed string reaches the sink
+the attacker's characters and the product's own tags are indistinguishable. It is recorded as `P-22`.
+
+The third is coverage rather than a new sink. The `SafeIconClass` and `SafeCssColor` allow-lists introduced
+for `H-06` were `private static` members of a single widget, and QA finding `F-AA` established that **four**
+render paths consume the same two values while only that one was guarded.
+
+### Two path corrections, stated first because they cost time otherwise
+
+The QA report cites the tag helper as `WebVella.Erp.Web/TagHelpers/WvPageHeader.cs`. It is at
+`WebVella.Erp.Web/TagHelpers/WvPageHeader/WvPageHeader.cs` — a tenth correction beyond the nine the plan
+records. And `F-AA`'s *"Track Time cell builder"* is not a source file at all: it is a C# `ICodeVariable`
+persisted as **seed data** in `WebVella.Erp.Plugins.Project/ProjectPlugin.20190203.cs` and compiled at
+runtime, which composes `<i class='{iconClass}' style='color:{color}'></i>` with no encoding whatsoever.
+
+| File | Change | Threat addressed |
+| --- | --- | --- |
+| `WebVella.Erp.Web/TagHelpers/WvPageHeader/WvPageHeader.cs` | Seven value-bearing sinks moved from `AppendHtml` to `Append`. One of them previously concatenated a literal `<i class='icon fas fa-ellipsis-v'></i>` with `Title` in a single raw append and is now **split**, so the icon stays raw and the title is encoded. The `Description` sink is left raw and carries a comment forbidding its conversion | CWE-79 stored cross-site scripting, OWASP A03:2021 |
+| `WebVella.Erp.Web/Utils/PageUtils.cs` | `GenerateListPageDescription` encodes the interpolated `sortBy` value and each filter name through `HtmlEncoder.Default`. Every literal — both `strong` wrappers, the `ul`, the `li` elements and the comma separator — is untouched | CWE-79 reflected cross-site scripting, OWASP A03:2021 |
+| `WebVella.Erp.Plugins.Project/Services/SafeStyleValue.cs` | **New.** The two allow-lists promoted out of one widget into a shared class, with the rationale recording that keeping them private is *how* three of four paths came to be missed | CWE-79, OWASP A03:2021 |
+| `WebVella.Erp.Plugins.Project/Services/TaskService.cs` | `GetTaskIconAndColor` guards both `out` values. This is the root-cause fix for the stored code variable | CWE-79, OWASP A03:2021 |
+| `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTasksPriorityChart/PcProjectWidgetTasksPriorityChart.cs` | Publishes a **new** sanitised `List<SelectOption>` rather than mutating the originals, covering both Razor twins from one change | CWE-79, OWASP A03:2021 |
+| `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs` | Repointed at the shared class; its two private copies removed | CWE-79, OWASP A03:2021 |
+
+### Why the smallest fix was also the complete one
+
+Nothing was added to close `P-21` — no helper, no dependency, no markup. `Append` is the encoding
+counterpart of `AppendHtml` on the same interface, so the change is subtractive in effect, and every
+structural `AppendHtml` that emits a `TagBuilder` or a compile-time literal is untouched. That mattered more
+than elegance: a census of **all fifty** consumer views established that not one passes markup into the four
+encoded attributes, so encoding them could not change what a legitimate value renders as — and if any had,
+the correct fix would have been narrower, not this one.
+
+### Why the guard went into `TaskService` and not into the views
+
+Editing `ProjectPlugin.20190203.cs` would have changed only **fresh** provisioning, and the plan excludes
+database-stored data from modification. `GetTaskIconAndColor` is the single point at which both values leave
+the entity metadata, so guarding there covers the stored code variable with **no** change to seed or stored
+data. It also turned out to cover more than `F-AA` named: the dashboard's *My Overdue Tasks* widget renders
+through the same copy-out point.
+
+One thing was deliberately **not** done. `ViewBag.PriorityOptions` was previously assigned straight from the
+cached entity-metadata graph. Sanitising those objects in place would have poisoned that cache for every
+other consumer in the process, so a copy is published instead.
+
+### What was left alone, and why
+
+`F-AA`'s fourth path — the Track Time grid **title**, sanitised by a tag allow-list that produces real `<b>`
+elements — is documented rather than changed. No grid-rendering source exists in this repository; `wv-grid`
+ships inside the third-party `WebVella.TagHelpers` package, which the plan restricts to version updates, and
+a sanitiser that emits `<b>` while stripping `<script>` is behaving as designed. The remaining **21 Minor**
+and **12 Info** findings in the same QA report are pre-existing quality and accessibility observations in
+code this remediation never touched, each carrying a git-level counterfactual; they are recorded in
+[the risk register](risk-register.md) with the plan section that declines them.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `dotnet build WebVella.ERP3.sln --no-restore` | exit 0, **0 errors**; `grep -c ": error "` returns 0 |
+| Analyzer diagnostics attributable to this class | **zero.** A script mapping every warning line number against the changed ranges returns `warnings inside changed ranges: 0`; `WvPageHeader.cs` reports no diagnostic at all, and the new `SafeStyleValue.cs` appears **0** times in the build log |
+| `P-21` before | Raw response bytes contained `<span class="text">QaXss1<script>alert('DS1')</script>` and `QaXss2"><img src=x onerror=alert('DS2')>` verbatim |
+| `P-21` after | The same bytes read `QaXss1&lt;script&gt;alert(&#x27;DS1&#x27;)&lt;/script&gt;` and `QaXss2&quot;&gt;&lt;img src=x onerror=alert(&#x27;DS2&#x27;)&gt;`; literal `<script>alert` and `<img src=x` counts both **0** |
+| `P-21` in a browser | Total session dialog count **0**; zero `img[src="x"]`, zero inline scripts calling `alert`, zero elements with `onerror`/`onmouseover`; zero console errors and warnings; **204** requests, none ≥ 400. Bookended positive controls proved the detectors could observe a live payload at both ends of the run, and no enforcing CSP header is sent, so nothing was masked |
+| `P-21` behaviour preservation | With per-request identifiers normalised, the rendered document for legitimate values is **byte-identical** before and after: 35,926 bytes either side on the list screen, 36,310 with a sort term |
+| `P-21` regression | Six list screens, an entity detail screen, four page-switch screens and a project record: exactly one styled header each, **no** literal HTML entity in any visible text — which is what rules out double encoding — back button still same-origin and working, and the page-switch dropdown still opening with all four items retaining both icon and label. The split sink verified as a real `i.fas.fa-ellipsis-v` element with the title as a separate text node beside it |
+| `P-22` before | `?sortBy=name<script>alert('SORTXSS')</script>` and `?q_XX<b>hi</b>YY_v=abc` each emitted their payload verbatim at HTTP 200 |
+| `P-22` after | Both entity-encoded, and five further payloads inert — `"><svg onload=alert(1)>`, `'-alert(1)-'`, `</strong><script>alert(2)</script>`, an `img`/`onerror` filter name and a `javascript:` scheme — with zero raw `svg` and zero raw `script` in the response |
+| `P-22` feature half | The description still renders a real `ul.list-inline` with two real `li.list-inline-item` elements and a real `strong` around `sorted by`. Both halves were required, because either alone would be a false pass |
+| `F-AA` hostile | The two previously unguarded paths now emit `<i class="" style="color: ">` and `<i class='' style='color:'>`; zero occurrences of the hostile class or colour fragments. In a browser: `style.length` **0**, computed `background-image: none`, inherited colour, zero width, not hit-testable, and `__xssHits` empty after a real hover, a real click at the icon's exact centre and **96** synthetic events across the icon, its parents, its rows and `document.body`, with **zero** new network requests. Even the legitimate `arrow-circle-up` fragment is absent, proving the value is dropped **whole** rather than partially escaped |
+| `F-AA` legitimate | All **six** styled icons across three screens keep their exact configured class, `style.length` **1**, their exact configured colour, a real Font Awesome `:before` glyph and a 17.5 × 14 box. The project dashboard renders **two** distinct colours, **two** distinct glyph codepoints and **two** distinct class strings — including the `fa` versus `fas` prefix preserved verbatim — which is what proves a targeted allow-list rather than a pass-or-blank switch |
+| Fixture hygiene | The poisoned priority metadata was restored **byte-identically** (10,950 bytes either side, JSON-equal, `$type` first-key order preserved). The `entities.json` column is type `json`, not `jsonb`, so a text-level replace cannot reorder keys — which is what makes this method immune to the canonicalisation incident that broke login during QA |
+
+One measurement is recorded so a later reader does not mistake it for a regression: the `strong` in the
+description computes to `font-weight: 400`, because `WebVella.Erp.Web/Theme/styles.css` normalises `strong`
+inside `.description`. That is a 2019 declaration in a file no security commit has touched, and it
+reproduces identically on a payload-free page.
+
+This section is the thirty-fifth `## ` heading of this log; the preceding count was thirty-four, and it
+is restated here because the section that changes the count is the only one that can. Reproduce with
+`grep -c '^## ' docs/security/remediation-log.md`.
+## Post-QA remediation — the plaintext-forwarding topology, and five documentation corrections
+
+Runtime QA of the configuration and deployment surface returned one **MAJOR** functional defect and six
+informational observations. This section records how each was disposed of. The defect is an availability
+consequence of two controls this log already describes — the non-Development `Secure`-only antiforgery
+cookie of the session class (`M-02`) and the HSTS/redirection pair of the transport class (`H-15`) —
+meeting a deployment topology neither of them accounted for.
+
+### The defect: a plaintext-only host answered HTTP 500 on every form-bearing page
+
+Reproduced verbatim before any change, on a published `WebVella.Erp.Site.Crm` artifact with valid
+secrets, `ASPNETCORE_ENVIRONMENT=Production` and `ASPNETCORE_URLS=http://127.0.0.1:17230` — the
+mainstream "TLS terminates at the ingress, plaintext is forwarded to the application" shape. The host
+started healthy, `/` answered `302`, all seven security headers were present, and **`/login`
+answered `500`** with a 265-byte generic body. Four measured links, none inferred:
+
+1. `AntiforgeryOptions.Cookie.SecurePolicy = Always` is applied outside Development in `AddErp` —
+   deliberate, and the deployed-host remediation for `M-02` (CWE-614, CWE-1004).
+2. `UseHttpsRedirection()` is **silently inert** when no HTTPS port is discoverable; the host logged
+   `Failed to determine the https port for redirect.` and passed the plaintext request through.
+3. Forwarded-header processing is deny-by-default and was unconfigured, so `X-Forwarded-Proto` could not
+   establish the scheme.
+4. The request reached MVC, `FormTagHelper` asked for a token, and
+   `DefaultAntiforgery.CheckSSLConfig` threw
+   `…SecurePolicy = Always, but the current request is not an SSL request`.
+
+**A health probe and a header audit both pass while the application cannot be used.** That is the part
+that made this MAJOR rather than a configuration note: nothing in the platform said anything, even though
+the platform aborts loudly and precisely for a missing `ConnectionString`.
+
+### What was changed
+
+| File | Change |
+| --- | --- |
+| `WebVella.Erp.Web/ErpMvcExtensions.cs` | **New** `ValidateTransportSecurityPosture` and `IsKestrelHttpsEndpointDeclared`, plus three constants (`HTTPS_PORT`, `Kestrel:Endpoints`, the `https://` scheme prefix) and one call site inside `UseErp()`. Outside Development, a host whose declared endpoints are all plaintext and which has no other HTTPS evidence now **aborts at startup** with a message naming every key that satisfies the check. Development, and the case where no endpoint is declared at all, get the identical text as a `warn:` line instead. |
+| `docs/security/secure-configuration.md` | The HSTS/redirection caveat now states the real non-Development consequence (HTTP 500 on every form-bearing page, not merely "no redirect"), documents the new check and its decision table, and **corrects the environment variable it previously prescribed**. The `Cookies and session lifetime` operator note also distinguishes that posture from Development's request-matched antiforgery cookie. |
+| `SECURITY.md` | The operator hardening checklist carries the same correction and the same consequence. |
+| `docs/security/risk-register.md` | `RISK-124`, `RISK-125` and `RISK-126` added; `RISK-022` gains the measured reason its `eval` backlog cannot be cleared by first-party work. |
+| `.github/workflows/security-scan.yml` | Two stale comments corrected — see *Comment accuracy* below. |
+
+**The transport guard itself relaxes no cookie policy.** The authentication cookie stays `Always` in
+every environment, and the antiforgery cookie stays `Always` outside Development. A later runtime fix
+made only the Development antiforgery policy `SameAsRequest`, because the framework otherwise throws
+before rendering any local plaintext form; that carve-out does not reach a deployed posture, and an
+HTTPS Development request still receives `Secure`. No host `Startup.cs` was touched by the transport
+guard, no package was added, no `using` was added, and no new configuration key was invented: the check
+reads keys the framework and this platform already consume.
+
+### Design decisions
+
+- **Fail fast, in the shape the platform already uses.** The check mirrors
+  `ErpSettings.ValidateRequiredSecurityConfiguration`: collect the situation, name every key that fixes
+  it, throw `InvalidOperationException` from startup, echo no value. An operator meets one idiom, not
+  two.
+- **Registered once, inherited by seven hosts.** It lives in `UseErp()`, which every host calls, so the
+  control cannot be present on six hosts and missing on the seventh. The console application and the
+  WebAssembly server never call `AddErp`/`UseErp`, never receive the `Secure`-only antiforgery policy,
+  and are correctly untouched.
+- **Ordered after `ErpSettings.Initialize`, deliberately.** A deployment missing both a secret and an
+  HTTPS path must still fail on the secret: that is the failure the operator fixes first, and the
+  continuous gate's Linux startup smoke test asserts that exact message on eight artifacts launched
+  HTTP-only in Production. Verified after the change: with blank secrets the abort is still
+  `required security configuration is missing`, and the transport message does not appear at all.
+- **Four pieces of evidence, any one sufficient.** A declared `https` endpoint; a `Kestrel:Endpoints`
+  entry whose `Url` is `https`; `HTTPS_PORT` (which is what `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT` and
+  `https_port` all resolve to, and what an ANCM-hosted site sets from `ASPNETCORE_ANCM_HTTPS_PORT`); or a
+  trusted proxy declaration. The proxy test **reuses `BuildForwardedHeadersOptions`** rather than
+  re-reading its keys, so "a proxy is trusted" means exactly what `UseErpForwardedHeaders` acts on and
+  the two cannot drift apart.
+- **Refuse on a known-bad posture, report on an unknown one.** The residual is real and is recorded as
+  `RISK-126` rather than glossed: with no endpoint declared in Production, this application binds
+  `http://localhost:5000` alone and `/login` still answers 500, but the check reports instead of
+  refusing, because aborting a deployment that would have worked is a worse outcome than the one being
+  prevented.
+- **The message names keys and quotes the observed endpoints, never a value.** Endpoint addresses are
+  operator-supplied topology — the same reasoning that already lets the `KnownProxies` diagnostic name a
+  malformed address — and a four-pattern sweep of the abort output for the database password, the
+  encryption key, the token key and the initial administrator password returns zero hits.
+
+### Verification, measured
+
+Published Release artifacts, dedicated database, .NET SDK `10.0.302` from `global.json`.
+
+| Check | Recorded result |
+| --- | --- |
+| The original reproduction, re-executed | Startup **aborts** with the actionable message; `Now listening on` appears **0** times, so the host never serves and the `/login` 500 is unreachable |
+| Secret leakage in the abort output | **0** hits for the database password, encryption key, token key and initial administrator password |
+| `ASPNETCORE_HTTPS_PORT=<port>` on a plaintext-only host | starts; `/login` → **307** to `https://…/login` |
+| `HTTPS_PORT=<port>` on a plaintext-only host | starts; `/login` → **307** |
+| `Settings__ForwardedHeaders__KnownProxies` + `X-Forwarded-Proto: https` | starts; `/login` → **200** |
+| `ASPNETCORE_HTTPS_PORTS` (plural) only — the variable this guide used to prescribe | **refused at startup** with the message that names the singular form. Before the change this configuration answered `/login` with **500** |
+| `Kestrel__Endpoints__Https__Url=https://…` with a certificate, no `ASPNETCORE_URLS` | binds https, `/login` → **200**, check silent |
+| Supported topology (`https` + `http` declared, Production) | `/login` **200** over https, **307** over http, `/` **302**; all seven headers byte-exact; `Content-Security-Policy` still **report-only**; check silent |
+| Development, plaintext only | **starts** with exactly **one** `warn:` line; `/login` **200**, token-protected sign-in **302**, authenticated home **200**; the antiforgery cookie omits `Secure` only on plaintext and the authentication cookie remains `Secure` |
+| No `ASPNETCORE_URLS` at all, Production | **starts** with the `warn:` line and the "none declared" wording — no false refusal (`RISK-126`) |
+| Continuous-gate contract: blank secrets, HTTP-only, Production | still aborts with `required security configuration is missing` ×3; transport message absent ×0 |
+| Second host shape: `WebVella.Erp.Site` (own `ConfigurationBuilder`, `UserSecretsId`, `ErpSettings` already initialised) | plaintext-only → aborts, never serves; https topology → `/login` 200, http 307, check silent |
+| `dotnet build WebVella.Erp.Web` | 0 errors; the only analyzer diagnostic citing `ErpMvcExtensions.cs` is the pre-existing `CA2263` at L445 — **zero new warnings** |
+| Browser, supported topology | Login page renders fully styled; sign-in `POST` **302** → `GET /` **200**, title `Home`; **no** HTTP 500 and no antiforgery error at any point; **0** console errors and 0 warnings of 142 messages (136 are expected report-only CSP notices); **51** requests, none ≥ 400; `erp_auth_sdk` and `.AspNetCore.Antiforgery.*` both `Secure` + `HttpOnly` with `document.cookie` empty; the new check emitted nothing across a 455-line host log |
+
+### The documentation corrections
+
+- **The prescribed environment variable did not exist.** This guide and the operator checklist both told
+  operators to set `ASPNETCORE_HTTPS_PORTS`. Measured: with `ASPNETCORE_HTTPS_PORTS=17231`, a valid
+  certificate and no `ASPNETCORE_URLS`, the host bound `http://localhost:5000` alone — the plural key is a
+  Kestrel default-binding key this application's `WebHost` pipeline never reads, so it neither binds an
+  endpoint nor arms the redirect. Both documents now name `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT` and the
+  configuration key `https_port`, all three of which were measured to work.
+- **The documented Production failure mode was wrong, in two places.** The transport section described
+  the consequence as "HSTS and no redirect", and the cookie note described it as being bounced back to
+  the login page because the browser refuses the cookie. Outside Development neither is what happens:
+  `/login` answers **500** and the form never renders. Both now state that measured behaviour and also
+  distinguish Development, where the antiforgery cookie follows the request scheme and plaintext login
+  remains usable.
+- **The `eval` half of the Content-Security-Policy backlog cannot be cleared by refactoring.** Runtime
+  validation localised a source exactly — `/_content/WebVella.Erp.Web/js/wv-lazyload/p-7e344a40.js`, a
+  vendored Stencil chunk reporting `kEvalViolation` against `script-src` — and a nonce or hash cannot
+  authorise string evaluation. `RISK-022` and the enforcement inventory now record that the only two
+  routes are an `'unsafe-eval'` amendment (an owner decision) or rebuilding the vendored chunk
+  (third-party asset work, excluded here), so a plan that assumes stage 3 is first-party work will stall.
+- **The fail-fast surface is now documented rather than implied** — `RISK-124` records that a
+  configuration abort exits 134 with a stack trace, why that is accepted, and the one-line log filter that
+  makes triage immediate.
+- **The login autocomplete advisory is recorded with its fix** — `RISK-125`, kept out of code because
+  `autocomplete` is absent rather than disabled and no confirmed finding sits behind it.
+
+One observation needed **no** change, and was verified rather than assumed: the per-process scope of the
+login throttle is already `RISK-008`, and the absence of any test suite is already disclosed wherever
+the gate that depends on it is described. The earlier CORS asymmetry no longer exists:
+`Settings__Cors__AllowedOrigins` is now honoured by both `WebVella.Erp.Site` and
+`WebVella.Erp.Site.Project`; an absent key denies every origin outside Development, while Development
+falls back to three localhost origins for Site and four for Project.
+
+### Comment accuracy
+
+Two comments inside `.github/workflows/security-scan.yml` still claimed *"all 19 tracked projects are
+solution members"* and *"this listing reaches all 19 solution members"*, contradicting the same file's
+own derived model, this log's governing note, and runtime (`dotnet sln list` reports **17**; two
+WebAssembly projects are covered by explicit per-project steps). The executable logic was already correct
+and its assertions pass; only the prose was stale, and it is now aligned with the 17 + 2 model the file
+actually implements.
+
+This section is the thirty-sixth `## ` heading of this log; the preceding count was thirty-five, and it
 is restated here because the section that changes the count is the only one that can. Reproduce with
 `grep -c '^## ' docs/security/remediation-log.md`.

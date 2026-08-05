@@ -43,14 +43,14 @@ of this commit.
 | Response security headers | All seven emitted by `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`, registered once through `AddErp` and ordered in **all seven** hosts ahead of `UseResponseCompression` and both `UseStaticFiles` calls |
 | Content-Security-Policy | Emitted in **report-only** mode carrying the mandated value **verbatim** — `default-src 'self'; script-src 'self'; style-src 'self'` and nothing else. There is **no `report-uri` directive and no collection endpoint**; both were removed, because appending `report-uri` altered the mandated header value and the collector's early return could answer a request without attaching the other six headers. Reports are read from the browser console during the rollout instead (`RISK-022`) |
 | Transport security | `UseHsts()` then `UseHttpsRedirection()` in all seven hosts, guarded to non-Development and ordered **after** `UseCors` so cross-origin preflight is not broken by a redirect |
-| Cookies | `SecurePolicy=Always` **unconditionally, including in Development**, `SameSite=Lax`, a 24-hour sliding expiry window and a 7-day absolute horizon |
+| Cookies | Authentication: `SecurePolicy=Always` **unconditionally, including in Development**, `SameSite=Lax`, a 24-hour sliding expiry window and a 7-day absolute horizon. Antiforgery: `SecurePolicy=Always` outside Development and `SameAsRequest` in Development, retaining the framework's `SameSite=Strict` default |
 | Rate limiting | `UseRateLimiter()` in all seven hosts, positioned after both static-file middlewares so assets are never throttled |
 | Login throttling | Per-account and per-address counters over a bounded private store, consulted at the login page and at the anonymous token route (`RISK-008`) |
 | Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors: the four severity codes `NU1901`–`NU1904` **and** the two data-availability codes `NU1900` and `NU1905`. .NET analyzers run with **`AnalysisLevel=latest-recommended` and nothing further** — that pair of properties is the whole of the analyzer gate. No `AnalysisLevelSecurity` upgrade and **no global analyzer configuration file** is supplied, and the workflow fails if either appears. Four Security-category rules execute at that level (`CA5350`, `CA5351`, `CA5359`, `CA5364`, measured at 0 / 5 / 0 / 0); all analyzer diagnostics stay warnings at the project level and are enforced instead by the workflow's Gate 1 allow-list. Verified inherited by **19 of 19** projects — `Directory.Build.props` is **directory**-scoped, so inheritance does not depend on solution membership, of which there are 17 |
 | Toolchain pin | `global.json` pins `10.0.302` with `rollForward: disable`, so only that exact SDK builds the repository and the gate's recorded results are reproducible by construction — both gates are selected by the SDK, so a drifting toolchain would make them unreproducible (review findings `GATE-02` and `CR2-F-13`) |
 | Shipped secrets | **Scrubbed.** All eight `Config.json` files carry empty secret values and `DevelopmentMode: false`, `WebVella.Erp.Site/web.config` sets `Production`, and the seeded administrator password is no longer a literal (`RISK-021`, now closed). One demo credential remains in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs`, which is outside this change's file scope |
 | Mail transport | SMTP server certificates are **validated by default**. `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` bypasses validation only when `Settings:EmailSMTPAllowInvalidCertificates` is `true` — environment form `Settings__EmailSMTPAllowInvalidCertificates` — which exists for self-signed development servers, is honoured only in Development posture, and must never be set in production. **Revocation is checked by default too**, so the relay's chain must expose a reachable CRL or OCSP endpoint; `Settings:EmailSMTPCheckCertificateRevocation=false` narrows that single check — in any posture — while leaving chain, expiry and host-name verification in force (`RISK-060`). See *SMTP certificate revocation* |
-| Closed since the inventory was taken | `RISK-013` is **closed**: no host applies `AllowAnyOrigin()` any longer. Both `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` serve explicit origin allow-lists, each drawn from the origins recorded in its own previously commented-out policy — `WebVella.Erp.Site` naming them in source, and `WebVella.Erp.Site.Project` reading `Settings:Cors:AllowedOrigins` and falling back to its own four **only** in `Development`, as *Cross-origin policy* below sets out — and the call survives only inside explanatory comments — `git grep -n 'AllowAnyOrigin' -- '*.cs'` returns comment lines and nothing applied. Finding `H-11` is **closed at all five sites**, not four: every `ServerCertificateValidationCallback` in the mail plugin — the four in `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` and the one in `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` — now yields the `AllowInvalidRemoteCertificates` setting rather than a literal `true`, and that setting parses to `false` unless an operator sets `Settings__EmailSMTPAllowInvalidCertificates` to `true`. `RISK-014` is **closed**: both anonymous bearer-token error paths in `WebVella.Erp.Web/Controllers/WebApiController.cs` return a generic message outside Development and retain their server-side log record |
+| Closed since the inventory was taken | `RISK-013` is **closed**: no host applies `AllowAnyOrigin()` any longer. Both `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` read `Settings:Cors:AllowedOrigins`, deny every origin when it is absent outside Development, and use their own previously documented localhost sets only as Development fallbacks — three origins for Site and four for Project — as *Cross-origin policy* below sets out. The old calls survive only inside explanatory comments — `git grep -n 'AllowAnyOrigin' -- '*.cs'` returns comment lines and nothing applied. Finding `H-11` is **closed at all five sites**, not four: every `ServerCertificateValidationCallback` in the mail plugin — the four in `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` and the one in `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` — now yields the `AllowInvalidRemoteCertificates` setting rather than a literal `true`, and that setting parses to `false` unless an operator sets `Settings__EmailSMTPAllowInvalidCertificates` to `true`. `RISK-014` is **closed**: both anonymous bearer-token error paths in `WebVella.Erp.Web/Controllers/WebApiController.cs` return a generic message outside Development and retain their server-side log record |
 
 ## How this guide is organised
 
@@ -536,34 +536,35 @@ pipeline needed no edit at all. `AllowCredentials()` is deliberately absent from
 refuses it alongside a wildcard origin, and these two hosts authenticate cross-origin callers with a
 bearer token rather than with a cookie.
 
-**Six of the seven hosts name hard-coded localhost origins — those are development defaults, not
+**Five of the seven hosts still name hard-coded localhost origins — those are development defaults, not
 deployment configuration.** Replace them with the origins your deployment actually serves before going
 live; an allow-list naming the wrong origins is not protection, it is a mis-statement of it.
 
-**`WebVella.Erp.Site.Project` is the exception: its allow-list is supplied by configuration rather
-than edited into source.** It reads `Settings:Cors:AllowedOrigins`, environment form
-`Settings__Cors__AllowedOrigins`, so changing the origins a deployment serves needs no rebuild. The
-resolution is layered, and the layers are distinct:
+**`WebVella.Erp.Site` and `WebVella.Erp.Site.Project` are configuration-driven.** Both read
+`Settings:Cors:AllowedOrigins`, environment form `Settings__Cors__AllowedOrigins`, so changing the
+origins either deployment serves needs no rebuild. The resolution is layered, with one deliberate
+difference in the Development fallback:
 
 | `Settings:Cors:AllowedOrigins` | `ASPNETCORE_ENVIRONMENT` | Resulting allow-list |
 | --- | --- | --- |
 | Supplied, one or more origins | any, including `Development` | Exactly the origins supplied — a supplied value always wins |
 | Supplied but empty | any, including `Development` | Empty. This is the explicit "allow nothing" |
-| Absent | `Development` | The four origins named in this host's **own** commented-out policy: `http://localhost:3333`, `http://localhost:3000`, `http://localhost`, `http://localhost:2202` |
+| Absent | `Development` | Site: `http://localhost:3333`, `http://localhost:3000`, `http://localhost`. Project: those three plus `http://localhost:2202` |
 | Absent | anything else, or unset | Empty — deny by default |
 
 The value is one string delimited by `,` or `;`; entries are trimmed and empty entries dropped, so
 `https://a.example.com ; https://b.example.com` supplies two origins. Matching is exact — scheme, host
 and port must all correspond and there must be no trailing slash — which was verified rather than
-assumed: `http://localhost:2202/`, `HTTP://LOCALHOST:2202`, `https://localhost:2202`,
-`http://127.0.0.1:2202` and the literal `null` origin each receive **no** `Access-Control-Allow-Origin`
-while `http://localhost:2202` receives it.
+assumed. On Project, `http://localhost:2202/`, `HTTP://LOCALHOST:2202`,
+`https://localhost:2202`, `http://127.0.0.1:2202` and the literal `null` origin each receive **no**
+`Access-Control-Allow-Origin` while `http://localhost:2202` receives it. On Site, `:2202` is deliberately
+excluded because that Stencil client belongs to Project.
 
-**Supply the key for any Project-host deployment that a browser client calls cross-origin.** An absent
-key outside `Development` is a deny-all: correct as a default, but not a working configuration for such
-a client. The key is deliberately **absent from the shipped `Config.json`**, so a configuration file
-left untouched cannot silently authorise an origin, and the development fallback can never reach a
-production deployment.
+**Supply the key for either host when a browser client calls it cross-origin.** An absent key outside
+`Development` is a deny-all: correct as a default, but not a working configuration for such a client.
+The key is deliberately **absent from the shipped `Config.json`**, so a configuration file left untouched
+cannot silently authorise an origin, and the Development fallbacks can never reach a production
+deployment.
 
 Verify afterwards that an allowed origin receives `Access-Control-Allow-Origin`
 together with `Vary: Origin`, and that an origin outside the list receives **no** CORS headers at all.
@@ -822,6 +823,25 @@ Then confirm the fail-fast behaviour is real rather than merely configured: star
 `Settings:ConnectionString` or `Settings:EncryptionKey` removed. It must abort at startup with a
 message naming the missing setting and nothing else. If it starts, a fallback still exists somewhere.
 
+Confirm the transport posture the same way, because a host that answers `/` cannot be assumed usable:
+
+```bash
+# On the topology you actually deploy, /login must NOT be 500. Over HTTPS expect 200; over plaintext
+# expect 307 to https, or 200 when a trusted proxy forwards X-Forwarded-Proto: https.
+curl -s -o /dev/null -w '%{http_code}\n' https://<host>/login
+
+# Negative test of the startup check: with only a plaintext endpoint declared and none of
+# ASPNETCORE_HTTPS_PORT / HTTPS_PORT / Settings__ForwardedHeaders__KnownProxies set, a
+# non-Development host must ABORT at startup and must never log "Now listening on".
+ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' dotnet <Host>.dll
+```
+
+A `warn: WebVella.Erp.Web.ErpMvcServicesExtensions[1]` line in a host log means the same condition was
+detected but only reported. In Development, the host remains usable over local plaintext because the
+antiforgery cookie follows the request scheme, but configure HTTPS to exercise the production transport
+posture. Outside Development, the warning means no endpoint was declared (`RISK-126`); verify the server
+defaults immediately, because `/login` answers 500 if they resolve to plaintext only.
+
 Confirm the mail transport's two certificate settings are still bound the way they are documented —
 both are read at every send, so a rename or a typo in either is silent until mail stops:
 
@@ -938,8 +958,8 @@ in `Config.json` until then.
 | `Settings__EmailSMTPAllowInvalidCertificates` | `Settings:EmailSMTPAllowInvalidCertificates` | No | Accepts **any** SMTP server certificate. Honoured only alongside `Settings:DevelopmentMode`; refused, and reported once per process, anywhere else. Never set it in production |
 | `Settings__EmailSMTPCheckCertificateRevocation` | `Settings:EmailSMTPCheckCertificateRevocation` | No | Defaults to `true`. Set to `false` **only** when the relay's certificate chain cannot publish a reachable CRL or OCSP endpoint — see *SMTP certificate revocation*. Chain, expiry and host name stay verified; honoured in every posture; reported once per process (`RISK-060`) |
 | `Settings__DevelopmentMode` | `Settings:DevelopmentMode` | No | Must be `false` outside development |
-| `Settings__Cors__AllowedOrigins` | `Settings:Cors:AllowedOrigins` | `WebVella.Erp.Site.Project` only, and there only when a browser client calls it cross-origin | One string of origins delimited by `,` or `;`; entries trimmed, empty entries dropped, matched exactly with no trailing slash. Absent outside `Development` denies every origin; absent **in** `Development` falls back to that host's four localhost development origins; supplied but empty denies every origin in **any** environment. Deliberately not present in the shipped `Config.json`. The other six hosts name their origins in source and ignore this key |
-| `ASPNETCORE_ENVIRONMENT` | hosting environment | Recommended | Must **not** be `Development` in production. It additionally selects the `WebVella.Erp.Site.Project` cross-origin fallback described in the row above |
+| `Settings__Cors__AllowedOrigins` | `Settings:Cors:AllowedOrigins` | `WebVella.Erp.Site` and `WebVella.Erp.Site.Project`, when a browser client calls either host cross-origin | One string of origins delimited by `,` or `;`; entries trimmed, empty entries dropped, matched exactly with no trailing slash. Absent outside `Development` denies every origin; absent **in** `Development` falls back to Site's three localhost origins or Project's four; supplied but empty denies every origin in **any** environment. Deliberately not present in the shipped `Config.json`. The other five hosts name their origins in source and ignore this key |
+| `ASPNETCORE_ENVIRONMENT` | hosting environment | Recommended | Must **not** be `Development` in production. It additionally selects the host-specific Site and Site.Project cross-origin fallbacks described in the row above |
 
 The token-signing requirement is conditional on purpose. Demanding a signing key from the five hosts
 and the console application that issue no tokens would stop them starting, which the preservation
@@ -1109,11 +1129,66 @@ application knows an HTTPS port.** Started with `ASPNETCORE_ENVIRONMENT=Producti
 endpoint, the host emitted `Strict-Transport-Security: max-age=31536000; includeSubDomains` on every
 response — the header half works — while the redirection half logged
 `Failed to determine the https port for redirect.` and passed plaintext requests through untouched.
-That is the framework's documented behaviour, not a defect here, but it means an operator who
-terminates TLS at a proxy and forwards plaintext gets HSTS and **no** redirect unless they also supply
-`ASPNETCORE_HTTPS_PORTS` (or `https_port`) and forward the protocol with
-forwarded-header processing. Treat "redirects plaintext" as conditional on that configuration and
-verify it on the deployed topology rather than trusting the middleware's presence in the pipeline.
+That is the framework's documented behaviour, not a defect here.
+
+**Outside Development, the consequence is worse than "no redirect", and this guide previously
+understated it.** A plaintext request that is not redirected reaches MVC, and the antiforgery cookie is
+`Secure`-only by design (see *Cookies and session lifetime* below, finding M-02).
+`DefaultAntiforgery.CheckSSLConfig` therefore throws `The antiforgery system has the configuration value
+AntiforgeryOptions.Cookie.SecurePolicy = Always, but the current request is not an SSL request`, and
+**every page carrying a form — `/login` included — answers HTTP 500**, so nobody can sign in. Nothing
+else looks wrong while that is true: the host starts healthy, `/` still answers `302`, and all seven
+security headers are still emitted, so a health probe and a header audit both pass on an application
+that cannot be used. Development deliberately makes the antiforgery cookie follow the request scheme so
+local plaintext forms remain usable; the authentication cookie remains `Secure`. Weakening the
+non-Development antiforgery policy is **not** the remedy — that reinstates the CWE-614 weakness M-02
+closed.
+
+**A startup guard now refuses that configuration instead of letting it fail one request at a time.**
+`ValidateTransportSecurityPosture` in `WebVella.Erp.Web/ErpMvcExtensions.cs` runs inside `UseErp()`, so
+all seven hosts inherit it, and it looks for any **one** of four ways a request can arrive over HTTPS:
+
+1. a declared endpoint of this process whose scheme is `https` — `ASPNETCORE_URLS`, `UseUrls` or a host
+   binding, all of which reach `IServerAddressesFeature.Addresses` before the pipeline is built;
+2. a `Kestrel:Endpoints:<name>:Url` whose scheme is `https`;
+3. a public HTTPS port in configuration — `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT` or the configuration key
+   `https_port` — which arms the redirect so a plaintext request never reaches a form;
+4. a trusted reverse proxy — `Settings__ForwardedHeaders__KnownProxies` or
+   `Settings__ForwardedHeaders__KnownNetworks` — which lets `X-Forwarded-Proto: https` establish the
+   scheme.
+
+Finding one ends the check silently. Finding none, the host **aborts at startup** with a message naming
+every key above, and it aborts *before serving a single request*. Two deliberate exceptions keep the
+guard from ever refusing a deployment that would have worked:
+
+* **Development is exempt from the refusal** and gets the identical text as a `warn:` line instead.
+  Its antiforgery cookie uses `SameAsRequest`, so local plaintext sign-in remains supported while the
+  warning keeps the missing HTTPS path visible. The authentication cookie remains `Secure`.
+* **When no endpoint is declared at all**, the endpoints come from Kestrel's own defaults or from host
+  code the platform cannot inspect, so the same text is written as a `warn:` line rather than enforced.
+  Measured in Production, for the record: with nothing declared this application binds
+  `http://localhost:5000` only, so that configuration does still fail on `/login` — the warning is the
+  notice, not a clean bill.
+
+**`ASPNETCORE_HTTPS_PORTS` — plural — does not work, and an earlier revision of this guide wrongly
+prescribed it.** It is a Kestrel default-binding key that this application's `WebHost` pipeline never
+reads: measured with `ASPNETCORE_HTTPS_PORTS=17231` and a valid certificate but no `ASPNETCORE_URLS`,
+the host still bound `http://localhost:5000` alone and `/login` still answered `500`. Use the singular
+`ASPNETCORE_HTTPS_PORT`, or `HTTPS_PORT`, or the configuration key `https_port`.
+
+The measured behaviour of each option, on a host whose only declared endpoint is plaintext:
+
+| Configuration | `/login` over plaintext | Startup |
+| --- | --- | --- |
+| nothing further supplied | **HTTP 500** before the guard existed; **refused at startup** now | aborts with the actionable message |
+| `ASPNETCORE_HTTPS_PORT=<public https port>` (or `HTTPS_PORT`) | `307` to `https://…/login` | starts |
+| `Settings__ForwardedHeaders__KnownProxies=<proxy address>` **and** the proxy sends `X-Forwarded-Proto: https` | `200` | starts |
+| `ASPNETCORE_HTTPS_PORTS` (plural) | still **500** — the key is not read | refused at startup |
+
+Trusting a proxy that does not actually send `X-Forwarded-Proto` leaves the failure in place: the guard
+can see that a proxy is trusted but cannot see what that proxy sends, which is why option 4 has two
+halves. Treat "redirects plaintext" as conditional on this configuration and verify it on the deployed
+topology rather than trusting the middleware's presence in the pipeline.
 
 Before this remediation, HSTS was used nowhere in the platform except
 `WebVella.Erp.WebAssembly/Server/Program.cs`.
@@ -1168,13 +1243,14 @@ a restrictive named policy and are deliberately left alone. Their hard-coded loc
 separate low-severity item recorded in the [risk register](risk-register.md). Overstating this
 finding's breadth was one of the false-positive classes the audit explicitly eliminated.
 
-**Six hosts still carry development defaults in source; the seventh is configuration-driven.**
-`WebVella.Erp.Site` and the five already-restrictive hosts name localhost origins in their own
+**Five hosts still carry development defaults in source; Site and Site.Project are
+configuration-driven.** The five already-restrictive hosts name localhost origins in their own
 `Startup.cs`, so replace those with the origins your deployment actually serves.
-`WebVella.Erp.Site.Project` instead reads `Settings:Cors:AllowedOrigins` — environment form
-`Settings__Cors__AllowedOrigins` — and falls back to its four commented-out development origins **only**
-when that key is absent *and* `ASPNETCORE_ENVIRONMENT` is `Development`; in every other environment an
-absent key means deny-all. The full resolution table, the delimiters and the exact-match rules are under
+`WebVella.Erp.Site` and `WebVella.Erp.Site.Project` both read `Settings:Cors:AllowedOrigins` —
+environment form `Settings__Cors__AllowedOrigins` — and fall back to their own development origins
+**only** when that key is absent *and* `ASPNETCORE_ENVIRONMENT` is `Development`; Site uses three, while
+Project adds `http://localhost:2202` as its fourth. In every other environment an absent key means
+deny-all. The full resolution table, the delimiters and the exact-match rules are under
 [*Cross-origin policy*](#cross-origin-policy) above. Either way, verify that a listed origin receives
 `Access-Control-Allow-Origin` together with `Vary: Origin` and that an unlisted origin receives **no**
 CORS headers at all.
@@ -1803,6 +1879,8 @@ The last two matter disproportionately: **the mandated policy does not mention `
 
 The inline-emitting surface is also **wider than the four components originally identified**. In addition to the HTML-block component and the two script-emitting components, real reports implicate CKEditor 5, the `wv-lazyload`/Stencil bundle (inline style *and* `eval`), and the Ace editor. Enforcement is a project of its own, not a configuration flip.
 
+**The `eval` row is the one line of this table that step 2 below cannot clear.** A nonce or a hash authorises a *known script*; only `'unsafe-eval'` authorises *string evaluation*, so refactoring first-party markup does nothing for an `eval` raised inside a dependency. Runtime validation localised one source precisely — `/_content/WebVella.Erp.Web/js/wv-lazyload/p-7e344a40.js`, a vendored Stencil lazy-load chunk that evaluates a string as JavaScript and reports `kEvalViolation` against `script-src`, observed on both the login page and the authenticated home page. That leaves exactly two routes, and both are decisions rather than tasks: amend the mandated value with `'unsafe-eval'` (a real weakening, owned by the application security owner), or rebuild/replace the vendored chunk (third-party asset work, which this remediation's modification boundary excludes — third-party code takes version updates only). CKEditor 5 is the second `eval` source with the same property. Read step 2 accordingly, and see `RISK-022` in [the risk register](risk-register.md).
+
 The route from here to enforcement:
 
 1. Leave report-only on and collect from real usage across all hosts.
@@ -1851,6 +1929,8 @@ Two ordering constraints are load-bearing:
 
 Terminate TLS in front of the application. The platform issues HSTS unconditionally outside Development; it redirects plaintext **only when an HTTPS port is discoverable** (see the measured caveat under *HSTS and HTTPS redirection* above), and it does not manage certificates.
 
+If this process can see no HTTPS request path at all outside Development, redirection is not the only casualty: the `Secure`-only antiforgery cookie makes **every form-bearing page, `/login` included, answer HTTP 500**. The host therefore **refuses to start** in that known-bad configuration and names the keys that satisfy it — `ASPNETCORE_URLS` with an `https://` address, `ASPNETCORE_HTTPS_PORT` (singular) or `HTTPS_PORT`, or `Settings__ForwardedHeaders__KnownProxies`/`__KnownNetworks` with a proxy that sends `X-Forwarded-Proto: https`. `ASPNETCORE_HTTPS_PORTS` (plural) is **not** read by this application. In Development the antiforgery cookie follows the request scheme so local plaintext forms work, while the same missing-HTTPS condition is reported as a warning. The full decision table is under *HSTS and HTTPS redirection* above.
+
 ### 4. Cookies and session lifetime
 
 Cookie authentication is configured identically across all seven hosts:
@@ -1866,7 +1946,7 @@ Cookie authentication is configured identically across all seven hosts:
 
 All seven hosts obtain these values from a **single** shared configurator, `ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie`, so the seven hosts cannot drift apart.
 
-> **Operators: `SecurePolicy` is `Always` even in Development.** Sign-in therefore works only over HTTPS. Running a host over plain `http://localhost` will appear to accept your credentials and then bounce you back to the login page, because the browser refuses to store the cookie. This is expected; use the HTTPS endpoint.
+> **Operators: the authentication cookie's `SecurePolicy` is `Always` even in Development; the antiforgery cookie is posture-aware.** Outside Development the antiforgery cookie is also `Always`, so a plaintext-only host is refused at startup before `/login` can reach the server-side SSL check. In Development it uses `SameAsRequest`: a plaintext `/login` renders and accepts a token-protected POST, and the antiforgery cookie is emitted without `Secure`; the same Development request over HTTPS receives `Secure`. The authentication cookie remains `Secure` throughout. The startup transport-security check reports a missing HTTPS path as a `warn:` line in Development and aborts a known plaintext-only deployment outside it. See *HSTS and HTTPS redirection* above.
 
 #### A configuration incoherence that was fixed
 
@@ -1937,7 +2017,7 @@ Set the environment to **`Production`** for any installation reachable by untrus
   (`RISK-021`, closed). Verify the effective values in your own deployment anyway, since either can be
   overridden by an environment variable that outranks the file.
 
-Development mode still suppresses HSTS and HTTPS redirection, so leaving it on disables transport controls described in this document. It no longer affects the cookie `SecurePolicy`, which is now `Always` unconditionally.
+Development mode still suppresses HSTS and HTTPS redirection, so leaving it on disables transport controls described in this document. The authentication cookie remains `SecurePolicy=Always`; the antiforgery cookie instead uses `SameAsRequest` in Development so local plaintext forms remain usable, while retaining `Always` everywhere else.
 
 ### 8. Items formerly open, now closed
 
@@ -1946,12 +2026,11 @@ retracted rather than deleted, because an operator who read the earlier revision
 reverse-proxy compensation that is no longer required.
 
 * **~~Two hosts still serve a permissive `Access-Control-Allow-Origin: *`.~~ Closed.** Both
-  `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` now use an explicit origin allow-list. The two
-  lists deliberately differ, and they are supplied differently. `WebVella.Erp.Site` names the three
-  origins from its **own** commented-out policy directly in `Startup.cs`. `WebVella.Erp.Site.Project`
-  reads `Settings:Cors:AllowedOrigins` instead, and falls back to the four origins from its own
-  commented-out policy — those same three plus `http://localhost:2202` — **only** in `Development` and
-  **only** when that key is absent. The other five hosts were already restrictive and were not touched.
+  `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` now use an explicit origin allow-list and both read
+  `Settings:Cors:AllowedOrigins`. The supplied-list, supplied-empty and absent-outside-Development states
+  are identical. Their Development fallbacks deliberately differ: Site uses the three origins from its
+  own commented-out policy, while Project adds `http://localhost:2202` as its fourth. The other five
+  hosts were already restrictive and were not touched.
 
   Verified against a running `WebVella.Erp.Site.Project` host, and the environment is part of the result
   rather than incidental to it:
@@ -2141,7 +2220,7 @@ value that ships in the public source tree.
 | `Settings:Jwt:Issuer` | No | Token issuer. Defaults to `webvella-erp`. |
 | `Settings:Jwt:Audience` | No | Token audience. Defaults to `webvella-erp`. |
 | `Settings:DevelopmentMode` | No | Defaults to `false`. Must remain `false` in any deployment reachable by untrusted users (finding H-12). |
-| `Settings:Cors:AllowedOrigins` | Only for `WebVella.Erp.Site.Project`, and there only when a browser client calls it cross-origin | Cross-origin allow-list for that one host, delimited by `,` or `;`. Absent outside `Development` denies every origin, which is the correct default but not a working configuration for such a client; absent **in** `Development` falls back to that host's four localhost development origins; supplied but empty denies every origin in any environment (finding H-14). |
+| `Settings:Cors:AllowedOrigins` | For `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` when a browser client calls either host cross-origin | Cross-origin allow-list for those two hosts, delimited by `,` or `;`. Absent outside `Development` denies every origin, which is the correct default but not a working configuration for such a client; absent **in** `Development` falls back to Site's three localhost origins or Project's four; supplied but empty denies every origin in any environment (finding H-14). |
 | `Settings:EmailSMTPCheckCertificateRevocation` | No | Defaults to `true`, so an SMTP relay certificate's revocation status **is** checked. Set it to `false` only when the relay's chain cannot publish a reachable CRL or OCSP responder; the trust chain, validity dates and host name remain verified either way. Unlike `Settings:EmailSMTPAllowInvalidCertificates` it is honoured in every posture, because a control that is inert in production is no remedy for a production outage. See *SMTP certificate revocation* and `RISK-060`. |
 | `Settings:DataProtectionKeyDirectory` | No | Directory holding the Data Protection key ring that encrypts and signs every authentication cookie. Absent, the framework default applies and the keys are transient, so a restart invalidates issued cookies. Opt-in rather than defaulted, because a directory invented here would be no more durable than the default. See *The Data Protection key ring* and `RISK-115` (finding `CR2-F-11`). |
 | `Settings:FileSystemStorageFolder` | Only when `Settings:EnableFileSystemStorage` is `true` | Root folder for file-system-backed file storage. Blanked in all eight tracked configurations because the committed values named an internal host and path; `ErpSettings` substitutes a placeholder when it is blank, so hosts with the feature disabled start normally (finding `CR2-F-12`). |

@@ -174,7 +174,19 @@ namespace WebVella.Erp.Web.TagHelpers
 								}
 								var metaLabelAuxTextEl = new TagBuilder("span");
 								metaLabelAuxTextEl.AddCssClass("text");
-								metaLabelAuxTextEl.InnerHtml.AppendHtml(AreaLabel);
+								// SECURITY (CWE-79, OWASP A03:2021 - stored cross-site scripting): every one of the
+								// value-bearing sinks in this tag helper is a TEXT channel, and AppendHtml writes its
+								// argument to the response without encoding it. The values arrive from the database -
+								// an entity name, a page label, an application label, a data-source name, a field
+								// label - so a stored "<script>" reached the browser intact and executed in the
+								// authenticated origin of whoever opened the record. Append is the encoding
+								// counterpart of AppendHtml, so switching to it is both the minimal fix and the
+								// complete one: no helper is added and no caller changes.
+								// A census of all 50 views that bind this tag helper confirms not one of them passes
+								// markup into area-label, area-sublabel, title or subtitle, so encoding them cannot
+								// change what a legitimate value renders as. The one genuine markup channel is
+								// Description - see the comment at its sink further down.
+								metaLabelAuxTextEl.InnerHtml.Append(AreaLabel);
 								metaLabelAuxEl.InnerHtml.AppendHtml(metaLabelAuxTextEl);
 								if (!String.IsNullOrWhiteSpace(AreaSubLabel))
 								{
@@ -185,7 +197,8 @@ namespace WebVella.Erp.Web.TagHelpers
 
 									var metaSubLabelAuxTextEl = new TagBuilder("span");
 									metaSubLabelAuxTextEl.AddCssClass("text");
-									metaSubLabelAuxTextEl.InnerHtml.AppendHtml(AreaSubLabel);
+									//SECURITY - CWE-79: text channel, encoded. See the AreaLabel sink above.
+									metaSubLabelAuxTextEl.InnerHtml.Append(AreaSubLabel);
 									metaLabelAuxEl.InnerHtml.AppendHtml(metaSubLabelAuxTextEl);
 								}
 								metaTitleEl.InnerHtml.AppendHtml(metaLabelAuxEl);
@@ -216,7 +229,13 @@ namespace WebVella.Erp.Web.TagHelpers
 									metaSubLabelTextEl.Attributes.Add("data-toggle", "dropdown");
 									metaSubLabelTextEl.Attributes.Add("href", "#");
 									//metaSubLabelTextEl.InnerHtml.AppendHtml("switch");
-									metaSubLabelTextEl.InnerHtml.AppendHtml("<i class='icon fas fa-ellipsis-v'></i>" + Title);
+									//SECURITY - CWE-79: the icon is a compile-time literal and stays raw, but Title is
+									//database text and is appended separately so that it is encoded. Concatenating the
+									//two before the call is what previously forced the whole string through the raw
+									//path; splitting the call is the smallest change that keeps the icon and encodes
+									//the value.
+									metaSubLabelTextEl.InnerHtml.AppendHtml("<i class='icon fas fa-ellipsis-v'></i>");
+									metaSubLabelTextEl.InnerHtml.Append(Title);
 									switchDropdownEl.InnerHtml.AppendHtml(metaSubLabelTextEl);
 
 									//Dropdown
@@ -232,7 +251,9 @@ namespace WebVella.Erp.Web.TagHelpers
 											switchItemEl.InnerHtml.AppendHtml("<i class=\"fa fa-fw\"></i>");
 
 										switchItemEl.Attributes.Add("href", pageSwitchItem.Url);
-										switchItemEl.InnerHtml.AppendHtml(pageSwitchItem.Label);
+										//SECURITY - CWE-79: text channel, encoded. PcPageHeader fills this from
+										//ErpPage.Label, so it is database text exactly like Title and SubTitle.
+										switchItemEl.InnerHtml.Append(pageSwitchItem.Label);
 										switchDDMenuEl.InnerHtml.AppendHtml(switchItemEl);
 									}
 									switchDropdownEl.InnerHtml.AppendHtml(switchDDMenuEl);
@@ -246,13 +267,16 @@ namespace WebVella.Erp.Web.TagHelpers
 
 										var metaSubLabelTextEl2 = new TagBuilder("span");
 										metaSubLabelTextEl2.AddCssClass("subtext");
-										metaSubLabelTextEl2.InnerHtml.AppendHtml(SubTitle);
+										//SECURITY - CWE-79: text channel, encoded. See the AreaLabel sink above.
+										metaSubLabelTextEl2.InnerHtml.Append(SubTitle);
 										metaLabelTextEl.InnerHtml.AppendHtml(metaSubLabelTextEl2);
 									}
 								}
 								else
 								{
-									metaLabelTextEl.InnerHtml.AppendHtml(Title);
+									//SECURITY - CWE-79: text channel, encoded. This is the sink the audit reproduced -
+									//a data-source name reached it through data_source/details.cshtml and executed.
+									metaLabelTextEl.InnerHtml.Append(Title);
 
 									if (!String.IsNullOrWhiteSpace(SubTitle))
 									{
@@ -262,7 +286,8 @@ namespace WebVella.Erp.Web.TagHelpers
 
 										var metaSubLabelTextEl = new TagBuilder("span");
 										metaSubLabelTextEl.AddCssClass("subtext");
-										metaSubLabelTextEl.InnerHtml.AppendHtml(SubTitle);
+										//SECURITY - CWE-79: text channel, encoded. See the AreaLabel sink above.
+										metaSubLabelTextEl.InnerHtml.Append(SubTitle);
 										metaLabelTextEl.InnerHtml.AppendHtml(metaSubLabelTextEl);
 									}
 								}
@@ -314,6 +339,16 @@ namespace WebVella.Erp.Web.TagHelpers
 					{
 						var metaDescriptionEl = new TagBuilder("div");
 						metaDescriptionEl.AddCssClass("description");
+						// SECURITY (CWE-79, OWASP A03:2021) - THIS SINK IS DELIBERATELY RAW. DO NOT convert it to
+						// Append. Unlike every other value on this tag helper, Description is a genuine markup
+						// channel: its only non-literal supplier is PageUtils.GenerateListPageDescription, which
+						// composes "<ul class='list-inline'><li class='list-inline-item'>...</li></ul>" wrapping
+						// "<strong>sorted by</strong>" and "<strong>filtered by</strong>". Encoding here would show
+						// those tags to the user as literal text on every list page in the product.
+						// The attacker-influenceable fragments that builder interpolates - the "sortBy" query value
+						// and each filter name - are therefore encoded at the builder instead, which is the only
+						// place they can be separated from the markup around them. That is the fix for the reflected
+						// half of this weakness; keeping this sink raw is what preserves the feature.
 						metaDescriptionEl.InnerHtml.AppendHtml(Description);
 						metaDescriptionLeftColumn.InnerHtml.AppendHtml(metaDescriptionEl);
 					}

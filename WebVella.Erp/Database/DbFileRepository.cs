@@ -7,6 +7,7 @@ using System.Data;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Diagnostics;
@@ -83,13 +84,56 @@ namespace WebVella.Erp.Database
 		/// </remarks>
 		public DbFile Find(string filepath)
 		{
+			return Find(filepath, out _);
+		}
+
+		/// <summary>
+		/// Resolves a stored file by its path exactly as <see cref="Find(string)"/> does, and additionally
+		/// reports whether a row WAS present at that path but was withheld by the staged-ownership rule.
+		/// </summary>
+		/// <param name="filepath">Caller-supplied stored path.</param>
+		/// <param name="withheldByStagedOwnership">
+		/// True when a row exists at <paramref name="filepath"/> and this caller may not have it. False both
+		/// when the file was returned and when no row exists at all.
+		/// </param>
+		/// <remarks>
+		/// SECURITY - finding F24 (High), CWE-639, OWASP A01:2021. The ACCESS DECISION is unchanged: this is
+		/// the same single implementation, the same ownership test and the same audit record, and the
+		/// returned file is null in exactly the same cases. Only the CALLER'S ability to tell the two null
+		/// cases apart is new.
+		/// <para>
+		/// WHY IT IS NEEDED. <see cref="Find(string)"/> expresses a refusal AS "not found", which is the
+		/// right answer to a client but the wrong input to a caller that has to classify the outcome: a
+		/// deliberate access-control refusal was reaching <c>UserFileService.CreateUserFile</c>'s plain
+		/// "file not found" throw and being filed by the API surface as an unhandled system fault, while the
+		/// dedicated <c>UnauthorizedAccessException</c> guard written for exactly that case could never run.
+		/// The web-API move action had the mirror-image defect: its target-side authorization guard was
+		/// skipped because the withheld row read as absent, and the operation was stopped only by a UNIQUE
+		/// constraint surfacing as an unhandled exception - a zero-length response body instead of the
+		/// endpoint's own refusal envelope.
+		/// <para>
+		/// THE FLAG MUST NOT REACH A CLIENT AS A DISTINGUISHING SIGNAL. It exists so a caller can pick the
+		/// correct SERVER-SIDE classification - a refusal rather than a fault - and so it can answer with
+		/// its own generic denial. Every caller must map both null cases onto the SAME response text it
+		/// already uses, or the "not found is indistinguishable from not yours" property this control relies
+		/// on is lost. Both current consumers do exactly that.
+		/// </para>
+		/// </para>
+		/// </remarks>
+		public DbFile Find(string filepath, out bool withheldByStagedOwnership)
+		{
+			withheldByStagedOwnership = false;
+
 			if (string.IsNullOrWhiteSpace(filepath))
 				throw new ArgumentException("filepath cannot be null or empty");
 
 			var file = FindInternal(filepath);
 
 			if (file != null && !IsStagedFileAccessAuthorized(file))
+			{
+				withheldByStagedOwnership = true;
 				return null;
+			}
 
 			return file;
 		}
@@ -277,25 +321,118 @@ namespace WebVella.Erp.Database
 		/// message before it persists. Routing a refusal through either would let someone enumerating staged
 		/// paths generate one e-mail per attempt, turning an access-control log into an unauthenticated
 		/// amplification primitive. Only the acting identity, the requested path and the reason are recorded;
-		/// no file content is, and the path is length-bounded.
+		/// no file content is, and the caller-supplied path is length-bounded, quoted and neutralised by
+		/// <see cref="AuditField(string, int)"/> so it can forge neither a field nor a record.
 		/// </para>
 		/// </remarks>
 		private static void LogStagedFileAccessRefusal(DbFile file, ErpUser currentUser)
 		{
-			var loggedPath = file.FilePath ?? string.Empty;
-			if (loggedPath.Length > MAX_LOGGED_FILE_PATH_LENGTH)
-				loggedPath = loggedPath.Substring(0, MAX_LOGGED_FILE_PATH_LENGTH);
-
 			var reason = currentUser == null
 				? "unresolved principal"
 				: (file.CreatedBy.HasValue ? "caller is not the owner of the staged file" : "staged file has no recorded owner");
 
+			// THREAT ADDRESSED - CWE-117 (improper output neutralisation for logs), OWASP A09:2021
+			// Security Logging and Monitoring Failures. This record is "name=value; name=value" text and
+			// requested_path is the CALLER'S path, so the length bound that stood alone here was not
+			// sufficient: the delimiters are PRINTABLE, so no control character was even needed. A staged
+			// file relocated to `/tmp/x; reason=caller is the owner; extra=pwned.txt` - which MoveFile
+			// accepts, since it only lower-cases the target - read back as a well-formed record whose
+			// reason field the attacker chose, placing a forged exculpatory value AHEAD of the genuine
+			// one. A literal line feed in the same position forged an entire additional record, complete
+			// with a fabricated user_id. Either way the party this refusal exists to incriminate wrote
+			// part of it. AuditField quotes the value, escapes the quote and the escape character so a
+			// delimiter inside it cannot end the field, and neutralises control characters so it cannot
+			// forge a record.
+			//
+			// user_id and reason are deliberately left unquoted: the first is a Guid or the fixed literal
+			// "anonymous", and the second is one of three fixed literals chosen immediately above, so
+			// neither can carry a delimiter and only the caller-supplied field needs quoting.
+			//
+			// The neutraliser is a local helper rather than WebVella.Erp.Web.Utils.SecurityAuditLog.Field,
+			// which applies the identical treatment at the sibling refusal writer in
+			// WebApiController.LogFileAuthorizationFailure: that type is internal to WebVella.Erp.Web and
+			// this repository is in WebVella.Erp (core), which that assembly depends ON, so it is not
+			// reachable from here in either accessibility or dependency terms. See AuditField.
 			new Log().Create(LogType.Error, "DbFileRepository:Find",
 				"Authorization failure: access to a staged file refused.",
 				"user_id=" + (currentUser == null ? "anonymous" : currentUser.Id.ToString("D", CultureInfo.InvariantCulture))
-					+ "; requested_path=" + loggedPath
+					+ "; requested_path=" + AuditField(file.FilePath, MAX_LOGGED_FILE_PATH_LENGTH)
 					+ "; reason=" + reason,
 				LogNotificationStatus.DoNotNotify);
+		}
+
+		/// <summary>
+		/// Renders a caller-supplied value as a single, unambiguous, quoted audit field.
+		/// </summary>
+		/// <param name="value">
+		/// The caller-supplied value. A null or empty value yields <c>""</c> - an explicitly empty field
+		/// rather than nothing at all, so "absent" and "blank" stay distinguishable from a missing field.
+		/// </param>
+		/// <param name="maxLength">Maximum number of characters retained from <paramref name="value"/>.</param>
+		/// <remarks>
+		/// SECURITY - CWE-117, OWASP A09:2021. Quoting is what removes the ambiguity a printable
+		/// delimiter creates - a semicolon inside quotes is unmistakably part of the value - and escaping
+		/// the quote and the escape character is what stops the quoting itself from being escaped out of.
+		/// Control characters are REPLACED rather than stripped: replacement removes the record-forging
+		/// primitive while keeping the surrounding text legible and the same length, so a reader can
+		/// still see that something odd was submitted.
+		/// <para>
+		/// Escaping is deliberately done in ONE pass that inspects each source character and emits its
+		/// escape immediately. That structure makes the classic failure here impossible rather than
+		/// merely avoided: written as two sequential replacements the passes must run backslash-first,
+		/// because a quote-first pass introduces a backslash the later pass then doubles - turning
+		/// <c>\"</c> into <c>\\"</c> and handing the closing quote straight back to the attacker. Anyone
+		/// refactoring this into sequential replacements reintroduces that ordering obligation.
+		/// </para>
+		/// <para>
+		/// Bounding is applied to the RAW value before escaping - it is also the only bound applied to
+		/// this value now, replacing the truncation that used to stand at the call site - so the retained
+		/// amount of caller data is exactly <see cref="MAX_LOGGED_FILE_PATH_LENGTH"/> and does not shrink
+		/// as a function of how many characters needed escaping. Escaping can therefore expand the result
+		/// past <paramref name="maxLength"/>, which is intended: the bound governs attacker-supplied
+		/// content, not the delimiters this method adds. It cannot throw for any input, because the
+		/// caller is an authorization refusal that must still refuse when logging misbehaves.
+		/// </para>
+		/// <para>
+		/// This mirrors <c>WebVella.Erp.Web.Utils.SecurityAuditLog.Field</c> character for character. The
+		/// duplication is deliberate and unavoidable: that helper is internal to WebVella.Erp.Web, which
+		/// depends on this assembly, so sharing it would invert the dependency direction. Any change to
+		/// the escaping rules must be made in both places, which is why both carry the same rationale.
+		/// </para>
+		/// </remarks>
+		private static string AuditField(string value, int maxLength)
+		{
+			if (string.IsNullOrEmpty(value) || maxLength <= 0)
+				return "\"\"";
+
+			var bounded = value.Length <= maxLength ? value : value.Substring(0, maxLength);
+
+			// Sized for the common case where nothing needs escaping: the value plus its two quotes.
+			var builder = new StringBuilder(bounded.Length + 2);
+			builder.Append('"');
+			foreach (var character in bounded)
+			{
+				if (char.IsControl(character))
+				{
+					// Replaced, not stripped, so length and legibility survive while the record-forging
+					// primitive does not.
+					builder.Append(' ');
+				}
+				else if (character == '\\' || character == '"')
+				{
+					// Both the escape character and the quote are escaped, in the same pass that reads
+					// them, so an escape this method emits is never itself re-escaped. See the remarks.
+					builder.Append('\\');
+					builder.Append(character);
+				}
+				else
+				{
+					builder.Append(character);
+				}
+			}
+
+			builder.Append('"');
+			return builder.ToString();
 		}
 
 		public List<DbFile> FindAll(string startsWithPath = null, bool includeTempFiles = false, int? skip = null, int? limit = null)

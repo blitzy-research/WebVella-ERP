@@ -214,6 +214,25 @@ namespace WebVella.Erp.Plugins.Project.Services
 			return eqlResult;
 		}
 
+		/// <summary>
+		/// Resolves the icon class and colour configured against a task priority option.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - H-06 (CWE-79, OWASP A03:2021 - stored cross-site scripting). This method is the
+		/// single point at which the priority option's icon class and colour leave the entity metadata,
+		/// and every consumer renders both of them straight into HTML attributes - a class attribute and
+		/// a "color:" style declaration. One of those consumers is not a source file at all: it is a
+		/// stored ICodeVariable that the platform compiles and evaluates at runtime, which composes
+		/// "&lt;i class='{iconClass}' style='color:{color}'&gt;" with NO encoding whatsoever, so the Track
+		/// Time grid rendered whatever the option happened to contain. Guarding the values here rather
+		/// than at each consumer is therefore not merely tidier - it is the only way to cover that
+		/// consumer without rewriting stored configuration, which the remediation scope excludes.
+		/// The guards reject rather than escape, and both are idempotent, so a consumer that applies
+		/// SafeStyleValue again for its own sake is unaffected.
+		/// </remarks>
+		/// <param name="priorityValue">The stored priority option value.</param>
+		/// <param name="iconClass">Receives the icon class, or an empty string when it is not a safe class list.</param>
+		/// <param name="color">Receives the colour, or an empty string when it is not a recognised colour shape.</param>
 		public void GetTaskIconAndColor(string priorityValue, out string iconClass, out string color)
 		{
 			iconClass = "";
@@ -223,8 +242,10 @@ namespace WebVella.Erp.Plugins.Project.Services
 			var recordPriority = priorityOptions.FirstOrDefault(x => x.Value == priorityValue);
 			if (recordPriority != null)
 			{
-				iconClass = recordPriority.IconClass;
-				color = recordPriority.Color;
+				//SECURITY - H-06 (CWE-79): allow-list the two attribute-bound values as they leave the
+				//database. See the remarks above and SafeStyleValue for why encoding alone is not enough.
+				iconClass = SafeStyleValue.IconClass(recordPriority.IconClass);
+				color = SafeStyleValue.CssColor(recordPriority.Color);
 			}
 
 		}

@@ -121,7 +121,25 @@ namespace WebVella.Erp.Plugins.Project.Components
 					ViewBag.LowPriority = lowPriority;
 					ViewBag.NormalPriority = normalPriority;
 					ViewBag.HighPriority = highPriority;
-					ViewBag.PriorityOptions = ((SelectField)new EntityManager().ReadEntity("task").Object.Fields.First(x => x.Name == "priority")).Options;
+					//SECURITY - H-06 (CWE-79, OWASP A03:2021 - stored cross-site scripting): both views bind
+					//these options straight into a class attribute and a "color:" style declaration
+					//(class="@option.IconClass" style="color: @option.Color"). Razor encodes them, which closes
+					//attribute breakout but not the two contexts themselves: a crafted class list still smuggles
+					//extra class names, and a semicolon inside the colour simply opens another CSS declaration.
+					//The values are therefore allow-listed here rather than in the views, so that the Design and
+					//the Display twin are both covered by one check and cannot drift apart.
+					//The originals MUST NOT be mutated in place - they belong to the cached entity metadata
+					//graph, so writing to them would poison that cache for every other consumer in the process.
+					//A sanitised copy is published instead; Value and Label are carried over untouched because
+					//the views select options by Value and Razor encodes Label at its own text sink.
+					var priorityOptions = ((SelectField)new EntityManager().ReadEntity("task").Object.Fields.First(x => x.Name == "priority")).Options;
+					var safePriorityOptions = new List<SelectOption>();
+					foreach (var priorityOption in priorityOptions)
+					{
+						safePriorityOptions.Add(new SelectOption(priorityOption.Value, priorityOption.Label,
+							SafeStyleValue.IconClass(priorityOption.IconClass), SafeStyleValue.CssColor(priorityOption.Color)));
+					}
+					ViewBag.PriorityOptions = safePriorityOptions;
 					ViewBag.Datasets = chartDatasets;
 				}
 				switch (context.Mode)

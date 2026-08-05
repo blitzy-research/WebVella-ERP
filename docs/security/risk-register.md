@@ -81,7 +81,7 @@ the same risk written from different angles; the subject and status in this tabl
 | `RISK-066` | The SMTP-service test page path raises `ValidationException` through its parameterless constructor and attaches every detail to `.Errors`, so the exception's own `Message` carries no text. Any consumer that logs or displays `ex.Message` alone — including the generic internal-error surface that `RecordManager` produces — reports a failure with no indication of which field was rejected or why. Observed together with `RISK-065`: the caller received only the generic internal-error string and an empty error collection. | Documented — out of scope under AAP 0.1.3 guideline 8 | Platform team |
 | `RISK-067` | `ErpSettings.Initialize` parses seven boolean settings with the idiom `string.IsNullOrWhiteSpace(...) ? default : bool.Parse(...)`, so a malformed value fails the host closed with `FormatException: String 'notabool' was not recognized as a valid Boolean.` The message names the offending **value** but never the offending **key**, unlike the encryption-key validation in the same file which names its setting explicitly. Failing closed is the correct posture and is deliberately preserved; only the diagnosability is poor, and it applies to `Settings:DevelopmentMode` — the discriminator for the certificate opt-out posture — among six others. | Documented — out of scope under AAP 0.1.3 guideline 8 and 0.3.2 (no refactoring beyond security) | Platform team |
 | `RISK-068` | `SmtpService.Username` carries `[JsonProperty("username")]` and is therefore present in any serialisation of a cached SMTP service, while `Password` carries `[JsonIgnore]` and is correctly withheld. The `smtp_service` entity is administrator-only and the username alone is not a credential, so the residual is the disclosure of one half of a relay credential pair to a principal who can already read the row. Recorded so the asymmetry is a deliberate, reviewed position rather than an oversight. | Documented — out of scope under AAP 0.1.3 guideline 8 | Platform team |
-| `RISK-069` | The MVC `CookieTempDataProvider` cookie is left at framework defaults, so it is emitted without `Secure` while the authentication and antiforgery cookies are both pinned to `SecurePolicy.Always`. | Documented — out of scope under AAP 0.1.3 guideline 8. | Platform team |
+| `RISK-069` | The MVC `CookieTempDataProvider` cookie is left at framework defaults, so it is emitted without `Secure` while the authentication cookie is pinned to `SecurePolicy.Always` in every environment and the antiforgery cookie is pinned to `Always` outside Development. | Documented — out of scope under AAP 0.1.3 guideline 8. | Platform team |
 | `RISK-070` | The default CORS policy is applied globally by a bare `app.UseCors()`, so it evaluates Razor Page form POSTs as well as API calls and logs `CORS policy execution failed` for same-origin submissions that then succeed. | Documented — out of scope under AAP 0.1.3 guideline 8. | Platform team |
 | `RISK-071` | 74 unresolved relative links across 64 pre-existing files under `docs/developer/**`: 29 root-absolute `/doc-images/...` image links with no `docs/doc-images` directory, and 45 extension-less cross-references written relative to the repository root rather than to the containing page. | Documented — pre-existing, out of scope under AAP 0.1.3 guideline 8. | Platform team |
 | `RISK-112` | Bounding regular-expression cost narrows what a record filter accepts: the product of explicit repetition bounds is capped at 256, back-references and stacked quantifiers are refused, and a regex query executes under 60 seconds rather than 600. The textbook `(a+)+` shape is deliberately **admitted**, measured harmless on PostgreSQL's hybrid DFA/NFA — an admission contingent on that engine, so `DbRegexPattern` must be revisited if the regex implementation ever changes. | Accepted | Platform team |
@@ -92,6 +92,13 @@ the same risk written from different angles; the subject and status in this tabl
 | `RISK-117` | The licence-governance gate that keeps `RISK-001` unshippable refuses to **build** a package, not to **publish** one: a `.nupkg` produced before the gate existed remains pushable, and the gate can confirm that an answer was recorded but not that the person recording it was entitled to. What it buys is deliberateness — the answer must be typed and appears in the log or the diff — on the one step that cannot be undone. | Accepted — bounded residual of the control | Whoever performs a release |
 | `RISK-118` | Authenticated page renderings stay recoverable from the **browser's** back/forward cache after logout, because authenticated content responses carry no `Cache-Control` while `/login` and `/logout` do. Measured during runtime verification: two presses of Back after logout restored the authenticated shell with **no document request issued**. The restored view is inert — the same ticket replayed against four protected routes is refused server-side — so what survives is one already-delivered rendering on a device an attacker must already hold. Recorded with a minimal fix rather than remediated: `Cache-Control` is not in the mandated seven-header set, and the ticket-acceptance weakness behind `CR2-F-01` / `CR2-F-02` is separately proven closed. | Accepted — documented with fix guidance | Platform team |
 | `RISK-119` | Two **pre-existing** defects in the shipped Blazor WebAssembly client's HTTP layer, found while remediating `B3-SEAM-01` and outside its scope. `Client/Services/TokenManagerService.cs` builds its refresh URL as `api/v3/en_US/auth/jwt/token/refresh` on an `HttpClient` whose `BaseAddress` already ends in `/api/`, so the client's automatic token refresh addresses a doubled segment that no route serves. `Client/ApiService/ApiService.System.cs` sets a **lower-case** `bearer` scheme on `DefaultRequestHeaders`, and both token-issuing hosts select the authentication handler by a case-**sensitive** `Authorization` prefix match, so those calls are not authenticated as bearer at all — and the credential is left attached to a shared client rather than scoped to one request. Neither is a new exposure and neither weakens the `B3-SEAM-01` fix, which builds its own URL and sets its own correctly-cased request-scoped header. | Accepted — documented with fix guidance | Platform team |
+| `RISK-120` | The page header's `description` attribute is the **one** value on `WvPageHeader` that is deliberately rendered raw, and it must stay that way. Its only non-literal supplier, `PageUtils.GenerateListPageDescription`, composes an inline `ul`/`li` list wrapping a bold `sorted by` and `filtered by`, so encoding at the sink would show those tags to the user as literal text on every list screen in the product. The two attacker-influenceable values that builder interpolates are encoded **at the builder** instead, which closes `P-22`; what remains is the structural fact that the channel is raw, and therefore that any future caller passing untrusted text into `description` reintroduces the sink. Guarded by an in-code comment at the sink that forbids conversion, and by the encoding being applied where the value and the markup are still distinguishable. | Accepted — by design, with the exploitable half fixed | Platform team |
+| `RISK-121` | QA finding `F-AA` path 4: the Track Time grid's **title** cell is sanitised by a tag allow-list that produces real `<b>` elements rather than encoding them. No grid-rendering source exists in this repository — `wv-grid` ships inside the third-party `WebVella.TagHelpers` 1.8.0 package, which the plan restricts to version updates — and a sanitiser that emits `<b>` while stripping `<script>` is behaving as designed. QA measured nothing exploitable: no dialog, no live handler, hostile rectangles 0 × 0. | Named, not fixed — third-party, non-exploitable as measured | Platform team |
+| `RISK-122` | The **33** remaining findings from the frontend QA pass — 21 Minor and 12 Info — are pre-existing quality, accessibility, responsive-layout and environment observations in code this remediation never touched, each carrying a git-level counterfactual proving pre-existence. They are enumerated with recommended fixes in the detailed entry below, grouped by theme. The plan declines them: minimal code changes only, no feature additions, no refactoring beyond security requirements, third-party libraries restricted to version updates, and fix only what is confirmed. | Documented for a future sprint | Platform team |
+| `RISK-123` | Administrator-authored entity and application metadata — the stored `color` and `icon_name` keys, reaching the `color`, `icon-color` and `icon-class` attributes — flows from the database into the page header's `style` and `class` **attributes**, where a privileged author can inject additional **CSS declarations**. Found while auditing the remaining `AppendHtml` arguments during final validation, not reported by QA. Measured rather than assumed: the framework's `TagBuilder` encodes attribute values, so a seeded `#f44336;background:url(javascript:alert(1))" onmouseover="alert(9)` rendered as `style="background-color:#f44336;background:url(javascript:alert(1))&quot; onmouseover=&quot;alert(9);"` — the quote is `&quot;`, the `onmouseover=` is inert text **inside** the style value, and no attribute or handler is created. What survives is the CSS declaration itself, which needs no HTML-special character. Not remediated: it is not a script-execution sink, it requires the same SDK/administrator rights as the raw channels `RISK-023` already accepts, and sanitising it would constrain the **34** legitimate colour and icon bindings verified rendering correctly across every screen. | Accepted — privilege-gated CSS channel, proven not a handler sink | Platform team |
+| `RISK-124` | Every required-configuration abort surfaces as an **unhandled exception**: the host prints the actionable message, then a stack trace, and exits **134** rather than exiting non-zero with a single line. This is framework-default behaviour for a `Startup.Configure` throw and it is fail-closed - the process never serves a request and no value is echoed - but a container orchestrator reports a crash where the cause is a configuration fault, which can lengthen operator triage. Applies to the secret validation in `WebVella.Erp/ErpSettings.cs`, the encryption-key accessor in `WebVella.Erp/Utilities/CryptoUtility.cs`, the Content-Security-Policy option binding and the transport-security check in `WebVella.Erp.Web/ErpMvcExtensions.cs`. | Accepted - documented with fix guidance | Platform team |
+| `RISK-125` | The login form's two inputs carry no `autocomplete` attributes, so browsers emit an autofill advisory (`suggested: "current-password"`) and password managers are not steered. No functional and no security impact - `autocomplete` is absent, not disabled, so nothing suppresses a password manager. Fixing it is a presentation-layer enhancement with no confirmed finding behind it, which the audit plan's modification boundaries exclude. | Recommended, not fixed - out of remediation scope | Frontend maintainer |
+| `RISK-126` | The startup transport-security check **refuses** a deployment only when the endpoints were declared and every one is plaintext; when **no** endpoint is declared it reports the identical diagnosis as a `warn:` line instead, because the endpoints then come from Kestrel's defaults or from host code the check cannot inspect. Measured in Production: with nothing declared this application binds `http://localhost:5000` alone, so that configuration does still answer HTTP 500 on `/login` - the warning is the notice, not a clean bill. Deliberate: refusing on an unknown posture could abort a deployment that would have worked. | Accepted - bounded residual of the transport-security check | Platform team |
 
 
 
@@ -1294,6 +1301,23 @@ observable rather than declarative.
 | 4 | Hold report-only unchanged and observe | The 14-day / seven-host / zero-first-party-violation threshold above is met and recorded |
 | 5 | Flip `SecurityHeadersOptions.ContentSecurityPolicyReportOnly` to `false` | The enforcing `Content-Security-Policy` header is confirmed on both a dynamic and a static response on every host, and the manual verification checklist is re-executed with no regression |
 
+**The `eval` subset of stage 3 cannot be cleared by hashes or nonces, and one source of it is
+third-party.** This is recorded separately because stage 3's exit condition reads naturally as
+"refactor the inline blocks or adopt a nonce", and that route does not exist for `eval`: a nonce or a
+hash authorises a *known script*, while `'unsafe-eval'` is what authorises *string evaluation*, so no
+amount of first-party refactoring clears an `eval` violation raised inside a dependency. Runtime
+validation localised one such source exactly:
+`/_content/WebVella.Erp.Web/js/wv-lazyload/p-7e344a40.js`, a vendored Stencil lazy-load chunk, which
+evaluates a string as JavaScript and reports `kEvalViolation` against `script-src` (observed on the
+login page and again on the authenticated home page of a host serving the report-only policy). Two
+routes exist and both are decisions rather than tasks: **amend the mandated value with
+`'unsafe-eval'`** — a genuine weakening of the mandated header set that belongs to the owner named
+above, not to whoever clears the backlog — or **rebuild or replace the vendored chunk**, which is
+third-party asset work that the audit plan's modification boundary excludes from this remediation
+(third-party code: version updates only). Until one of them is taken, stage 3's "zero `eval`
+violations" exit condition is **not achievable by first-party work alone**, and any plan that assumes
+otherwise will stall at stage 3. CKEditor 5 is the second `eval` source and has the same property.
+
 **If the owner declines to promote.** Enforcement is then formally deferred rather than quietly
 pending: the deferral is recorded here with its date and rationale, `RISK-022` stays open, and the
 compensating control remains documented as **detective only** — which in turn means the retained
@@ -1742,7 +1766,7 @@ which statements changed.
 | Ref | Issue | Why not fixed |
 | --- | --- | --- |
 | RISK-012 | **The generic record-update path can wipe a password hash.** The user-facing save path correctly ignores a blank incoming password, verified by a real UI save leaving the hash byte-identical. The *generic* record-update path guards only against `null`, not an empty string, which would be converted to `NULL` downstream. | Pre-existing and unchanged by the credential work. Named in [the credential migration guide](credential-migration.md) so it is not attributed to the migration. |
-| RISK-013 | ~~Two hosts serve a permissive `Access-Control-Allow-Origin: *`.~~ **No longer accurate — resolved.** Both hosts now register an explicit `WithOrigins(...)` allow-list. A repository-wide scan for a *live* (non-commented) `AllowAnyOrigin()` across all seven host `Startup.cs` files returns **zero** occurrences, and a running `WebVella.Erp.Site.Project` host echoes `Access-Control-Allow-Origin` for each of its four configured origins while returning no such header for four disallowed origins. The configuration is part of that result rather than incidental to it: those four are the fallback the host applies **only** when `Settings:Cors:AllowedOrigins` is absent *and* `ASPNETCORE_ENVIRONMENT` is `Development`, and the same host in `Production` with no key configured echoes none of them. | **Fixed.** Recorded as finding `P-06` in [the audit report](security-audit-report.md). |
+| RISK-013 | ~~Two hosts serve a permissive `Access-Control-Allow-Origin: *`.~~ **No longer accurate — resolved.** Both hosts now register an explicit `WithOrigins(...)` allow-list and read `Settings:Cors:AllowedOrigins`. A repository-wide scan for a *live* (non-commented) `AllowAnyOrigin()` across all seven host `Startup.cs` files returns **zero** occurrences. A supplied list wins in every environment; an empty list denies every origin; an absent key denies every origin outside Development and selects the host's own Development fallback — three localhost origins for `WebVella.Erp.Site`, and those three plus `http://localhost:2202` for `WebVella.Erp.Site.Project`. Runtime checks on both hosts confirmed listed origins receive `Access-Control-Allow-Origin` with `Vary: Origin` and unlisted origins receive neither. | **Fixed.** Recorded as finding `P-06` in [the audit report](security-audit-report.md). |
 | RISK-014 | ~~Two bearer-token error paths return stack traces **unconditionally**.~~ **No longer accurate — resolved.** Both anonymous token endpoints now log server-side and return a generic message, with full exception text emitted only behind the development-mode guard. Measured: the last `StackTrace` reference in the controller is at **line 5264**, while the token and refresh actions begin at **5287** and **5395**, so neither anonymous action contains one. | **Fixed** as `H-13`. The ten *authenticated* actions that still leak are a separate, pre-existing residual — see `RISK-032`. |
 | RISK-015 | `/ckeditor/ImageFinder` returns HTTP 500 — its page model does not derive from the type its layout requires. **Proven pre-existing by counterfactual**: reverting the view to its original content reproduced the identical exception. | A reliability defect, not a security one. |
 | RISK-016 | Three navigation anchors carry `href="javascript: void(0)"` — Bootstrap dropdown toggle placeholders, byte-identical on every page. **These are not injection sinks.** | Named specifically so a future "the HTML contains `javascript:`" scan hit is not misread as a leak. |
@@ -2392,11 +2416,11 @@ Recognised as valuable, all outside this remediation's scope, none started:
 * A `must_change_password` marker on the user entity, so the generated initial administrator password
   is *forced* to be rotated rather than merely advised (RISK-027).
 * Reviewing the per-host CORS allow-lists themselves. Replacing the two permissive policies is **done**
-  (`RISK-013`), and one host has since gone further: `WebVella.Erp.Site.Project` reads its list from
-  `Settings:Cors:AllowedOrigins`, so it is already deployment configuration and denies every origin when
-  unconfigured outside `Development`. The remaining **six** hosts still name a hard-coded set of
+  (`RISK-013`), and both `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` now read their lists from
+  `Settings:Cors:AllowedOrigins`, so they are deployment configuration and deny every origin when
+  unconfigured outside `Development`. The remaining **five** hosts still name a hard-coded set of
   `http://localhost` development origins in source. Those need to become deployment configuration before
-  any of the six faces a real front end.
+  any of the five faces a real front end.
 * Integration with a dedicated secret manager, rather than environment variables alone.
 * Centralised log aggregation, intrusion detection, and a web application firewall.
 * Automated dependency-update tooling, so advisories surface without a manual review.
@@ -2750,13 +2774,13 @@ five hosts already used a restrictive named policy and were deliberately left al
 finding was scoped to two hosts rather than seven — overstating its breadth was one of the
 false-positive classes the audit eliminated.
 
-The two lists are supplied differently, and the difference matters to an operator. `WebVella.Erp.Site`
-names its three origins in source. `WebVella.Erp.Site.Project` reads `Settings:Cors:AllowedOrigins`
-instead and falls back to its four commented-out development origins **only** when that key is absent
-*and* `ASPNETCORE_ENVIRONMENT` is `Development` — so a deployment configures it without a rebuild, and an
-unconfigured non-development deployment denies every origin. The full resolution table is in the
-[secure configuration guide](secure-configuration.md#cross-origin-policy). An earlier revision of that
-host denied every origin in *every* environment, including `Development`, because nothing in the tree
+Both lists now read `Settings:Cors:AllowedOrigins`, so either deployment can be configured without a
+rebuild and an unconfigured non-development deployment denies every origin. Their only difference is
+the fallback used when the key is absent *and* `ASPNETCORE_ENVIRONMENT` is `Development`:
+`WebVella.Erp.Site` uses three localhost origins, while `WebVella.Erp.Site.Project` adds the Stencil
+client at `http://localhost:2202` as its fourth. The full resolution table is in the
+[secure configuration guide](secure-configuration.md#cross-origin-policy). An earlier revision of
+Project denied every origin in *every* environment, including `Development`, because nothing in the tree
 supplied the key; that over-denial was itself a review finding, and it is recorded in the
 [remediation log](remediation-log.md#project-host-cross-origin-supply-path-frontend-01).
 
@@ -2780,12 +2804,12 @@ outside the allow-list still receives the normal response status and body, and s
 `Access-Control-Allow-Origin` and no `Vary: Origin`. The absence of the header is the control; CORS is
 enforced by the browser, not by the server declining to answer.
 
-**What is not closed by this entry:** the allowed origins are hard-coded localhost values in **six** of
+**What is not closed by this entry:** the allowed origins are hard-coded localhost values in **five** of
 the seven hosts. They are development defaults, and an allow-list naming the wrong origins protects
-nothing. That is a deployment task, recorded under *ongoing recommendations*. The seventh,
-`WebVella.Erp.Site.Project`, is no longer among them: its list is supplied through
-`Settings:Cors:AllowedOrigins`, so it is already deployment configuration rather than a source edit, and
-it denies every origin when that key is unconfigured outside `Development`.
+nothing. That is a deployment task, recorded under *ongoing recommendations*. `WebVella.Erp.Site` and
+`WebVella.Erp.Site.Project` are no longer among them: both lists are supplied through
+`Settings:Cors:AllowedOrigins`, so they are deployment configuration rather than source edits, and both
+deny every origin when that key is unconfigured outside `Development`.
 
 ### RISK-014 — Closed: the anonymous bearer-token error paths no longer return exception text
 
@@ -4559,10 +4583,11 @@ set-cookie: .AspNetCore.Mvc.CookieTempDataProvider=; expires=Thu, 01 Jan 1970 00
 ```
 
 `HttpOnly` and `SameSite=Lax` are present; **`Secure` is not.** The contrast is what makes this worth
-recording rather than ignoring: `ErpMvcExtensions` pins the antiforgery cookie to
-`CookieSecurePolicy.Always` and the shared cookie configurator pins the authentication cookie to
-`SecurePolicy.Always` unconditionally, so this is the one cookie the platform emits that was never brought
-under that policy. No `CookieTempDataProvider` options are configured anywhere in the repository, so it
+recording rather than ignoring: outside Development, `ErpMvcExtensions` pins the antiforgery cookie to
+`CookieSecurePolicy.Always`, and the shared cookie configurator pins the authentication cookie to
+`SecurePolicy.Always` unconditionally. The Development-only antiforgery carve-out uses `SameAsRequest`;
+the TempData cookie is still the one cookie the platform emits that was never brought under either
+explicit policy. No `CookieTempDataProvider` options are configured anywhere in the repository, so it
 inherits the framework default of `CookieSecurePolicy.None`.
 
 **What is actually exposed, stated precisely.** In the flow observed, nothing: the directive carries an
@@ -4765,3 +4790,304 @@ scheme to `Bearer` and move the assignment off `DefaultRequestHeaders` onto the 
 confirm a protected call is authenticated as the bearer principal rather than falling through to the cookie
 handler. Fixing the second will make previously-unauthenticated client calls start authenticating, so it
 should be validated against the client's protected screens rather than assumed to be inert.
+
+
+## Detailed entries — residuals from the frontend QA pass on the output-encoding remediation
+
+The three entries below come from a QA pass that exercised the remediation in a real browser rather than
+reading it. That pass raised 35 findings. Two were acted on and are recorded in
+[the audit report](security-audit-report.md) as `P-21` and `P-22`; a third, the incomplete coverage of the
+`H-06` allow-list, was acted on as part of the same class. The remainder are here.
+
+#### RISK-120 — The page header's `description` channel is raw by design, and one caller keeps it that way
+
+**Status: accepted, by design. The exploitable half is fixed.**
+
+`WvPageHeader` renders eight values. Seven are text and are now encoded (`P-21`). The eighth,
+`Description`, is markup, and encoding it would break a working feature on every list screen in the product:
+its only non-literal supplier, `PageUtils.GenerateListPageDescription`, composes
+`<ul class="list-inline"><li class="list-inline-item">…</li></ul>` wrapping a bold `<strong>sorted by</strong>`
+and `<strong>filtered by</strong>`. Encoded, a user would see those tags as literal characters.
+
+This is the same shape as `RISK-023`, and it is recorded separately because its resolution is different.
+`RISK-023`'s four channels are remediated by compensating control alone. Here the exploitable half was
+genuinely closed: the two attacker-influenceable values the builder interpolates — the `sortBy` query value
+and each filter name — are encoded **at the builder**, where they are still distinguishable from the markup
+around them. What cannot be closed is the structural fact that the channel is raw, and therefore that a
+future caller passing untrusted text into `description` would reintroduce the sink.
+
+**What guards it.** Two things, neither of which is a compiler check and both of which are stated so a
+reader knows what they are relying on. The sink in `WvPageHeader.cs` carries a comment that forbids
+converting it to `Append`, names its upstream supplier, and explains that the fix belongs at the builder.
+And the encoding is applied at the only point where the two are separable, so the correct pattern is
+demonstrated in the codebase rather than only described here.
+
+**Recommended fix, for a future sprint rather than now.** Change `GenerateListPageDescription` to return a
+structured result — a record carrying the count, the optional sort term and the filter names as *data* —
+and move the markup composition into a Razor partial, so the tag helper never receives a pre-composed HTML
+string at all. That removes the raw channel instead of guarding it. It is out of scope here because it
+changes a public signature used by nine list page models, which is refactoring beyond the security fix.
+
+#### RISK-121 — The Track Time grid title is sanitised by a third-party tag allow-list, not encoded
+
+**Status: named, not fixed. Third-party component; non-exploitable as measured.**
+
+QA finding `F-AA` enumerated four render paths consuming the same hostile priority metadata. Three were
+closed in the remediation — the queue widget was already guarded, and the priority chart and the Track Time
+grid **icon** are now guarded through `SafeStyleValue` and `TaskService.GetTaskIconAndColor`. The fourth is
+the grid's **title** cell, which passes its value through a tag allow-list that produces genuine `<b>`
+elements rather than encoding them.
+
+**Why it is not changed.** There is no grid-rendering source in this repository to change: `wv-grid` ships
+inside the third-party `WebVella.TagHelpers` 1.8.0 package, and the plan restricts third-party code to
+version updates. Independently of scope, a tag allow-list that emits `<b>` while stripping `<script>` is a
+sanitiser behaving as specified, not a missing control. QA measured the outcome rather than inferring it: no
+dialog fired, no live event handler existed, a `javascript:` scheme inside a CSS `url()` was inert, and every
+hostile rectangle measured 0 × 0.
+
+**Residual, stated plainly.** A user who can set a task subject can cause a small set of formatting tags to
+render inside that grid cell. That is a presentation-integrity issue, not script execution.
+
+**Recommended fix.** Raise it with the tag-helper library rather than working around it: request an opt-in
+`encode-text` mode on the grid column so a consumer can choose encoding over sanitisation. Until then, a
+consumer-side option is to project the column through a server-side encode before it reaches the grid, which
+would need one call site per column and is why it is not done pre-emptively.
+
+#### RISK-122 — The 33 remaining frontend QA findings, and the recommended fix for each
+
+**Status: documented for a future sprint.**
+
+The QA pass raised 21 Minor and 12 Info findings beyond the three that were acted on. Every one is
+pre-existing in code this remediation never touched, and every one carries a git-level counterfactual: an
+unmodified stylesheet, an unmodified chart component, an unmodified pager, an unmodified third-party widget,
+or a nav markup diff whose every added line is a comment.
+
+**Why they are declined rather than fixed.** The governing plan is explicit and its constraints are
+acceptance criteria, not preferences: *minimal code changes only*; *no feature additions or enhancements*;
+*no refactoring beyond security requirements*; *third-party code and vendor libraries — version updates
+only*; *fix only what is confirmed*, with no speculative hardening; and no change motivated by feature
+value, developer convenience or code aesthetics. Accessibility and layout defects in unmodified files meet
+none of the tests that bring work into this scope. The QA pass reached the same conclusion independently,
+recording its own out-of-scope boundary as *"other documented-only Medium/Low issues"*.
+
+They are recorded here because the plan's fourth objective requires every documented finding to carry an
+actionable fix rather than a generic caution.
+
+**Accessibility — the largest and most coherent group, and the one worth scheduling first.**
+
+| Finding | Measured | Recommended fix |
+| --- | --- | --- |
+| No visible focus indicator | 71 of 90 focusable elements | Add a single `:focus-visible` rule to `button-colors.css` with a 2px outline and offset; one declaration covers the whole product because the buttons are already class-driven |
+| Interactive elements reach assistive tech unnamed | 41 of 90 tab stops | The product uses `title` as its naming strategy, which surfaces as *description* rather than *name*. Add `aria-label` alongside `title` in the tag helpers that emit icon-only controls |
+| No `h1` and no `<main>` landmark on any screen | every screen | Promote the page-header title element to `h1` inside `WvPageHeader`, and wrap the body region of `_AppMaster.cshtml` in `<main>`. Two edits, both in shared files |
+| Colour contrast below AA, including both primary button labels | 2.78:1 and 3.12:1 | Darken the two primary button backgrounds in `button-colors.css` until the white label reaches 4.5:1 |
+| Arrow keys inert; Space cannot open the settings menu | 5 confirmations | The nav script binds `click` only. Add a `keydown` handler mapping Enter, Space and the arrow keys onto the existing click path |
+| `label for` targets the wrong element id | `input-{guid}` versus `textarea-{guid}` | Derive the `for` value from the element that is actually rendered, in the field tag helper that emits both shapes |
+| Tab order jumps backwards ~1126px | pager component | The pager's DOM order is float-reversed. Reorder the markup and keep the visual order with `flex-direction: row-reverse` |
+| Third-party select widget announces its own value as its name; the labelled native select is 1×1px with `tabindex=-1` | third-party | Out of reach without a library change; raise upstream |
+| Third-party select's open panel clips the selected option | third-party | Raise upstream |
+| Grid has no accessible name, no `th[scope]`, no `aria-sort`; 15 row actions indistinguishable | third-party grid | Raise upstream; the shipped views cannot add these attributes |
+| Tap targets below 44 × 44 | 90 of 91 elements, though Lighthouse's `target-size` audit passes on mobile | Increase padding in the shared button and icon-button classes; measure against the Lighthouse audit rather than the raw count |
+
+**Responsive and visual layout.**
+
+| Finding | Measured | Recommended fix |
+| --- | --- | --- |
+| Horizontal overflow on the data-source list at ≤1024px | 67-character `target` column, no `.table-responsive`; does **not** reproduce on the pages list | Wrap that grid in `.table-responsive`; `grep -c table-responsive` returns 0 across the tree, so this is a product-wide gap rather than one screen's |
+| Timesheet table overlaps a sibling card and an alert at 768px | 2008 px² and 1386 px² | Same fix, same wrapper |
+| Production error page: 390px overflow, Quirks Mode, zero stylesheets | `error.cshtml` has `Layout=""`, a hardcoded `width:500px` and no doctype | Add a doctype and a minimal inline stylesheet. Deliberately keep it layout-free and self-contained so it cannot itself fail — that is why it looks the way it does |
+| No mobile nav collapse; the Logout control sits off-screen at 390px | nav markup byte-identical to origin | Add the Bootstrap navbar collapse markup the theme already ships CSS for |
+| Escape does not close the search drawer; no focus trap | 0 of 1,152,000 pixels changed by the remediation | Add a `keydown` Escape handler and a focus trap to the drawer component |
+| Login-page markup nits | mislabelled field, missing `autocomplete` | Add `autocomplete="username"` and `autocomplete="current-password"`, and correct the `for` attribute |
+
+**Data presentation and correctness.**
+
+| Finding | Measured | Recommended fix |
+| --- | --- | --- |
+| All four charts render with `labels:[]`, `legend.display:false`, `tooltips.enabled:false` | 3 chart components, 0 changed files | Populate `labels` from the series names already available in the component, and enable the legend and tooltips |
+| Two widgets disagree about the same task's overdue state | 1 versus 2 | A genuine off-by-one in unmodified code: `TaskDistribution` compares `AddDays(1) < DateTime.Now.Date` (midnight) while `TasksChart` compares `< DateTime.Now`, so a task due exactly yesterday is never "overdue" in one of them. Extract one shared predicate and call it from both |
+| No length or format validation on names; a 300-character name round-trips into a URL segment | no `maxlength`, no `pattern`; the server validates presence only | Add `maxlength` and a server-side length bound to the create and manage models. **Note the security-relevant edge:** the value reaches a URL segment, so bound it server-side, not only in markup |
+| Entity metadata is fragile to JSON key reordering | `$type` must stay first | Configure the serialiser to emit `$type` first explicitly, or read it positionally-independently. This is the defect that broke login during the QA pass when a fixture write round-tripped the column through `jsonb` |
+
+**Environment and build, not application defects.**
+
+| Finding | Measured | Recommended fix |
+| --- | --- | --- |
+| Task details and two SDK list screens return HTTP 500 on Linux | `TimeZoneNotFoundException: 'FLE Standard Time'`, then `FileNotFoundException: /usr/share/zoneinfo/Europe/Kiev`, thrown inside third-party `WebVella.TagHelpers.WvFieldDateTime` | Two independent remedies, either sufficient: set `Settings:TimeZoneName` to an IANA identifier such as `Europe/Sofia`, which the deployment guide already documents; or install a tzdata build that still carries the pre-rename `Europe/Kiev` alias. The literal Windows identifier lives in the unmodified vendor DLL, so the application cannot fix it |
+| `/projects/dashboard/dashboard/a` returns 500 on 7 of 8 hosts | those hosts carry no `ProjectReference` to `WebVella.Erp.Plugins.Project`, in **either** the current tree or origin; all 17 changed project files audited and no reference count changed | Either add the reference to the hosts that expose the route, or remove the sitemap entry from hosts that do not load the plugin. This is a product packaging decision, not a security one |
+| A stale QA seed avatar returns 404 | `/fs/qa/avatar-ann.png`, with a working `assets/avatar.png` fallback | Test-data residue from the QA pass, disclosed by that pass. Delete the row or upload the file |
+| Two vendored source-map files return 405 | requested only by developer tools | Cosmetic; see `RISK-019` |
+| No HTML response compression; missing meta description and crawlable anchors; a 16×16 logo fails the mobile responsive-image audit | Lighthouse best-practice and SEO audits, costing exactly 4 points | Enable HTML in the existing response-compression configuration and supply a larger logo asset. None is a security finding |
+
+**One further item, recorded because it borders on security rather than because it is one.** A return URL
+with leading whitespace is accepted after trimming and resolves to an arbitrary **same-origin** path. That
+is the framework's own documented `IsLocalUrl` behaviour, which `PageUtils.GetSafeReturnUrl` deliberately
+mirrors so its behaviour is auditable against a recognised reference implementation. Browsers ignore
+leading whitespace when resolving a URL, so `" /valid/path"` is a legitimate value that must keep working.
+No cross-origin navigation is reachable, and the QA pass confirmed the browser never left the origin.
+Nothing to fix; recorded so a future scan hit is not misread.
+
+#### RISK-123 — Administrator-authored colour and icon metadata reaches a style attribute as CSS
+
+`WvPageHeader` exposes nine `string` properties. Six now carry no exposure: `area-label`, `area-sublabel`,
+`title` and `subtitle` are HTML-encoded at the sink as of `P-21`, `description` is the raw-by-design channel
+of `RISK-120`, and `return-url` passes through `BaseErpPageModel.SanitizeReturnUrl` before it becomes an
+`href`. The remaining three are this entry: `color` and `icon-color` are interpolated into a `style`
+attribute, and `icon-class` is appended to a `class` attribute:
+
+```
+metaLabelIconWrapperEl.Attributes.Add("style", $"background-color:{Color};");
+metaLabelIconEl.Attributes.Add("style", $"color:{IconColor};");
+metaLabelIconEl.AddCssClass(IconClass);
+```
+
+Consumer views bind all three from the database rather than from literals — `color="@Model.ErpEntity.Color"`
+at 15 sites, `icon-class="@Model.ErpEntity.IconName"` at 11, `color="@Model.App.Color"` and
+`icon-class="@Model.App.IconClass"` at 4 each — so the values are administrator-authored entity and
+application metadata, not compile-time constants.
+
+**What was measured, rather than assumed.** The `color` of the `account` entity was replaced with
+`#f44336;background:url(javascript:alert(1))" onmouseover="alert(9)`, a payload deliberately carrying both a
+quote-breakout attempt and a quote-free CSS declaration. The entity-detail page delivered:
+
+```
+style="background-color:#f44336;background:url(javascript:alert(1))&quot; onmouseover=&quot;alert(9);"
+```
+
+The double quote is encoded to `&quot;`, so the `onmouseover=` text is trapped **inside** the `style`
+attribute value as inert characters: no attribute is created and no handler is registered. `TagBuilder`
+encodes attribute values on render, which removes the entire handler-injection class from this channel. The
+CSS declaration survives verbatim, because it contains no HTML-special character for that encoder to act on.
+The fixture was reverted and the stored metadata verified byte-identical to its backup — 10,721 bytes,
+equal after parsing, key order preserved.
+
+**Why it is documented rather than remediated.** Three reasons, in order of weight. It is not a
+script-execution sink: `javascript:` inside a CSS `url()` is inert in every current browser, and the
+report-only Content-Security-Policy already reports a `default-src` violation for any off-origin
+`url(...)` an author might substitute instead. It is privilege-gated to exactly the tier `RISK-023` already
+accepts — an author who can set an entity's colour can equally author a raw HTML block, so constraining the
+colour while leaving `PcHtmlBlock` raw would buy nothing. And a sanitiser here would have to police a
+property whose legitimate values are arbitrary CSS colours, across the 34 bindings confirmed rendering
+correctly during runtime verification; the plan's instruction to fix only what is confirmed, and to prefer
+the least invasive control, both point away from that.
+
+**Recommended fix, when the platform team chooses to close it.** Validate `color` and `icon_color` against
+a CSS-colour allow-list — a `#`-prefixed 3-, 6- or 8-digit hex value, or a member of the CSS named-colour
+set — and `icon_class` against the icon-token pattern already used by `SafeStyleValue.IconClass` in
+`WebVella.Erp.Plugins.Project`. That helper is the working precedent: it is an allow-list that drops a
+non-conforming value whole while passing legitimate `fa`/`fas` tokens through unchanged, and runtime
+verification confirmed it preserves two distinct glyphs and two distinct colours from the same code path.
+Promoting an equivalent guard into `WebVella.Erp.Web` and applying it at these three interpolations would
+close the channel without touching any consumer view.
+## Detailed entries — residuals and observations from the runtime-configuration QA pass
+
+The three entries below were opened by runtime QA of the configuration and deployment surface. One is a
+bounded residual of the transport-security check added in that pass; the other two are observations that
+runtime validation made concrete and that the modification boundaries keep out of code.
+
+#### RISK-124 — Configuration aborts surface as an unhandled exception, so an orchestrator sees a crash
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — documented with fix guidance |
+| **Related finding** | Runtime QA observation on the fail-fast surface; applies to C-04, H-04, H-05 and the transport-security check |
+| **Owner** | Platform team |
+
+**What was observed.** Every required-configuration abort behaves the same way: the host writes the
+actionable message, then a stack trace of roughly thirty frames, and the process ends with exit status
+**134** (`SIGABRT`, reported by shells as "Aborted"). The abort is raised from `Startup.Configure` —
+`ErpSettings.ValidateRequiredSecurityConfiguration`, `CryptoUtility.CryptKey`, the
+`SecurityHeaders:ContentSecurityPolicyReportOnly` binding, and `ValidateTransportSecurityPosture` all
+throw — and the seven hosts' `Program.Main` calls `.Run()` without catching, so .NET's default
+unhandled-exception path terminates the process.
+
+**Why it is accepted rather than fixed.** The behaviour is fail-closed and leaks nothing: measured
+across five live negative starts, the process never served a single HTTP request, and no configuration
+*value* appeared in the output — only key names. Making it a clean single-line non-zero exit means
+wrapping `Main` in all seven hosts plus the console application in a `try`/`catch`, deciding which
+exception types are "configuration" faults, and suppressing the stack trace for them. That is
+error-handling redesign across eight entry points with no vulnerability behind it, which the audit
+plan's boundaries exclude (no refactoring beyond security requirements; fix only what is confirmed).
+
+**Operator guidance, which is the actionable half.** Every abort message begins with the marker
+`WebVella ERP startup aborted` and is written in full **before** the first stack frame, so triage never
+needs the trace. This filter recovers it — verified against both a transport abort and a missing-secret
+abort:
+
+```bash
+docker logs <container> 2>&1 \
+  | sed -n '/WebVella ERP startup aborted/,/^[[:space:]]*at /p' \
+  | grep -v '^[[:space:]]*at '
+```
+
+Expect the message up to **three** times: once as `Application startup exception`, once inside the
+`Microsoft.AspNetCore.Hosting.Diagnostics` critical entry, and once in the unhandled-exception dump. Any
+one copy is complete; they are the same string. An exit status of 134 from one of these hosts should be
+read as "configuration fault, message above", not as a runtime crash. If a future change does introduce
+a top-level handler, it must keep two properties this behaviour already has: the message must remain
+complete, and no configuration value may be echoed (CWE-532).
+
+#### RISK-125 — The login inputs carry no `autocomplete` attributes
+
+| Field | Value |
+| --- | --- |
+| **Status** | Recommended, not fixed — out of remediation scope |
+| **Related finding** | Runtime QA observation (browser autofill advisory) |
+| **Owner** | Frontend maintainer |
+
+**What was observed.** Loading `/login` in Chrome produces one verbose console entry —
+`[DOM] Input elements should have autocomplete attributes (suggested: "current-password")` — and one
+DevTools issue, `An element doesn't have an autocomplete attribute`. They are the only two non-CSP
+console entries on the page; there are zero errors and zero warnings.
+
+**Why it is not fixed here.** `autocomplete` is **absent, not disabled**. The weakness pattern OWASP
+warns about is `autocomplete="off"` on credential fields, which suppresses password managers; nothing
+suppresses anything here. Adding `autocomplete="username"` and `autocomplete="current-password"` is a
+usability improvement with no confirmed vulnerability behind it, and the audit plan's modification
+boundaries are explicit on both counts — no feature additions or enhancements, and fix only what is
+confirmed. The login **view** is also not among the files the plan places in scope; only its page model
+is.
+
+**Recommended fix, when a frontend change is in scope.** On `WebVella.Erp.Web/Pages/login.cshtml`, add
+`autocomplete="username"` to the email input and `autocomplete="current-password"` to the password
+input. Both advisories then disappear and password-manager behaviour improves. Nothing else changes:
+the fields keep their names, so the form post and the antiforgery contract are untouched.
+
+#### RISK-126 — The transport-security check reports, rather than refuses, when no endpoint is declared
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — bounded residual of the control |
+| **Related finding** | The QA finding that a plaintext-only Production host answered HTTP 500 on every form-bearing page |
+| **Owner** | Platform team |
+
+**The control.** `ValidateTransportSecurityPosture` in `WebVella.Erp.Web/ErpMvcExtensions.cs` runs
+inside `UseErp()`, so all seven hosts inherit it, and it accepts any one of four pieces of evidence that
+a request can arrive over HTTPS: a declared endpoint whose scheme is `https`; a `Kestrel:Endpoints`
+entry whose `Url` is `https`; a public HTTPS port in `HTTPS_PORT` (`ASPNETCORE_HTTPS_PORT`,
+`HTTPS_PORT`, or the configuration key `https_port`); or a trusted reverse proxy declared through
+`Settings:ForwardedHeaders:KnownProxies`/`KnownNetworks`. With a declared endpoint, none of those
+signals, and a non-Development environment, the host aborts before serving anything.
+
+**The residual.** The refusal fires only when at least one endpoint was **declared** —
+`ASPNETCORE_URLS`, `UseUrls` or a host binding, all of which reach `IServerAddressesFeature.Addresses`
+before the pipeline is built. When nothing is declared, the endpoints are chosen by Kestrel's own
+defaults or by host code this check cannot inspect, so the identical diagnosis is written as a `warn:`
+line and startup continues. Measured on a published Production host with no `ASPNETCORE_URLS` at all:
+Kestrel bound `http://localhost:5000` alone and `/login` still answered **500**. The warning is therefore
+a notice, not a clean bill.
+
+**Why the boundary is drawn there.** A check that aborts a deployment which would have worked is worse
+than the failure it prevents, and "no declaration" genuinely is an unknown posture rather than a known
+bad one — a fork that binds endpoints in code would be refused on a correct configuration. Development
+also stays on the reporting path, but for a different reason: its antiforgery cookie uses
+`SameAsRequest`, so local plaintext sign-in is supported, and the warning keeps an absent HTTPS path
+visible without preventing the developer from starting the host.
+
+**Two further things the check cannot see, stated so they are not assumed.** It cannot know whether a
+trusted proxy actually sends `X-Forwarded-Proto: https` — trusting a proxy that does not leaves the 500
+in place, which is why the diagnosis says so — and it cannot know whether a declared `https` endpoint
+will bind successfully, for example with an unreadable certificate. Both remain deployment
+verifications; see the checklist in [the secure configuration guide](secure-configuration.md).
+
+This register's canonical index carries `RISK-124`, `RISK-125` and `RISK-126` as its last three rows.

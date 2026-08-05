@@ -143,7 +143,29 @@ namespace WebVella.Erp.Web.Services
 			if (!normalizedSourcePath.StartsWith(temporaryNamespacePrefix, StringComparison.Ordinal))
 				throw new UnauthorizedAccessException(PROMOTION_DENIED_MESSAGE);
 
-			var tempFile = Fs.Find(path);
+			//THREAT ADDRESSED - CWE-778 (insufficient logging) and the audit MISCLASSIFICATION it produces,
+			//OWASP A09:2021. The ownership guard immediately below was UNREACHABLE for the case it was
+			//written for: DbFileRepository.Find withholds a staged row the caller does not own by answering
+			//null - deliberately, so a client cannot tell "not yours" from "no such path" - which is
+			//indistinguishable from a genuinely missing file at THIS call site, so the plain Exception on the
+			//not-found line fired first. The calling action's dedicated UnauthorizedAccessException clause
+			//therefore never ran, and a deliberate access-control refusal was filed by the general handler as
+			//"Unhandled fault: Exception" - a system fault an operator would triage as a bug, which is
+			//exactly the signal the "log authorization failures" requirement exists to produce correctly.
+			//
+			//The overload reports the withheld case WITHOUT changing the access decision or the response
+			//text: both outcomes still answer the caller with a generic denial, so no existence oracle is
+			//created - a withheld row now answers PROMOTION_DENIED_MESSAGE, which is the SAME message this
+			//method already returns for the namespace test above and for the pinned-move refusal below.
+			var tempFile = Fs.Find(path, out var withheldByStagedOwnership);
+
+			//Ordered BEFORE the not-found test, because a withheld row is an authorization outcome and must
+			//be reported as one. The distinct exception type is what the calling action switches on - see the
+			//PROMOTION_DENIED_MESSAGE remarks at the top of this class for why refusals use a type of their
+			//own rather than the plain Exception a missing file raises.
+			if (withheldByStagedOwnership)
+				throw new UnauthorizedAccessException(PROMOTION_DENIED_MESSAGE);
+
 			if(tempFile == null) {
 				throw new Exception("File not found on that path");
 			}

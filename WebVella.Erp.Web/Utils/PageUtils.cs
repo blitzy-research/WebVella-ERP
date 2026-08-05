@@ -4,6 +4,8 @@ using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+//SECURITY - CWE-79: supplies HtmlEncoder for the reflected sinks in GenerateListPageDescription.
+using System.Text.Encodings.Web;
 using System.Text.RegularExpressions;
 using System.Web;
 using WebVella.Erp.Api;
@@ -232,7 +234,17 @@ namespace WebVella.Erp.Web.Utils
 			if (httpContext.Request.Query.ContainsKey(prefix + "sortBy"))
 			{
 				var fieldDataName = httpContext.Request.Query[prefix + "sortBy"];
-				sortHtml += fieldDataName;
+				// SECURITY (CWE-79, OWASP A03:2021 - REFLECTED cross-site scripting): the string this method
+				// returns is markup, and every caller hands it to the page header's "description" attribute,
+				// which renders it raw because the "<strong>" and "<ul>" wrappers below are the feature. That
+				// makes the two values interpolated into it - this sort field name and the filter names further
+				// down - reflected sinks: both come straight off the query string, so a request such as
+				// "?sortBy=name<script>...</script>" placed a working script into an authenticated page.
+				// Encoding is applied to the interpolated value only, never to the surrounding markup, so a
+				// legitimate field name renders byte-for-byte as it did before. Doing it here rather than at the
+				// sink is what keeps the two apart: by the time the composed string reaches the sink, the
+				// attacker's characters and the product's own tags are indistinguishable.
+				sortHtml += HtmlEncoder.Default.Encode(fieldDataName);
 
 				descriptionList.Add(sortHtml);
 			}
@@ -252,7 +264,11 @@ namespace WebVella.Erp.Web.Utils
 			var filterHtml = "";
 			if (filters.Count > 0)
 			{
-				filterHtml = "<strong>filtered by</strong> " + String.Join(',', filters.Select(x => x.Name).ToList());
+				//SECURITY - CWE-79 reflected cross-site scripting: a filter name is a regular-expression capture
+				//taken out of the query key itself (GetPageFiltersFromQuery above), so it is caller-supplied just
+				//as the sort field name is. Encoded per name, leaving the "<strong>" wrapper and the comma
+				//separator as markup. See the fuller comment on the sort field name above.
+				filterHtml = "<strong>filtered by</strong> " + String.Join(',', filters.Select(x => HtmlEncoder.Default.Encode(x.Name)).ToList());
 				descriptionList.Add(filterHtml);
 			}
 			//if (String.IsNullOrWhiteSpace(filterHtml))

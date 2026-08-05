@@ -68,6 +68,26 @@ export Settings__ConnectionString='Server=localhost;Port=5432;User Id=...;Passwo
 export Settings__EncryptionKey="$(openssl rand -hex 32)"
 ```
 
+**One more thing is required to sign in outside Development: the application must be able to see an
+HTTPS request.** In that posture the authentication and antiforgery cookies are `Secure`-only by design
+(finding M-02, CWE-614), so on a host reachable only over plaintext `/login` answers **HTTP 500** and no
+sign-in is possible. Development keeps the authentication cookie `Secure` but lets the antiforgery cookie
+follow the request scheme so local plaintext sign-in remains usable. Bind an HTTPS endpoint, or tell the
+application about the HTTPS port your proxy terminates on:
+
+```bash
+export ASPNETCORE_URLS='https://localhost:5001;http://localhost:5000'
+export Kestrel__Certificates__Default__Path=/path/to/certificate.pfx
+export Kestrel__Certificates__Default__Password='...'
+# Behind a TLS-terminating proxy instead, either:
+#   export ASPNETCORE_HTTPS_PORT=443                      # singular; redirects plaintext to HTTPS
+#   export Settings__ForwardedHeaders__KnownProxies=<ip>  # and have the proxy send X-Forwarded-Proto
+```
+
+Outside the Development environment the host **refuses to start** when it has none of these, naming every
+setting that satisfies it, rather than starting and then failing every form-bearing page. Note that
+`ASPNETCORE_HTTPS_PORTS` — plural — is **not** read by this application.
+
 The complete list, key-rotation guidance and the deployment checklist are in
 [docs/security/secure-configuration.md](docs/security/secure-configuration.md).
 

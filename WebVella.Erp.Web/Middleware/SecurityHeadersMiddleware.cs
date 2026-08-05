@@ -84,8 +84,46 @@ namespace WebVella.Erp.Web.Middleware
 			// has begun throws InvalidOperationException. Every write below uses indexer assignment
 			// rather than Add(): Add() throws ArgumentException on an already-present key, which would
 			// turn this hardening change into a 500 the moment anything else set the same header.
-			var headers = context.Response.Headers;
+			AttachSecurityHeaders(context.Response.Headers, onlyWhenMissing: false);
 
+			// THREAT ADDRESSED - finding M-01 again, at the ONE response class the pass above cannot
+			// reach: a response whose headers are DISCARDED after this middleware has written them.
+			// Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware answers an unhandled
+			// fault by calling Response.Clear() - which empties the whole header dictionary - and then
+			// writing its own body WITHOUT re-executing the pipeline, so every one of the seven headers
+			// written above was silently dropped and the Development 500 shipped bare. Verified
+			// empirically on this runtime: a header set by a middleware registered OUTER to the
+			// developer exception page is discarded exactly as one set here is, so re-ordering the
+			// hosts' app.UseSecurityHeaders() call - the obvious first fix - cannot close it. A callback
+			// registered here survives Response.Clear() because it lives on the response feature rather
+			// than in the header dictionary, and it runs at response start, which is still "before the
+			// response begins" for header-mutation purposes.
+			//
+			// Production is NOT affected by that defect and is deliberately left exactly as it was:
+			// UseExceptionHandler("/error") and UseStatusCodePagesWithReExecute("/error") RE-EXECUTE the
+			// downstream pipeline, so the pass above runs a second time and re-attaches the set itself.
+			// This callback is therefore a no-op on every such response - see onlyWhenMissing below.
+			//
+			// THREAT ADDRESSED - CWE-693 again: the re-attach pass fills GAPS only. It cannot vary the
+			// header set (the same seven names and the same constants are used), cannot duplicate a
+			// header (indexer assignment), and cannot overwrite a value another component deliberately
+			// set later, because a present name is left untouched.
+			context.Response.OnStarting(() =>
+			{
+				AttachSecurityHeaders(context.Response.Headers, onlyWhenMissing: true);
+				return Task.CompletedTask;
+			});
+
+			await next(context);
+		}
+
+		// Writes the mandated header set. Called twice per request against the same response: once
+		// eagerly, before the pipeline continues, and once at response start with onlyWhenMissing set,
+		// so a response whose headers were cleared between those two points still carries the set. The
+		// two calls share one implementation deliberately - two copies would be two places for the
+		// values, the Development HSTS suppression or the single-CSP-name invariant to drift.
+		private void AttachSecurityHeaders(IHeaderDictionary headers, bool onlyWhenMissing)
+		{
 			// THREAT ADDRESSED - finding H-15, CWE-319 (cleartext transmission of sensitive
 			// information) and CWE-614 (sensitive cookie without 'Secure' attribute), OWASP A02:
 			// Cryptographic Failures: with no HSTS an attacker can downgrade the connection to
@@ -110,19 +148,19 @@ namespace WebVella.Erp.Web.Middleware
 			// exists, why it tests the environment rather than the scheme, and which way it fails.
 			if (emitStrictTransportSecurity)
 			{
-				headers[StrictTransportSecurityHeaderName] = StrictTransportSecurityValue;
+				SetHeader(headers, StrictTransportSecurityHeaderName, StrictTransportSecurityValue, onlyWhenMissing);
 			}
 
-			headers[XContentTypeOptionsHeaderName] = XContentTypeOptionsValue;
-			headers[XFrameOptionsHeaderName] = XFrameOptionsValue;
+			SetHeader(headers, XContentTypeOptionsHeaderName, XContentTypeOptionsValue, onlyWhenMissing);
+			SetHeader(headers, XFrameOptionsHeaderName, XFrameOptionsValue, onlyWhenMissing);
 
 			// '0' is intentional and must not be "modernised" to '1; mode=block': it disables the
 			// legacy browser XSS auditors, which are themselves exploitable to selectively suppress
 			// legitimate script.
-			headers[XXssProtectionHeaderName] = XXssProtectionValue;
+			SetHeader(headers, XXssProtectionHeaderName, XXssProtectionValue, onlyWhenMissing);
 
-			headers[ReferrerPolicyHeaderName] = ReferrerPolicyValue;
-			headers[PermissionsPolicyHeaderName] = PermissionsPolicyValue;
+			SetHeader(headers, ReferrerPolicyHeaderName, ReferrerPolicyValue, onlyWhenMissing);
+			SetHeader(headers, PermissionsPolicyHeaderName, PermissionsPolicyValue, onlyWhenMissing);
 
 			// The mandated policy value is emitted verbatim and is never weakened: the value carries
 			// exactly the three mandated fetch directives and no fourth directive of any kind. It ships
@@ -142,7 +180,17 @@ namespace WebVella.Erp.Web.Middleware
 			// blank, weakened or replaced by any host, plugin or configuration source.
 			const string contentSecurityPolicy = SecurityHeadersOptions.ContentSecurityPolicy;
 
-			// Exactly one of the two policy header names is emitted, never both.
+			// Exactly one of the two policy header names is emitted, never both. In the re-attach pass
+			// the test spans BOTH names rather than only the one this configuration would write: if the
+			// response already carries the other name, writing this one would put two policy headers on
+			// one response - the precise state the invariant above forbids - so the pass yields instead.
+			if (onlyWhenMissing
+				&& (headers.ContainsKey(ContentSecurityPolicyReportOnlyHeaderName)
+					|| headers.ContainsKey(ContentSecurityPolicyHeaderName)))
+			{
+				return;
+			}
+
 			if (options.ContentSecurityPolicyReportOnly)
 			{
 				headers[ContentSecurityPolicyReportOnlyHeaderName] = contentSecurityPolicy;
@@ -151,8 +199,19 @@ namespace WebVella.Erp.Web.Middleware
 			{
 				headers[ContentSecurityPolicyHeaderName] = contentSecurityPolicy;
 			}
+		}
 
-			await next(context);
+		// Assigns one header, yielding to a value that is already present when the caller is filling
+		// gaps. Indexer assignment for the reason stated in Invoke: IHeaderDictionary.Add() throws on
+		// an already-present key, which would turn a hardening change into a 500.
+		private static void SetHeader(IHeaderDictionary headers, string name, string value, bool onlyWhenMissing)
+		{
+			if (onlyWhenMissing && headers.ContainsKey(name))
+			{
+				return;
+			}
+
+			headers[name] = value;
 		}
 	}
 

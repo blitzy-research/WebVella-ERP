@@ -497,13 +497,17 @@ jobs:
       # Solution-wide by design (see the H-19 note on runs-on): a per-project
       # restore would not prove the core project is present in the scan graph.
       #
-      # F-08, now closed at the source: all 19 tracked projects are solution
-      # members, so this one restore audits every dependency graph in the tree, and
-      # the preceding step fails the job if a project ever stops being a member.
-      # The two WebAssembly projects are ALSO restored explicitly below as a
-      # redundant second layer, which additionally gives `dotnet list package
+      # F-08, addressed by the 17 + 2 coverage model this file implements - NOT by
+      # enrolling every project in the solution, which the frozen plan puts out of
+      # scope (see the EXPLICITLY_GATED_PROJECTS note above). The solution
+      # enumerates 17 of the repository's 19 tracked projects, so this one restore
+      # audits 17 dependency graphs, and the membership assertion above fails the
+      # job if that set ever drifts. The two WebAssembly non-members are restored
+      # explicitly below - not as a redundant second layer but as the ONLY restore
+      # that reaches them - which additionally gives `dotnet list package
       # --vulnerable` the per-project assets files it needs to read them
-      # individually later.
+      # individually later. 17 + 2 = 19; an earlier revision of this comment
+      # claimed all 19 were solution members, which `dotnet sln list` disproves.
       - name: Restore with dependency auditing
         run: |
           dotnet restore WebVella.ERP3.sln
@@ -711,12 +715,14 @@ jobs:
           set -o pipefail
           dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive 2>&1 \
             | tee vulnerable-packages.txt
-          # F-08. This listing reaches all 19 solution members. The two WebAssembly
-          # projects are additionally listed into their own evidence file, and the SAME
-          # assertion is then applied to both files - so a redundant per-project
-          # listing can never disagree with the solution-wide one without failing
-          # Gate 2. The graph assertion earlier in this job fails if either project
-          # ever stops being a solution member.
+          # F-08. This listing reaches the 17 projects the solution enumerates. The two
+          # WebAssembly non-members are listed into their own evidence file below, and the
+          # SAME assertion is then applied to both files - so the per-project listing can
+          # never disagree with the solution-wide one without failing Gate 2, and 17 + 2
+          # covers all 19 tracked projects. The membership assertion earlier in this job
+          # fails if the solution's set of members ever drifts from that model. An earlier
+          # revision of this comment said this listing reaches 19 solution members; the
+          # solution has 17, which is why the two are listed separately at all.
           : > vulnerable-packages-wasm.txt
           for project in \
             WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.csproj \

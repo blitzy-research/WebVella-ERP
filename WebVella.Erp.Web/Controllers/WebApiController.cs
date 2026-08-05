@@ -3938,8 +3938,21 @@ namespace WebVella.Erp.Web.Controllers
 			//exactly the same terms as the source, and only when it already exists: a target that does not
 			//exist yet has no owner to protect. The refusal text is the same generic message, so this cannot
 			//be used to discover which target paths hold real files.
-			var targetFile = fsRepository.Find(target);
-			if (targetFile != null && !IsFileMutationAuthorized(targetFile, target, "MoveFile"))
+			//THREAT ADDRESSED - the guard above was SKIPPED for the one target class it most needed to cover.
+			//DbFileRepository.Find withholds a STAGED row the caller does not own by answering null, so
+			//another user's staged file read as "no target here", the ownership test never ran, and the
+			//overwrite proceeded until the files.filepath UNIQUE constraint raised an unhandled exception -
+			//stopping the destruction, but answering with a ZERO-LENGTH body instead of this endpoint's own
+			//refusal envelope, and filing a deliberate access-control outcome as a system fault. The overload
+			//reports that withheld case, so a staged target is now refused on exactly the same terms, with
+			//exactly the same generic message, as the published targets this guard already covered.
+			//
+			//The withheld branch does NOT re-log through IsFileMutationAuthorized: passing it the null row
+			//would record the reason as "file not found", which would be false. The refusal is already
+			//audited accurately, with the acting identity and the neutralised requested path, by
+			//DbFileRepository's own staged-refusal record at the moment it withheld the row.
+			var targetFile = fsRepository.Find(target, out var targetWithheldByStagedOwnership);
+			if (targetWithheldByStagedOwnership || (targetFile != null && !IsFileMutationAuthorized(targetFile, target, "MoveFile")))
 			{
 				return DoResponse(new FSResponse { Success = false, Message = FILE_ACCESS_DENIED_MESSAGE });
 			}
