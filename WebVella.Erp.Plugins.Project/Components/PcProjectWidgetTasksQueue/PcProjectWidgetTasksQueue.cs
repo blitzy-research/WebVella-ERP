@@ -120,9 +120,12 @@ namespace WebVella.Erp.Plugins.Project.Components
 						//does not fully constrain them: they land in a class attribute and inside a style
 						//declaration, where a crafted value still injects extra class names or extra CSS without
 						//ever needing to escape the attribute. See SafeStyleValue for the checks themselves.
-						//Those two checks used to be private members of this class, which is how three sibling
-						//render paths for the same two values came to be left unguarded. They now live in
-						//SafeStyleValue so that every consumer shares one implementation. The call below is
+						//Those two checks used to be private members of this class, which is how FOUR sibling
+						//render paths for the same two values came to be left unguarded - three widget-side
+						//paths, plus the platform-wide select conversion boundary that QA found afterwards and
+						//that no plugin-owned guard could ever have reached. They now live in
+						//WebVella.Erp.Web.Utils.SafeStyleValue so that every consumer, framework and plugin
+						//alike, shares one implementation. The call below is
 						//redundant today because TaskService.GetTaskIconAndColor guards its own output, and it is
 						//kept anyway: this component would otherwise depend on a caller-side guarantee for its
 						//own safety, and the check is idempotent, so an already-clean value passes unchanged.

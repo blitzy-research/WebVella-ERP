@@ -112,7 +112,24 @@ namespace WebVella.Erp.Web.Utils
 			if(originOptions == null)
 				return null;
 
-			return originOptions.Select(x=> new WvSelectOption{Color = x.Color,IconClass = x.IconClass,Label = x.Label, Value = x.Value}).ToList();
+			//THREAT ADDRESSED - CWE-79 (stored cross-site scripting), OWASP A03:2021, finding H-06.
+			//Color and IconClass are database configuration read from a select field's stored options,
+			//and this method is the ONLY place in the repository that constructs a WvSelectOption - so
+			//it is the single boundary at which those two values leave the platform and enter the
+			//third-party WebVella.TagHelpers select component. That component's display path
+			//concatenates them straight into a class attribute and a style attribute with no encoding,
+			//which let a stored value close the attribute and add a new one of its own, including an
+			//event handler. Its inline-edit path writes the same two values into data-icon/data-color,
+			//and the select2 script then reads the DECODED attribute back out of the DOM and re-inserts
+			//it as markup - so correct server-side attribute encoding does not close that half.
+			//Allow-listing here closes both, product-wide, for every wv-field-select and
+			//wv-field-multiselect, and it has to sit on this side of the boundary because the component
+			//ships inside a NuGet package this work may only version-update.
+			//Label is deliberately NOT altered here: the same component already encodes it in edit
+			//mode, so encoding it at this boundary would double-encode every legitimate label
+			//containing an ampersand, an apostrophe or an angle bracket. That residual is recorded in
+			//docs/security/risk-register.md rather than closed with a user-visible regression.
+			return originOptions.Select(x=> new WvSelectOption{Color = SafeStyleValue.CssColor(x.Color),IconClass = SafeStyleValue.IconClass(x.IconClass),Label = x.Label, Value = x.Value}).ToList();
 		}	
 
 		public static WvSelectOptionsAjaxDatasource ToWvSelectOptionsAjaxDatasource(this SelectOptionsAjaxDatasource origin){

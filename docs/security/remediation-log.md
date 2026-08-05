@@ -8670,7 +8670,7 @@ runtime, which composes `<i class='{iconClass}' style='color:{color}'></i>` with
 | --- | --- | --- |
 | `WebVella.Erp.Web/TagHelpers/WvPageHeader/WvPageHeader.cs` | Seven value-bearing sinks moved from `AppendHtml` to `Append`. One of them previously concatenated a literal `<i class='icon fas fa-ellipsis-v'></i>` with `Title` in a single raw append and is now **split**, so the icon stays raw and the title is encoded. The `Description` sink is left raw and carries a comment forbidding its conversion | CWE-79 stored cross-site scripting, OWASP A03:2021 |
 | `WebVella.Erp.Web/Utils/PageUtils.cs` | `GenerateListPageDescription` encodes the interpolated `sortBy` value and each filter name through `HtmlEncoder.Default`. Every literal — both `strong` wrappers, the `ul`, the `li` elements and the comma separator — is untouched | CWE-79 reflected cross-site scripting, OWASP A03:2021 |
-| `WebVella.Erp.Plugins.Project/Services/SafeStyleValue.cs` | **New.** The two allow-lists promoted out of one widget into a shared class, with the rationale recording that keeping them private is *how* three of four paths came to be missed | CWE-79, OWASP A03:2021 |
+| `WebVella.Erp.Plugins.Project/Services/SafeStyleValue.cs` | **New.** The two allow-lists promoted out of one widget into a shared class, with the rationale recording that keeping them private is *how* three of four paths came to be missed. **Superseded:** a later QA pass found a fifth path outside any plugin's reach, so this file was moved again, to `WebVella.Erp.Web/Utils/SafeStyleValue.cs` — see *The fifth render path* below | CWE-79, OWASP A03:2021 |
 | `WebVella.Erp.Plugins.Project/Services/TaskService.cs` | `GetTaskIconAndColor` guards both `out` values. This is the root-cause fix for the stored code variable | CWE-79, OWASP A03:2021 |
 | `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTasksPriorityChart/PcProjectWidgetTasksPriorityChart.cs` | Publishes a **new** sanitised `List<SelectOption>` rather than mutating the originals, covering both Razor twins from one change | CWE-79, OWASP A03:2021 |
 | `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs` | Repointed at the shared class; its two private copies removed | CWE-79, OWASP A03:2021 |
@@ -8732,6 +8732,87 @@ reproduces identically on a payload-free page.
 This section is the thirty-fifth `## ` heading of this log; the preceding count was thirty-four, and it
 is restated here because the section that changes the count is the only one that can. Reproduce with
 `grep -c '^## ' docs/security/remediation-log.md`.
+## The fifth render path — the platform-wide select conversion boundary (`F-R3-XSS`, `H-06`)
+
+A later, cross-cutting QA pass re-tested the four paths above — all four passed — and found a **fifth** that
+none of them could have covered. It is recorded as `F-R3-XSS` (MAJOR, CWE-79, OWASP A03:2021) and is closed
+here.
+
+### The defect: the same two values, one boundary further out
+
+`WebVella.Erp.Web/Utils/ModelExtensions.ToWvSelectOption` is the **only** place in the repository that
+constructs a `WvSelectOption`. It therefore is the single boundary at which a stored option's `icon_class`
+and `color` leave the platform and enter the third-party `WebVella.TagHelpers` 1.8.0 select component, which
+serves **94** call sites across **65** files and **176** `wv-field-select` / `wv-field-multiselect` tag
+usages. That component's display path composes `<i class="{icon_class}" style="color:{color}"></i> {label}`
+by concatenation, with no encoding, so a stored value containing a double quote closed the `class` attribute
+and opened attributes of its own.
+
+Measured before the fix, with the `task` entity's `priority` option poisoned: the HTML parser produced
+`["class","onmouseover","\"","style"]` on an element the application only ever gave two attributes; the
+injected `color:red` computed live as `rgb(255,0,0)`; and Chrome's own Content-Security-Policy engine logged
+*"Executing inline event handler"* against the live page — the browser classifying the injected attribute as
+a real inline handler and reaching its execution stage. The task-details page carried **1** such element and
+the SDK entity data-list **4**, one per affected row, on **both** the Project host and a host that does not
+contain the Project plugin at all. That is what made the exposure product-wide rather than plugin-local.
+
+### Why the earlier guard could not reach it
+
+`SafeStyleValue` lived in `WebVella.Erp.Plugins.Project`, and `WebVella.Erp.Web` cannot reference a plugin
+that references it. A guard owned by the plugin was structurally incapable of covering the framework's own
+conversion boundary, whatever its quality. The register had in fact already predicted the answer:
+`RISK-123`'s recommended fix says *"Promoting an equivalent guard into `WebVella.Erp.Web`"*.
+
+### What was changed
+
+| File | Change | Threat addressed |
+| --- | --- | --- |
+| `WebVella.Erp.Web/Utils/SafeStyleValue.cs` | **New — moved, not copied.** The identical allow-lists, now in `WebVella.Erp.Web.Utils` so the framework and every plugin share one audited implementation. Its remarks carry the **correction of record**: the original claim of *"four independent render paths"* was short by one | CWE-79, OWASP A03:2021 |
+| `WebVella.Erp.Plugins.Project/Services/SafeStyleValue.cs` | **Deleted.** Duplicating security logic across two assemblies is the exact pattern that caused the original miss | CWE-79, OWASP A03:2021 |
+| `WebVella.Erp.Web/Utils/ModelExtensions.cs` | `ToWvSelectOption` routes `Color` through `SafeStyleValue.CssColor` and `IconClass` through `SafeStyleValue.IconClass`. `Label` is deliberately left alone — see below | CWE-79, OWASP A03:2021 |
+| `WebVella.Erp.Plugins.Project/Services/TaskService.cs` | `using WebVella.Erp.Web.Utils;`, so the root-cause fix for the stored code variable now consumes the promoted helper | — |
+| `.../PcProjectWidgetTasksPriorityChart/PcProjectWidgetTasksPriorityChart.cs` | Same `using`. Behaviour unchanged | — |
+| `.../PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs` | Already had the `using`, so no code change. Its comment's stale *"three sibling render paths"* count corrected to **four**, so no wrong path count survives anywhere in the source | — |
+
+### Two things the single edit closed that were not obvious
+
+The first is a **client-side** sink. The framework already encoded the inline-edit
+`<option data-icon data-color>` attributes correctly, and that did **not** protect the edit surface: the
+select2 script reads the **decoded** attribute value back out of the DOM and re-inserts it as markup,
+reproducing the identical break-out. Runtime verification watched the injected-handler count rise from one to
+two the moment the inline editor was engaged. No amount of correct server-side encoding closes that; emptying
+the value **before** it is written into the attribute does.
+
+The second is proof that the guard is discriminating rather than blanket. With the dropdown open, select2
+still injected a real `<i class="fa fa-fw fas fa-fw fa-arrow-circle-down" style="color:#4CAF50">` element for
+the legitimate option while emitting bare text for the two poisoned ones. The vulnerable path ran; it simply
+had nothing hostile left to insert.
+
+### What was left alone, and why
+
+`SelectOption.Label` is raw at the same vendor sink. Measured, not assumed: a seeded
+`label = high<img src=x onerror=alert(…)>` produced a live `<img>` element in the display `<div>`, while the
+same value in the form-mode `<option>` text was correctly encoded. Encoding `Label` at the conversion
+boundary would therefore **double-encode** it in edit mode — and unlike a class token list or a colour, an
+option label legitimately contains `&`, `'`, `<` or `>` (`R&D`, `Client's request`, `> 30 days`), so every
+such label would visibly render its entities in every dropdown in the product. The plan's preservation
+requirement forbids that, and a label has no constrainable shape for an allow-list to police. It is recorded
+as `RISK-127` with two recommended fixes, the preferred one being an opt-in `encode-text` mode from the
+tag-helper library — the same request `RISK-121` already makes for the grid column.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `dotnet build WebVella.ERP3.sln --no-restore --no-incremental` | exit 0, **0 errors**, 3044 warnings — the established baseline count; zero `NU1900`–`NU1905` |
+| Analyzer diagnostics attributable to this class | **zero new warning codes.** Per-file multisets are identical before and after (`ModelExtensions.cs` `CA1305` only; `TaskService.cs` `CA1305`×4, `CA1822`×30, `CA1860`×12, `CA2201`×36), and the new `SafeStyleValue.cs` produces **0** diagnostics |
+| Before, with the payload seeded | task details **1** live `<i … onmouseover=…>`; SDK entity data-list **4**, on both hosts. Token counts `R3ICON3`/`R3COLOR3`/`R3ICON9`/`R3COLOR9` all non-zero |
+| After, **with the payload still seeded** | Every one of those counts **0** on both hosts. A rejected pair now renders `<div class="form-control erp-select">high</div>` — byte-identical to how an option with no icon and no colour has always rendered |
+| After, in a browser | `[onmouseover]` **0** in display mode, in select2 edit mode **and** with the dropdown open; **0** payload dialogs after 340 + 756 dispatched pointer events and real-mouse hovers over the weaponised option; a `MutationObserver` armed before page scripts recorded **0** `on*` sightings; CSP `script-src-attr` violations **0** across 205 captured violations, and no *"Executing inline event handler"* message. Positive and in-place negative controls proved the detectors could see a live handler at both ends of the run |
+| The zeros are the fix, not a removed payload | The application's own meta API still returned the hostile `icon_class` and `color` verbatim at HTTP 200 throughout |
+| Behaviour preservation | With legitimate metadata restored, all six task rows render their real glyph and colour — `fas fa-fw fa-arrow-circle-up`/`#F44336`, `fa fa-fw fa-minus-circle`/`#2196F3`, `fas fa-fw fa-arrow-circle-down`/`#4CAF50` — with `::before` codepoints U+F0AA/U+F056/U+F0AB from Font Awesome 5 Free weight 900, non-zero boxes, and every computed colour matching its inline style |
+| Regression across the four earlier paths | All three plugin call sites of the moved helper exercised and correct: the tasks-queue widget, the priority chart, and `TaskService.GetTaskIconAndColor` feeding the Track Time grid's stored code variable. Both dashboard doughnuts retained their full colour arrays and painted the exact target RGB values. `[onmouseover],[onerror],[onload],[onfocus]` **0** on all five pages checked; no console error or failed request beyond two pre-existing avatar-asset defects already in the register |
+
 ## Post-QA remediation — the plaintext-forwarding topology, and five documentation corrections
 
 Runtime QA of the configuration and deployment surface returned one **MAJOR** functional defect and six

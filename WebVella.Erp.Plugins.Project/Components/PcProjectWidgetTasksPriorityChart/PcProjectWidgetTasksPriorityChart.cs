@@ -12,6 +12,9 @@ using WebVella.Erp.Plugins.Project.Services;
 using WebVella.Erp.Web;
 using WebVella.Erp.Web.Models;
 using WebVella.Erp.Web.Services;
+//SECURITY - H-06 (CWE-79): SafeStyleValue now lives in WebVella.Erp.Web so the framework's select
+//conversion boundary shares this plugin's allow-list rather than duplicating it.
+using WebVella.Erp.Web.Utils;
 using WebVella.TagHelpers.Models;
 
 namespace WebVella.Erp.Plugins.Project.Components

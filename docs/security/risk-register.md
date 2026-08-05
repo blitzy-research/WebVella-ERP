@@ -99,6 +99,8 @@ the same risk written from different angles; the subject and status in this tabl
 | `RISK-124` | Every required-configuration abort surfaces as an **unhandled exception**: the host prints the actionable message, then a stack trace, and exits **134** rather than exiting non-zero with a single line. This is framework-default behaviour for a `Startup.Configure` throw and it is fail-closed - the process never serves a request and no value is echoed - but a container orchestrator reports a crash where the cause is a configuration fault, which can lengthen operator triage. Applies to the secret validation in `WebVella.Erp/ErpSettings.cs`, the encryption-key accessor in `WebVella.Erp/Utilities/CryptoUtility.cs`, the Content-Security-Policy option binding and the transport-security check in `WebVella.Erp.Web/ErpMvcExtensions.cs`. | Accepted - documented with fix guidance | Platform team |
 | `RISK-125` | The login form's two inputs carry no `autocomplete` attributes, so browsers emit an autofill advisory (`suggested: "current-password"`) and password managers are not steered. No functional and no security impact - `autocomplete` is absent, not disabled, so nothing suppresses a password manager. Fixing it is a presentation-layer enhancement with no confirmed finding behind it, which the audit plan's modification boundaries exclude. | Recommended, not fixed - out of remediation scope | Frontend maintainer |
 | `RISK-126` | The startup transport-security check **refuses** a deployment only when the endpoints were declared and every one is plaintext; when **no** endpoint is declared it reports the identical diagnosis as a `warn:` line instead, because the endpoints then come from Kestrel's defaults or from host code the check cannot inspect. Measured in Production: with nothing declared this application binds `http://localhost:5000` alone, so that configuration does still answer HTTP 500 on `/login` - the warning is the notice, not a clean bill. Deliberate: refusing on an unknown posture could abort a deployment that would have worked. | Accepted - bounded residual of the transport-security check | Platform team |
+| `RISK-127` | The third-party `wv-field-select` / `wv-field-multiselect` **display** path concatenates a stored option's `icon_class` and `color` straight into a `class` and a `style` attribute with no encoding. QA finding `F-R3-XSS` proved it live and **cross-host**. The **icon and colour half is now closed**: `SafeStyleValue` was promoted from `WebVella.Erp.Plugins.Project` into `WebVella.Erp.Web.Utils` and is applied in `ModelExtensions.ToWvSelectOption`, the single conversion boundary feeding all **94** call sites, which also closes the client-side select2 re-injection that server-side attribute encoding could not reach. **Two residuals remain.** First, `SelectOption.Label` is raw at the same vendor sink and is deliberately **not** encoded, because the component already encodes it in edit mode and encoding at the boundary would double-encode every legitimate label containing `&`, `'`, `<` or `>`. Second, the guard is caller-side, so any future code that constructs a `WvSelectOption` directly, or any future vendor sink that consumes another `SelectOption` member, reintroduces the exposure. This entry also corrects the record: `SafeStyleValue`'s original remarks claimed "four independent render paths"; there are **five**. | Icon/colour half **resolved**; `Label` channel and caller-side scope accepted with fix guidance | Platform team |
+| `RISK-128` | The **24** informational findings from the cross-cutting runtime QA pass that raised `F-R3-XSS`. Every one is pre-existing in code this remediation never touched, and the pass proved that rather than asserting it: **zero** `.css` files changed by the project, the chart views and `login.cshtml` verified `UNCHANGED`, and the two widgets the remediation did edit emitting **byte-identical** avatar markup apart from an added `alt=""`. Eleven are already named by existing entries (`RISK-058`, `RISK-122`, `RISK-125`) and are cross-referenced rather than duplicated; the remaining thirteen are enumerated below with a recommended fix each. One is **security-adjacent** and worth reading first: there is no cross-process entity-metadata cache invalidation, and field permissions live in the same cached JSON, so a runtime permission tightening does not reach other host processes until they restart. One is a **positive** finding recorded so it is not later mistaken for a defect. The plan declines them all: minimal code changes only, no feature additions, no refactoring beyond security requirements, third-party libraries restricted to version updates, and fix only what is confirmed. | Documented for a future sprint | Platform team |
 
 
 
@@ -4838,6 +4840,12 @@ grid **icon** are now guarded through `SafeStyleValue` and `TaskService.GetTaskI
 the grid's **title** cell, which passes its value through a tag allow-list that produces genuine `<b>`
 elements rather than encoding them.
 
+*A note on that count, so this entry is not read as complete.* `F-AA`'s four were the paths **that pass had
+found**; a later cross-cutting pass found a **fifth** — the platform-wide select conversion boundary — which
+is recorded and closed as `RISK-127`. This entry concerns only `F-AA`'s title cell, and the rationale below
+is confined to it. In particular, the *"QA measured nothing exploitable"* reasoning holds for **this** sink
+and was explicitly found **not** to extend to the fifth one, where a live injected attribute was measured.
+
 **Why it is not changed.** There is no grid-rendering source in this repository to change: `wv-grid` ships
 inside the third-party `WebVella.TagHelpers` 1.8.0 package, and the plan restricts third-party code to
 version updates. Independently of scope, a tag allow-list that emits `<b>` while stripping `<script>` is a
@@ -4973,12 +4981,14 @@ the least invasive control, both point away from that.
 
 **Recommended fix, when the platform team chooses to close it.** Validate `color` and `icon_color` against
 a CSS-colour allow-list — a `#`-prefixed 3-, 6- or 8-digit hex value, or a member of the CSS named-colour
-set — and `icon_class` against the icon-token pattern already used by `SafeStyleValue.IconClass` in
-`WebVella.Erp.Plugins.Project`. That helper is the working precedent: it is an allow-list that drops a
-non-conforming value whole while passing legitimate `fa`/`fas` tokens through unchanged, and runtime
-verification confirmed it preserves two distinct glyphs and two distinct colours from the same code path.
-Promoting an equivalent guard into `WebVella.Erp.Web` and applying it at these three interpolations would
-close the channel without touching any consumer view.
+set — and `icon_class` against the icon-token pattern already used by `SafeStyleValue.IconClass`. That
+helper is the working precedent: it is an allow-list that drops a non-conforming value whole while passing
+legitimate `fa`/`fas` tokens through unchanged, and runtime verification confirmed it preserves two distinct
+glyphs and two distinct colours from the same code path. **This recommendation's first half has since been
+carried out for a different finding and is no longer pending:** closing `RISK-127` promoted the helper out of
+`WebVella.Erp.Plugins.Project` into `WebVella.Erp.Web/Utils/SafeStyleValue.cs`, so it is now callable from
+the framework itself. What remains for this entry is applying it at these three page-header interpolations,
+which needs no further groundwork and would touch no consumer view.
 ## Detailed entries — residuals and observations from the runtime-configuration QA pass
 
 The three entries below were opened by runtime QA of the configuration and deployment surface. One is a
@@ -5090,4 +5100,150 @@ in place, which is why the diagnosis says so — and it cannot know whether a de
 will bind successfully, for example with an unreadable certificate. Both remain deployment
 verifications; see the checklist in [the secure configuration guide](secure-configuration.md).
 
-This register's canonical index carries `RISK-124`, `RISK-125` and `RISK-126` as its last three rows.
+#### RISK-127 — The select component's display path: what the conversion-boundary guard closes, and what it does not
+
+| Field | Value |
+| --- | --- |
+| **Status** | Icon/colour half **resolved**; the `Label` channel and the caller-side scope of the guard accepted, with fix guidance |
+| **Related finding** | QA finding `F-R3-XSS` (MAJOR, CWE-79, OWASP A03:2021), a fifth render path for `H-06` |
+| **Weakness** | CWE-79 (improper neutralisation of input during web page generation), CWE-83 (improper neutralisation of script in attributes) |
+| **Owner** | Platform team |
+
+**What was found.** A stored option's `icon_class` and `color` reached a `class` and a `style` attribute
+**unencoded** through the third-party `WebVella.TagHelpers` 1.8.0 select component's display path, which
+composes `<i class="{icon_class}" style="color:{color}"></i> {label}` by concatenation. A stored value
+containing a double quote therefore closed the `class` attribute and opened attributes of its own. Runtime
+verification measured the parser producing `["class","onmouseover","\"","style"]` on an element the
+application only ever gave two attributes, and Chrome's own Content-Security-Policy engine logged
+*"Executing inline event handler"* against the live page — the browser classifying the injected attribute
+as a real inline handler and reaching its execution stage. The injected `color:red` computed live as
+`rgb(255,0,0)`.
+
+**Why it was not caught by the original `H-06` pass.** The three widget-side paths and
+`TaskService.GetTaskIconAndColor` were guarded by a helper that lived **inside the Project plugin**. The
+widest consumer of the same two values is not a plugin at all: it is
+`WebVella.Erp.Web/Utils/ModelExtensions.cs`, whose `ToWvSelectOption` is the only place in the repository
+that constructs a `WvSelectOption` and therefore the single boundary feeding **94** call sites across
+**65** files and **176** `wv-field-select` / `wv-field-multiselect` tag usages. `WebVella.Erp.Web` cannot
+reference a plugin that references it, so a guard owned by the plugin could never have reached that
+boundary. The exposure was consequently reachable on **every** host that renders any select field —
+including hosts that do not carry the Project plugin at all, which is what made it cross-host.
+
+**What was changed.** `SafeStyleValue` was promoted from
+`WebVella.Erp.Plugins.Project/Services/SafeStyleValue.cs` to
+`WebVella.Erp.Web/Utils/SafeStyleValue.cs` — moved, not copied, so exactly one audited implementation
+exists — and applied at the conversion boundary. The plugin's three call sites now consume the promoted
+helper through a `using`; their behaviour is byte-identical because the allow-lists themselves are
+unchanged. The guards reject rather than escape and are idempotent, so the plugin-side calls that are now
+redundant remain harmless and are deliberately retained.
+
+**A second sink closed by the same edit, worth naming because encoding could not have closed it.** The
+framework already encoded the inline-edit `<option data-icon data-color>` attributes correctly, yet that
+did not protect the edit surface: the select2 script reads the **decoded** attribute value back out of the
+DOM and re-inserts it as markup, reproducing the identical break-out client-side. Runtime verification saw
+the injected-handler count rise from one to two when the inline editor was engaged. Allow-listing the value
+*before* it is ever written into those attributes is what closes that half — no amount of correct
+server-side encoding would have.
+
+**Residual 1 — `SelectOption.Label` is raw at the same sink, and is deliberately left so.** Measured, not
+assumed: seeding `label = high<img src=x onerror=alert(…)>` produced a live `<img>` element in the display
+`<div>` on the task-details page and once per affected row on the SDK data list, while the same value in the
+form-mode `<option>` text was correctly encoded to `high&lt;img …&gt;`. Encoding `Label` at the conversion
+boundary would therefore **double-encode** it in edit mode, and unlike `icon_class` and `color` — whose
+legitimate values are a class token list and a colour, neither of which can contain an HTML-special
+character — an option label legitimately can: `R&D`, `Client's request`, `> 30 days`. Every such label
+would visibly render its entities in every dropdown in the product, which the audit plan's preservation
+requirement (§0.3.2, "user-facing behaviour is preserved") forbids, and an allow-list is not available
+either because a label's legitimate value space is arbitrary text. The channel is privilege-gated to the
+same administrator tier `RISK-023` already accepts for the by-design raw channels, and the report-only
+Content-Security-Policy observes it.
+
+*Recommended fix, when the platform team chooses to close it.* Two options, in order of preference.
+(a) Ask the tag-helper library for an opt-in `encode-text` mode on the select display path — the same
+request `RISK-121` makes for the grid column — after which no caller-side change is needed at all.
+(b) Encode `Label` at the boundary **and** stop relying on the component's own encoding, which requires the
+library to expose whether it will encode; without that, (b) trades a script-execution channel for a
+visible-entity regression and is not an improvement on balance. Do **not** attempt an allow-list on
+`Label`: unlike the other two values it has no constrainable shape.
+
+**Residual 2 — the guard is caller-side, so it constrains what the platform passes, not what the component
+renders.** Two futures reintroduce the exposure. A new code path that constructs a `WvSelectOption`
+directly instead of going through `ToWvSelectOption` would bypass the guard entirely; today there is
+exactly **one** construction site in the repository, and the in-code comment at it says so, but nothing
+mechanically prevents a second. And a future version of the component that renders another `SelectOption`
+member into an attribute would arrive unguarded. Both are review-time concerns, not runtime ones.
+
+*Recommended control.* Keep the single-construction-site property true, and treat it as an invariant during
+review of any change to `WebVella.Erp.Web/Utils/ModelExtensions.cs`. A mechanical check — asserting that
+`new WvSelectOption` occurs exactly once repository-wide — would close it, and is recorded here rather than
+added because the plan admits no new tooling beyond the gates it already defines.
+
+**Correction of record.** `SafeStyleValue`'s original remarks asserted that *"four independent render paths
+consume the same two values"*. That count was short by one; there are **five**, the fifth being the
+platform-wide select conversion boundary. The pattern that produced the miss is worth naming because it is
+reusable: the count enumerated *the paths that had been fixed* rather than *the sinks that consume the
+value*. The remarks in `WebVella.Erp.Web/Utils/SafeStyleValue.cs` and the comment in
+`PcProjectWidgetTasksQueue.cs` now both state the corrected count and the reason the fifth path sits
+outside any plugin's reach.
+
+#### RISK-128 — The 24 informational findings from the cross-cutting runtime QA pass
+
+**Status: documented for a future sprint.**
+
+The pass that raised `F-R3-XSS` also recorded **24** informational observations. None is attributable to this
+remediation, and that was established by counterfactual rather than by claim: **zero** `.css` files were
+changed by the project; `button-colors.css` — the root cause of the focus-glow group — exists only inside the
+vendor NuGet package; `Nav.Default.cshtml`, `Theme/styles.css`, `login.cshtml` and all three chart views were
+verified `UNCHANGED`; **zero** repository files reference Chart.js `tooltips`; and the two widgets the
+remediation did edit emit avatar markup byte-identical to pre-project apart from an added `alt=""`. The
+decisive cross-check is that *"My Timesheet"* emits no avatar at all and still overflows by +177 px, so the
+added markup cannot be the cause of the overflow group.
+
+**Why they are declined rather than fixed.** The same acceptance criteria that govern `RISK-122`: minimal
+code changes only; no feature additions or enhancements; no refactoring beyond security requirements;
+third-party code restricted to version updates; and fix only what is confirmed, with no speculative
+hardening. Accessibility, layout, chart-configuration and copy defects in unmodified files meet none of the
+tests that bring work into this scope. They are written up here because the plan's fourth objective requires
+every documented finding to carry an actionable fix rather than a generic caution.
+
+**Eleven are already named elsewhere and are not restated.**
+
+| Finding | Already covered by |
+| --- | --- |
+| Login inputs carry no `autocomplete` | `RISK-125`, and the login-markup row of `RISK-122` |
+| Accessibility cluster — focus indicators, 44 px targets, five contrast failures including the 1.61:1 sort carets, unlabelled pager input, `logo.png` with no `alt`, no `aria-invalid`/`aria-describedby`/`role="alert"` | the accessibility group of `RISK-122` |
+| No semantic heading on `/login` | the *"no `h1` and no `<main>` landmark"* row of `RISK-122` |
+| Horizontal overflow below 808 px on 6 of 7 screens (minimum content width measured at 457 px on the details page) | the responsive group of `RISK-122`, which records the same root cause and the `.table-responsive` fix; this pass adds the 808 px threshold and the fixed-width navbar as the second contributor |
+| Nine-column Timesheet escapes its card (`overflow-x: visible`, no `.table-responsive`) | same group, same fix |
+| Escaped table content overlaps a foreign panel at 768 px | same group |
+| Details-page *Manage* button clipped at 375 px; read-only grid never stacks | same group |
+| Chart tooltips disabled and `labels` empty on all four doughnuts | the data-presentation group of `RISK-122` |
+| Generic error page lacks `<!DOCTYPE html>` (Quirks Mode) | the *"production error page"* row of `RISK-122`, which also records why that page is deliberately layout-free |
+| HTTP 405 on the avatar path emitted by a pre-built third-party bundle | `RISK-058` |
+| The 88-plus shared `wv-field-select` call sites that made the vendor sink product-wide | `RISK-127`, which closes them all at one boundary |
+
+**The thirteen not previously named, each with a recommended fix.**
+
+| # | Finding | Measured | Recommended fix |
+| --- | --- | --- | --- |
+| 1 | **No cross-process entity-metadata cache invalidation.** *Security-adjacent — read this one first.* | A host that was not restarted kept serving stale option metadata across two subsequent database changes | Field permissions live in the same cached JSON as the metadata, so a runtime permission **tightening** does not reach other host processes until they restart. Until a cross-process invalidation channel exists, treat a permission change as requiring a rolling restart and say so in the operator runbook. The minimal technical fix is a version column on the metadata row that each process re-reads on a short interval; a full notification channel is a larger change than this plan admits |
+| 2 | `rec_user.last_logged_in` is never updated | The write lives inside the fully commented-out block at `WebVella.Erp.Web/Security/WebSecurityUtil.cs` | Left dead deliberately — the plan keeps the dead security code documented rather than deleted. Authentication auditing was restored at the live login path instead, which is what `M-12` actually required. To close this specifically, set the column in `login.cshtml.cs` alongside the existing audit record; it is one statement |
+| 3 | The `weight` field stores 10 when 77 or 55 was submitted | Handler files verified git-unchanged, so pre-existing | The bound property is not the property the save path reads. Trace `weight` from the page model to `RecordManager` and bind the same name at both ends; no security consequence, but it is a data-fidelity defect a user can see |
+| 4 | User-list column headers transposed | — | Correct the header order in the SDK user-list view so each header sits above its own column |
+| 5 | Stale page titles, e.g. *"Create New Application"* on unrelated create screens | — | The titles are copied seed data. Correct the `label` of the affected pages in the SDK page-manage UI; no code change is needed |
+| 6 | The validation banner's title duplicates the first error message | — | Render a fixed heading in the banner component and list the errors beneath it, rather than promoting `errors[0]` into the title |
+| 7 | No success confirmation after create or save | — | A feature addition, which the plan excludes. When scheduled, reuse the toast component already referenced by the shared layout rather than introducing a new one |
+| 8 | `<label for>` points at a hidden input while the visible file input is unlabelled | file-field tag helper | The same class of defect as the `input`/`textarea` mismatch in `RISK-122`: derive `for` from the element actually rendered. Fixing both together in the field tag helpers is cheaper than fixing either alone |
+| 9 | The login POST re-render emits a bare `<img/>` with no `src` and no `alt` | root-caused at the raw-HTML level in the login view | Emit the logo through the same expression the GET path uses, or drop the element on re-render. Cosmetic, but it also produces a console resource error on every failed sign-in |
+| 10 | Overdue count differs by one between `TaskService` and `PcProjectWidgetTaskDistribution` | grand totals still reconcile at 6 | The two use different boundary comparisons for *today*. Pick one — inclusive or exclusive of the current day — and have the widget call the service rather than recomputing |
+| 11 | `MoveFile` raises an unhandled exception on a malformed body | Response is byte-identical to the pre-project baseline: HTTP 400, **0-byte** body, **0** leak tokens | Fail-closed and non-disclosing already, so this is a reliability rather than a security concern — which is why the plan leaves the empty and missing handlers alone. To close it, validate the body shape before dereferencing it and return the same 400 deliberately |
+| 12 | The vendor `WebVella.TagHelpers` hard-codes the Windows time-zone id `"FLE Standard Time"`, which this Linux ICU build cannot resolve | Worked around **outside** the repository with a tzdata symlink, deliberately left in place so later runs still work | Raise upstream: the library should accept the configured `Settings:TimeZoneName` rather than a hard-coded Windows identifier. Until then the platform-level override documented in [the secure configuration guide](secure-configuration.md) is the supported route, and the symlink is a container-local convenience that must not be relied on in a deployment |
+| 13 | **Positive finding, recorded so it is not later mistaken for a defect:** submitting the redaction sentinel as a password is ignored silently rather than stored | — | This is the intended behaviour of the write-side sentinel check and is what prevents a full-record round-trip from overwriting a credential hash. No action. It is the runtime confirmation of the highest-risk ripple the plan identified |
+
+**One thing this pass did *not* find, which is worth recording.** It re-tested every control the remediation
+delivered — credential rehashing, hash redaction, login throttling, authorisation and IDOR boundaries, the
+upload and download pipeline, output encoding, transport and header posture, error propagation, and a full
+CRUD state-consistency cycle — across all seven hosts plus a Development host, and reported **1,179 of 1,180**
+test cases passing with no Critical and no Minor findings. The single failure was `F-R3-XSS`, now `RISK-127`.
+
+This register's canonical index carries `RISK-126`, `RISK-127` and `RISK-128` as its last three rows.

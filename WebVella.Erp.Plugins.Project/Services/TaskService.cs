@@ -12,6 +12,10 @@ using WebVella.Erp.Plugins.Project.Model;
 using WebVella.Erp.Recurrence;
 using WebVella.Erp.Web.Models;
 using WebVella.Erp.Web.Pages.Application;
+//SECURITY - H-06 (CWE-79): SafeStyleValue was promoted from this plugin into WebVella.Erp.Web so the
+//framework's own select conversion boundary could call it too. The framework cannot reference a plugin
+//that references it, so a guard owned here could never have covered the platform-wide select sink.
+using WebVella.Erp.Web.Utils;
 
 
 //TODO develop service

@@ -1,21 +1,40 @@
 ﻿using System;
 
-namespace WebVella.Erp.Plugins.Project.Services
+namespace WebVella.Erp.Web.Utils
 {
 	/// <summary>
-	/// Allow-list guards for the two pieces of database-sourced presentation metadata this plugin
+	/// Allow-list guards for the two pieces of database-sourced presentation metadata the platform
 	/// renders into HTML attributes: a CSS class list and a CSS colour.
 	/// </summary>
 	/// <remarks>
 	/// SECURITY - H-06 (CWE-79, OWASP A03:2021 - stored cross-site scripting).
 	/// <para>
-	/// Both values originate in the <c>options</c> of the task entity's "priority" select field, so
-	/// they are database configuration rather than compile-time constants: whoever can edit that field
-	/// chooses what every dashboard in the product renders. Four independent render paths consume the
-	/// same two values, and the audit found only one of them guarded, which is why these checks live
-	/// here as one shared, reviewable implementation instead of as private members of a single
-	/// component. The alternative - repeating the same two checks at each site - is what allowed three
-	/// of the four paths to be missed in the first place.
+	/// Both values originate in the <c>options</c> of a select or multi-select field, so they are
+	/// database configuration rather than compile-time constants: whoever can edit that field chooses
+	/// what every screen rendering it emits. Several independent render paths consume the same two
+	/// values, which is why these checks live here as one shared, reviewable implementation instead of
+	/// as private members of a single component. The alternative - repeating the same two checks at
+	/// each site - is what allowed path after path to be missed.
+	/// </para>
+	/// <para>
+	/// CORRECTION OF RECORD. The earlier remarks on this class asserted that "four independent render
+	/// paths consume the same two values". That count was short by one, and the missing path is by far
+	/// the widest: <see cref="ModelExtensions.ToWvSelectOption"/> is the single conversion boundary
+	/// through which every select and multi-select field in the product hands its stored options to the
+	/// third-party WebVella.TagHelpers display component, and that component concatenates both values
+	/// straight into a <c>class</c> attribute and a <c>style</c> attribute with no encoding. It is
+	/// reachable on every host that renders any select field, not only on the hosts carrying the
+	/// Project plugin. That is also why this class lives in WebVella.Erp.Web rather than in a plugin:
+	/// the framework cannot call into a plugin that references the framework, so a guard owned by a
+	/// plugin could never have reached the widest sink of the five.
+	/// </para>
+	/// <para>
+	/// Guarding at that boundary additionally closes a sink that correct server-side encoding cannot
+	/// reach. The framework does encode the inline-edit <c>&lt;option data-icon data-color&gt;</c>
+	/// attributes, but the select2 script reads the DECODED attribute value back out of the DOM and
+	/// re-inserts it as markup, reproducing the identical attribute break-out client-side. Because the
+	/// value is allow-listed before it is ever written into those attributes, what the script reads
+	/// back is already safe.
 	/// </para>
 	/// <para>
 	/// Encoding alone is not sufficient for either value, which is the reason an allow-list exists at
@@ -27,8 +46,8 @@ namespace WebVella.Erp.Plugins.Project.Services
 	/// </para>
 	/// <para>
 	/// A rejected value degrades to an empty string in both cases. That is deliberate and is not an
-	/// invented fallback: it is exactly what the platform already yields for a priority option with no
-	/// icon or no colour configured, so the rejected rendering is an existing state of the product.
+	/// invented fallback: it is exactly what the platform already yields for an option with no icon or
+	/// no colour configured, so the rejected rendering is an existing state of the product.
 	/// </para>
 	/// </remarks>
 	public static class SafeStyleValue
