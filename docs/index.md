@@ -1,26 +1,22 @@
 # blitzy-WebVella-ERP
 
-WebVella ERP monolith decomposition — cloud-native microservices, serverless architecture, and OWASP security audit
+WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, with a completed
+OWASP Top 10 (2021) security audit and remediation. The solution comprises nineteen projects: a shared
+core library, a web framework, seven independently hosted site applications and six plugins.
 
-## Security documentation
+## Security
 
-The platform has been audited against the OWASP Top 10 (2021). The findings, the changes made, and
-the operator guidance that follows from them are recorded in the documents below.
+An OWASP Top 10 (2021) audit and remediation is complete: of 53 findings — 5 Critical, 20 High, 18
+Medium and 10 Low — every Critical and High is remediated, and every Medium and Low is documented
+with a recommended fix.
 
-| Document | What it covers |
-|---|---|
-| [Security audit report](security/security-audit-report.md) | Every finding in the mandated eight-field format: finding, severity, CWE, location, description, impact, evidence, remediation |
-| [Remediation log](security/remediation-log.md) | What changed, grouped by vulnerability class, with the verification performed for each |
-| [Risk register](security/risk-register.md) | Recorded decisions, accepted risks, standing warnings and ongoing recommendations |
-| [Secure configuration guide](security/secure-configuration.md) | Operator guidance: required secrets, response headers, transport security, cookies, rate limiting |
-| [Credential migration guide](security/credential-migration.md) | The password-hash migration, operator actions, and rollback guidance |
+* [Audit Report](security/security-audit-report.md) — all 53 findings, each with severity, CWE, location, description, impact, evidence and remediation
+* [Remediation Log](security/remediation-log.md) — what was fixed, per vulnerability class, with the verification performed for each
+* [Risk Register](security/risk-register.md) — accepted risks, open owner decisions, and every documented-only finding
+* [Secure Configuration](security/secure-configuration.md) — operator guide: required settings, secret supply, response headers, transport security, cookies, rate limiting
+* [Credential Migration](security/credential-migration.md) — how existing password hashes are upgraded on next login, and what operators must do
+* [`SECURITY.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/SECURITY.md) — the vulnerability disclosure policy: how to report an issue, and which versions are supported
 
-**Start with the [secure configuration guide](security/secure-configuration.md) if you are deploying
-the platform.** Three secrets must be supplied before it will start, and several controls activate
-only outside the Development environment.
-
-The vulnerability disclosure policy is in
-[`SECURITY.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/SECURITY.md), and the
-third-party dependency inventory — including licences, advisory state and the recorded licensing
-decision — is in
-[`LIBRARIES.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/LIBRARIES.md).
+**Read Secure Configuration before deploying.** The platform refuses to start until its secrets are
+supplied externally, and several controls activate only outside the Development environment. The
+third-party dependency inventory is in [`LIBRARIES.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/LIBRARIES.md).
