@@ -6374,7 +6374,16 @@ namespace WebVella.Erp.Web.Controllers
 			// unnoticed - a source that has already burnt its budget on failed logins will find refresh
 			// refused too, which is the correct outcome for a single hostile source and is documented in the
 			// risk register.
-			if (loginThrottle.IsAddressRefusing(remoteAddress))
+			//
+			// THREAT ADDRESSED - review finding H-OPEN-02, CWE-307 read with CWE-367
+			// (time-of-check/time-of-use). This gate used to be the read-only IsAddressRefusing predicate
+			// followed later by RegisterAddressFailure, so every request in a concurrent burst observed the
+			// same pre-attack count and passed: the budget could be overshot by the size of the burst before
+			// any member of it had recorded anything. It now RESERVES the attempt atomically, before the
+			// token is validated - the same reserve-then-finalise protocol the two password surfaces use,
+			// which the finding requires on every credential and token surface rather than on the password
+			// ones alone. Every exit below finalises the reservation exactly once.
+			if (!loginThrottle.TryBeginAddressAttempt(remoteAddress))
 			{
 				if (loginThrottle.TryClaimRefusalAudit(remoteAddress, out var suppressedRefusals))
 				{
@@ -6420,7 +6429,10 @@ namespace WebVella.Erp.Web.Controllers
 			// method's own missing guard, not anything about the token.
 			if (model == null || string.IsNullOrWhiteSpace(model.Token))
 			{
-				loginThrottle.RegisterAddressFailure(remoteAddress);
+				// H-OPEN-02: finalises the reservation taken above AND records the failure, in one call. A
+				// malformed submission from a source still inside its budget is a genuine failed attempt and
+				// must be metered, or an attacker could probe indefinitely with empty bodies.
+				loginThrottle.FinishAddressAttempt(remoteAddress, failed: true);
 				SecurityAuditLog.Write(Diagnostics.LogType.Error, "GetNewJwtToken",
 					"Bearer token refresh rejected - no token supplied.",
 					"ip=" + SecurityAuditLog.Field(remoteAddress, MAX_AUDITED_FIELD_LENGTH));
@@ -6430,6 +6442,11 @@ namespace WebVella.Erp.Web.Controllers
 				return DoResponse(response);
 			}
 
+			// H-OPEN-02: the outcome of the reservation, decided once and finalised in the finally below so
+			// that no exit path can leave it outstanding. Null means "not yet judged", which is what an
+			// unexpected fault leaves it as - and a fault must not be charged as a failure, for the reason
+			// the catch clause records.
+			bool? refreshFailed = null;
 			try
 			{
 				response.Object = await AuthService.GetNewTokenAsync(model.Token);
@@ -6439,10 +6456,7 @@ namespace WebVella.Erp.Web.Controllers
 				// the attempt has to be counted. The response is left exactly as it was: this route has always
 				// answered a bad token with Success = true and a null Object, and changing that would alter the
 				// response envelope for every existing client.
-				if (response.Object == null)
-				{
-					loginThrottle.RegisterAddressFailure(remoteAddress);
-				}
+				refreshFailed = response.Object == null;
 			}
 			catch (Exception e)
 			{
@@ -6476,6 +6490,14 @@ namespace WebVella.Erp.Web.Controllers
 				{
 					response.Message = INTERNAL_ERROR_MESSAGE;
 				}
+			}
+			finally
+			{
+				// H-OPEN-02: the reservation is released exactly once, whatever happened. A genuine server
+				// fault is finalised WITHOUT a failure - an attacker cannot provoke one on demand, and
+				// counting it would let a datastore wobble lock out legitimate sources, which is the same
+				// doctrine the issue route applies to AbandonAttempt.
+				loginThrottle.FinishAddressAttempt(remoteAddress, refreshFailed ?? false);
 			}
 			return DoResponse(response);
 		}

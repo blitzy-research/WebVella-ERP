@@ -1,5 +1,8 @@
 ﻿using System;
+using System.Globalization;
 using Microsoft.Extensions.Caching.Memory;
+using Newtonsoft.Json;
+using WebVella.Erp.Database;
 
 namespace WebVella.Erp.Web.Services
 {
@@ -20,20 +23,40 @@ namespace WebVella.Erp.Web.Services
 	//     Callers therefore RESERVE an attempt before authenticating and finalise it afterwards;
 	//     reservations count towards the threshold while they are outstanding.
 	//   * CWE-770 (allocation without limits). The counters are keyed partly by a value the caller
-	//     supplies, so an attacker who varies the username can mint unbounded distinct keys. The
-	//     backing store is therefore explicitly size-bounded rather than free to grow.
+	//     supplies, so an attacker who varies the username can mint unbounded distinct keys. Growth is
+	//     bounded by EXPIRY rather than by capacity: every entry carries an absolute expiry and expired
+	//     rows are reclaimed by the durable store's own sweep, so the live set is bounded by the attempt
+	//     rate within one window - and, decisively, a fabricated key can no longer displace a real
+	//     account's counter, because there is nothing to evict.
 	//   * Source-address rotation. Counting failures against a combined username-and-address key
 	//     hands an attacker with a proxy pool a fresh budget per address for the same account, so
 	//     the account is never locked. The two dimensions are therefore counted INDEPENDENTLY.
 	//
-	// Scope limitation, documented rather than hidden: the backing store is in-process, so the
-	// protection is per-process only. A multi-instance or load-balanced deployment is NOT protected
-	// by this service, because each process counts failures independently. Moving the counters to a
-	// distributed backing store is a recorded recommendation and is deliberately not built here.
+	// H-OPEN-02: THE COUNTERS ARE NOW DURABLE AND SHARED, AND THAT IS THE FIX. They used to live in a
+	// process-local, size-bounded MemoryCache, and each of that store's three boundaries defeated the
+	// mandated five-attempt guarantee outright:
+	//   * a process restart discarded every counter and every in-force lockout, so a deployment, recycle
+	//     or crash handed an attacker a fresh budget;
+	//   * a second instance behind a load balancer counted independently, so the effective budget was
+	//     five failures PER INSTANCE - the guarantee multiplied by the instance count;
+	//   * pre-lockout counters were stored at LOW cache priority and were therefore deliberately
+	//     capacity-evictable, so an attacker who submitted twenty thousand fabricated usernames could
+	//     displace a target account's partial count and repeat that reset indefinitely.
+	// State therefore moved to Database/DbSecurityStateRepository: durable across restarts, shared by
+	// every instance against the same database, ATOMIC per key (each transition is a single row-locked
+	// read-modify-write, so a concurrent burst is serialised by the database rather than by an
+	// in-process lock that only covers one process), and reclaimed BY EXPIRY ONLY - there is no capacity
+	// ceiling, so no counter and no lockout can ever be evicted while it is still live. It needs no
+	// schema change and no new dependency: see that type for the full rationale.
+	//
+	// AND IT FAILS CLOSED. When the durable store cannot be consulted, TryBeginAttempt REFUSES the
+	// attempt rather than allowing it. That costs nothing real - credential verification reads the user
+	// from the same database, so a database this code cannot reach is one no login could have succeeded
+	// against - and the alternative, allowing an unmetered attempt whenever the counter is unavailable,
+	// is precisely how an outage becomes an unlimited guessing window.
 	//
 	// Sealed deliberately. Nothing derives from this type, and the lockout invariants below are only
-	// sound if no subclass can override or widen them; sealing also keeps the disposal pattern for
-	// the owned cache minimal.
+	// sound if no subclass can override or widen them.
 	public sealed class LoginThrottleService : IDisposable
 	{
 		// "Account lockout after 5 failed attempts" is the literal value mandated by the
@@ -65,22 +88,13 @@ namespace WebVella.Erp.Web.Services
 		// than less, so it errs in the safe direction.
 		private const int MaxKeyComponentLength = 128;
 
-		// Hard ceiling on the number of tracked principals, which is what makes CWE-770 unreachable:
-		// the store evicts rather than grows once this many entries are live. Sized so that ordinary
-		// operation never reaches it, while the memory an attacker can pin is bounded to this many
-		// small entries no matter how many distinct usernames they submit.
-		private const long MaxTrackedPrincipals = 20000;
-
-		// Fraction of entries discarded when the ceiling is hit. Eviction prefers the lowest-priority
-		// entries first, which is why in-force lockouts are stored at a higher priority than
-		// still-counting entries - see Store.
-		private const double EvictionCompactionPercentage = 0.2;
-
-		// Namespaced so throttle entries cannot collide with any other consumer's cache keys, and
-		// separated by dimension so an account counter and an address counter can never alias - an
-		// account named after an IP address must not share a counter with that address.
-		private const string AccountKeyPrefix = "wv_login_throttle_acct_";
-		private const string AddressKeyPrefix = "wv_login_throttle_addr_";
+		// Namespaced so throttle entries cannot collide with any other consumer's durable-store keys, and
+		// separated by dimension so an account counter and an address counter can never alias - an account
+		// named after an IP address must not share a counter with that address. Both sit inside the
+		// reserved security namespace, so the durable store's reclamation sweep for this control can never
+		// reach another control's rows or a plugin's own row.
+		private const string AccountKeyPrefix = DbSecurityStateRepository.ReservedKeyPrefix + "lthr_acct_";
+		private const string AddressKeyPrefix = DbSecurityStateRepository.ReservedKeyPrefix + "lthr_addr_";
 
 		// Substituted for a missing username or address so that a malformed request is still
 		// counted against a stable, non-empty key instead of failing.
@@ -92,35 +106,43 @@ namespace WebVella.Erp.Web.Services
 		//
 		// Coalescing refusal audits without this would trade one defect for another. The suppressed
 		// count is carried into the NEXT audited refusal, so a flood that stops mid-window would have
-		// its volume expire with the cache entry and never be recorded at all: the amplification would
+		// its volume expire with the entry and never be recorded at all: the amplification would
 		// be gone and so would the evidence. This interval guarantees that a sustained flood keeps
 		// producing periodic, dated records, while bounding amplification to one record per hundred
 		// refused requests rather than one per request.
 		private const int RefusalAuditSuppressionInterval = 100;
 
-		// A dedicated, size-bounded cache rather than the platform's Utils.Cache helper. That helper
-		// constructs its MemoryCache with default options and exposes no way to set a SizeLimit, so
-		// entries written through it are bounded only by their expiration - which is precisely the
-		// CWE-770 exposure above, and is not fixable from the calling side. Raising the limit on the
-		// shared instance is not an option either, because it would change eviction behaviour for
-		// every other consumer of that cache. This instance is private, is never shared, and is
-		// owned for the lifetime of this service, which is registered as a singleton so the counters
-		// survive across requests. No new package dependency is introduced: MemoryCache is the same
-		// type that helper already uses.
-		private readonly MemoryCache cache = new MemoryCache(new MemoryCacheOptions
+		// H-OPEN-02: THE COUNTERS THEMSELVES HAVE NO IN-PROCESS COPY AND THERE IS NO IN-PROCESS LOCK, and
+		// both absences are the fix rather than a simplification. Every transition below is a single atomic
+		// read-modify-write inside the durable store, which serialises concurrent mutation of one key
+		// across every process against the database. A local lock could only ever have serialised the
+		// instance that happened to receive the request, which is exactly why the previous shape counted
+		// five failures per instance instead of five in total. A COUNTER is never cached: a count read from
+		// a stale local copy is a count that permits attempts it should have refused.
+		//
+		// THE ONE THING THAT IS MIRRORED LOCALLY IS AN IN-FORCE LOCKOUT, AND ONLY POSITIVELY. Once the
+		// durable store has said "this key is locked out until T", that answer cannot change back before T:
+		// the window-lapse rule keys on the same T, and no operation clears a lockout early. So a hit here
+		// can only ever REFUSE a key that is already refused - it can never authorise an attempt, never
+		// mask a lockout another instance recorded (a miss always consults the durable store), and never
+		// outlive the fact it mirrors, because the entry's absolute expiration IS T. What it buys is that
+		// an attacker hammering an account that is already locked out costs one cheap lookup instead of a
+		// row-locked transaction per request, which is what stops the lockout itself from becoming the
+		// expensive operation. Eviction under the size ceiling is harmless here for the same reason it is
+		// harmless in SessionRevocationService: the next request simply asks the database and re-learns the
+		// same answer. That is the opposite of the previous design, where eviction discarded a PARTIAL
+		// COUNT and handed the budget back.
+		private readonly MemoryCache activeLockouts = new MemoryCache(new MemoryCacheOptions
 		{
-			SizeLimit = MaxTrackedPrincipals,
+			SizeLimit = MaxMirroredLockouts,
 			CompactionPercentage = EvictionCompactionPercentage
 		});
 
-		// Every state transition below is a read-modify-write of a counter that concurrent login
-		// attempts contend for - a brute-force attack is by definition concurrent - so all of them
-		// run under this lock. The state object handed back by the cache is the very instance the
-		// cache holds, so both the read and the mutation must be inside the same critical section.
-		// Contention is irrelevant in practice: the work here is a dictionary lookup and a few field
-		// assignments, against a login path that performs a database query and a deliberately slow
-		// password hash.
-		private readonly object lockObj = new object();
+		// Ceiling on mirrored lockouts, and the fraction discarded when it is reached. Both are
+		// housekeeping numbers rather than security ones - see the field above for why eviction here
+		// cannot weaken the control.
+		private const long MaxMirroredLockouts = 20000;
+		private const double EvictionCompactionPercentage = 0.2;
 
 		// Consulted by every credential-verification entry point BEFORE the credential is checked.
 		//
@@ -135,27 +157,36 @@ namespace WebVella.Erp.Web.Services
 		// service refuse more, never less, and is bounded rather than permanent: the entry holding it
 		// expires with the counting window, so the reservation is released within WindowMinutes at
 		// worst.
+		//
+		// H-OPEN-02: THE TWO DIMENSIONS ARE NOW RESERVED IN TWO SEPARATE ATOMIC OPERATIONS, because the
+		// durable store's unit of atomicity is one row. Each check-and-reserve is indivisible for its own
+		// key - which is the property that makes the threshold hold under a concurrent burst and across
+		// instances - and the composition is made safe by ORDER and COMPENSATION: the account dimension
+		// (the mandated five-attempt guarantee) is taken first, and if the address dimension then refuses,
+		// the account reservation is released again before returning. The worst outcome of a failure
+		// between the two is a released-late reservation, which refuses MORE rather than less and expires
+		// with the window.
+		//
+		// FAILS CLOSED: a store that cannot be consulted refuses the attempt.
 		public bool TryBeginAttempt(string username, string ipAddress)
 		{
 			var accountKey = BuildAccountKey(username);
 			var addressKey = BuildAddressKey(ipAddress);
-			var now = DateTime.UtcNow;
 
-			lock (lockObj)
+			if (!TryReserve(accountKey, MaxFailedAttemptsPerAccount))
+				return false;
+
+			if (!TryReserve(addressKey, MaxFailedAttemptsPerAddress))
 			{
-				var account = GetState(accountKey, now);
-				var address = GetState(addressKey, now);
-
-				if (IsRefusing(account, MaxFailedAttemptsPerAccount, now))
-					return false;
-
-				if (IsRefusing(address, MaxFailedAttemptsPerAddress, now))
-					return false;
-
-				Reserve(accountKey, account, now);
-				Reserve(addressKey, address, now);
-				return true;
+				// The account reservation must not outlive a refusal it did not cause. Released with the
+				// same non-failure finalisation an abandoned attempt uses, so the account's failure count
+				// is untouched: the caller was refused by the ADDRESS budget and must not also be charged
+				// a failure against the account it named.
+				RecordOutcome(accountKey, MaxFailedAttemptsPerAccount, failed: false);
+				return false;
 			}
+
+			return true;
 		}
 
 		// Finalises a reserved attempt whose credential was rejected. Records one failure against
@@ -163,13 +194,8 @@ namespace WebVella.Erp.Web.Services
 		// corresponding lockout as soon as either threshold is reached.
 		public void RegisterFailedAttempt(string username, string ipAddress)
 		{
-			var now = DateTime.UtcNow;
-
-			lock (lockObj)
-			{
-				RecordOutcome(BuildAccountKey(username), MaxFailedAttemptsPerAccount, failed: true, now: now);
-				RecordOutcome(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, failed: true, now: now);
-			}
+			RecordOutcome(BuildAccountKey(username), MaxFailedAttemptsPerAccount, failed: true);
+			RecordOutcome(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, failed: true);
 		}
 
 		// Finalises a reserved attempt that authenticated successfully, so a legitimate user is never
@@ -183,18 +209,13 @@ namespace WebVella.Erp.Web.Services
 		// address nothing, since that counter has five times the budget and expires with the window.
 		public void RegisterSuccess(string username, string ipAddress)
 		{
-			var now = DateTime.UtcNow;
+			// Deleting the row releases this reservation and discards the account's failures in one
+			// step. It also discards any other reservation outstanding against the same account, which
+			// yields an attacker nothing: reaching this method at all required a credential that
+			// already authenticates.
+			DbSecurityStateRepository.TryMutate(BuildAccountKey(username), _ => DbSecurityStateMutation.Delete());
 
-			lock (lockObj)
-			{
-				// Removing the entry releases this reservation and discards the account's failures in
-				// one step. It also discards any other reservation outstanding against the same
-				// account, which yields an attacker nothing: reaching this method at all required a
-				// credential that already authenticates.
-				cache.Remove(BuildAccountKey(username));
-
-				RecordOutcome(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, failed: false, now: now);
-			}
+			RecordOutcome(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, failed: false);
 		}
 
 		// Finalises a reserved attempt that could not be completed - the credential was never
@@ -203,13 +224,8 @@ namespace WebVella.Erp.Web.Services
 		// base, and the reservation cannot leak either.
 		public void AbandonAttempt(string username, string ipAddress)
 		{
-			var now = DateTime.UtcNow;
-
-			lock (lockObj)
-			{
-				RecordOutcome(BuildAccountKey(username), MaxFailedAttemptsPerAccount, failed: false, now: now);
-				RecordOutcome(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, failed: false, now: now);
-			}
+			RecordOutcome(BuildAccountKey(username), MaxFailedAttemptsPerAccount, failed: false);
+			RecordOutcome(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, failed: false);
 		}
 
 		// Decides whether a REFUSAL should be written to the audit trail, and reports how many
@@ -258,20 +274,32 @@ namespace WebVella.Erp.Web.Services
 			suppressedRefusals = 0;
 
 			var addressKey = BuildAddressKey(ipAddress);
-			var now = DateTime.UtcNow;
+			int claimed = 0;
+			bool audit = false;
+			DateTime observedLockout = DateTime.MinValue;
 
-			lock (lockObj)
+			// H-OPEN-02: one atomic mutation, so two concurrent refusals from the same source cannot both
+			// claim the same audit slot - which under the previous in-process lock they could do on two
+			// different instances, producing the amplification the coalescing exists to prevent. A store
+			// fault means the claim CANNOT be recorded, and the caller is told not to write: an unrecorded
+			// claim would let every subsequent refusal claim again, so failing towards silence bounds the
+			// log while a failed write towards writing would not.
+			bool recorded = MutateState(addressKey, (state, now) =>
 			{
-				var state = GetState(addressKey, now) ?? new LoginAttemptState();
+				// This method is only ever reached after a refusal, so the record it reads is the one most
+				// likely to carry a live lockout. Noting the deadline here keeps the positive-only mirror
+				// warm on exactly the hot path - a source hammering while already locked out - so those
+				// requests stop costing a row-locked transaction each.
+				observedLockout = state.LockedOutUntilUtc;
 
 				// First refusal of this window from this source: audit it, and carry forward anything
 				// suppressed during the previous window so no volume is lost across the boundary.
 				if (!state.RefusalAuditClaimed)
 				{
 					state.RefusalAuditClaimed = true;
-					suppressedRefusals = state.SuppressedRefusalAudits;
+					claimed = state.SuppressedRefusalAudits;
 					state.SuppressedRefusalAudits = 0;
-					Store(addressKey, state, now);
+					audit = true;
 					return true;
 				}
 
@@ -283,15 +311,21 @@ namespace WebVella.Erp.Web.Services
 
 				if (state.SuppressedRefusalAudits >= RefusalAuditSuppressionInterval)
 				{
-					suppressedRefusals = state.SuppressedRefusalAudits;
+					claimed = state.SuppressedRefusalAudits;
 					state.SuppressedRefusalAudits = 0;
-					Store(addressKey, state, now);
-					return true;
+					audit = true;
 				}
 
-				Store(addressKey, state, now);
+				return true;
+			});
+
+			MirrorLockout(addressKey, observedLockout);
+
+			if (!recorded)
 				return false;
-			}
+
+			suppressedRefusals = claimed;
+			return audit;
 		}
 
 		// Refusal predicate for an entry point that has no account dimension at all - specifically the
@@ -304,15 +338,55 @@ namespace WebVella.Erp.Web.Services
 		// because there is no principal to attribute an attempt to until the token validates.
 		//
 		// Read-only: this neither reserves nor records. Pair it with RegisterAddressFailure.
+		//
+		// H-OPEN-02: retained as the read-only predicate it has always been, and it FAILS CLOSED - a store
+		// that cannot be consulted reports "refusing", because an unreadable counter must not read as an
+		// empty one. The route that used it now reserves through TryBeginAddressAttempt instead, so this
+		// member and RegisterAddressFailure remain for callers outside this assembly: both are public
+		// members of a public type, and the engagement forbids API contract changes.
 		public bool IsAddressRefusing(string ipAddress)
 		{
 			var addressKey = BuildAddressKey(ipAddress);
 			var now = DateTime.UtcNow;
 
-			lock (lockObj)
+			if (activeLockouts.TryGetValue(addressKey, out _))
+				return true;
+
+			if (!TryReadState(addressKey, out LoginAttemptState state))
+				return true;
+
+			if (IsRefusing(state, MaxFailedAttemptsPerAddress, now))
 			{
-				return IsRefusing(GetState(addressKey, now), MaxFailedAttemptsPerAddress, now);
+				MirrorLockout(addressKey, state.LockedOutUntilUtc);
+				return true;
 			}
+
+			return false;
+		}
+
+		// Reserves one attempt against the source address alone, for an entry point that has no account
+		// dimension - the anonymous bearer-token REFRESH route.
+		//
+		// THREAT ADDRESSED - review finding H-OPEN-02, CWE-307 read together with CWE-367
+		// (time-of-check/time-of-use). The refresh route used the check-then-act pair above, so a
+		// concurrent burst could collectively overshoot the address budget by the size of the burst before
+		// any member of it had recorded a failure - and the remediation for this finding requires a
+		// reservation to be taken BEFORE the validation work an attempt causes, on every credential and
+		// token surface rather than on the password surfaces alone. This is that reservation for the
+		// account-less surface: one atomic check-and-reserve, exactly like the account dimension of
+		// TryBeginAttempt.
+		//
+		// A true result MUST be finalised exactly once with FinishAddressAttempt. FAILS CLOSED.
+		public bool TryBeginAddressAttempt(string ipAddress)
+		{
+			return TryReserve(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress);
+		}
+
+		// Finalises a reservation taken by TryBeginAddressAttempt: records the failure when
+		// <paramref name="failed"/> is true, and releases the reservation either way.
+		public void FinishAddressAttempt(string ipAddress, bool failed)
+		{
+			RecordOutcome(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, failed);
 		}
 
 		// Records one failure against the source address WITHOUT a prior reservation, for the same
@@ -334,12 +408,7 @@ namespace WebVella.Erp.Web.Services
 		// how large a burst can be.
 		public void RegisterAddressFailure(string ipAddress)
 		{
-			var now = DateTime.UtcNow;
-
-			lock (lockObj)
-			{
-				RecordUnreservedFailure(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress, now);
-			}
+			RecordUnreservedFailure(BuildAddressKey(ipAddress), MaxFailedAttemptsPerAddress);
 		}
 
 		// Refusal predicate, evaluated under the caller's lock.
@@ -358,96 +427,239 @@ namespace WebVella.Erp.Web.Services
 			return (state.FailedAttempts + state.AttemptsInFlight) >= maxFailedAttempts;
 		}
 
-		// Takes out one reservation against a key, under the caller's lock. The state is passed in
-		// already read - and therefore already normalised for a lapsed window by GetState - so that
-		// the expiry rule is applied exactly once per operation and cannot diverge between the
-		// refusal check and the reservation that follows it.
-		private void Reserve(string key, LoginAttemptState state, DateTime now)
+		// Atomically tests the refusal predicate and, if it passes, takes out one reservation against a
+		// key. One durable mutation, so the test and the reservation cannot be separated by a concurrent
+		// attempt on any instance - which is the property that makes the mandated threshold hold rather
+		// than merely being written down.
+		//
+		// Returns false both when the key is refusing and when the durable store could not be reached:
+		// the caller may not distinguish them, and must not, because both mean "do not verify a
+		// credential now".
+		private bool TryReserve(string key, int maxFailedAttempts)
 		{
-			if (state == null)
-				state = new LoginAttemptState();
+			// Short-circuit on a lockout this process has already been told about. Positive-only, so this
+			// can only refuse an attempt the durable store would also refuse.
+			if (activeLockouts.TryGetValue(key, out _))
+				return false;
 
-			state.AttemptsInFlight += 1;
-			Store(key, state, now);
+			bool reserved = false;
+			DateTime observedLockout = DateTime.MinValue;
+
+			bool recorded = MutateState(key, (state, now) =>
+			{
+				if (IsRefusing(state, maxFailedAttempts, now))
+				{
+					observedLockout = state.LockedOutUntilUtc;
+					return true;
+				}
+
+				state.AttemptsInFlight += 1;
+				reserved = true;
+				return true;
+			});
+
+			if (!reserved)
+				MirrorLockout(key, observedLockout);
+
+			return recorded && reserved;
 		}
 
 		// Releases one reservation against a key and, when the credential was rejected, records the
-		// failure. Runs under the caller's lock.
-		private void RecordOutcome(string key, int maxFailedAttempts, bool failed, DateTime now)
+		// failure. One atomic durable mutation.
+		private void RecordOutcome(string key, int maxFailedAttempts, bool failed)
 		{
-			var state = GetState(key, now) ?? new LoginAttemptState();
+			DateTime appliedLockout = DateTime.MinValue;
 
-			// Floored rather than simply decremented: the entry may have been evicted or expired
-			// between the reservation and this call, in which case the count legitimately starts from
-			// zero and must not go negative - a negative in-flight count would subtract from recorded
-			// failures and silently raise the effective threshold.
-			state.AttemptsInFlight = Math.Max(0, state.AttemptsInFlight - 1);
-
-			if (failed)
+			MutateState(key, (state, now) =>
 			{
-				if (now < state.LockedOutUntilUtc)
-				{
-					// A lockout was applied by a concurrent attempt while this one was in flight. The
-					// counter is not advanced and the lockout is not extended: the existing entry
-					// already carries the protection, and extending it on every further attempt would
-					// let an attacker hold a real account locked out indefinitely.
-				}
-				else
-				{
-					// No stale-count reset is needed here: GetState has already cleared any window
-					// whose lockout deadline has passed, so a lapsed lockout arrives as a zeroed
-					// counter and this simply opens a fresh window.
-					state.FailedAttempts += 1;
-					if (state.FailedAttempts >= maxFailedAttempts)
-						state.LockedOutUntilUtc = now.AddMinutes(WindowMinutes);
-				}
-			}
+				// Floored rather than simply decremented: the entry may have expired between the
+				// reservation and this call, in which case the count legitimately starts from
+				// zero and must not go negative - a negative in-flight count would subtract from recorded
+				// failures and silently raise the effective threshold.
+				state.AttemptsInFlight = Math.Max(0, state.AttemptsInFlight - 1);
 
-			Store(key, state, now);
+				if (failed)
+				{
+					if (now < state.LockedOutUntilUtc)
+					{
+						// A lockout was applied by a concurrent attempt while this one was in flight. The
+						// counter is not advanced and the lockout is not extended: the existing entry
+						// already carries the protection, and extending it on every further attempt would
+						// let an attacker hold a real account locked out indefinitely.
+					}
+					else
+					{
+						// No stale-count reset is needed here: Normalize has already cleared any window
+						// whose lockout deadline has passed, so a lapsed lockout arrives as a zeroed
+						// counter and this simply opens a fresh window.
+						state.FailedAttempts += 1;
+						if (state.FailedAttempts >= maxFailedAttempts)
+						{
+							state.LockedOutUntilUtc = now.AddMinutes(WindowMinutes);
+							appliedLockout = state.LockedOutUntilUtc;
+						}
+					}
+				}
+
+				return true;
+			});
+
+			MirrorLockout(key, appliedLockout);
 		}
 
-		// Records a failure against a key that was never reserved. Runs under the caller's lock.
+		// Records a failure against a key that was never reserved.
 		//
 		// Identical to the failure half of RecordOutcome, minus the reservation release - see
 		// RegisterAddressFailure for why releasing a reservation this caller never took would be a
 		// throttle bypass. The two share no code on purpose: factoring the common half out would leave
 		// a helper whose correctness depends on the caller having got the reservation accounting right
 		// elsewhere, which is exactly the coupling that produced the hazard.
-		private void RecordUnreservedFailure(string key, int maxFailedAttempts, DateTime now)
+		private void RecordUnreservedFailure(string key, int maxFailedAttempts)
 		{
-			var state = GetState(key, now) ?? new LoginAttemptState();
+			DateTime appliedLockout = DateTime.MinValue;
 
-			if (now < state.LockedOutUntilUtc)
+			MutateState(key, (state, now) =>
 			{
-				// A lockout is already in force. The counter is not advanced and the deadline is not
-				// extended, for the same reason as in RecordOutcome: extending it on every further
-				// attempt would let an attacker pin a shared source address in lockout indefinitely.
-			}
-			else
-			{
-				// GetState has already cleared any window whose deadline has passed, so a lapsed
-				// lockout arrives zeroed and this opens a fresh window.
-				state.FailedAttempts += 1;
-				if (state.FailedAttempts >= maxFailedAttempts)
-					state.LockedOutUntilUtc = now.AddMinutes(WindowMinutes);
-			}
+				if (now < state.LockedOutUntilUtc)
+				{
+					// A lockout is already in force. The counter is not advanced and the deadline is not
+					// extended, for the same reason as in RecordOutcome: extending it on every further
+					// attempt would let an attacker pin a shared source address in lockout indefinitely.
+				}
+				else
+				{
+					// Normalize has already cleared any window whose deadline has passed, so a lapsed
+					// lockout arrives zeroed and this opens a fresh window.
+					state.FailedAttempts += 1;
+					if (state.FailedAttempts >= maxFailedAttempts)
+					{
+						state.LockedOutUntilUtc = now.AddMinutes(WindowMinutes);
+						appliedLockout = state.LockedOutUntilUtc;
+					}
+				}
 
-			Store(key, state, now);
+				return true;
+			});
+
+			MirrorLockout(key, appliedLockout);
 		}
 
-		// Reads the state for a key, normalised for the current time. Returns null when nothing is
-		// tracked.
-		//
-		// INVARIANT: this is the ONE place that knows when a counting window has ended, and every
-		// operation reads through it. Applying the rule here rather than inside any individual operation
-		// is what makes recovery from a lockout a property of the LOGIC rather than of cache timing -
-		// Store deliberately extends an entry's lifetime to outlive the lockout it carries, so eviction
-		// must never be what releases a principal. Do not duplicate this rule into a caller.
-		private LoginAttemptState GetState(string key, DateTime now)
+		// Records an in-force lockout in the positive-only local mirror. A deadline that is absent or
+		// already past is not mirrored, so the mirror can never hold an entry that outlives the lockout it
+		// represents - its absolute expiration is that deadline exactly.
+		private void MirrorLockout(string key, DateTime lockedOutUntilUtc)
 		{
-			LoginAttemptState state;
-			if (!cache.TryGetValue(key, out state) || state == null)
-				return null;
+			if (lockedOutUntilUtc <= DateTime.UtcNow)
+				return;
+
+			activeLockouts.Set(key, true, new MemoryCacheEntryOptions
+			{
+				AbsoluteExpiration = new DateTimeOffset(lockedOutUntilUtc, TimeSpan.Zero),
+				Size = 1,
+				Priority = CacheItemPriority.High
+			});
+		}
+
+		// Reads the state for a key from the durable store, normalised for the current time.
+		//
+		// Returns false when the store could not be consulted at all, which every caller treats as a
+		// refusal. A true result with a default state means "nothing is tracked", which is a different
+		// answer and must stay distinguishable from the first.
+		private static bool TryReadState(string key, out LoginAttemptState state)
+		{
+			state = new LoginAttemptState();
+
+			if (!DbSecurityStateRepository.TryRead(key, out string payload))
+				return false;
+
+			state = Normalize(Deserialize(payload), DateTime.UtcNow);
+			return true;
+		}
+
+		// Applies an atomic read-modify-write to the state for a key, and stores the result with an
+		// expiry that is guaranteed to outlive any lockout it carries.
+		//
+		// INVARIANT, and it is the same one the previous in-process implementation held: the failure
+		// count, the outstanding reservations and the lockout deadline live in ONE record, so nothing can
+		// drop the lockout while preserving the counter, nor the reverse. The window-lapse rule is applied
+		// in exactly one place - Normalize, called here - so recovery from a lockout is a property of the
+		// LOGIC rather than of storage timing, and expiry can never release a locked-out principal early.
+		//
+		// Returns false when the mutation could not be committed. The callback is invoked at most once.
+		private static bool MutateState(string key, Func<LoginAttemptState, DateTime, bool> mutate)
+		{
+			return DbSecurityStateRepository.TryMutate(key, payload =>
+			{
+				DateTime now = DateTime.UtcNow;
+				LoginAttemptState state = Normalize(Deserialize(payload), now);
+
+				if (!mutate(state, now))
+					return DbSecurityStateMutation.Delete();
+
+				// Re-measured from the most recent attempt, which is stricter than a fixed window: an
+				// attacker pacing attempts cannot age the counter out from under itself. Extended to
+				// outlive an in-force lockout so expiry can never end one early.
+				TimeSpan lifetime = TimeSpan.FromMinutes(WindowMinutes);
+				TimeSpan remainingLockout = state.LockedOutUntilUtc - now;
+				if (remainingLockout > lifetime)
+					lifetime = remainingLockout;
+
+				return DbSecurityStateMutation.Store(JsonConvert.SerializeObject(state, StorageSerializerSettings), now.Add(lifetime));
+			});
+		}
+
+		// Serialisation settings for the stored record: the invariant culture and unambiguous UTC handling,
+		// supplied explicitly rather than inherited.
+		//
+		// AND THE RECORD ITSELF CARRIES NO DateTime, WHICH IS THE REAL DEFENCE. Explicit settings are NOT
+		// sufficient on their own here, which was measured rather than assumed: JsonConvert.SerializeObject
+		// with a settings argument resolves through JsonSerializer.CreateDefault, so the CONVERTERS
+		// registered in JsonConvert.DefaultSettings are still applied - and all seven hosts register
+		// ErpDateTimeJsonConverter globally, which renders a DateTime in the installation's configured
+		// display time zone and drops the UTC marker. A lockout deadline computed in UTC was therefore
+		// written as an unmarked LOCAL timestamp: on a host configured for UTC+3 a deadline of 18:26Z was
+		// stored as "21:26:24.039", and DateTime.MinValue as "0001-01-01T01:34:00.000". The round trip was
+		// self-consistent on ONE host - which is precisely what makes the defect dangerous - but the stored
+		// text was ambiguous, so two instances in different time zones, or one host whose display zone was
+		// reconfigured, would have disagreed about when a lockout ends. For a control whose entire purpose
+		// is to be shared across instances that is a fail-open. The deadline is therefore stored as UTC
+		// TICKS, a plain integer no converter can reinterpret and no time zone can shift, and these
+		// settings remain as a second line of defence over the record's remaining numeric fields.
+		private static readonly JsonSerializerSettings StorageSerializerSettings = new JsonSerializerSettings
+		{
+			DateTimeZoneHandling = DateTimeZoneHandling.Utc,
+			DateFormatHandling = DateFormatHandling.IsoDateFormat,
+			DateParseHandling = DateParseHandling.DateTime,
+			Culture = CultureInfo.InvariantCulture,
+			Formatting = Formatting.None
+		};
+
+		// Reads a stored record, or a fresh one when nothing is stored.
+		//
+		// A payload this build cannot deserialise yields a FRESH state rather than a fault or a lockout.
+		// That direction is deliberate: an unreadable counter must not lock an account out on state
+		// nobody can interpret, and the cost of the other direction - restarting one principal's count -
+		// is bounded by the window, whereas an uninterpretable permanent lockout is not.
+		private static LoginAttemptState Deserialize(string payload)
+		{
+			if (string.IsNullOrWhiteSpace(payload))
+				return new LoginAttemptState();
+
+			try
+			{
+				return JsonConvert.DeserializeObject<LoginAttemptState>(payload, StorageSerializerSettings) ?? new LoginAttemptState();
+			}
+			catch (JsonException)
+			{
+				return new LoginAttemptState();
+			}
+		}
+
+		// Applies the end-of-window rule. See MutateState for why this lives in exactly one place.
+		private static LoginAttemptState Normalize(LoginAttemptState state, DateTime now)
+		{
+			if (state == null)
+				return new LoginAttemptState();
 
 			// A window whose lockout deadline has passed is spent: its failures must stop refusing
 			// anything, or the principal would remain locked out after serving the lockout it earned.
@@ -462,55 +674,13 @@ namespace WebVella.Erp.Web.Services
 				// is locked out again later is audited again rather than staying permanently silent.
 				// The suppressed count is deliberately PRESERVED across this reset: it is reported by
 				// the next audited refusal, and clearing it here would discard the very volume the
-				// coalescing exists to summarise. When the source simply stops, the entry expires and
+				// coalescing exists to summarise. When the source simply stops, the record expires and
 				// the residual count goes with it - which is why TryClaimRefusalAudit also reports on a
 				// fixed interval rather than only at window boundaries.
 				state.RefusalAuditClaimed = false;
 			}
 
 			return state;
-		}
-
-		// Writes the state back under the caller's lock.
-		private void Store(string key, LoginAttemptState state, DateTime now)
-		{
-			// Fail-safe invariant. The failure count, the outstanding reservations and the lockout
-			// deadline live in ONE cache entry, so nothing can drop the lockout while preserving the
-			// counter, nor the reverse. The entry is additionally kept for at least as long as any
-			// lockout it carries, so expiry can never release a locked-out principal early.
-			var lifetime = TimeSpan.FromMinutes(WindowMinutes);
-			var remainingLockout = state.LockedOutUntilUtc - now;
-			if (remainingLockout > lifetime)
-				lifetime = remainingLockout;
-
-			// An explicit absolute expiration is mandatory so that tracking state is RECLAIMED rather than
-			// retained for the process lifetime. It is not what releases a lockout: GetState normalises a
-			// window whose deadline has passed, so a principal recovers on the next read whether or not the
-			// entry has been evicted, and the lifetime below is deliberately extended to OUTLIVE the lockout
-			// it carries so eviction can never end one early. Re-writing it on every recorded attempt
-			// measures the window from the most recent attempt, which is stricter than a fixed window - an
-			// attacker pacing attempts cannot age the counter out from under itself.
-			//
-			// Size is mandatory too, because the cache above declares a SizeLimit; every entry counts
-			// as one tracked principal.
-			//
-			// Priority is what keeps eviction from becoming a bypass. When the ceiling is reached the
-			// cache discards the lowest-priority entries first, so an in-force lockout is stored High
-			// while a still-counting entry is stored Low: flooding the store with fabricated
-			// usernames evicts other attackers' partial counts long before it releases anyone's
-			// lockout. NeverRemove is deliberately NOT used - it would exempt lockout entries from the
-			// ceiling entirely and hand back the unbounded growth this store exists to prevent. The
-			// residual is bounded and accepted: displacing a specific account's partial count costs
-			// the attacker a full store turnover, tens of thousands of requests against a transport
-			// rate limiter, to buy back at most four guesses.
-			var options = new MemoryCacheEntryOptions
-			{
-				AbsoluteExpirationRelativeToNow = lifetime,
-				Size = 1,
-				Priority = (state.LockedOutUntilUtc > now) ? CacheItemPriority.High : CacheItemPriority.Low
-			};
-
-			cache.Set(key, state, options);
 		}
 
 		// The two dimensions are counted independently, under separate keys.
@@ -535,9 +705,10 @@ namespace WebVella.Erp.Web.Services
 		// normalised defensively here: a null, empty or whitespace value becomes a placeholder rather
 		// than a null key, so no public member can fault on the input it was given. Counters stay bounded
 		// by their thresholds because they stop advancing once a lockout is in force, and the computed
-		// expiration is always positive. This bounds INPUT-driven failure only - it is not a claim that
-		// the members cannot throw at all, since the underlying memory cache can still fault (for example
-		// ObjectDisposedException during shutdown); callers must not rely on absolute non-throwing.
+		// expiration is always positive. This bounds INPUT-driven failure only; storage faults are
+		// handled separately and never propagate - DbSecurityStateRepository reports them through its
+		// return value rather than by throwing, and every member here treats an unavailable store as a
+		// refusal.
 		private static string Normalize(string value)
 		{
 			if (string.IsNullOrWhiteSpace(value))
@@ -545,7 +716,7 @@ namespace WebVella.Erp.Web.Services
 
 			// Upper-cased rather than lower-cased because uppercase is the round-trip-safe invariant
 			// normalisation form, so two spellings of the same principal cannot end up on separate
-			// counters. The value is only ever a cache key and is never displayed.
+			// counters. The value is only ever a storage key and is never displayed.
 			var normalized = value.Trim().ToUpperInvariant();
 			if (normalized.Length > MaxKeyComponentLength)
 				normalized = normalized.Substring(0, MaxKeyComponentLength);
@@ -553,16 +724,22 @@ namespace WebVella.Erp.Web.Services
 			return normalized;
 		}
 
-		// Releases the owned cache. Called by the dependency-injection container when the application
-		// shuts down, since this service is registered as a singleton.
+		// Releases the owned lockout mirror. Called by the dependency-injection container when the
+		// application shuts down, since this service is registered as a singleton. The COUNTERS need no
+		// release - they live in the durable store, which opens its connections per operation - so what is
+		// disposed here is only the positive-only mirror described above.
 		public void Dispose()
 		{
-			cache.Dispose();
+			activeLockouts.Dispose();
 			GC.SuppressFinalize(this);
 		}
 
-		// The counter has to be a reference type so that it can be mutated in place while the cache
-		// holds it, under the service's lock, rather than being copied in and out.
+		// The record persisted for one counted principal, serialised as JSON into the durable store.
+		//
+		// A class rather than a struct because the mutation callbacks above amend it in place. Property
+		// names are serialised as written: they are internal to this type's own storage format and are
+		// never exposed, so no wire contract depends on them - but a rename is still a storage-format
+		// change, and an unreadable record deliberately reads as a FRESH counter (see Deserialize).
 		private sealed class LoginAttemptState
 		{
 			// Failures already judged and recorded.
@@ -572,12 +749,36 @@ namespace WebVella.Erp.Web.Services
 			// concurrent burst cannot collectively exceed it.
 			public int AttemptsInFlight { get; set; }
 
-			// DateTime.MinValue, the default, means no lockout is in force.
-			public DateTime LockedOutUntilUtc { get; set; }
+			// The lockout deadline, stored as UTC ticks. Zero - the default - means no lockout is in force.
+			//
+			// AN INTEGER RATHER THAN A DateTime, deliberately: see StorageSerializerSettings for the
+			// measured reason. A DateTime here was rewritten by the platform's global JSON date converter
+			// into the host's display time zone with no marker, making the stored deadline ambiguous
+			// between instances. Ticks cannot be reinterpreted by a converter, a culture or a time zone.
+			public long LockedOutUntilUtcTicks { get; set; }
+
+			// The deadline as an instant, for the logic above. Not serialised - LockedOutUntilUtcTicks is
+			// the stored form - and always UTC, so every comparison in this file is a comparison of the
+			// same clock. A value whose ticks are zero round-trips as DateTime.MinValue rather than being
+			// shifted by a time-zone conversion, which is what the ticks test in the setter protects.
+			[JsonIgnore]
+			public DateTime LockedOutUntilUtc
+			{
+				get { return new DateTime(LockedOutUntilUtcTicks, DateTimeKind.Utc); }
+				set
+				{
+					if (value.Ticks == 0)
+						LockedOutUntilUtcTicks = 0;
+					else if (value.Kind == DateTimeKind.Utc)
+						LockedOutUntilUtcTicks = value.Ticks;
+					else
+						LockedOutUntilUtcTicks = value.ToUniversalTime().Ticks;
+				}
+			}
 
 			// True once a refusal from this source has been written to the audit trail for the current
-			// window. Lives in the SAME cache entry as the counters above so that a source cannot lose
-			// its counters while keeping its claim, or the reverse - the fail-safe invariant Store
+			// window. Lives in the SAME record as the counters above so that a source cannot lose
+			// its counters while keeping its claim, or the reverse - the fail-safe invariant MutateState
 			// documents applies to this field too. Only meaningful on address-dimension entries; the
 			// account-dimension entries never set it, because coalescing on the username would restore
 			// the amplification this exists to bound.
