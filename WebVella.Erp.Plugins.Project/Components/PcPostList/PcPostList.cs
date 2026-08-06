@@ -121,7 +121,14 @@ namespace WebVella.Erp.Plugins.Project.Components
 					var treeRecords = EntityRecordUtils.ConvertRecordListToTree(input: inputRecords, result: new List<EntityRecord>(), parentId: null,
 						parentIdFieldName: "parent_id", createdDateFieldName: "created_on", sortOrder: "asc");
 					ViewBag.Records = treeRecords;
-					ViewBag.RecordsJson = JsonConvert.SerializeObject(treeRecords);
+					//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding
+					//M-01. This JSON is handed to a client bundle that assigns each record's "body" straight
+					//to innerHTML, so it is the sink - not a data feed. Sanitizing here is what neutralises
+					//payloads that were ALREADY STORED before the write paths were hardened, which the write
+					//side cannot reach and which the platform's scope forbids fixing by rewriting stored
+					//data. Copies are produced, so ViewBag.Records and the request's data model are
+					//unchanged, and nested replies are neutralised on the same terms as their parents.
+					ViewBag.RecordsJson = JsonConvert.SerializeObject(EntityRecordUtils.SanitizeMarkupRenderedFields(treeRecords));
 					HttpContext httpContext = null;
 					if (ErpRequestContext.PageContext != null)
 					{

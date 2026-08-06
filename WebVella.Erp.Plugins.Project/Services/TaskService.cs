@@ -405,7 +405,11 @@ namespace WebVella.Erp.Plugins.Project.Services
 
 
 			//Add activity log
-			var subject = $"created <a href=\"/projects/tasks/tasks/r/{patchRecord["id"]}/details\">[{patchRecord["key"]}] {taskSubject}</a>";
+			//THREAT ADDRESSED - CWE-79, OWASP A03:2021, review finding M-01. Trusted markup carrying
+			//author-controlled task data into the feed's innerHTML sink; the interpolated key and subject are
+			//encoded at the point they enter markup. See the equivalent site in CommentService for the full
+			//rationale. The href identifier is a Guid.
+			var subject = $"created <a href=\"/projects/tasks/tasks/r/{patchRecord["id"]}/details\">[{HtmlSanitizer.EncodeText(patchRecord["key"]?.ToString())}] {HtmlSanitizer.EncodeText(taskSubject)}</a>";
 			var relatedRecords = new List<string>() { patchRecord["id"].ToString(), projectId.ToString() };
 			var scope = new List<string>() { "projects" };
 			//Add watchers as scope

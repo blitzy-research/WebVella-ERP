@@ -79,7 +79,17 @@ namespace WebVella.Erp.Plugins.Project.Components
 				if (context.Mode != ComponentMode.Options && context.Mode != ComponentMode.Help)
 				{
 					var inputRecords = context.DataModel.GetPropertyValueByDataSource(options.Records) as List<EntityRecord> ?? new List<EntityRecord>();
-					var groupedRecords = inputRecords.GroupBy(x => ((DateTime)x["created_on"]).ToString("dd MMMM")).ToList();
+
+					//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding
+					//M-01. The feed bundle assigns BOTH "subject" and "body" to innerHTML, and the feed is the
+					//widest-reaching of the three surfaces because a row composed from one author's task is
+					//shown to every watcher. Sanitizing here neutralises rows stored before the composition
+					//sites were hardened; see PcPostList for the full rationale. This runs BEFORE the grouping
+					//rather than after it so the serialized shape is untouched - the bundle continues to
+					//receive exactly the same object graph it received before - and because it returns copies,
+					//the request's data model is unchanged.
+					var groupedRecords = EntityRecordUtils.SanitizeMarkupRenderedFields(inputRecords)
+						.GroupBy(x => ((DateTime)x["created_on"]).ToString("dd MMMM")).ToList();
 					var groupedFeedList = new EntityRecord();
 					foreach (var feedDate in groupedRecords)
 					{
