@@ -2660,13 +2660,26 @@ namespace WebVella.Erp.Utilities
 		// endpoint's own standard error envelope. This method's own contract is only to report or to
 		// decline to report; see the remarks below.
 
-		// Upper bound on the number of leading bytes any of the readers below will examine. TIFF is the
-		// only format whose dimension tags are not at a fixed small offset - they sit behind an image file
-		// directory whose position the header declares - so the probe window has to be wide enough to
-		// reach a normal directory while still being a hard, constant bound rather than "as far as it
-		// takes". 64 KiB reaches the directory of every TIFF a browser or camera produces; a file that
-		// hides its directory beyond that simply reports no dimensions rather than being chased.
-		private const int MAX_IMAGE_HEADER_PROBE_BYTES = 64 * 1024;
+		// THREAT ADDRESSED - review finding M-OPEN-01, CWE-20 improper input validation with CWE-400
+		// uncontrolled resource consumption, OWASP A04 Insecure Design. A 64 KiB probe window used to bound
+		// how far the two non-fixed-offset readers below would look. It was a bound on the wrong thing. TIFF
+		// declares where its image file directory sits and JPEG is a marker stream, so BOTH can legitimately
+		// carry their dimensions past 64 KiB - a JPEG with a large EXIF or ICC segment routinely does - and
+		// an attacker can place them there on purpose. The readers then reported no dimensions, and the
+		// upload caller treated "no dimensions" as acceptance, so the 30,000-edge and 120-megapixel bounds
+		// were bypassed by any crafted file that simply pushed its header out of the window.
+		//
+		// THE WHOLE BUFFER IS NOW PARSED, and that is safe because the buffer is ALREADY BOUNDED: every
+		// caller on the upload path enforces MAX_UPLOAD_SIZE_BYTES before this reader is reached, so
+		// content.Length is bounded by the size cap rather than by a window of this reader's own choosing.
+		// The work stays linear and allocation-free - the JPEG walk advances by whole segments and the TIFF
+		// directory has at most 65,535 twelve-byte entries - so removing the window cannot become the
+		// amplification the window was there to prevent.
+		//
+		// The other half of the fix is in the caller: a file that IS a recognised image container but whose
+		// dimensions still cannot be established is now REFUSED rather than accepted, so a short read or a
+		// deliberately malformed header can no longer buy admission. See
+		// WebApiController.GetUploadImageDimensionRejectionReason and IsRecognisedImageContainer below.
 
 		/// <summary>
 		/// Reads the pixel dimensions of an image from its header, without decoding it.
@@ -2807,6 +2820,50 @@ namespace WebVella.Erp.Utilities
 			}
 
 			return null;
+		}
+
+		/// <summary>
+		/// Reports whether content announces itself as one of the image containers
+		/// <see cref="ReadImageDimensions"/> knows how to read.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding M-OPEN-01, CWE-20 improper input validation, CWE-400 uncontrolled
+		/// resource consumption, OWASP A04 Insecure Design.
+		/// THREAT ADDRESSED: <see cref="ReadImageDimensions"/> returns null both for "this is not an image I
+		/// recognise" and for "this IS an image I recognise but I could not read its header", and the upload
+		/// bound treated the two identically - as acceptance. That made the pixel bound optional: a crafted
+		/// or truncated image header bought admission simply by being unreadable. This predicate separates
+		/// the two answers so the caller can refuse the second while continuing to ignore the first, which
+		/// is what keeps the bound a RESOURCE bound rather than a type gate - deciding what may be uploaded
+		/// at all remains the extension allow-list's job.
+		/// <para>
+		/// IT TESTS EXACTLY THE SIGNATURES THE READER DISPATCHES ON, deliberately duplicating no knowledge:
+		/// both use the same signature fields below, so a format cannot become readable without becoming
+		/// recognised or vice versa. A LEADING PREFIX IS ENOUGH - the longest test examines twelve bytes -
+		/// so a caller may pass a short sniff rather than a whole file.
+		/// </para>
+		/// <para>
+		/// Never throws, matching <see cref="ReadImageDimensions"/>: it is called on attacker-supplied bytes.
+		/// </para>
+		/// </remarks>
+		/// <param name="content">The content, or a leading prefix of it. May be null or short.</param>
+		/// <returns><c>true</c> when the leading bytes name a container this reader dispatches on.</returns>
+		public static bool IsRecognisedImageContainer(byte[] content)
+		{
+			if (content == null || content.Length < 8)
+			{
+				return false;
+			}
+
+			return StartsWith(content, PngSignature)
+				|| StartsWith(content, Gif87aSignature)
+				|| StartsWith(content, Gif89aSignature)
+				|| StartsWith(content, BmpSignature)
+				|| (StartsWith(content, RiffSignature) && HasAsciiTag(content, 8, "WEBP"))
+				|| StartsWith(content, IcoSignature)
+				|| StartsWith(content, TiffLittleEndianSignature)
+				|| StartsWith(content, TiffBigEndianSignature)
+				|| StartsWith(content, JpegSignature);
 		}
 
 		private static readonly byte[] PngSignature = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
@@ -2970,7 +3027,10 @@ namespace WebVella.Erp.Utilities
 
 		private static (int Width, int Height)? ReadTiffDimensions(byte[] content, bool isBigEndian)
 		{
-			var limit = Math.Min(content.Length, MAX_IMAGE_HEADER_PROBE_BYTES);
+			//M-OPEN-01: the whole buffer, not a window. The buffer is already bounded by the upload size cap
+			//the caller enforces first, and a directory beyond an arbitrary window is exactly what a crafted
+			//file used to hide behind.
+			var limit = content.Length;
 			if (limit < 8)
 			{
 				return null;
@@ -3060,7 +3120,10 @@ namespace WebVella.Erp.Utilities
 
 		private static (int Width, int Height)? ReadJpegDimensions(byte[] content)
 		{
-			var limit = Math.Min(content.Length, MAX_IMAGE_HEADER_PROBE_BYTES);
+			//M-OPEN-01: the whole buffer, not a window. A large EXIF or ICC segment pushes a legitimate frame
+			//header past any fixed window, and an attacker can pad one there deliberately; the walk below
+			//advances segment by segment, so the cost is linear in a length the caller has already capped.
+			var limit = content.Length;
 
 			//Skip the two-byte start-of-image marker and walk the marker stream.
 			var offset = 2;

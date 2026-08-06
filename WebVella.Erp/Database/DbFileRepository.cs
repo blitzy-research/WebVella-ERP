@@ -995,6 +995,22 @@ namespace WebVella.Erp.Database
 						throw new FileNotFoundException("Source file cannot be found.");
 					}
 
+					//COMPENSATION - review finding L-OPEN-03, CWE-367 time-of-check/time-of-use with CWE-703
+					//improper check for an exceptional condition, OWASP A04. The storage-side move below cannot
+					//enlist in this transaction, and it runs BEFORE the commit. A commit that then fails - a
+					//deferred constraint, a lost connection, a server restart between the two - rolled the row
+					//back to the source path while the bytes had already been moved to the destination, so the
+					//metadata described a file whose content was no longer there AND an unreferenced object was
+					//left at the destination. The row and the bytes diverged with nothing recording it.
+					//These four locals let the failure path put the bytes back. They are declared HERE, outside
+					//the branches, precisely so the compensation cannot be written against a path recomputed
+					//later: GetFileSystemPath is derived from srcFile.FilePath, which the filesystem branch
+					//MUTATES, so a recomputed source path would no longer be the source.
+					string movedBlobSourcePath = null;
+					string movedBlobDestinationPath = null;
+					string movedFileSystemSourcePath = null;
+					string movedFileSystemDestinationPath = null;
+
 					if(ErpSettings.EnableCloudBlobStorage)
 					{
 						var srcPath = StoragePath.Combine(StoragePath.RootFolderPath, sourceFilepath);
@@ -1007,6 +1023,12 @@ namespace WebVella.Erp.Database
 								{
 									storage.WriteAsync(destinationPath, original).Wait();
 									storage.DeleteAsync(sourceFilepath).Wait();
+									//L-OPEN-03: recorded only once the write AND the delete have both returned, so
+									//compensation is attempted for a move that actually happened and never for one
+									//that threw part way - a throw here is caught below with the row still
+									//uncommitted, which is already the safe direction.
+									movedBlobSourcePath = srcPath;
+									movedBlobDestinationPath = destinationPath;
 								}
 							}
 
@@ -1022,10 +1044,24 @@ namespace WebVella.Erp.Database
 							srcFile.FilePath = destinationFilepath;
 							var fsDestFilePath = GetFileSystemPath(srcFile);
 							File.Move(fsSrcFilePath, fsDestFilePath);
+							//L-OPEN-03: after the move returned, for the same reason as above.
+							movedFileSystemSourcePath = fsSrcFilePath;
+							movedFileSystemDestinationPath = fsDestFilePath;
 						}
 					}
 
-					connection.CommitTransaction();
+					try
+					{
+						connection.CommitTransaction();
+					}
+					catch
+					{
+						//L-OPEN-03: the row did not commit but the bytes did move, so put them back before the
+						//exception continues. The original exception is what the caller must see, so the
+						//compensation reports its own failures rather than raising them - see the helper.
+						RestoreMovedFileStorage(movedBlobSourcePath, movedBlobDestinationPath, movedFileSystemSourcePath, movedFileSystemDestinationPath);
+						throw;
+					}
 					//SECURITY - finding F24: FindInternal, not Find. The move is already committed at this
 					//point, so this read is not an access-control decision - the decision was taken above,
 					//where the SOURCE was resolved through Find. Going through Find here would return null
@@ -1390,6 +1426,112 @@ namespace WebVella.Erp.Database
 		internal static IBlobStorage GetBlobStorage(string overrideConnectionString = null)
 		{
 			return StorageFactory.Blobs.FromConnectionString(string.IsNullOrWhiteSpace(overrideConnectionString) ? ErpSettings.CloudBlobStorageConnectionString : overrideConnectionString);
+		}
+
+		/// <summary>
+		/// Moves file content back to where it came from after a <see cref="Move"/> whose database commit
+		/// failed, so the metadata and the stored bytes do not diverge.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding L-OPEN-03, CWE-367 time-of-check/time-of-use, CWE-703 improper check for
+		/// an exceptional condition, OWASP A04 Insecure Design.
+		/// THREAT ADDRESSED: neither the blob store nor the filesystem can enlist in the database
+		/// transaction, and <see cref="Move"/> has to move the bytes before it commits - it cannot know the
+		/// storage move will succeed after the fact. A commit that fails after that move left the row at the
+		/// source path and the bytes at the destination: a file the database says exists and the store cannot
+		/// produce, plus an unreferenced object at the destination that nothing will ever clean up.
+		/// <para>
+		/// IT UNDOES ONLY WHAT WAS ACTUALLY DONE. Each pair of paths is non-null only once its move returned,
+		/// so nothing is reversed on a half-completed move - a move that threw is caught with the row still
+		/// uncommitted, which is already the safe direction and needs no compensation.
+		/// </para>
+		/// <para>
+		/// IT NEVER THROWS, and that is the load-bearing property rather than a convenience. The caller is
+		/// already handling a failed commit and MUST propagate that original exception; an exception raised in
+		/// here would replace it, so the caller would report a compensation fault and lose the reason the
+		/// commit failed. The two cases are distinguished instead: a reversal that succeeds leaves nothing to
+		/// report, and a reversal that fails is the only state a human has to repair, so it is announced on
+		/// standard error naming the operation and the file identity ONLY - never content, and never a
+		/// connection string or credential. Standard error rather than <c>Diagnostics.Log</c> because the log
+		/// writes through the database whose transaction has just failed.
+		/// </para>
+		/// <para>
+		/// THE DELETE PATH NEEDS NO EQUIVALENT and deliberately has none: <see cref="Delete"/> orders its work
+		/// so that a failure leaves an orphaned ROW - metadata whose bytes may be gone - which is reportable
+		/// and repairable, rather than destroying bytes the database still claims are present. That ordering
+		/// and its rationale are stated at that call site.
+		/// </para>
+		/// </remarks>
+		/// <param name="blobSourcePath">Blob path the content was moved from, or null.</param>
+		/// <param name="blobDestinationPath">Blob path the content was moved to, or null.</param>
+		/// <param name="fileSystemSourcePath">Filesystem path the content was moved from, or null.</param>
+		/// <param name="fileSystemDestinationPath">Filesystem path the content was moved to, or null.</param>
+		private static void RestoreMovedFileStorage(string blobSourcePath, string blobDestinationPath, string fileSystemSourcePath, string fileSystemDestinationPath)
+		{
+			if (blobSourcePath != null && blobDestinationPath != null)
+			{
+				try
+				{
+					using (IBlobStorage storage = GetBlobStorage())
+					{
+						using (Stream moved = storage.OpenReadAsync(blobDestinationPath).Result)
+						{
+							if (moved != null)
+							{
+								storage.WriteAsync(blobSourcePath, moved).Wait();
+							}
+						}
+
+						storage.DeleteAsync(blobDestinationPath).Wait();
+					}
+				}
+				catch (Exception restoreFailure)
+				{
+					ReportFileStorageCompensationFailure("blob", blobDestinationPath, restoreFailure);
+				}
+			}
+
+			if (fileSystemSourcePath != null && fileSystemDestinationPath != null)
+			{
+				try
+				{
+					//The move is only reversed while the destination is still the file this operation created
+					//and the source is still absent. Anything else means another writer has been here, and
+					//overwriting that would turn a recoverable divergence into lost content.
+					if (File.Exists(fileSystemDestinationPath) && !File.Exists(fileSystemSourcePath))
+					{
+						File.Move(fileSystemDestinationPath, fileSystemSourcePath);
+					}
+				}
+				catch (Exception restoreFailure)
+				{
+					ReportFileStorageCompensationFailure("filesystem", fileSystemDestinationPath, restoreFailure);
+				}
+			}
+		}
+
+		/// <summary>
+		/// Announces, on standard error, that stored content could not be returned to its original location
+		/// after a failed move, which is the one outcome a human has to repair.
+		/// </summary>
+		/// <remarks>
+		/// Review finding L-OPEN-03. Not rate-limited, unlike the transport notices elsewhere in this
+		/// solution, and deliberately so: this is not a per-request policy decision evaluated on every call
+		/// but a divergence between the database and the object store, so every occurrence names a distinct
+		/// object that needs attention and suppressing repeats would hide work. Only the store and the path
+		/// already present in the caller's own parameters are named, plus the exception TYPE - never its
+		/// message, which for a storage provider can carry an endpoint or a token.
+		/// </remarks>
+		/// <param name="store">Which store failed to accept the reversal.</param>
+		/// <param name="path">The location the content is still at.</param>
+		/// <param name="failure">The reversal failure.</param>
+		private static void ReportFileStorageCompensationFailure(string store, string path, Exception failure)
+		{
+			Console.Error.WriteLine("error: WebVella.Erp.Database.DbFileRepository[1] A file move was rolled "
+				+ "back in the database but its content could NOT be returned to its original location in the "
+				+ store + " store, so the metadata and the stored content have diverged. The content is still "
+				+ "at '" + path + "' (" + failure.GetType().FullName + "). Move it back or re-run the move once "
+				+ "the database fault is resolved.");
 		}
 
 		internal static string GetFileSystemPath(DbFile file)

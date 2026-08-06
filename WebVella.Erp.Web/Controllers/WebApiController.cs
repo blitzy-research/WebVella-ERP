@@ -119,10 +119,18 @@ namespace WebVella.Erp.Web.Controllers
 		private const int MAX_UPLOAD_IMAGE_EDGE_PIXELS = 30000;
 		private const long MAX_UPLOAD_IMAGE_TOTAL_PIXELS = 120L * 1000L * 1000L;
 
-		// Upper bound on the prefix the pre-transaction pixel check reads from a posted file. Matches the
-		// probe window Helpers.ReadImageDimensions itself observes, so a header that reader can reach is a
-		// header this check can supply, and neither can be induced to read further.
-		private const int MAX_IMAGE_HEADER_PROBE_BYTES = 64 * 1024;
+		// THREAT ADDRESSED - review finding M-OPEN-01, CWE-20 with CWE-400, OWASP A04. This used to be a
+		// 64 KiB window: the pre-transaction pixel check read that much of a posted file and
+		// Helpers.ReadImageDimensions observed the same window internally. A JPEG or TIFF that carries its
+		// dimensions past 64 KiB - which a large EXIF or ICC segment does legitimately, and which an attacker
+		// can arrange deliberately - therefore reported no dimensions, and no dimensions was treated as
+		// acceptance, so the edge and area bounds below were bypassable at will.
+		//
+		// It is now only a SIGNATURE SNIFF. Helpers.IsRecognisedImageContainer examines at most twelve
+		// leading bytes, so this prefix answers "is this an image container at all" for the cost of one small
+		// read; only when the answer is yes is the whole - already size-capped - body read and parsed. A
+		// non-image file therefore still costs a few bytes rather than a second full pass over its content.
+		private const int MAX_IMAGE_SIGNATURE_PROBE_BYTES = 32;
 
 		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The upload actions below accepted ANY
 		// extension, and the download action then served the stored bytes inline from this application's own
@@ -4562,6 +4570,22 @@ namespace WebVella.Erp.Web.Controllers
 			var dimensions = Helpers.ReadImageDimensions(content);
 			if (dimensions == null)
 			{
+				//THREAT ADDRESSED - review finding M-OPEN-01, CWE-20 with CWE-400, OWASP A04. "No dimensions"
+				//used to mean "accepted", unconditionally, which made the two bounds below OPTIONAL: a file
+				//that declared an enormous canvas only had to make its header unreadable - by truncating it,
+				//by malforming it, or by pushing it past the old 64 KiB probe window - and it was admitted.
+				//A parser short-read is not evidence of safety and is no longer treated as any.
+				//THE DISTINCTION MATTERS AND IS THE WHOLE FIX: content that is not an image container this
+				//platform can read is STILL accepted here, because what may be uploaded at all is decided by
+				//ALLOWED_UPLOAD_EXTENSIONS and UPLOAD_CONTENT_SIGNATURES and a resource bound that also
+				//refused unrecognised content would silently narrow the admitted set. Content that IS a
+				//recognised image container and still yields no dimensions is refused, because for that
+				//content the bound cannot be evaluated and admitting it is the bypass.
+				if (Helpers.IsRecognisedImageContainer(content))
+				{
+					return "The uploaded image header could not be read, so its size could not be checked.";
+				}
+
 				return null;
 			}
 
@@ -4601,46 +4625,82 @@ namespace WebVella.Erp.Web.Controllers
 
 			try
 			{
-				var probeLength = (int)Math.Min(file.Length, MAX_IMAGE_HEADER_PROBE_BYTES);
-				if (probeLength <= 0)
+				//M-OPEN-01: a signature sniff first, so a non-image body is dismissed after a few bytes and
+				//never read twice. Only a recognised image container is worth reading in full.
+				var signature = ReadUploadPrefix(file, MAX_IMAGE_SIGNATURE_PROBE_BYTES);
+				if (signature == null || !Helpers.IsRecognisedImageContainer(signature))
 				{
 					return null;
 				}
 
-				var probe = new byte[probeLength];
-				using (var stream = file.OpenReadStream())
+				//M-OPEN-01: the WHOLE body, not a window. file.Length has already been bounded against
+				//MAX_UPLOAD_SIZE_BYTES by GetUploadRejectionReason, which every caller of this overload runs
+				//first, so this read is bounded by the size cap and not by a window a crafted header can be
+				//pushed past. Reading a prefix here and refusing on "no dimensions" would have refused
+				//legitimate photographs whose EXIF or ICC segment precedes the frame header, which is why the
+				//full parse and the refusal below are one fix and not two.
+				var content = ReadUploadPrefix(file, (int)Math.Min(file.Length, MAX_UPLOAD_SIZE_BYTES));
+				if (content == null)
 				{
-					var read = 0;
-					while (read < probeLength)
-					{
-						var chunk = stream.Read(probe, read, probeLength - read);
-						if (chunk <= 0)
-						{
-							break;
-						}
-
-						read += chunk;
-					}
-
-					if (read <= 0)
-					{
-						return null;
-					}
-
-					if (read < probeLength)
-					{
-						Array.Resize(ref probe, read);
-					}
+					//An image container whose bytes could not be read at all cannot be measured, and this
+					//overload runs BEFORE the transaction opens - so refusing here is the answer the caller
+					//can act on, rather than a rollback later.
+					return "The uploaded image header could not be read, so its size could not be checked.";
 				}
 
-				return GetUploadImageDimensionRejectionReason(probe);
+				return GetUploadImageDimensionRejectionReason(content);
 			}
 			catch (IOException)
 			{
 				//A body the transport could not deliver is the transport's failure to report, not a pixel
-				//bound violation. The action's own read will surface it.
+				//bound violation. The action's own read will surface it, and the authoritative check on the
+				//buffer it reads runs again inside GetUploadContentRejectionReason.
 				return null;
 			}
+		}
+
+		// Reads up to the requested number of leading bytes of a posted file, or null when nothing could be
+		// read. Shared by the signature sniff and the full-body parse above so the two cannot drift apart on
+		// what a short read means.
+		// M-OPEN-01: a SHORT read returns the bytes actually obtained rather than null, because a shorter
+		// body is still measurable content - but a read that obtained NOTHING returns null, and the caller
+		// treats that as unmeasurable rather than as acceptance. IFormFile.OpenReadStream returns a fresh
+		// reader over content ASP.NET Core has already buffered, so reading here does not consume the stream
+		// the action reads later.
+		private static byte[] ReadUploadPrefix(IFormFile file, int length)
+		{
+			if (length <= 0)
+			{
+				return null;
+			}
+
+			var buffer = new byte[length];
+			var read = 0;
+			using (var stream = file.OpenReadStream())
+			{
+				while (read < length)
+				{
+					var chunk = stream.Read(buffer, read, length - read);
+					if (chunk <= 0)
+					{
+						break;
+					}
+
+					read += chunk;
+				}
+			}
+
+			if (read <= 0)
+			{
+				return null;
+			}
+
+			if (read < length)
+			{
+				Array.Resize(ref buffer, read);
+			}
+
+			return buffer;
 		}
 
 		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The two multi-file actions wrap their
