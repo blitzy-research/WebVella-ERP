@@ -3,13 +3,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.StaticFiles;
-using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -101,6 +99,31 @@ namespace WebVella.Erp.Web.Controllers
 		// later quoted into a response header, so an unbounded name is both a storage and a header concern.
 		private const int MAX_UPLOAD_FILE_NAME_LENGTH = 200;
 
+		// THREAT ADDRESSED - review finding M-08, CWE-400 (uncontrolled resource consumption), OWASP A04
+		// Insecure Design. The byte-length cap above bounds what arrives; it does NOT bound what the bytes
+		// DECLARE. Image formats are compressed, so a few kilobytes well inside MAX_UPLOAD_SIZE_BYTES can
+		// declare a canvas of hundreds of megapixels - the "decompression bomb" shape - and every consumer
+		// downstream that ever resolves those declared dimensions pays for them. These two bounds close that
+		// gap at the one place every upload action already passes through, so no action can be constrained
+		// and another left open.
+		//
+		// The dimensions are READ FROM THE HEADER, never by decoding (see Helpers.ReadImageDimensions), so
+		// the check itself costs a constant handful of byte comparisons and cannot be the amplification it
+		// exists to prevent.
+		//
+		// The values are deliberately generous rather than tight: 30,000 pixels on an edge comfortably
+		// exceeds a 600-megapixel gigapan and any scanner output, and 120 megapixels of total area exceeds
+		// every current camera sensor, so no legitimate upload is refused while an image that declares more
+		// area than any real photograph is. A file whose header cannot be read is NOT refused here - type
+		// admission is the extension allow-list's and the leading-signature check's job, not this bound's.
+		private const int MAX_UPLOAD_IMAGE_EDGE_PIXELS = 30000;
+		private const long MAX_UPLOAD_IMAGE_TOTAL_PIXELS = 120L * 1000L * 1000L;
+
+		// Upper bound on the prefix the pre-transaction pixel check reads from a posted file. Matches the
+		// probe window Helpers.ReadImageDimensions itself observes, so a header that reader can reach is a
+		// header this check can supply, and neither can be induced to read further.
+		private const int MAX_IMAGE_HEADER_PROBE_BYTES = 64 * 1024;
+
 		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The upload actions below accepted ANY
 		// extension, and the download action then served the stored bytes inline from this application's own
 		// origin - so an uploaded .html or .svg became stored script running with the victim's session. The
@@ -144,20 +167,39 @@ namespace WebVella.Erp.Web.Controllers
 		// stored images with src-prefix="/fs", i.e. <img src="/fs/...">, so forcing every response to
 		// download would break image display across the whole platform.
 		//
-		// It is NARROWED to exactly the four extensions this action's own isImage test names, and must not be
-		// widened to match the UPLOAD allow-list. An inline allow-list has to be derived from what the
-		// platform PROVES it renders inline - the raster set the isImage test and the image field components
-		// consume - and nothing here emits an <img src="/fs/...">, a preview or an <embed> for .bmp, .webp,
-		// .ico, .tif or .tiff, so admitting them would widen the inline surface for no functional gain.
-		// .pdf is excluded for a stronger reason: served inline it is rendered by the browser's own PDF
-		// engine, which honours embedded JavaScript actions and has historically been a source of
-		// same-origin script execution. It is a document format with an execution surface, not an image.
-		// Everything not named here - including .html, .htm, .svg, .xhtml, .xml, .js and every extension
-		// with no known media type - is forced to an attachment, which is what breaks the stored-scripting
-		// chain. Widening this set is an owner decision; see docs/security/risk-register.md.
+		// ALIGNED WITH THE UPLOAD ALLOW-LIST - review finding M-06. An earlier revision narrowed this set to
+		// four extensions on the argument that nothing "proves" the platform renders the others inline. That
+		// argument was wrong twice over, and the review established both halves.
+		//   It broke working functionality. PcFieldImage and PcFieldFile ADMIT nine image extensions on
+		//   upload - ALLOWED_UPLOAD_EXTENSIONS above - and then render whatever was stored through
+		//   src-prefix="/fs". A user who uploaded the .bmp, .webp, .ico, .tif or .tiff that the platform
+		//   itself accepted got a stored file the same components could not display, because the response
+		//   carried a download disposition. The two policies have to agree: whatever may be uploaded as an
+		//   image must be servable as one.
+		//   And it bought nothing. All five are PASSIVE RASTER container formats with no scripting surface
+		//   whatsoever - no element, no event handler, no external reference, nothing a parser will execute -
+		//   so admitting them widens the inline surface by exactly zero script. That is the distinction the
+		//   allow-list encodes, and it is why the set is derived from the IMAGE half of the upload allow-list
+		//   rather than from the raster set one download helper happened to name.
+		//
+		// THE THREE EXCLUSIONS ARE THE ENTIRE POINT OF THE CONTROL, AND MUST NOT BE RELAXED:
+		//   .svg is an XML DOCUMENT that can carry <script> and event handlers. It is deliberately absent
+		//   from the upload allow-list too, so it can no longer be stored - but it stays named here because
+		//   a file stored before that constraint existed must still not render inline.
+		//   .html and .htm execute on this application's origin with this application's cookies. They are
+		//   the exact payload of the H-08 -> stored cross-site scripting chain.
+		//   .pdf is a document format with an execution surface: served inline it is rendered by the
+		//   browser's own PDF engine, which honours embedded JavaScript actions and has historically been a
+		//   source of same-origin script execution. It is admitted on upload because the platform classifies
+		//   it as a document, and withheld from inline rendering for that reason.
+		// Everything not named here - including .xhtml, .xml, .js and every extension with no known media
+		// type - is forced to an attachment, which is what breaks the stored-scripting chain. The
+		// complementary control is X-Content-Type-Options: nosniff, which SecurityHeadersMiddleware emits on
+		// every response, so a passive raster served inline cannot be re-interpreted as markup either.
+		// Widening this set beyond passive raster is an owner decision; see docs/security/risk-register.md.
 		private static readonly HashSet<string> INLINE_DOWNLOAD_EXTENSIONS = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 		{
-			".jpg", ".jpeg", ".png", ".gif"
+			".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".ico", ".tif", ".tiff"
 		};
 
 		// THREAT ADDRESSED - finding H-08, CWE-434 (unrestricted upload of file with dangerous type), OWASP
@@ -3889,23 +3931,27 @@ namespace WebVella.Erp.Web.Controllers
 			new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType);
 
 
-			IDictionary<string, StringValues> queryCollection = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(HttpContext.Request.QueryString.ToString());
-			string action = queryCollection.Keys.Any(x => x == "action") ? ((string)queryCollection["action"]).ToLowerInvariant() : "";
-			string requestedMode = queryCollection.Keys.Any(x => x == "mode") ? ((string)queryCollection["mode"]).ToLowerInvariant() : "";
-			string width = queryCollection.Keys.Any(x => x == "width") ? ((string)queryCollection["width"]).ToLowerInvariant() : "";
-			string height = queryCollection.Keys.Any(x => x == "height") ? ((string)queryCollection["height"]).ToLowerInvariant() : "";
-			bool isImage = extension == ".jpg" || extension == ".jpeg" || extension == ".png" || extension == ".gif";
-
-			int widthInt = 0;
-			if (!String.IsNullOrWhiteSpace(width) && int.TryParse(width, out int outWidthInt))
-			{
-				widthInt = outWidthInt;
-			}
-			int heightInt = 0;
-			if (!String.IsNullOrWhiteSpace(height) && int.TryParse(height, out int outHeightInt))
-			{
-				heightInt = outHeightInt;
-			}
+			//REVIEW FINDING M-05 - THIS ACTION SERVES THE STORED BYTES AT FULL SIZE, ALWAYS.
+			//Fifteen lines used to sit here parsing an "action=resize" query contract - action, mode, width
+			//and height, plus two int.TryParse conversions and an isImage test. Not one of the resulting
+			//values was ever read again: no resize was performed, no variant was selected, and the response
+			//was the unmodified stored bytes in every case. The parsing therefore ADVERTISED a contract the
+			//endpoint did not honour, which is worse than not offering it - a caller reading this code, or
+			//reading a URL that carried those parameters, would reasonably conclude a thumbnail had been
+			//requested and served, and would size layout or bandwidth expectations around a resize that never
+			//happened. The dead parsing is removed rather than implemented, because implementing it would
+			//mean decoding and re-encoding attacker-supplied images on a GET path - which is exactly the
+			//uncontrolled-resource-consumption exposure review finding M-08 closes on the upload side, and
+			//exactly the kind of feature work the remediation boundaries forbid.
+			//
+			//NOTHING IN THE REPOSITORY PRODUCES THAT QUERY ANY LONGER, which is what makes the removal
+			//behaviour-preserving rather than a contract change. Its only producer was
+			//Pages/ckeditor/ImageFinder.cshtml, retired under review finding C-04; and WebVella.TagHelpers
+			//1.8.0 - the package behind wv-field-image, whose width, height and resize-action attributes
+			//might suggest otherwise - composes no resize query at all, verified against the shipped
+			//assembly. A request that still arrives carrying those parameters is answered exactly as before:
+			//full-size bytes, with the query ignored. The behaviour is recorded for operators in
+			//docs/security/secure-configuration.md so the absence is documented rather than merely true.
 
 			//THREAT: H-08 (CWE-434, OWASP A04 + A03) escalating into stored cross-site scripting. Stored files
 			//are served from the application's OWN origin and this action set no content-disposition at all, so
@@ -3916,9 +3962,10 @@ namespace WebVella.Erp.Web.Controllers
 			//DO NOT REPLACE THIS WITH A BLANKET "attachment" DISPOSITION. /fs/ is a live inline asset origin:
 			//PcFieldImage and PcFieldFile render stored files as <img src="/fs/..."> via src-prefix="/fs", so a
 			//blanket disposition would break image rendering across the entire platform. The control is
-			//therefore an INLINE ALLOW-LIST derived from the raster image set this action already computes on
-			//the isImage line above, so every file that can legitimately render still renders while everything
-			//else - notably .html, .htm, .svg, .xhtml, .xml and .js - downloads instead of executing. An
+			//therefore an INLINE ALLOW-LIST, INLINE_DOWNLOAD_EXTENSIONS, which review finding M-06 aligned with
+			//the image half of the upload allow-list so every image type the platform ACCEPTS can also be
+			//displayed, while everything else - notably .html, .htm, .svg, .xhtml, .xml, .js and .pdf -
+			//downloads instead of executing. An
 			//extension with no known media type resolves to a null mimeType and is likewise not on the
 			//allow-list, so it downloads too. The complementary control is X-Content-Type-Options: nosniff,
 			//which SecurityHeadersMiddleware already emits for every response, so NO header is set here:
@@ -4387,11 +4434,110 @@ namespace WebVella.Erp.Web.Controllers
 
 				if (matches)
 				{
-					return null;
+					//M-08: the signature agrees with the extension, so if this is an image its header can be
+					//trusted enough to read a declared canvas size out of and bound it.
+					return GetUploadImageDimensionRejectionReason(content);
 				}
 			}
 
 			return "The uploaded file content does not match its file type.";
+		}
+
+		// THREAT ADDRESSED - review finding M-08, CWE-400 (uncontrolled resource consumption), OWASP A04.
+		// Refuses an image whose header DECLARES more pixels than the platform will carry, before the bytes
+		// are stored and before any consumer resolves those dimensions. Returns null - accepted - both when
+		// the content is not an image this reader recognises and when the declared canvas is within bounds,
+		// because this is a resource bound and not a type gate: what may be uploaded at all is decided by
+		// ALLOWED_UPLOAD_EXTENSIONS and UPLOAD_CONTENT_SIGNATURES above, and a bound that also refused
+		// unrecognised headers would silently narrow the admitted set to the formats this reader happens to
+		// cover.
+		// The reason text names no dimension and echoes no submitted value, matching every other reason in
+		// this file: they are rendered into a JSON body and into a script context, so echoing input would
+		// turn the rejection itself into the injection.
+		private static string GetUploadImageDimensionRejectionReason(byte[] content)
+		{
+			var dimensions = Helpers.ReadImageDimensions(content);
+			if (dimensions == null)
+			{
+				return null;
+			}
+
+			if (dimensions.Value.Width > MAX_UPLOAD_IMAGE_EDGE_PIXELS || dimensions.Value.Height > MAX_UPLOAD_IMAGE_EDGE_PIXELS)
+			{
+				return "The uploaded image is larger than the " + MAX_UPLOAD_IMAGE_EDGE_PIXELS + " pixel limit on a single edge.";
+			}
+
+			if ((long)dimensions.Value.Width * dimensions.Value.Height > MAX_UPLOAD_IMAGE_TOTAL_PIXELS)
+			{
+				return "The uploaded image declares more pixels than the " + (MAX_UPLOAD_IMAGE_TOTAL_PIXELS / (1000L * 1000L)) + " megapixel limit.";
+			}
+
+			return null;
+		}
+
+		// THREAT ADDRESSED - review finding M-08, CWE-400, OWASP A04. The same bound as the overload above,
+		// applied to a posted file BEFORE its bytes are read in full and before the two multi-file actions
+		// open their database transaction. Both halves of that matter:
+		//   the refusal reaches the caller as the endpoint's own specific reason rather than as the bounded
+		//   generic message their catch clause produces for a fault - a refusal an operator can act on, not
+		//   just a 400;
+		//   and no transaction is opened only to be rolled back, which is the doctrine
+		//   GetUploadBatchRejectionReason already states for every other check it performs.
+		// Only a bounded PREFIX of the stream is read - enough for a header, never the whole file - so a
+		// declared 600-megapixel canvas is refused after a few kilobytes rather than after the full body has
+		// been buffered. IFormFile.OpenReadStream returns a fresh reader over content ASP.NET Core has
+		// already buffered, so reading a prefix here does not consume the stream the action reads later.
+		// Any failure to read is treated as "no opinion" and returns null: this is a resource bound, and the
+		// type gate that decides what may be uploaded at all is the extension allow-list.
+		private static string GetUploadImageDimensionRejectionReason(IFormFile file)
+		{
+			if (file == null)
+			{
+				return null;
+			}
+
+			try
+			{
+				var probeLength = (int)Math.Min(file.Length, MAX_IMAGE_HEADER_PROBE_BYTES);
+				if (probeLength <= 0)
+				{
+					return null;
+				}
+
+				var probe = new byte[probeLength];
+				using (var stream = file.OpenReadStream())
+				{
+					var read = 0;
+					while (read < probeLength)
+					{
+						var chunk = stream.Read(probe, read, probeLength - read);
+						if (chunk <= 0)
+						{
+							break;
+						}
+
+						read += chunk;
+					}
+
+					if (read <= 0)
+					{
+						return null;
+					}
+
+					if (read < probeLength)
+					{
+						Array.Resize(ref probe, read);
+					}
+				}
+
+				return GetUploadImageDimensionRejectionReason(probe);
+			}
+			catch (IOException)
+			{
+				//A body the transport could not deliver is the transport's failure to report, not a pixel
+				//bound violation. The action's own read will surface it.
+				return null;
+			}
 		}
 
 		// THREAT ADDRESSED - finding H-08, CWE-434, OWASP A04 + A03. The two multi-file actions wrap their
@@ -4420,6 +4566,15 @@ namespace WebVella.Erp.Web.Controllers
 				if (rejectionReason != null)
 				{
 					return rejectionReason;
+				}
+
+				//M-08: the declared pixel bound, checked here for the same reason every other check in this
+				//method is - so the batch is refused before the transaction opens and with a reason the
+				//caller can act on. It reads a bounded header prefix only.
+				var dimensionRejectionReason = GetUploadImageDimensionRejectionReason(file);
+				if (dimensionRejectionReason != null)
+				{
+					return dimensionRejectionReason;
 				}
 
 				safeFileNames[file] = safeFileName;
@@ -5565,11 +5720,27 @@ namespace WebVella.Erp.Web.Controllers
 
 						var mimeType = MimeMapping.MimeUtility.GetMimeMapping(filePath);
 						var fileExtension = Path.GetExtension(filePath);
+						//THREAT ADDRESSED - review finding M-08 (CWE-400 uncontrolled resource consumption /
+						//CWE-1188 reliance on platform behaviour that this platform does not provide).
+						//Helpers.GetImageDimension no longer decodes the image - it reads the dimensions from
+						//the header - and it now returns NULL rather than throwing when the header cannot be
+						//read. The previous code dereferenced the result unconditionally, which on Linux
+						//meant every image upload faulted inside the transaction below: the Windows-only GDI+
+						//facade it used threw TypeInitializationException, the record was never written, and
+						//the whole batch rolled back. Dimensions are metadata, not a security property, so
+						//"unknown" is recorded by OMITTING the two fields exactly as a non-image file does,
+						//and the upload still succeeds. The pixel BOUND that closes the resource-consumption
+						//half of the finding is enforced before this point, in
+						//GetUploadContentRejectionReason, so reaching here means the dimensions were already
+						//found acceptable.
 						if (mimeType.StartsWith("image"))
 						{
 							var dimensionsRecord = Helpers.GetImageDimension(fileBuffer);
-							userFileRecord["width"] = (decimal)dimensionsRecord["width"];
-							userFileRecord["height"] = (decimal)dimensionsRecord["height"];
+							if (dimensionsRecord != null)
+							{
+								userFileRecord["width"] = (decimal)dimensionsRecord["width"];
+								userFileRecord["height"] = (decimal)dimensionsRecord["height"];
+							}
 							userFileRecord["type"] = "image";
 						}
 						else if (mimeType.StartsWith("video"))
@@ -5691,11 +5862,27 @@ namespace WebVella.Erp.Web.Controllers
 
 						var mimeType = MimeMapping.MimeUtility.GetMimeMapping(dbFile.FilePath);
 						var fileExtension = Path.GetExtension(dbFile.FilePath);
+						//THREAT ADDRESSED - review finding M-08 (CWE-400 uncontrolled resource consumption /
+						//CWE-1188 reliance on platform behaviour that this platform does not provide).
+						//Helpers.GetImageDimension no longer decodes the image - it reads the dimensions from
+						//the header - and it now returns NULL rather than throwing when the header cannot be
+						//read. The previous code dereferenced the result unconditionally, which on Linux
+						//meant every image upload faulted inside the transaction below: the Windows-only GDI+
+						//facade it used threw TypeInitializationException, the record was never written, and
+						//the whole batch rolled back. Dimensions are metadata, not a security property, so
+						//"unknown" is recorded by OMITTING the two fields exactly as a non-image file does,
+						//and the upload still succeeds. The pixel BOUND that closes the resource-consumption
+						//half of the finding is enforced before this point, in
+						//GetUploadContentRejectionReason, so reaching here means the dimensions were already
+						//found acceptable.
 						if (mimeType.StartsWith("image"))
 						{
 							var dimensionsRecord = Helpers.GetImageDimension(fileBuffer);
-							resultRec["width"] = (decimal)dimensionsRecord["width"];
-							resultRec["height"] = (decimal)dimensionsRecord["height"];
+							if (dimensionsRecord != null)
+							{
+								resultRec["width"] = (decimal)dimensionsRecord["width"];
+								resultRec["height"] = (decimal)dimensionsRecord["height"];
+							}
 							resultRec["type"] = "image";
 						}
 						else if (mimeType.StartsWith("video"))

@@ -796,7 +796,8 @@ namespace WebVella.Erp.Database
 		/// <para>
 		/// THE UPDATE IS A COMPARE-AND-SWAP ON THE PATH, not on the identifier. An earlier predicate read
 		/// "id = @id AND id = @expected_id", whose second conjunct was a tautology once the identifier had
-		/// already been compared above: it re-asserted the identifier and never the PATH, while every
+		/// already been compared above - <c>@id</c> is that same compared identifier - so it re-asserted the
+		/// identifier and never the PATH, while every
 		/// storage-side operation further down addresses the object BY PATH -
 		/// <c>storage.DeleteAsync(sourceFilepath)</c> and <c>File.Move(GetFileSystemPath(...))</c>. The
 		/// predicate therefore also requires the row to still be AT the source path, and the affected-row
@@ -941,17 +942,33 @@ namespace WebVella.Erp.Database
 					if (destFileToOverwrite != null && overwrite)
 						Delete(destFileToOverwrite.FilePath, destFileToOverwrite.Id);
 
-					//The predicate is widened from "id = @id" to also require the row to still be the
-					//authorized one AND to still be at the source path - an identifier alone would have let a
-					//row that had been moved elsewhere be relocated to this destination. Every half is
-					//parameterised, so no value is concatenated into SQL.
-					var command = connection.CreateCommand(expectedSourceId.HasValue
-						? @"UPDATE files SET filepath = @filepath WHERE id = @id AND id = @expected_id AND filepath = @source_filepath"
-						: @"UPDATE files SET filepath = @filepath WHERE id = @id AND filepath = @source_filepath");
+					//The predicate is widened from "id = @id" to ALSO require the row to still be at the
+					//source path - an identifier alone would have let a row that had been moved elsewhere be
+					//relocated to this destination. Both halves are parameterised, so no value is
+					//concatenated into SQL, and the statement is unconditional: the authorized identifier is
+					//carried in @id, which is srcFile.Id, and the pin was already compared against that same
+					//identifier above, so a further "id = @expected_id" conjunct could only ever restate what
+					//@id already asserts. See the remarks on this method - this is a compare-and-swap on the
+					//PATH, which is what every storage-side operation below addresses the object by.
+					//
+					//ADDITIONAL FIX found while verifying review finding M-06 at runtime, not reported by the
+					//review because it postdates the reviewed baseline. This statement was previously chosen
+					//between two forms, and the pinned form named an @expected_id parameter that was never
+					//bound to the command; a second, duplicate binding of @source_filepath stood where that
+					//binding belonged. PostgreSQL resolves an unbound ":name" as a COLUMN reference, so every
+					//pinned move answered 42703 'column "expected_id" does not exist'. Every caller pins the
+					//source - the two record file/image field paths, the staged user-file path, and the
+					//"/fs/move/" endpoint - so the unpinned form was unreachable and the move operation was
+					//broken outright: a hardening change that disabled the feature it was hardening. It
+					//failed CLOSED, because the access decision is taken before this statement and the
+					//transaction rolls back, so no unauthorized move occurred. The root cause was the two
+					//parallel conditionals - SQL text and parameter list - that had to agree and silently did
+					//not; removing the conditionality removes that failure mode rather than re-synchronising
+					//it, and costs nothing because the discarded conjunct was a tautology.
+					var command = connection.CreateCommand(@"UPDATE files SET filepath = @filepath WHERE id = @id AND filepath = @source_filepath");
 					command.Parameters.Add(new NpgsqlParameter("@source_filepath", sourceFilepath));
 					command.Parameters.Add(new NpgsqlParameter("@id", srcFile.Id));
 					command.Parameters.Add(new NpgsqlParameter("@filepath", destinationFilepath));
-					command.Parameters.Add(new NpgsqlParameter("@source_filepath", sourceFilepath));
 
 					if (command.ExecuteNonQuery() != 1)
 					{

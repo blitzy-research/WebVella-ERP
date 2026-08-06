@@ -275,10 +275,19 @@ namespace WebVella.Erp.Web.Services
 			userFileRecord["name"] = Path.GetFileName(path);
 			var fileExtension = Path.GetExtension(path);
             var mimeType = MimeMapping.MimeUtility.GetMimeMapping(path);
+			//THREAT ADDRESSED - review finding M-08 (CWE-400 uncontrolled resource consumption / CWE-1188
+			//reliance on platform behaviour this platform does not provide). Helpers.GetImageDimension now
+			//reads the dimensions from the image header instead of decoding the image, and returns NULL when
+			//the header cannot be read. This site dereferenced the result unconditionally, so on Linux the
+			//Windows-only GDI+ facade it previously used threw TypeInitializationException and promoting ANY
+			//staged image to a user file failed. Dimensions are metadata rather than a security property, so
+			//"unknown" omits the two fields exactly as a non-image file does and the promotion still succeeds.
             if (mimeType.StartsWith("image")) {
 				var dimensionsRecord = Helpers.GetImageDimension(tempFile.GetBytes());
-				userFileRecord["width"] = (decimal)dimensionsRecord["width"];
-				userFileRecord["height"] = (decimal)dimensionsRecord["height"];
+				if (dimensionsRecord != null) {
+					userFileRecord["width"] = (decimal)dimensionsRecord["width"];
+					userFileRecord["height"] = (decimal)dimensionsRecord["height"];
+				}
 				userFileRecord["type"] = "image";
 			}
 			else if(mimeType.StartsWith("video")) {

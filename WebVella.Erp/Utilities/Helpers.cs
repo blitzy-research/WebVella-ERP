@@ -2626,16 +2626,493 @@ namespace WebVella.Erp.Utilities
 			return record;
 		}
 
+		// THREAT ADDRESSED - review finding M-08 (CWE-400 uncontrolled resource consumption, and CWE-1188
+		// platform-specific behaviour relied upon on a platform that does not provide it), OWASP A04
+		// Insecure Design. Two defects sat in one four-line method, and the CA1416 suppression that used to
+		// bracket it was what kept both of them invisible.
+		//
+		// (1) NOT AVAILABLE ON THE DEPLOYMENT PLATFORM. System.Drawing.Image.FromStream is a Windows-only
+		// GDI+ facade. On .NET 10 running on Linux it does not degrade - it throws
+		// TypeInitializationException from Windows.Win32.PInvokeGdiPlus, measured directly on this
+		// platform. Every caller reaches this method from inside an "if the MIME type starts with image"
+		// branch of an upload path, and none of them catches it locally, so on Linux EVERY image upload
+		// failed: the platform's own accept-image policy admitted the file and then the persistence step
+		// threw. The CA1416 suppression asserted the opposite of the truth - it declared the platform
+		// question reviewed and settled - which is precisely why this was never surfaced by the analyzer
+		// gate. The suppression is removed rather than moved.
+		//
+		// (2) UNBOUNDED DECODE. FromStream DECODES the image to construct the object, so the work and the
+		// memory it consumed were a function of the declared pixel dimensions rather than of the byte
+		// length that the upload size cap actually bounds. A few kilobytes of highly compressed pixel data
+		// can declare hundreds of megapixels - the "decompression bomb" shape - so an authenticated caller
+		// could exhaust the process from well inside the size limit.
+		//
+		// THE FIX IS TO STOP DECODING. Every format this platform admits on upload carries its pixel
+		// dimensions in a fixed-offset header, so the dimensions are READ rather than derived: constant
+		// work, a bounded number of leading bytes examined, no pixel buffer allocated, and no platform
+		// dependency. That is also the least invasive control available - it needs no package (OWASP
+		// Dependency Updates / AAP "no new package dependency"), and it keeps the returned
+		// EntityRecord contract identical for every file that previously succeeded.
+		//
+		// The dimension BOUND that closes the resource-consumption half is enforced by the caller, at the
+		// single upload choke point every upload action already passes through
+		// (WebApiController.GetUploadContentRejectionReason), because a refusal there returns the
+		// endpoint's own standard error envelope. This method's own contract is only to report or to
+		// decline to report; see the remarks below.
+
+		// Upper bound on the number of leading bytes any of the readers below will examine. TIFF is the
+		// only format whose dimension tags are not at a fixed small offset - they sit behind an image file
+		// directory whose position the header declares - so the probe window has to be wide enough to
+		// reach a normal directory while still being a hard, constant bound rather than "as far as it
+		// takes". 64 KiB reaches the directory of every TIFF a browser or camera produces; a file that
+		// hides its directory beyond that simply reports no dimensions rather than being chased.
+		private const int MAX_IMAGE_HEADER_PROBE_BYTES = 64 * 1024;
+
+		/// <summary>
+		/// Reads the pixel dimensions of an image from its header, without decoding it.
+		/// </summary>
+		/// <remarks>
+		/// Review finding M-08. Returns an <see cref="EntityRecord"/> carrying decimal "width" and
+		/// "height" when the dimensions can be read, and <c>null</c> when they cannot.
+		/// <para>
+		/// RETURNING NULL RATHER THAN THROWING IS PART OF THE CONTRACT. This method sits on upload paths
+		/// whose type policy is enforced by an extension allow-list and a leading-signature check, not by
+		/// this method, so a file that is admitted but whose header this reader does not recognise must
+		/// not become a failed upload - and a malformed or truncated header must never become an
+		/// unhandled fault on a request path, which would hand an authenticated caller a denial-of-service
+		/// primitive. Callers therefore treat a null result as "dimensions unknown" and persist the record
+		/// without the width and height fields, exactly as they already do for a non-image file.
+		/// </para>
+		/// <para>
+		/// Formats covered are those the upload allow-list admits: PNG, JPEG, GIF, BMP, WEBP, ICO and
+		/// TIFF. SVG is deliberately absent because it is deliberately absent from the upload allow-list:
+		/// it is an XML document that can carry script, and it has no pixel dimensions to read.
+		/// </para>
+		/// </remarks>
 		public static EntityRecord GetImageDimension(byte[] imageContent)
 		{
-			Stream stream = new MemoryStream(imageContent);
-#pragma warning disable CA1416 // Validate platform compatibility
-			System.Drawing.Image image = System.Drawing.Image.FromStream(stream);
+			var dimensions = ReadImageDimensions(imageContent);
+			if (dimensions == null)
+			{
+				return null;
+			}
+
 			var response = new EntityRecord();
-			response["height"] = (decimal)image.Height;
-			response["width"] = (decimal)image.Width;
-#pragma warning restore CA1416 // Validate platform compatibility
+			response["width"] = (decimal)dimensions.Value.Width;
+			response["height"] = (decimal)dimensions.Value.Height;
 			return response;
+		}
+
+		/// <summary>
+		/// Reads the pixel dimensions of an image from its header, or returns null when they cannot be
+		/// determined. Never throws for malformed, truncated or unrecognised content.
+		/// </summary>
+		/// <remarks>
+		/// Review finding M-08. Separated from <see cref="GetImageDimension"/> so a caller that needs to
+		/// BOUND the dimensions before persisting anything - the upload rejection check - can read them
+		/// without allocating a record, and so the two callers cannot drift apart on what "unknown" means.
+		/// </remarks>
+		public static (int Width, int Height)? ReadImageDimensions(byte[] imageContent)
+		{
+			if (imageContent == null || imageContent.Length < 8)
+			{
+				return null;
+			}
+
+			try
+			{
+				//PNG - the IHDR chunk is specified to be the first chunk, so width and height sit at fixed
+				//offsets 16 and 20, big-endian.
+				if (StartsWith(imageContent, PngSignature))
+				{
+					if (imageContent.Length < 24)
+					{
+						return null;
+					}
+
+					return Bound(ReadInt32BigEndian(imageContent, 16), ReadInt32BigEndian(imageContent, 20));
+				}
+
+				//GIF - the logical screen descriptor follows the six-byte version signature, little-endian.
+				if (StartsWith(imageContent, Gif87aSignature) || StartsWith(imageContent, Gif89aSignature))
+				{
+					if (imageContent.Length < 10)
+					{
+						return null;
+					}
+
+					return Bound(ReadUInt16LittleEndian(imageContent, 6), ReadUInt16LittleEndian(imageContent, 8));
+				}
+
+				//BMP - the DIB header follows the 14-byte file header. Its own size field distinguishes the
+				//12-byte BITMAPCOREHEADER, whose dimensions are 16-bit, from every later header, whose
+				//dimensions are signed 32-bit. Height is negative for a top-down bitmap, so it is taken as
+				//an absolute value.
+				if (StartsWith(imageContent, BmpSignature))
+				{
+					if (imageContent.Length < 26)
+					{
+						return null;
+					}
+
+					var dibHeaderSize = ReadInt32LittleEndian(imageContent, 14);
+					if (dibHeaderSize == 12)
+					{
+						return Bound(ReadUInt16LittleEndian(imageContent, 18), ReadUInt16LittleEndian(imageContent, 20));
+					}
+
+					var bmpWidth = ReadInt32LittleEndian(imageContent, 18);
+					var bmpHeight = ReadInt32LittleEndian(imageContent, 22);
+					return Bound(Math.Abs((long)bmpWidth), Math.Abs((long)bmpHeight));
+				}
+
+				//WEBP - a RIFF container whose fourth chunk word is "WEBP". Three codec chunks exist and
+				//each carries its dimensions differently, which is why the extension's leading-signature
+				//check cannot reach them and this reader has to.
+				if (StartsWith(imageContent, RiffSignature) && HasAsciiTag(imageContent, 8, "WEBP"))
+				{
+					return ReadWebpDimensions(imageContent);
+				}
+
+				//ICO - an icon directory rather than a single image.
+				if (StartsWith(imageContent, IcoSignature))
+				{
+					return ReadIcoDimensions(imageContent);
+				}
+
+				//TIFF - little- and big-endian variants. The dimensions live in tags 0x0100 and 0x0101 of
+				//the first image file directory, whose offset the header declares.
+				if (StartsWith(imageContent, TiffLittleEndianSignature))
+				{
+					return ReadTiffDimensions(imageContent, false);
+				}
+
+				if (StartsWith(imageContent, TiffBigEndianSignature))
+				{
+					return ReadTiffDimensions(imageContent, true);
+				}
+
+				//JPEG - a marker stream, so the frame header has to be walked to rather than indexed.
+				if (StartsWith(imageContent, JpegSignature))
+				{
+					return ReadJpegDimensions(imageContent);
+				}
+			}
+			catch (Exception)
+			{
+				//M-08: unreachable by construction - every read below is index-guarded - but retained as
+				//the outer guarantee behind the documented contract, because this method is called on
+				//attacker-supplied bytes and "returns null" must hold for every input without exception.
+				return null;
+			}
+
+			return null;
+		}
+
+		private static readonly byte[] PngSignature = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+		private static readonly byte[] Gif87aSignature = { 0x47, 0x49, 0x46, 0x38, 0x37, 0x61 };
+		private static readonly byte[] Gif89aSignature = { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61 };
+		private static readonly byte[] BmpSignature = { 0x42, 0x4D };
+		private static readonly byte[] RiffSignature = { 0x52, 0x49, 0x46, 0x46 };
+		private static readonly byte[] IcoSignature = { 0x00, 0x00, 0x01, 0x00 };
+		private static readonly byte[] TiffLittleEndianSignature = { 0x49, 0x49, 0x2A, 0x00 };
+		private static readonly byte[] TiffBigEndianSignature = { 0x4D, 0x4D, 0x00, 0x2A };
+		private static readonly byte[] JpegSignature = { 0xFF, 0xD8, 0xFF };
+
+		private static bool StartsWith(byte[] content, byte[] signature)
+		{
+			if (content.Length < signature.Length)
+			{
+				return false;
+			}
+
+			for (var index = 0; index < signature.Length; index++)
+			{
+				if (content[index] != signature[index])
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		private static bool HasAsciiTag(byte[] content, int offset, string tag)
+		{
+			if (offset < 0 || content.Length < offset + tag.Length)
+			{
+				return false;
+			}
+
+			for (var index = 0; index < tag.Length; index++)
+			{
+				if (content[offset + index] != (byte)tag[index])
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		private static long ReadInt32BigEndian(byte[] content, int offset)
+		{
+			return ((long)content[offset] << 24) | ((long)content[offset + 1] << 16) | ((long)content[offset + 2] << 8) | content[offset + 3];
+		}
+
+		private static int ReadInt32LittleEndian(byte[] content, int offset)
+		{
+			return content[offset] | (content[offset + 1] << 8) | (content[offset + 2] << 16) | (content[offset + 3] << 24);
+		}
+
+		private static long ReadUInt16LittleEndian(byte[] content, int offset)
+		{
+			return content[offset] | ((long)content[offset + 1] << 8);
+		}
+
+		private static long ReadUInt16BigEndian(byte[] content, int offset)
+		{
+			return ((long)content[offset] << 8) | content[offset + 1];
+		}
+
+		/// <summary>
+		/// Rejects a non-positive or implausible dimension pair rather than reporting it.
+		/// </summary>
+		/// <remarks>
+		/// Review finding M-08. A header is caller-supplied data, so a value read from one is a claim and
+		/// not a fact. Anything outside a sane range is reported as unknown, which keeps a crafted header
+		/// from reaching the record fields or the caller's bound arithmetic. The ceiling is deliberately
+		/// far above any real photograph so no legitimate image is refused by it; the ACTUAL pixel policy
+		/// is the caller's, at the upload choke point.
+		/// </remarks>
+		private static (int Width, int Height)? Bound(long width, long height)
+		{
+			const long absoluteMaximumEdge = 1000000;
+			if (width <= 0 || height <= 0 || width > absoluteMaximumEdge || height > absoluteMaximumEdge)
+			{
+				return null;
+			}
+
+			return ((int)width, (int)height);
+		}
+
+		private static (int Width, int Height)? ReadWebpDimensions(byte[] content)
+		{
+			//The codec chunk follows the twelve-byte RIFF/WEBP preamble.
+			if (content.Length < 30)
+			{
+				return null;
+			}
+
+			//Lossy: a VP8 bitstream whose 14-byte frame header ends with two 14-bit dimensions.
+			if (HasAsciiTag(content, 12, "VP8 "))
+			{
+				return Bound(ReadUInt16LittleEndian(content, 26) & 0x3FFF, ReadUInt16LittleEndian(content, 28) & 0x3FFF);
+			}
+
+			//Lossless: VP8L packs two 14-bit dimensions, each stored one less than its value, into the
+			//four bytes after its one-byte signature.
+			if (HasAsciiTag(content, 12, "VP8L"))
+			{
+				var packed = (uint)(content[21] | (content[22] << 8) | (content[23] << 16) | (content[24] << 24));
+				return Bound((packed & 0x3FFF) + 1, ((packed >> 14) & 0x3FFF) + 1);
+			}
+
+			//Extended: VP8X states the canvas size directly as two 24-bit values, each stored one less
+			//than its value.
+			if (HasAsciiTag(content, 12, "VP8X"))
+			{
+				var canvasWidth = (long)(content[24] | (content[25] << 8) | (content[26] << 16)) + 1;
+				var canvasHeight = (long)(content[27] | (content[28] << 8) | (content[29] << 16)) + 1;
+				return Bound(canvasWidth, canvasHeight);
+			}
+
+			return null;
+		}
+
+		private static (int Width, int Height)? ReadIcoDimensions(byte[] content)
+		{
+			//An .ico is a DIRECTORY of images at different sizes, not one image, so "the dimensions" has to
+			//be a choice rather than a read. The LARGEST entry is reported, because that is the intrinsic
+			//size a browser resolves the file to when nothing constrains it and the value a consumer of the
+			//stored width and height would expect. Reporting the first entry instead would report whichever
+			//size the producing tool happened to emit first - conventionally the 16x16 one - and would
+			//understate every multi-resolution icon.
+			if (content.Length < 6)
+			{
+				return null;
+			}
+
+			var entryCount = ReadUInt16LittleEndian(content, 4);
+			long bestWidth = 0;
+			long bestHeight = 0;
+			for (var entry = 0; entry < entryCount; entry++)
+			{
+				//Each directory entry is sixteen bytes and opens with the width and the height, each a
+				//single byte in which zero means 256.
+				var entryOffset = 6 + ((long)entry * 16);
+				if (entryOffset + 16 > content.Length)
+				{
+					break;
+				}
+
+				var entryWidth = content[entryOffset] == 0 ? 256 : content[entryOffset];
+				var entryHeight = content[entryOffset + 1] == 0 ? 256 : content[entryOffset + 1];
+				if (entryWidth * entryHeight > bestWidth * bestHeight)
+				{
+					bestWidth = entryWidth;
+					bestHeight = entryHeight;
+				}
+			}
+
+			return Bound(bestWidth, bestHeight);
+		}
+
+		private static (int Width, int Height)? ReadTiffDimensions(byte[] content, bool isBigEndian)
+		{
+			var limit = Math.Min(content.Length, MAX_IMAGE_HEADER_PROBE_BYTES);
+			if (limit < 8)
+			{
+				return null;
+			}
+
+			var directoryOffset = isBigEndian
+				? ReadInt32BigEndian(content, 4)
+				: (long)(uint)ReadInt32LittleEndian(content, 4);
+
+			//The directory has to sit after the header and inside the probe window, with room for its own
+			//entry count.
+			if (directoryOffset < 8 || directoryOffset + 2 > limit)
+			{
+				return null;
+			}
+
+			var entryCount = isBigEndian
+				? ReadUInt16BigEndian(content, (int)directoryOffset)
+				: ReadUInt16LittleEndian(content, (int)directoryOffset);
+
+			long? width = null;
+			long? height = null;
+			for (var entry = 0; entry < entryCount; entry++)
+			{
+				//Each directory entry is twelve bytes: a two-byte tag, a two-byte field type, a four-byte
+				//count and a four-byte value.
+				var entryOffset = directoryOffset + 2 + ((long)entry * 12);
+				if (entryOffset + 12 > limit)
+				{
+					break;
+				}
+
+				var tag = isBigEndian
+					? ReadUInt16BigEndian(content, (int)entryOffset)
+					: ReadUInt16LittleEndian(content, (int)entryOffset);
+				if (tag != 0x0100 && tag != 0x0101)
+				{
+					continue;
+				}
+
+				var fieldType = isBigEndian
+					? ReadUInt16BigEndian(content, (int)entryOffset + 2)
+					: ReadUInt16LittleEndian(content, (int)entryOffset + 2);
+
+				//Field type 3 is a 16-bit value, left-aligned in the four-byte value field; type 4 is a
+				//32-bit value. Anything else is not a dimension this reader will interpret.
+				long value;
+				if (fieldType == 3)
+				{
+					value = isBigEndian
+						? ReadUInt16BigEndian(content, (int)entryOffset + 8)
+						: ReadUInt16LittleEndian(content, (int)entryOffset + 8);
+				}
+				else if (fieldType == 4)
+				{
+					value = isBigEndian
+						? ReadInt32BigEndian(content, (int)entryOffset + 8)
+						: (long)(uint)ReadInt32LittleEndian(content, (int)entryOffset + 8);
+				}
+				else
+				{
+					continue;
+				}
+
+				if (tag == 0x0100)
+				{
+					width = value;
+				}
+				else
+				{
+					height = value;
+				}
+
+				if (width.HasValue && height.HasValue)
+				{
+					break;
+				}
+			}
+
+			if (!width.HasValue || !height.HasValue)
+			{
+				return null;
+			}
+
+			return Bound(width.Value, height.Value);
+		}
+
+		private static (int Width, int Height)? ReadJpegDimensions(byte[] content)
+		{
+			var limit = Math.Min(content.Length, MAX_IMAGE_HEADER_PROBE_BYTES);
+
+			//Skip the two-byte start-of-image marker and walk the marker stream.
+			var offset = 2;
+			while (offset + 3 < limit)
+			{
+				//Markers are introduced by one or more 0xFF fill bytes.
+				if (content[offset] != 0xFF)
+				{
+					offset++;
+					continue;
+				}
+
+				var marker = content[offset + 1];
+
+				//Standalone markers carry no length: fill bytes, the restart markers and the two
+				//image-delimiting markers.
+				if (marker == 0xFF || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD9))
+				{
+					offset += 2;
+					continue;
+				}
+
+				var segmentLength = ReadUInt16BigEndian(content, offset + 2);
+				if (segmentLength < 2)
+				{
+					return null;
+				}
+
+				//Every start-of-frame marker states the frame dimensions in the same place. 0xC4, 0xC8 and
+				//0xCC fall inside the numeric range but are not frame headers, so they are excluded.
+				var isStartOfFrame = marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
+				if (isStartOfFrame)
+				{
+					if (offset + 9 >= limit)
+					{
+						return null;
+					}
+
+					//Within the frame header: one byte of sample precision, then height, then width.
+					return Bound(ReadUInt16BigEndian(content, offset + 7), ReadUInt16BigEndian(content, offset + 5));
+				}
+
+				//Start of scan means the compressed data has begun and no frame header follows it.
+				if (marker == 0xDA)
+				{
+					return null;
+				}
+
+				offset += 2 + (int)segmentLength;
+			}
+
+			return null;
 		}
 
 	}
