@@ -2825,7 +2825,7 @@ jobs:
       # reverse. The two Part 2 records were renamed to HR-10 and HR-11; this step is
       # what stops the condition returning, because the arithmetic that detects it -
       # one identifier per record - is trivial to assert and impossible to eyeball
-      # across 96 records.
+      # across 115 records.
       #
       # Derived from the file rather than from a maintained list, so a new finding is
       # covered the moment it is added and no list can go stale. Fails closed: an
@@ -2839,7 +2839,10 @@ jobs:
           report="docs/security/security-audit-report.md"
           # The single record count this repository's documentation set is measured at.
           # Raise it deliberately, in the same commit that adds records.
-          expected_minimum_records=96
+          # Raised 96 -> 115 by the frontend and API seam review, which added Part 4's
+          # sixteen SR- records to the audit report. Measured, not estimated: the file
+          # carries 115 finding records and 115 distinct identifiers at that commit.
+          expected_minimum_records=115
 
           if [ ! -f "$report" ]; then
             echo "::error::MILESTONE-01 assertion could not run - $report is missing, so the audit deliverable itself is absent."

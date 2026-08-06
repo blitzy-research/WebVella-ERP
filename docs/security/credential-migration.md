@@ -467,8 +467,10 @@ the stored one-way hash.
 > aborting would recover nothing, because the schema version has already advanced — the notice is
 > retained in memory rather than discarded, and the fact, the count and the recovery procedure are
 > recorded in `system_log` under the source `ErpService.CredentialNoticeDelivery`. That record
-> deliberately contains no credential, no length and no digest. Recovery is then the procedure in
-> [If the one-time value was not captured](#if-the-one-time-value-was-not-captured) below.
+> deliberately contains no credential, no length and no digest. Recovery is then the procedure set out in
+> the steps immediately below, whose step 3 is the capture point. (An earlier revision linked to a
+> subsection titled *If the one-time value was not captured*; **no such subsection exists in this document**,
+> so the dangling link is replaced by this direct reference rather than left pointing at nothing.)
 
 The steps are:
 

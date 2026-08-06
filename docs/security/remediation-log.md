@@ -320,6 +320,16 @@ remediation**.
 > same normalisation yields **3,066 distinct `CA` diagnostics** and **650 `(rule, file)` pairs**. Any later
 > claim of "no new warnings" is measured against **3,093**.
 >
+> **Superseded downwards by the frontend and API seam remediation, and stated here so this note cannot be
+> read as current.** That pass measured **3,062** warnings and `0` errors on a `--no-incremental` solution
+> rebuild — composition **3,035** `CA`, **21** `ASPDEPR`, **5** `CS` and one codeless `libman.json` warning.
+> The **31-warning reduction** is fully attributed: retiring four files under `SR-04`, and replacing five
+> `throw new Exception` statements with typed exceptions under `SR-08`. Its "no new warnings" claim is the
+> stronger form — not a total comparison but a **diff of the warning-code multiset**, which came back
+> identical in composition at 53 codes, so no code appeared that was not already present and no count rose.
+> Baseline for any claim after that pass is therefore **3,062**; see
+> [the seam remediation section](#frontend-and-api-seam-remediation-the-disposition-of-sr-01-through-sr-16).
+>
 > **Why 3,094 and not 3,096, and what that means for every later figure in this log.** The final
 > regression pass compared the shipped build against the pre-remediation baseline rule by rule AND file by
 > file, and the per-file decomposition caught something the per-rule totals had hidden: `CA2201` showed a
@@ -4287,7 +4297,7 @@ by every page model, consumed by 48 views, 17 redirect sinks and 44 tag-helper b
 | File | Change |
 | --- | --- |
 | `WebVella.Erp.Web/Models/BaseErpPageModel.cs` | A **sanitizing property setter** at the single root-cause sink: absolute URLs, protocol-relative `//host`, `/\host`, control characters that split a scheme, and every scheme (`javascript:`, `data:`, `vbscript:`) rejected; empty preserved as empty, since 40+ views render it raw into an attribute |
-| `WebVella.Erp.Web/Utils/HtmlHelperExtension.cs` | The serialized-JSON helper `WvJsonRaw` keeps its framework `JavaScriptEncoder`-backed escaping of `<`. An intermediate revision also **added** a second, true JavaScript-string extension method (`WvJsScriptString`) and moved the one quoted-string caller to it; that method has since been **removed**, because adding a new public extension method to a shipped library is an API surface change a security fix did not require. The quoted-string case is now encoded on the page model instead, as an encoded property (`JsAdminImageFinderModel.CurrentTypeJsEncoded`), following the `ReturnUrlEncoded` precedent already used elsewhere in the repository. The encoding is identical; only its location changed, and no public surface was added |
+| `WebVella.Erp.Web/Utils/HtmlHelperExtension.cs` | The serialized-JSON helper `WvJsonRaw` keeps its framework `JavaScriptEncoder`-backed escaping of `<`. An intermediate revision also **added** a second, true JavaScript-string extension method (`WvJsScriptString`) and moved the one quoted-string caller to it; that method has since been **removed**, because adding a new public extension method to a shipped library is an API surface change a security fix did not require. The quoted-string case was then encoded on the page model instead, as an encoded property (`JsAdminImageFinderModel.CurrentTypeJsEncoded`), following the `ReturnUrlEncoded` precedent already used elsewhere in the repository. The encoding was identical; only its location changed, and no public surface was added. **That exemplar no longer exists**, and the tense above is past for that reason: `JsAdminImageFinderModel` lived in `WebVella.Erp.Web/Pages/ckeditor/ImageFinder.cshtml.cs`, which was **retired in full** under review finding `SR-04` because it and its sibling referenced roughly seventy `/jsadmin/**` AngularJS and CKEditor-4 assets that exist nowhere in this repository. The surviving encoded-property precedent to follow is `ReturnUrlEncoded` itself. `WvJsonRaw` and its `JavaScriptEncoder`-backed escaping are untouched by that retirement |
 | 2 page models, 2 header components | `Redirect` replaced with `LocalRedirect` at both POST sinks; the sanitizer applied at a component's raw query read and at the shared back-button href sink |
 
 Control characters are **rejected rather than normalised**, because browsers strip tab, carriage return
@@ -10435,9 +10445,11 @@ projects target `net10.0`.
 
 A code review of the final observability milestone returned **NOT APPROVED** with eleven findings: one
 Critical, seven Major, two Minor and one Informational. This section records what was done about each,
-which files carry it, and how it was verified. It is the last entry in this log because every count it
-cites had to be re-measured *after* the code changes landed, and a figure measured before them would
-have been stale on arrival — the failure mode `OBS-08` exists to catch.
+which files carry it, and how it was verified. It was written as the last entry in this log because every
+count it cites had to be re-measured *after* the code changes landed, and a figure measured before them
+would have been stale on arrival — the failure mode `OBS-08` exists to catch. **One section now follows it**,
+recording the frontend and API seam review; that section was added later and re-measured every figure it
+cites for the same reason.
 
 Ten of the eleven are remediated in code. One is declined, on an explicit exclusion in the frozen plan
 rather than on judgement, and its documentation half is discharged in full.
@@ -10487,3 +10499,107 @@ capability.
   generator, which still serves the local system account whose value is never displayed. Deleting it
   would have reintroduced a provisioning failure rather than closed an exposure, and the earlier
   documentation claim that it was removed "generator and all" is corrected rather than preserved.
+
+## Frontend and API seam remediation — the disposition of `SR-01` through `SR-16`
+
+A code review of the frontend and API seam at the final checkpoint returned **NOT APPROVED** with fourteen
+findings: four Critical, nine Major and one Minor. All fourteen are closed. Two further defects were found
+while closing them and are recorded as findings in their own right, because neither existed at the checkpoint
+the review examined: one was introduced **after** the baseline by a commit inside this engagement, and one was
+introduced **by a remediation in this very pass**.
+
+The findings are catalogued in full, in the mandated eight-field format, in
+[Part 4 of the audit report](security-audit-report.md#part-4-the-frontend-and-api-seam-review). This section
+records the disposition, the files, the verification and the commit boundary.
+
+**Why the review's own identifiers are not used here.** They were `C-01`–`C-04`, `M-01`–`M-09` and `L-01`,
+every one of which collides *exactly* with a Part 1 audit record. The `SR-` namespace was unused anywhere in
+this repository and is used throughout instead; the mapping is stated in each record's first field.
+
+### Disposition
+
+| Finding | Review ID | Severity | Subject | Disposition |
+| --- | --- | --- | --- | --- |
+| `SR-01` | `C-01` | **Critical** | The WebAssembly token-refresh URL duplicated the `api/` segment, so refresh always 404'd and the client deleted the token as though the server had rejected it | **Fixed at the divergence rather than at the string.** The route root is one shared constant consumed by both services, so they cannot drift apart again. Runtime: the corrected route returns **200**, the old form **405** |
+| `SR-02` | `C-02` | **Critical** | Two host pipelines compared the bearer scheme case-**sensitively**, so a standards-compliant `bearer <jwt>` was forwarded to the cookie handler and answered as anonymous — with a login redirect instead of a 401 | **Fixed, both halves.** Both selectors now compare `OrdinalIgnoreCase`, matching the platform's own `JwtMiddleware` precedent; the client emits the canonical spelling. Two further defects in the same path were fixed with it: a null returned after a navigation that does not abort the method, and a bearer token persisting on a shared `HttpClient` so "anonymous" calls were authenticated |
+| `SR-03` | `C-03` | **Critical** | The client shipped an `http://` API base while its host redirects to HTTPS — blocked as mixed content over HTTPS, and a cleartext bearer token over HTTP | **Fixed by removing the setting from the trusted path**, not by correcting its value. The base defaults to the serving origin, which cannot be weaker than the page; an insecure absolute base under a secure page is refused with an actionable error |
+| `SR-04` | `C-04` | **Critical** | Two pages referenced ~70 `/jsadmin/**` AngularJS and CKEditor-4 assets absent from the repository; the naive repair would have **added two EOL libraries** | **Fixed by removal**, verified safe first: zero inbound references. The live CKEditor 5 upload endpoints are untouched and still routed |
+| `SR-05` | `M-01` | **High** | Comment, timelog and feed bodies reached a client-side `innerHTML` sink in a pre-built bundle — a sink **no Razor census could see**, which is why every earlier encoding pass missed it | **Fixed with an allow-list sanitizer on write and again on read**, using an existing dependency. Read-side operates on copies so stored data is never rewritten. One planned step was **dropped on evidence**: encoding the feed snippet would have double-encoded, because the snippet helper was proven not to decode entities |
+| `SR-06` | `M-02` | Major / matrix Medium | The client login component passed a decoded `returnUrl` to a navigation call that accepts absolute URIs | **Fixed with a local-path allow-list** at **both** read sites — including the already-signed-in path, which fires on first render and needs no credential |
+| `SR-07` | `M-03` | Major / matrix Low | A save with no `returnUrl` redirected to the *application* route using a *page* identifier | **Fixed** to the page route, matching the sibling handler. The old target returns 404 with a zero-length body; the new one returns 200 |
+| `SR-08` | `M-04` | Major / matrix Medium | The client error model described a contract the server never emits; 400 worked by accident, 500 discarded the server's message, and **401 and 403 were returned as SUCCESS** | **Fixed by switching on HTTP status** rather than a discriminator the server never sends. A second defect of the same class *in this fix* was caught and closed: an access-warning model missing two of the platform's three members |
+| `SR-09` | `M-05` | Major / matrix Low | The download action parsed a resize contract it never honoured | **Fixed by removal.** Behaviour-identical: the only producer was retired by `SR-04`, and the third-party components were confirmed never to compose such a URL |
+| `SR-10` | `M-06` | Major / matrix Low | Five image types could be uploaded but were then served as attachments, so the platform's own image field showed a download prompt | **Fixed** by aligning the inline set with the passive-raster half of the upload set. `.svg`, `.html` and `.pdf` stay excluded by design. TIFF residual: `RISK-148` |
+| `SR-11` | `M-07` | Major / matrix Low | The packaged upload controls' error callbacks read a camelCase member as PascalCase and referenced an undeclared variable, so a refused upload left the control frozen with no feedback | **Fixed from outside the package**, which cannot be edited. **Upgrading is not a remedy** — 1.8.1 and 1.8.2 were fetched and both still carry the defect. The wrapper was confirmed to pre-date the baseline, so it was proved at runtime rather than re-implemented |
+| `SR-12` | `M-08` | **High** | Image dimensions were read through a Windows-only API behind a suppressed platform warning, so **every image upload failed on Linux**; dimensions were also unbounded | **Fixed with a bounded header-only reader** for seven formats that never throws, the suppression **deleted** rather than re-scoped, and a pixel bound added to the shared refusal helper every upload action already calls |
+| `SR-13` | `M-09` | Major / matrix Medium | This document set asserted *no open item in the code* while sixteen defects, four Critical, were live in the seam | **Fixed by correction, not overwriting.** Each stale claim is struck through and restated with the reason it was wrong, and the open-item row now carries the qualifier that makes it checkable |
+| `SR-14` | `L-01` | Low | The audit report claimed one API-contract change; the remediation log had already been corrected to four | **Fixed.** The report now carries the same four-item enumeration this log carries |
+| `SR-15` | — | **High** by impact | **Post-baseline regression from this engagement**: the move statement named `@expected_id` without binding it and bound `@source_filepath` twice, so PostgreSQL rejected it — **every** file move failed | **Fixed at the root cause.** The conjunct was provably a tautology, so the conditional SQL was removed rather than the binding repaired. Blast radius was established by enumeration: five callers, all passing a pinned identifier, so the broken branch was the only one ever taken |
+| `SR-16` | — | Low | **Regression introduced by `SR-11`'s own remediation**: a refusal message survived a later successful upload | **Fixed** with an explicit clear registered through `jqXHR.done(...)` — chosen over wrapping the success callback for two measured reasons stated in the record |
+
+### Commit boundaries
+
+One commit per vulnerability class, as the engagement requires. Seven classes:
+
+| Commit | Class | Findings | Principal files |
+| --- | --- | --- | --- |
+| 1 | Legacy asset retirement | `SR-04` | 4 Razor Page files deleted, 1 project file |
+| 2 | File and image pipeline | `SR-09`, `SR-10`, `SR-12`, `SR-15` | `Helpers.cs`, `WebApiController.cs`, `UserFileService.cs`, `DbFileRepository.cs` |
+| 3 | Upload error feedback | `SR-11`, `SR-16` | `wwwroot/js/site.js` |
+| 4 | Stored cross-site scripting | `SR-05` | new `Utils/HtmlSanitizer.cs`, 3 services, 3 page components, `EntityRecordUtils.cs` |
+| 5 | SDK workflow correctness | `SR-07` | `page/manage-custom.cshtml.cs` |
+| 6 | Authentication seam | `SR-01`, `SR-02`, `SR-03`, `SR-06`, `SR-08` | 2 host `Startup.cs`, 11 WebAssembly client files |
+| 7 | Documentation truth | `SR-13`, `SR-14` | this log, the audit report, the risk register, the secure configuration guide, the workflow |
+
+### What the verification actually consisted of
+
+Stated at the same standard as the rest of this log: what was *executed*, not what was *inspected*.
+
+- **Static, re-measured after every class rather than once at the end.** Full non-incremental solution
+  rebuild: **0 errors, 3,062 analyzer warnings**. The warning-code multiset was diffed against the
+  pre-change build and is **bit-identical** — 53 codes, exact counts — so **zero new warning codes were
+  introduced across the entire pass**, and every count movement during it was a *reduction*. The
+  WebAssembly Client, Server and Shared projects were built by name as well, at **48**, **48** and **0**
+  warnings and 0 errors. One trap worth recording: an *incremental* solution build reports a single warning
+  because nothing recompiles, so it is useless for regression comparison — only `--no-incremental` counts.
+- **Three ad-hoc assertion harnesses**, all passing, none committed: **66** assertions over the image
+  reader covering every admitted format and the oversize refusal; **82** over the sanitizer, including
+  *the original record is not mutated*, *the copy is a different instance* and *feed JSON is byte-identical
+  for benign content*; and **48** over the authentication seam, including the decisive pair *500 preserves
+  the server message* and *500 does not report "Not supported ApiErrorType"*.
+- **Runtime verification in a real browser for every class that renders anything**, against a live host and
+  a live PostgreSQL database. The evidence worth naming is the evidence that could have gone the other way:
+  the stored cross-site-scripting payloads were **left in the database** and shown to be inert, rather than
+  removed and declared closed — 0 of 53 live script blocks on the rendered page contained any marker; the
+  `.svg` negative control was driven through **four** attack vectors after being moved to that extension
+  through the move endpoint, and none executed, with a control step confirming the body genuinely was
+  script-bearing; the bearer-scheme fix was exercised at **four** casings, all reaching the JWT handler,
+  with `Basic` and a deliberate near-miss `Bearerx` still correctly routed to the cookie handler so the
+  comparison was shown not to have been over-broadened; and the open-redirect fix was checked with a
+  reachability control first, then by sampling the address every 100 ms for 3.2 s after each of three
+  attacks, with zero off-origin requests confirmed at **both** the browser and the OS socket level — and
+  with a local path **accepted**, proving the policy discriminates rather than denying everything.
+- **A false pass was refused rather than accepted.** The first read-side sanitizer check showed an empty
+  collection, which would have looked like success. It was diagnosed instead: selecting a row with no
+  ordering is non-deterministic, so the wrong record's page had been loaded. Pinning the identifier
+  exercised the path properly and the payload was found, neutralised.
+- **Two secondary defects were found *by* verification and fixed**, which is the part of this pass most
+  worth recording, because inspection alone would have missed both: `SR-16`, a stale refusal surviving a
+  success, and the incomplete access-warning model inside `SR-08`'s own fix. A third — an unhandled render
+  exception on the anonymous path — was found when a typed exception replaced a null dereference, and was
+  closed by making the path *handled* rather than merely typed.
+- **Route surface: two removals and nothing else.** Re-verified by filtering the full diff — **staged
+  deletions included**, which matters because a diff of unstaged changes alone does not show them — for
+  route, verb, authorization, endpoint-mapping and page-convention lines. The only matches are the **two
+  `@page` declarations removed by `SR-04`** (`/ckeditor` with its `/ckeditor/Index` form, and
+  `/ckeditor/ImageFinder`) plus two lines of **comment prose** mentioning `[Authorize]` and
+  `[AllowAnonymous]` without changing either. So: nothing changed, nothing added, two retired. That
+  retirement is a contract change and is recorded as the **fifth** intentional one in the audit report's
+  acceptance criteria, extending the four listed in row 15 above rather than being treated as exempt for
+  being subtractive. Both retired routes were unrenderable and referenced from zero files, and the live
+  CKEditor 5 controller endpoints are untouched.
+- **The repository's own gates were re-run against the modified tree**, not assumed: the credential sweep
+  passes over **1,517** tracked text files with its self-test proving it can still detect a planted value
+  inside a Markdown evidence line, and the finding-identifier assertion passes at **115 records, 115
+  distinct identifiers** with `expected_minimum_records` raised from 96 to 115 in the same change that added
+  the records — which is what that step's own instruction requires.

@@ -772,6 +772,14 @@ one edit, and then **ordered early in each host pipeline**. All seven were verif
 against a published host over HTTPS — on a dynamic response and on two static assets — not merely by
 reading the source.
 
+**A fourth response class was confirmed subsequently, and it is the one most easily assumed rather than
+checked: a 3xx redirect.** The headers are present on redirect responses too, not only on responses that
+carry a rendered body. That matters because a redirect is exactly where a header is most likely to be lost —
+the pipeline short-circuits before any content is produced — and because two of the mandated headers,
+`X-Frame-Options` and `Content-Security-Policy`, are only useful if they arrive on *every* response an
+attacker can cause a browser to follow. Verified on the wire during the frontend and API seam pass, on the
+post-save redirects of an SDK management form.
+
 `X-XSS-Protection` carries the value `0`, and that is correct and intentional rather than a disabled
 control. The legacy browser XSS auditor it refers to has been removed from modern browsers and, while
 it existed, was itself exploitable; `0` is the value that switches it off rather than leaving it in a
@@ -914,6 +922,24 @@ sinks encoded, and every retained by-design markup channel enumerated in `RISK-0
 report-only policy is **detective, not preventive**: the browser reports the violation and then runs
 the script anyway. It closes nothing on its own and must never be cited as evidence that `H-06` is
 covered.
+
+**One correction to the sentence above, and it matters operationally.** *Remediated in the view and
+builder layer* was accurate about the sinks then known, and it is exactly why one sink survived: the
+census behind it counted **Razor** raw-output sites, and the Project plugin's comment, timelog and feed
+bodies reach the browser through a **client-side `innerHTML` assignment inside a pre-built bundle** —
+which no Razor census can see, because no Razor expression is involved. That chain was live until review
+finding `SR-05` closed it with an allow-listed server-side sanitizer applied on write **and** again on
+read, so already-stored payloads are neutralised without rewriting stored data.
+
+Two operational consequences follow, and neither is inferable from the paragraph above:
+
+- **Do not treat "the views are encoded" as coverage of the rendering surface.** Any component that
+  assigns `innerHTML`, whether shipped here or added later, is a sink that server-side view encoding does
+  not reach. The control that covers it is sanitization at the persistence and projection boundary.
+- **The report-only measurement below is now corroborated independently.** A separate pass on a single
+  page observed roughly **80** report-only violations, every one raised by the application's *own* inline
+  styles, scripts and evaluation — consistent with the figures below and recorded as `RISK-155`. Enforcement
+  is a backlog, not a switch.
 
 ## Transport security
 
@@ -1614,6 +1640,78 @@ One consequence worth stating plainly: **abbreviating an address in this documen
 configuration file, does not undo the original disclosure.** Any internal host name or address that was
 ever committed should be treated as public and reachability-restricted at the network layer, not merely
 edited out of the current revision.
+
+## The WebAssembly client — transport, API base address and origin
+
+The Blazor WebAssembly client is a **browser-delivered** application, which changes what configuration can
+safely mean for it. Everything in its `wwwroot/appsettings.json` is downloaded by, and readable by, every
+visitor. **It cannot hold a secret of any kind**, and nothing should be added to it that an anonymous
+visitor must not read.
+
+### `serverUrl` — leave it empty unless the API is genuinely a separate host
+
+| Value | Behaviour | When to use it |
+| --- | --- | --- |
+| **empty (shipped default)** | The client calls **the origin that served it**, inheriting that origin's scheme | Always, unless the API is on a different host. This is the safe default and it is safe *by construction* — a same-origin base can never be weaker than the page |
+| a **relative** path | Resolved against the serving origin, so it is also scheme-safe by construction | A reverse proxy that mounts the API under a path prefix |
+| an **absolute `https://` URL** | Used as given | A genuinely separate API host |
+| an **absolute `http://` URL** | **Refused with a startup error** when the page itself is secure | Never. The two possible outcomes are a blocked request or a leaked bearer token |
+
+That last row is a deliberate refusal rather than an attempt, and the reason is worth stating because the
+failure it prevents is the *quiet* one. Under HTTPS, an `http://` API base makes every call active mixed
+content and the browser blocks it — loud, obvious, and quickly diagnosed. Served over plain HTTP the very
+same setting **works**, and transmits the bearer token in cleartext on every request. A working
+misconfiguration is far more dangerous than a broken one, so the client fails fast with an actionable
+message instead of leaving the outcome to the deployment's scheme. This is review finding `SR-03`; the
+version shipped before it carried `http://localhost:5000/` as its default.
+
+### Do not leave a cleartext listener bound
+
+Removing the insecure default closed the client's half of that finding. **It does not stop an operator
+binding a cleartext listener**, and during verification one was found live on the API port, answering
+probes — which is what made the exposure reachable rather than theoretical (`RISK-159`).
+
+- Bind **HTTPS only**, or terminate TLS at a proxy and let nothing else listen.
+- If a plaintext listener must exist, it should do nothing but redirect. HTTPS redirection is enabled and
+  guarded to non-Development, ordered **after** `UseCors` — see *Transport security*.
+- HTTPS is **not optional** for this platform even in a development loop: the authentication and antiforgery
+  cookies are `Secure`-only, so the login page cannot function over plain HTTP.
+
+### Client origin and cross-origin policy
+
+When the client is served from the same origin as the API — the shipped default — **no cross-origin
+configuration is required at all**, and requests carry `sec-fetch-site: same-origin`. Only if you set an
+absolute `serverUrl` does the client become a cross-origin caller, and in that case its origin must be added
+to `Settings:Cors:AllowedOrigins` on the API host. An absent or empty list denies every origin outside
+Development; see *Cross-origin policy*.
+
+### Post-authentication redirects are restricted to local paths
+
+The client's login component accepts a `returnUrl` only when it is a path on the same origin — a single
+leading `/`, and neither `//` nor `/\`. Absolute, scheme-relative and backslash-relative values fall back
+to `/`. Nothing needs configuring; it is noted so that a deep link which appears to be ignored after login
+is understood as the policy working rather than as a defect (`SR-06`).
+
+## File download serves the stored object at full size
+
+`GET /fs/{path}` returns the stored object **exactly as uploaded**. There is no server-side resizing, and
+there is no query parameter that will produce one.
+
+This is stated explicitly because the endpoint previously *appeared* to offer it: it parsed `action`, `mode`,
+`width` and `height` from the query string and then ignored them. The parsing was removed by review finding
+`SR-09` — its only producer anywhere in the repository was a page retired by `SR-04`, and the third-party
+field components were confirmed never to compose such a URL — so the behaviour is unchanged and the contract
+is now honest. If you need thumbnails, generate them at upload time in your own pipeline, or resize in the
+browser; do not expect a query parameter to do it.
+
+Two related delivery behaviours belong with this, since operators meet all three together:
+
+- **Inline versus attachment is an allow-list.** Only a small set of passive raster extensions is served
+  inline; everything else is served with `Content-Disposition: attachment` alongside
+  `X-Content-Type-Options: nosniff`. That is what stops an uploaded `.svg` or `.html` executing on this
+  application's origin, and it is proven end to end rather than assumed — see `RISK-149`.
+- **TIFF will render as a broken image**, inline or not, because no mainstream browser ships a TIFF decoder
+  for `<img>`. That is a browser limitation, not a platform one, and the options are set out in `RISK-148`.
 
 ## PostgreSQL is the only supported database
 

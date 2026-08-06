@@ -56,7 +56,7 @@ the two commands that check *them* are given in that section.
 | `RISK-012` | The generic record-update path can overwrite a password hash with a blank value; the user-facing save path is verified not to. | Named, not fixed | Platform team |
 | `RISK-013` | Two hosts served a permissive `Access-Control-Allow-Origin: *`. **Resolved — both hosts now carry an explicit origin allow-list, verified on the wire.** The close was two-stage, which is recorded rather than smoothed over: `WebVella.Erp.Site` was corrected in the original remediation, and `WebVella.Erp.Site.Project` only in follow-up work, after review found the second host still permissive while the finding was already reported as fixed. No live `AllowAnyOrigin()` call remains anywhere in the repository. Retained as an identifier because earlier revisions of this register and the audit report cite it as an open risk. | Resolved | — |
 | `RISK-014` | Two bearer-token error paths return stack traces **unconditionally**, so setting `Production` does not suppress them (finding `H-13`). | Named, not fixed | Platform team |
-| `RISK-015` | `/ckeditor/ImageFinder` returns HTTP 500; proven pre-existing by counterfactual. | Named, not fixed | Platform team |
+| `RISK-015` | ~~`/ckeditor/ImageFinder` returns HTTP 500; proven pre-existing by counterfactual.~~ **Closed — the route no longer exists.** | Closed by removal (`SR-04`) | — |
 | `RISK-016` | Three navigation anchors carry `href="javascript: void(0)"` — Bootstrap dropdown placeholders, **not** injection sinks. | Named, not a defect | Platform team |
 | `RISK-017` | One host's `Startup.cs` lacks the UTF-8 byte-order mark the repository's own `.editorconfig` mandates. | Named, not fixed | Platform team |
 | `RISK-018` | Four accessibility advisories on the login and management screens — label/form-field association, and missing `autocomplete` attributes. Not security findings. The `autocomplete` half is carried in full as `RISK-125`. | Named, not a defect — documentation only | Platform team |
@@ -163,6 +163,20 @@ the two commands that check *them* are given in that section.
 | `RISK-145` | Plugin patch files seed `PcFieldHtml` page-component options whose value is **server-authored C# source**, not attacker-controlled input. The rendering tag helper is third-party (`WebVella.TagHelpers` 1.8.0), which the plan restricts to version updates. Resolves through the by-design intentional-HTML channel recorded as `RISK-023`. Previously numbered `RISK-034`. | Accepted — by-design channel with a compensating control | Platform team |
 | `RISK-146` | No transport-level request-body limit bounds an upload before model binding: all five upload actions validate before reading the stream, but ASP.NET Core has already buffered the multipart body by then, and neither `MaxRequestBodySize` nor `MultipartBodyLengthLimit` is configured anywhere. This is the residual that review finding `F-09` decision (o) defers to. | Accepted — documented, not fixed | Platform team |
 | `RISK-147` | **CLOSED.** Ten authenticated API actions returned a stack trace in the response body; 0 occurrences remain, all ten routing through the development-gated `SafeErrorMessage`. Retained as a closure record; the open residual it used to be confused with is `RISK-142` | Closed — re-measured, condition absent |
+| `RISK-148` | No mainstream browser ships a TIFF decoder for `<img>`, so a stored `.tif`/`.tiff` shows a broken image whatever the disposition. Admitting them to the inline set under `SR-10` made the platform's own components consistent with the upload allow-list; it cannot make a browser decode TIFF | Accepted — **owner decision required**, three options stated | Platform team |
+| `RISK-149` | `POST /fs/move/` does not validate the **target** extension against the upload allow-list, so a caller who has already passed the upload gate can rename a stored object to an extension the upload gate would have refused | Accepted — contained, not fixed | Platform team |
+| `RISK-150` | `System.Drawing.Common` 10.0.1 remains a package reference while **no source file in the core or web projects references it**, after `SR-12` replaced the only consumer with a header-only reader | Accepted — retained deliberately under the plan's *dependencies to remove: none* rule | Platform team |
+| `RISK-151` | `DbFileRepository` throws on a move whose destination already exists without `overwrite`, and that throw escapes as an unhandled fault rather than the endpoint's refusal envelope. **Pre-existing at the checkpoint baseline and in the repository's 2019 initial commit.** Proven **not** an information-disclosure defect: under Production the response is an empty-body HTTP 400 | Accepted — reliability and contract residual, not a security one | Platform team |
+| `RISK-152` | Two further packaged inline scripts reference the same undeclared `response.message` that `SR-11` remediated — the multi-select field (2 occurrences) and a section component (1). Neither posts to an upload endpoint, so neither sits behind a security refusal | Accepted — outside `SR-11`'s scope, recorded so the census is complete | Platform team |
+| `RISK-153` | The packaged field shapes do not agree on element identifiers: the image shape names its wrapper text `fake-<name>-<guid>` with identifiers regenerated per render, so an identifier-based lookup is a harmless no-op there while the class-based fallback resolves. `SR-11`'s wrapper is written to tolerate this rather than depend on a shape | Accepted — by design in the remediation | — |
+| `RISK-154` | A pre-built Stencil bundle hard-codes a wrong-case legacy asset path for a default avatar, which returns HTTP 405 and renders as a broken image. The affected files are **generated bundle artifacts** | Accepted — cosmetic, and inside the third-party boundary | Platform team |
+| `RISK-155` | The content-security policy's **report-only** mode was independently confirmed to be load-bearing: roughly 80 report-only violations were observed on a single page, every one of them raised by the application's **own** inline styles, inline scripts and `eval` usage | Accepted — this is the measurement that justifies the staged report-then-enforce rollout | Platform team |
+| `RISK-156` | Two pre-existing accessibility advisories on the SDK custom-page form — a form field without an `id` or `name`, and a mismatched `<label for=…>` | Accepted — not security findings; documentation only | Platform team |
+| `RISK-157` | In the WebAssembly client's login component the password input is **not contained in a `<form>`** and its two inputs carry no `id` or `name`, which suppresses password-manager interoperability | Accepted — documentation only, and the client-side sibling of `RISK-125` | Platform team |
+| `RISK-158` | The WebAssembly client ships no `favicon.ico`, so every load records one 404 | Accepted — cosmetic | Platform team |
+| `RISK-159` | A **cleartext HTTP listener was live** on the API port during verification and answered a control probe, which is what made `SR-03`'s cleartext exposure reachable rather than theoretical. Removing the insecure default closed the client's half; nothing in the application prevents an operator binding a cleartext listener | Accepted — operator responsibility, now documented in [the secure configuration guide](secure-configuration.md) | Operator |
+| `RISK-160` | `HttpExt.cs` retains pre-existing analyzer findings in the helpers `SR-08` did **not** touch — one unused exception variable and two `throw new Exception` statements | Accepted — pre-existing, outside the finding's scope | Platform team |
+| `RISK-161` | `markdownlint` does **not** reach a clean exit on the nine documentation files, contrary to the claim in `.markdownlint.jsonc`. Measured at the pinned 0.45.0: **14** diagnostics — 9 `MD012`, 3 `MD022`, 2 `MD001` — all pre-existing and all stylistic. A fifteenth was **fixed** rather than accepted because it lost information | Accepted — stylistic only; the claim itself is corrected in the config | Platform team |
 
 ### Identifiers renumbered while consolidating this register
 
@@ -1966,7 +1980,7 @@ done
 | RISK-012 | **The generic record-update path can wipe a password hash.** The user-facing save path correctly ignores a blank incoming password, verified by a real UI save leaving the hash byte-identical. The *generic* record-update path guards only against `null`, not an empty string, which would be converted to `NULL` downstream. | Pre-existing and unchanged by the credential work. Named in [the credential migration guide](credential-migration.md) so it is not attributed to the migration. |
 | RISK-013 | ~~Two hosts serve a permissive `Access-Control-Allow-Origin: *`.~~ **No longer accurate — resolved.** Both hosts now register an explicit `WithOrigins(...)` allow-list and read `Settings:Cors:AllowedOrigins`. A repository-wide scan for a *live* (non-commented) `AllowAnyOrigin()` across all seven host `Startup.cs` files returns **zero** occurrences. A supplied list wins in every environment; an empty list denies every origin; an absent key denies every origin outside Development and selects the host's own Development fallback — three localhost origins for `WebVella.Erp.Site`, and those three plus `http://localhost:2202` for `WebVella.Erp.Site.Project`. Runtime checks on both hosts confirmed listed origins receive `Access-Control-Allow-Origin` with `Vary: Origin` and unlisted origins receive neither. | **Fixed.** Recorded as finding `P-06` in [the audit report](security-audit-report.md). |
 | RISK-014 | ~~Two bearer-token error paths return stack traces **unconditionally**.~~ **No longer accurate — resolved.** Both anonymous token endpoints now log server-side and return a generic message, with full exception text emitted only behind the development-mode guard. Measured at this commit, and restated because the earlier measurement has been overtaken by a wider sweep: the controller now contains **zero** `StackTrace` references of any kind; **37** of its fault responses route through `SafeErrorMessage` at `:L334-L339` and the remaining **4** — all inside these two token actions — assign the fixed `INTERNAL_ERROR_MESSAGE` directly. The token and refresh actions begin at **5653** and **5834**. | **Fixed** as `H-13`. The claim that ten *authenticated* actions still leak is **retracted** — see `RISK-032`, where the retraction and the development-gated residual that genuinely remains are recorded. |
-| RISK-015 | `/ckeditor/ImageFinder` returns HTTP 500 — its page model does not derive from the type its layout requires. **Proven pre-existing by counterfactual**: reverting the view to its original content reproduced the identical exception. | A reliability defect, not a security one. |
+| RISK-015 | ~~`/ckeditor/ImageFinder` returns HTTP 500 — its page model does not derive from the type its layout requires. **Proven pre-existing by counterfactual**: reverting the view to its original content reproduced the identical exception.~~ **No longer accurate — closed by removal, not by repair.** The route and its page model were retired in full under review finding `SR-04`, together with `/ckeditor/Index`, because the pair referenced roughly seventy `/jsadmin/**` AngularJS and CKEditor-4 assets that exist nowhere in this repository — so neither page could ever have rendered, and shipping the missing bundle would have meant adding two end-of-life vendor libraries. A route that cannot return 500 because it is not routed is a stronger outcome than a repaired one. | **Closed.** Retiring it was verified safe before removal rather than after: `JsAdminModel`, `JsAdminImageFinderModel` and the `/ckeditor` page routes were referenced from **zero** other files. The live CKEditor 5 integration is unaffected — it uses the controller routes `/ckeditor/drop-upload-url` and `/ckeditor/image-upload-url`, which are untouched and still routed. |
 | RISK-016 | Three navigation anchors carry `href="javascript: void(0)"` — Bootstrap dropdown toggle placeholders, byte-identical on every page. **These are not injection sinks.** | Named specifically so a future "the HTML contains `javascript:`" scan hit is not misread as a leak. |
 | RISK-017 | One host's `Startup.cs` lacks the UTF-8 byte-order mark that the repository's own `.editorconfig` mandates and every sibling file carries. | Cosmetic encoding inconsistency, pre-existing. Deliberately not "fixed", to avoid an unrelated whole-file diff. |
 | RISK-018 | Four accessibility advisories (label/form-field association, missing autocomplete attributes). | Not security findings; documentation only. |
@@ -6614,3 +6628,159 @@ operational tooling at all.
 Items 2 and 3 are small and would materially improve incident response; they are excluded here only
 because the frozen scope admits no observability feature work, and `L-05` is a Low, which the severity
 matrix places in the *document for a future sprint* tier.
+
+## Detailed entries — residuals from the frontend and API seam review (`SR-01`–`SR-16`)
+
+Every entry here arose while closing the sixteen findings recorded in
+[Part 4 of the audit report](security-audit-report.md#part-4-the-frontend-and-api-seam-review). Each is
+something that was **deliberately not fixed**, and each says why, because a residual recorded without its
+reasoning is indistinguishable from an oversight.
+
+### RISK-148 — A stored TIFF cannot render in a browser, whatever the platform does
+
+`SR-10` aligned the inline-download allow-list with the passive-raster half of the upload allow-list, which
+admitted `.bmp`, `.webp`, `.ico`, `.tif` and `.tiff` to inline delivery so the platform's own image and file
+field components stop showing a download prompt where an image belongs. Four of those five now render.
+
+**TIFF does not, and no server-side change can make it.** Chromium, Firefox and Edge ship **no TIFF decoder
+for `<img>`**, so a stored `.tif` renders as a broken image whether it is served inline or as an attachment.
+This was verified in a real browser rather than assumed from documentation.
+
+The residual is therefore a *product* decision, not a security one — the upload allow-list already admits
+TIFF, so refusing to serve it inline would leave the same inconsistency `SR-10` was raised to remove, merely
+relocated. Three options, and the choice belongs to the repository owner:
+
+| Option | Effect | Cost |
+| --- | --- | --- |
+| Leave inline, as delivered | Consistent with the upload allow-list; a TIFF shows a broken image | None. The status quo |
+| Serve TIFF as an attachment | The user gets a working download instead of a broken image | Reintroduces the upload/inline asymmetry for one extension, and the field components still cannot preview it |
+| Remove TIFF from the upload allow-list | The inconsistency disappears at its source | A behaviour change for any installation already storing TIFF, which the engagement's preservation requirement forbids |
+| Transcode TIFF to PNG on upload | A working preview | Genuine feature work, a new decode dependency, and a new decompression-amplification surface — precisely what `SR-12` bounded |
+
+Nothing here is a security exposure: TIFF is a passive raster format, and `X-Content-Type-Options: nosniff`
+is emitted platform-wide, so a mislabelled object cannot be reinterpreted as script.
+
+### RISK-149 — The move endpoint does not re-check the target extension
+
+`POST /fs/move/` promotes a staged object to a permanent path. It validates ownership and it validates the
+source, but it does **not** validate the *target* extension against the upload allow-list. A caller who has
+already passed the upload gate can therefore rename a stored object to an extension the upload gate itself
+would have refused — `.svg` being the interesting one, since that is the extension `SR-10` deliberately keeps
+out of the inline set.
+
+**Why it is contained rather than fixed.** The exposure a renamed `.svg` would represent is inline execution
+on the application's own origin, and that is closed on the **download** side rather than the upload side:
+the inline allow-list is a four-entry allow-list, so any extension outside it — `.svg` included — is served
+with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`. This was proven end to end
+rather than argued: a script-bearing payload was uploaded as `.txt`, moved to `.svg` through this very
+endpoint, and then fetched. The response carried
+`content-disposition: attachment; filename=svg-probe.svg` alongside `nosniff`, and the body was byte-identical
+to the source. Four separate attack vectors — `<img>`, `<iframe>`, `<object>` and top-level navigation — were
+then driven against it and **none** executed; the marker was never set, and a control step confirmed the body
+genuinely was script-bearing, so the negative result measured the control rather than an absent payload.
+
+Adding the check would be small. It is declined because the minimal-change rule prefers the control that is
+already proven to close the exposure over a second one that duplicates it, and because the endpoint's
+callers include the record-create and record-update promotion paths, where a new refusal would be a
+behaviour change on a path no finding implicates.
+
+### RISK-150 — A package reference with no remaining consumer
+
+`SR-12` replaced `System.Drawing.Image.FromStream` with a header-only dimension reader, and the orphaned
+`using System.Drawing;` was removed with it. Measured afterwards: **no source file in the core or web
+projects references `System.Drawing` at all.** The `System.Drawing.Common` 10.0.1 package reference remains.
+
+It is retained deliberately. The plan of record states *dependencies to remove: none*, and removing a
+package reference from a library this repository **publishes for third-party consumption** is an API-surface
+change in the transitive sense — a consumer relying on it flowing through would break. That is a
+compatibility decision for the repository owner, not a security fix. The package carries **no advisory**, so
+retaining it costs nothing in exposure; it is recorded only so that a future reader does not conclude the
+reference proves the Windows-only decode path still exists. It does not.
+
+### RISK-151 — A move to an existing destination escapes as an unhandled fault
+
+`DbFileRepository` throws when a move's destination already exists and `overwrite` was not requested, and
+that throw escapes as an unhandled fault rather than through the endpoint's own `FSResponse` refusal
+envelope.
+
+**Provenance, established rather than assumed.** The throw is present at the checkpoint baseline **and in
+this repository's 2019 initial commit**, so it is a pre-existing product behaviour and not a consequence of
+`SR-15` or of any change in this engagement.
+
+**Proven not to be an information-disclosure defect.** The obvious worry is that an unhandled fault leaks
+internal detail. It was tested rather than reasoned about: the same binary was started under
+`ASPNETCORE_ENVIRONMENT=Production` and the response asserted clean of `DbFileRepository`, `Npgsql`,
+`at WebVella`, the message text, absolute build paths, `Stack` and `HEADERS`. The result is an **empty-body
+HTTP 400** with HSTS present — no internal detail whatsoever. Under Development the developer exception page
+would show detail, which is what Development is for and is the same posture every other fault path carries.
+
+It remains a **contract and reliability** residual: a caller receives a bodiless 400 where the endpoint's own
+envelope would have explained the refusal. Fixing it means converting the throw into that envelope, which is
+a behaviour change on a shared repository method with five callers, and no finding implicates it.
+
+### RISK-152 and RISK-153 — What `SR-11`'s wrapper does not cover, and why it does not need to
+
+`SR-11` closed the packaged upload controls' broken error callbacks from outside the package. Two boundary
+facts are recorded so the census is complete rather than implied.
+
+**`RISK-152`.** The same undeclared `response.message` reference appears in two further packaged inline
+scripts — the multi-select field (2 occurrences) and a section component (1). Neither posts to an upload
+endpoint, so neither sits behind a security refusal, which is what `SR-11` exists to make visible. They are
+outside its scope by subject, not by convenience, and the package remains uneditable in any case.
+
+**`RISK-153`.** The packaged field shapes do not agree on element identifiers. The image shape names its
+wrapper text `fake-<name>-<guid>` with identifiers regenerated on every render, so an identifier-based
+lookup against a captured field identifier is a **harmless no-op** there, while the class-based fallback
+resolves. This is not a latent defect: the wrapper was written to try several anchors and to tolerate a miss,
+precisely so that it does not depend on a shape it cannot control. Recorded because the asymmetry is
+surprising to anyone reading the wrapper for the first time.
+
+### RISK-155 — The report-only policy is load-bearing, and now measured
+
+The content-security policy ships in **report-only** mode because four components emit inline script by
+design, and enforcing the mandated `script-src 'self'` immediately would break them. That has been the stated
+reasoning since the policy was introduced; it is now a measurement rather than an argument.
+
+Observed on a **single page** during this pass: roughly **80 report-only violations**, every one raised by
+the application's **own** inline styles, inline scripts and `eval` usage. Had the policy been enforcing, each
+of those would have been a blocked resource on a page the platform renders routinely.
+
+Two things follow. The staged report-then-enforce rollout is justified by evidence rather than by caution,
+and the volume tells an operator how much work enforcement actually represents — it is not a switch, it is a
+backlog. The rollout guidance is in [the secure configuration guide](secure-configuration.md).
+
+### RISK-161 — The Markdown lint gate does not reach the clean exit its own configuration claims
+
+`.markdownlint.jsonc` documents a reproduce command and states that it exits 0. **It does not.** Measured at
+the version that file pins, 0.45.0, the command exits **1** with **15** diagnostics.
+
+**This is the same defect class as `SR-13`, in a smaller frame**: a claim that was true when written, left
+standing as unconditional after the content moved underneath it. It is corrected in the configuration file
+rather than quietly satisfied, and recorded here.
+
+**Provenance, so the finding is not misattributed.** The counts are identical on the checkpoint baseline and
+on this tree, so every one of these diagnostics predates the frontend and API seam remediation. That pass
+introduced **zero** new diagnostics, verified at both versions: 15 → 14 at the pinned 0.45.0, and 94 → 94 at
+the locally installed 0.49.1 with a **rule histogram identical** in composition. The gap between 15 and 94 is
+entirely `MD060` `table-column-style`, a rule that does not exist in the pinned version.
+
+**One of the fifteen was fixed rather than accepted, and the distinction is the point.** An `MD056`
+`table-column-count` error in the `H-06` record was not stylistic — it **lost information**. Two backtick code
+spans in that record hold `grep` pipelines containing an unescaped `|`, and a pipe terminates a table cell
+*even inside a code span*, so the row parsed as four cells against a two-column header and the published page
+truncated the very commands a reader needs in order to reproduce the `Html.Raw` census. The pipes are now
+escaped and the row parses as two cells. Anything that silently removes evidence from a security deliverable
+is a content defect, not a formatting preference.
+
+**The remaining 14 are accepted**, and enumerated so the acceptance is specific rather than a blanket:
+
+| Rule | Count | What it is | Why it is not fixed |
+| --- | --- | --- | --- |
+| `MD012` | 9 | Two or more consecutive blank lines | Whitespace only. Renders identically |
+| `MD022` | 3 | A heading not preceded by a blank line | Renders identically under python-markdown; the heading and its anchor are produced correctly |
+| `MD001` | 2 | A `####` entry following a `##` section directly, skipping `###` | The register legitimately uses **both** `### RISK-…` (76 headings) and `#### RISK-…` (34), so these two are not anomalies against the file's own convention. Changing a level is anchor-safe but is still a structural edit to satisfy a style rule |
+
+None of the three carries a correctness property, and the engagement's modification boundaries forbid
+refactoring beyond remediation. **Recommended fix, if a future sprint wants the clean exit:** delete the
+surplus blank lines, insert the three missing ones, and settle the register on one entry heading level —
+then restore the `exit 0` claim in the configuration, in the same commit, and only after re-measuring.

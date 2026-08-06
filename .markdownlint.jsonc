@@ -15,7 +15,26 @@
 //
 // REPRODUCE:
 //   npx markdownlint-cli@0.45.0 SECURITY.md README.md LIBRARIES.md docs/index.md docs/security/*.md
-//   # exit 0
+//
+// MEASURED OUTCOME, corrected. That command exits **1** with **14** diagnostics on this tree, not 0.
+// The claim of a clean exit was true when written and has since drifted, which is precisely the failure
+// mode review finding SR-13 exists to catch, so it is corrected here rather than left standing. Measured
+// at the pinned 0.45.0 on both the checkpoint baseline and this tree: identical counts, so the drift
+// predates the frontend and API seam remediation and that pass introduced **zero** new diagnostics -
+// verified at 0.45.0 (15 -> 14) and at 0.49.1 (94 -> 94, identical rule histogram).
+//
+// The 15th was fixed rather than documented, because it was the only one that LOST INFORMATION: an
+// MD056 table-column-count error in the H-06 record, caused by unescaped pipe characters inside two
+// backtick code spans. A pipe splits a table cell even inside a code span, so the two reproduce
+// commands that let a reader verify the Html.Raw census rendered truncated on the published site. They
+// are now escaped and the row parses as the two cells its header declares.
+//
+// The remaining 14 are stylistic and carry no correctness property - 9 MD012 consecutive blank lines,
+// 3 MD022 blank-line-around-heading, 2 MD001 heading-increment where a #### entry follows a ## section
+// directly. All 14 are pre-existing, all are recorded in the risk register, and none is fixed here
+// because the engagement's modification boundaries forbid refactoring beyond remediation. Note also
+// that 0.49.1 adds MD060 table-column-style, which contributes a further 79 diagnostics at that
+// version and none at the pinned one; the pinned version is the one this file is measured against.
 {
   // ---------------------------------------------------------------------------------------------
   // DISABLED RULES — four, each with a stated reason and a named substitute control.
