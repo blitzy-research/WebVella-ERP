@@ -665,6 +665,41 @@ function GetFilenameFromUrl(url)
 		return fallback;
 	}
 
+	//The field container both shapes hang their feedback from. Resolved from whichever of the three
+	//anchors this widget shape actually renders, because the two shapes do not agree on all of them: the
+	//image shape names its wrapper-text element "fake-<name>-<id>" rather than "fake-<id>", so the
+	//"#fake-" lookup finds nothing there while "#file-" and "#edit-" both resolve. Deriving the container
+	//from the first anchor that exists is what lets one routine serve both shapes.
+	function resolveFieldAnchor(fakeInput, editWrapper, fileInput) {
+		var container = fileInput.closest(".wv-field");
+		if (container.length === 0) {
+			container = fakeInput.closest(".wv-field");
+		}
+		if (container.length === 0) {
+			container = editWrapper.closest(".wv-field");
+		}
+		return container.length > 0 ? container : editWrapper;
+	}
+
+	//Retracts the refusal once an upload for the same field is ACCEPTED. Making the refusal visible - the
+	//whole point of the override above - introduced a second way to misinform the user: the packaged
+	//success callback renders the accepted file but never clears a previous refusal, so a user refused
+	//once and then uploading an allowed file would see the obsolete refusal sitting under the new
+	//thumbnail, reporting a failure that did not happen. A control that reports the wrong outcome is as
+	//unusable as one that reports none, in the opposite direction. Only what renderRejection added is
+	//removed, and only for the field whose upload just completed.
+	function clearRejection() {
+		if (activeFieldId === null) {
+			return;
+		}
+		var fakeInput = $("#fake-" + activeFieldId);
+		var editWrapper = $("#edit-" + activeFieldId);
+		var fileInput = $("#file-" + activeFieldId);
+
+		fakeInput.removeClass("is-invalid");
+		resolveFieldAnchor(fakeInput, editWrapper, fileInput).find(".invalid-feedback").remove();
+	}
+
 	//Renders the refusal into whichever of the two field shapes is on the page. Every anchor the packaged
 	//callbacks touch sits inside the field's .wv-field container, and both shapes derive every one of
 	//their selectors from the same field id, so one routine covers all of them without branching per
@@ -689,14 +724,7 @@ function GetFilenameFromUrl(url)
 		//holds the file the server just rejected.
 		fileInput.val("");
 
-		var container = fileInput.closest(".wv-field");
-		if (container.length === 0) {
-			container = fakeInput.closest(".wv-field");
-		}
-		if (container.length === 0) {
-			container = editWrapper.closest(".wv-field");
-		}
-		var anchor = container.length > 0 ? container : editWrapper;
+		var anchor = resolveFieldAnchor(fakeInput, editWrapper, fileInput);
 		//Replace any feedback left by an earlier rejection instead of stacking another one
 		anchor.find(".invalid-feedback").remove();
 		var feedback = $("<div class='invalid-feedback'></div>").text(message);
@@ -717,9 +745,28 @@ function GetFilenameFromUrl(url)
 		return;
 	}
 
-	$.ajaxPrefilter(function (options) {
+	$.ajaxPrefilter(function (options, originalOptions, jqXHR) {
 		if (!isUploadRequest(options) || !isDefectiveHandler(options.error)) {
 			return;
+		}
+		//The stale-refusal cleanup is registered on the jqXHR rather than by wrapping options.success, and
+		//the distinction matters twice. jQuery installs a request's own success callback AFTER prefilters
+		//have run, so a handler added here is registered first and clears the obsolete message before the
+		//packaged callback renders the accepted value. And the packaged callback is left exactly as the
+		//package shipped it - including the case where jQuery was handed an ARRAY of success handlers,
+		//which a wrapper testing for a single function would have silently discarded. Failure is contained
+		//so a surprise in the cleanup can never suppress the upload the user just completed.
+		if (jqXHR && typeof jqXHR.done === "function") {
+			jqXHR.done(function () {
+				try {
+					clearRejection();
+				}
+				catch (clearError) {
+					if (typeof console !== "undefined" && console.log) {
+						console.log(clearError);
+					}
+				}
+			});
 		}
 		options.error = function (xhr, status, p3, p4) {
 			var message = readServerMessage(xhr, status, p3, p4);
