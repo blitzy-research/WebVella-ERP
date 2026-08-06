@@ -91,11 +91,26 @@ on:
   # change before it reaches master. An all-branch push trigger was deliberately
   # NOT used: it re-runs the whole gate on every intermediate commit of every
   # branch without adding any enforcement that `pull_request` does not already
-  # provide. A `schedule` trigger was likewise declined - re-auditing an unchanged
-  # tree against a changed advisory database is real value, but it is drift
-  # detection rather than change enforcement, and it belongs to the ongoing
-  # recommendations recorded in docs/security/risk-register.md rather than to this
-  # remediation's minimal change surface.
+  # provide.
+  #
+  # ADVISORY DRIFT - review finding GATE-01. A `schedule` trigger was previously
+  # declined as drift detection rather than change enforcement. That reasoning was
+  # wrong for THIS gate, and the finding is upheld: Gate 2 is a claim about the
+  # dependency graph's exposure to a database that changes WITHOUT the tree
+  # changing, so on an unchanged repository the last verdict decays into a stale
+  # assertion the moment a new advisory is published. Every other gate in this file
+  # re-derives its verdict from the commit; only this one has an input that moves on
+  # its own. The weekly run below therefore re-audits the default branch against the
+  # current advisory database. It is not a release gate: a scheduled run carries
+  # neither a version tag nor `release_candidate`, so Gate 5 reports rather than
+  # blocks on it, exactly as an ordinary push does - and `github.event_name` is not
+  # consulted anywhere else, so the scheduled run exercises the identical pipeline
+  # rather than a reduced variant of it.
+  schedule:
+    # Mondays at 05:17 UTC. An off-the-hour minute is deliberate: the hour and the
+    # half hour are when GitHub's scheduled-workflow queue is most congested, and a
+    # delayed drift scan is a drift scan whose result arrives late.
+    - cron: '17 5 * * 1'
   push:
     branches: [master]
     # A version tag is the repository's release signal, and it is what switches
@@ -870,8 +885,36 @@ jobs:
       - name: List vulnerable packages, including transitive dependencies
         run: |
           set -o pipefail
-          dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive 2>&1 \
-            | tee vulnerable-packages.txt
+          # EVERY LISTING'S EXIT STATUS IS CAPTURED EXPLICITLY - review finding
+          # GATE-01, which reported that these pipelines "do not uniformly capture
+          # failure status".
+          #
+          # WHAT THE PREVIOUS SHAPE RELIED ON. `dotnet list ... | tee file` inside a
+          # runner shell that supplies `-e` and `-o pipefail`. That does abort the
+          # step on a non-zero exit - until someone wraps the command in a subshell,
+          # a conditional or a loop, at which point the status is swallowed and the
+          # advisory search below runs against whatever partial text landed in the
+          # file. The status is therefore taken into a NAMED VARIABLE and asserted,
+          # so the guard survives an edit to the shape around it.
+          #
+          # AND A ZERO EXIT IS NOT ENOUGH EITHER. `dotnet list package` can fail to
+          # enumerate a graph while still exiting 0 - an unreadable source, a missing
+          # assets file, a project that cannot be evaluated - and the advisory grep
+          # would then find no advisory in output that examined nothing. The
+          # tool-error patterns are matched explicitly for that reason, and the
+          # per-project enumeration assertion further down proves WHICH projects were
+          # actually listed rather than merely that the file is non-empty.
+          #
+          # `< /dev/null` because `dotnet` drains standard input, which is the third
+          # of the three fail-open shell hazards this workflow documents.
+          listing_status=0
+          dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive \
+            < /dev/null > vulnerable-packages.txt 2>&1 || listing_status=$?
+          cat vulnerable-packages.txt
+          if [ "$listing_status" -ne 0 ]; then
+            echo "::error::Gate 2 failed - the solution-wide vulnerable-package listing exited ${listing_status}. No dependency graph was audited, so a clean advisory search below would be vacuous. Fix the restore or the listing rather than reading its silence as a pass."
+            exit 1
+          fi
           # F-08. This listing reaches the 17 projects the solution enumerates. The two
           # WebAssembly non-members are listed into their own evidence file below, and the
           # SAME assertion is then applied to both files - so the per-project listing can
@@ -884,8 +927,26 @@ jobs:
           for project in \
             WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.csproj \
             WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj ; do
-            dotnet list "$project" package --vulnerable --include-transitive 2>&1 \
-              | tee -a vulnerable-packages-wasm.txt
+            project_status=0
+            dotnet list "$project" package --vulnerable --include-transitive \
+              < /dev/null >> vulnerable-packages-wasm.txt 2>&1 || project_status=$?
+            if [ "$project_status" -ne 0 ]; then
+              echo "::error::Gate 2 failed - the vulnerable-package listing for ${project} exited ${project_status}, so one of the two projects outside the solution was not audited. 17 solution members plus these 2 is what makes the 19-of-19 coverage claim true; a silent failure here reduces it to 18 while every step still reports green."
+              exit 1
+            fi
+          done
+          cat vulnerable-packages-wasm.txt
+          # A ZERO EXIT WITH A BROKEN ENUMERATION. Both evidence files are searched
+          # for the tool's own failure text, because `dotnet list package` can report
+          # nothing while having examined nothing - an unreadable source, a missing
+          # assets file, an unevaluable project - and exit 0 doing it.
+          tool_error='(: error [A-Z]+[0-9]+|Unable to load the service index|[Aa]ssets file .* not found|error: )'
+          for evidence in vulnerable-packages.txt vulnerable-packages-wasm.txt; do
+            if grep -qE "$tool_error" "$evidence"; then
+              echo "::error::Gate 2 failed - ${evidence} contains the listing tool's own error output, so the dependency graph it appears to certify was not fully enumerated. A zero exit code does not make this a pass."
+              grep -E "$tool_error" "$evidence" | sort -u | sed 's/^/  /' | head -20
+              exit 1
+            fi
           done
           advisory='^[[:space:]]*>.*[[:space:]](High|Critical)([[:space:]]|$)'
           for evidence in vulnerable-packages.txt vulnerable-packages-wasm.txt; do
@@ -913,10 +974,38 @@ jobs:
           # `dotnet list package` wraps the project name in backticks in both its
           # clean and its vulnerable output, so this matches either way.
           tick=$(printf '\140')
-          if ! grep -qF "${tick}WebVella.Erp${tick}" vulnerable-packages.txt; then
-            echo "::error::Gate 2 failed - the core project WebVella.Erp was not enumerated by the solution listing, so the project that owns the platform's dependency graph went unscanned - the false-clean H-19 describes."
+          # EVERY SOLUTION MEMBER IS PROVED TO HAVE BEEN ENUMERATED, not just the
+          # core project - review finding GATE-01. The previous check named
+          # WebVella.Erp alone, which is the project H-19 caused to vanish, so it
+          # closed that specific false-clean and left the other sixteen able to drop
+          # out of the listing unobserved. The expected set is read from
+          # sln-members.txt, written by the membership step above from `dotnet sln
+          # list`, so this assertion cannot drift from the solution's actual
+          # membership and needs no hand-maintained list. Every missing project is
+          # reported rather than only the first, and the status is accumulated: a
+          # `while` loop in a pipeline reports only its final iteration, which is one
+          # of the three fail-open shell hazards this workflow documents.
+          if [ ! -s sln-members.txt ]; then
+            echo "::error::Gate 2 failed - sln-members.txt is missing or empty, so which projects the solution listing SHOULD have enumerated is unknown and this assertion cannot run. The membership step above must run first. An assertion that cannot run is a failure, never a pass."
             exit 1
           fi
+          enumeration_status=0
+          while IFS= read -r member <&3 || [ -n "$member" ]; do
+            [ -n "$member" ] || continue
+            member_name=$(basename "$member" .csproj)
+            if ! grep -qF "${tick}${member_name}${tick}" vulnerable-packages.txt; then
+              if [ "$member_name" = 'WebVella.Erp' ]; then
+                echo "::error::Gate 2 failed - the core project WebVella.Erp was not enumerated by the solution listing, so the project that owns the platform's dependency graph went unscanned - the false-clean H-19 describes."
+              else
+                echo "::error::Gate 2 failed - the solution member ${member_name} was not enumerated by the vulnerable-package listing, so its dependency graph went unscanned while this gate reported on the rest. That is the same false-clean H-19 produced for the core project, reaching a different project."
+              fi
+              enumeration_status=1
+            fi
+          done 3< sln-members.txt
+          if [ "$enumeration_status" -ne 0 ]; then
+            exit 1
+          fi
+          printf 'All %s solution members were enumerated by the listing\n' "$(wc -l < sln-members.txt)"
           for project in WebVella.Erp.WebAssembly.Shared WebVella.Erp.WebAssembly.Server; do
             if ! grep -qF "${tick}${project}${tick}" vulnerable-packages-wasm.txt; then
               echo "::error::Gate 2 failed - ${project} was not enumerated, so the dependency graph of a project outside the solution went unscanned. This is the F-08 coverage gap reopening."
@@ -1046,6 +1135,34 @@ jobs:
             if ! dotnet list "$proj" package --vulnerable --include-transitive \
               < /dev/null 2>&1 | tee -a vulnerable-packages-extra.txt; then
               printf '%s\n' "::error::Gate 2 inconclusive for ${proj} - the advisory listing itself failed, so its output cannot be trusted. Treated as a failure rather than assumed clean."
+              status=1
+            fi
+          done 3< extra-projects.txt
+          # THE SAME TWO NON-VACUITY CHECKS THE SOLUTION LISTING APPLIES - review
+          # finding GATE-01, "do not uniformly capture failure status". A per-project
+          # status is captured above, but a listing that exits 0 having enumerated
+          # nothing would still have reached the advisory search below, and an empty
+          # or error-bearing file would have passed it.
+          if [ ! -s vulnerable-packages-extra.txt ]; then
+            echo "::error::Gate 2 failed - vulnerable-packages-extra.txt is missing or empty, so no dependency graph was examined for the explicitly gated projects. A pass here would be vacuous."
+            status=1
+          fi
+          if grep -qE '(: error [A-Z]+[0-9]+|Unable to load the service index|[Aa]ssets file .* not found|error: )' vulnerable-packages-extra.txt; then
+            echo "::error::Gate 2 failed - vulnerable-packages-extra.txt contains the listing tool's own error output, so the graph it appears to certify was not fully enumerated. A zero exit code does not make this a pass."
+            grep -E '(: error [A-Z]+[0-9]+|Unable to load the service index|[Aa]ssets file .* not found|error: )' vulnerable-packages-extra.txt | sort -u | sed 's/^/  /' | head -20
+            status=1
+          fi
+          # And WHICH projects were enumerated, from the list this step actually
+          # iterated rather than from a hand-maintained copy of it. `dotnet list
+          # package` wraps the project name in backticks in both its clean and its
+          # vulnerable output; \140 is the octal escape for a backtick, built with
+          # printf so no reader has to guess at a shell escape.
+          extra_tick=$(printf '\140')
+          while IFS= read -r proj <&3 || [ -n "$proj" ]; do
+            [ -n "$proj" ] || continue
+            proj_name=$(basename "$proj" .csproj)
+            if ! grep -qF "${extra_tick}${proj_name}${extra_tick}" vulnerable-packages-extra.txt; then
+              echo "::error::Gate 2 failed - ${proj_name} was iterated but never enumerated by the listing tool, so this project's dependency graph went unscanned while the step reported on the others. This is the F-08 coverage gap reopening from the other direction."
               status=1
             fi
           done 3< extra-projects.txt
@@ -3928,6 +4045,110 @@ jobs:
       # proof that Gate 1 can actually report a defect; startup-smoke.txt carries
       # the per-host and per-config outcome for all seven hosts and the console
       # application.
+      # EVIDENCE COMPLETENESS AND COMMIT BINDING - review finding GATE-01, which
+      # reported that "no current run-bound evidence exists" and required the
+      # evidence to be retained commit-bound.
+      #
+      # TWO SEPARATE DEFECTS, BOTH FIXED HERE AND IN THE UPLOAD BELOW.
+      #
+      # 1. THE EVIDENCE WAS NOT SELF-DESCRIBING. Twenty files of build and scan
+      #    output carried nothing that tied them to a commit, a run or a moment. An
+      #    artifact downloaded a week later could not be attributed without trusting
+      #    the folder it came from, which is exactly the "stale record vouching for
+      #    commits it never examined" failure .gitignore warns about for the
+      #    committed direction. The manifest below records the commit, ref, run
+      #    identifier and attempt, the event that triggered the run, the UTC
+      #    timestamp, and a SHA-256 digest and byte size for every evidence file - so
+      #    an artifact can be tied to a commit and checked for tampering by anyone
+      #    holding the repository.
+      #
+      # 2. AN ABSENT EVIDENCE FILE WAS NOT AN ERROR. The upload's
+      #    `if-no-files-found: warn` meant a run that produced no evidence at all
+      #    published nothing and said so in a warning nobody reads. Worse, a run that
+      #    produced SOME evidence could lose an individual file silently. Both are
+      #    closed: this step fails when a file the gates were supposed to write is
+      #    absent, and the upload is switched to `error`.
+      #
+      # WHY THE STRICTNESS IS CONDITIONED ON analyzer-build-summary.txt. A run that
+      # aborts in checkout or SDK setup has produced no evidence and cannot be
+      # expected to - failing it a second time here would only obscure the real
+      # cause. That file is written by the first gate step that produces evidence, so
+      # its presence is the signal that the evidence-producing part of the job ran at
+      # all. Absent, this step reports why it is not asserting and leaves the run's
+      # existing status alone; present, every file is required.
+      #
+      # EMPTINESS IS RECORDED, NOT REQUIRED. security-unreviewed.txt is EMPTY on a
+      # passing run - it is the set difference that decides Gate 1 - and
+      # history-exposure-commits.txt is empty when no historical layer matched. So
+      # existence is asserted for every file while size is merely recorded in the
+      # manifest, where a zero next to a file that should not be zero is visible to a
+      # reviewer. Requiring non-emptiness here would fail a correct run.
+      - name: Assert the scan evidence is complete and bind it to the commit
+        if: always()
+        run: |
+          evidence_files='analyzer-build-summary.txt
+          history-exposure-commits.txt
+          security-rule-ids.txt
+          all-ca-diagnostics.txt
+          security-diagnostics.txt
+          security-allowlist.txt
+          security-unreviewed.txt
+          positive-control.txt
+          sln-members.txt
+          tracked-projects.txt
+          declared-non-members.txt
+          extra-projects.txt
+          vulnerable-packages.txt
+          vulnerable-packages-extra.txt
+          vulnerable-packages-wasm.txt
+          secret-sweep.txt
+          startup-smoke.txt
+          negative-control.txt
+          editorconfig-items.txt
+          manual-verification-matrix.txt'
+          if [ ! -f analyzer-build-summary.txt ]; then
+            echo "::warning::The run ended before the analyzer build produced any evidence, so there is nothing to bind to a commit and the completeness assertion is not applicable. This step does not change the run's status; look further up for the failure that stopped it."
+            exit 0
+          fi
+          missing=''
+          while IFS= read -r evidence <&3 || [ -n "$evidence" ]; do
+            evidence=$(printf '%s' "$evidence" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -n "$evidence" ] || continue
+            if [ ! -f "$evidence" ]; then
+              missing="${missing}${evidence}
+          "
+            fi
+          done 3<<EVIDENCE
+          $evidence_files
+          EVIDENCE
+          if [ -n "$missing" ]; then
+            echo "::error::The evidence set is incomplete, so the artifact would vouch for gates whose output is not there. A gate whose evidence is absent has not been shown to have run. Missing:"
+            printf '%s' "$missing" | sed '/^[[:space:]]*$/d' | sed 's/^[[:space:]]*/  /'
+            exit 1
+          fi
+          {
+            printf 'WebVella ERP security gate evidence manifest\n'
+            printf 'commit          %s\n' "${GITHUB_SHA:-<unknown>}"
+            printf 'ref             %s\n' "${GITHUB_REF:-<unknown>}"
+            printf 'event           %s\n' "${GITHUB_EVENT_NAME:-<unknown>}"
+            printf 'workflow        %s\n' "${GITHUB_WORKFLOW:-<unknown>}"
+            printf 'run             %s attempt %s\n' "${GITHUB_RUN_ID:-<unknown>}" "${GITHUB_RUN_ATTEMPT:-<unknown>}"
+            printf 'generated       %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            printf 'sdk             %s\n' "$(dotnet --version < /dev/null 2>/dev/null || printf '<unavailable>')"
+            printf '\n%-12s %10s  %s\n' 'SHA-256' 'BYTES' 'FILE'
+          } > evidence-manifest.txt
+          while IFS= read -r evidence <&3 || [ -n "$evidence" ]; do
+            evidence=$(printf '%s' "$evidence" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -n "$evidence" ] || continue
+            digest=$(sha256sum "$evidence" | cut -d' ' -f1)
+            size=$(wc -c < "$evidence" | tr -d '[:space:]')
+            printf '%s %10s  %s\n' "$digest" "$size" "$evidence" >> evidence-manifest.txt
+          done 3<<EVIDENCE
+          $evidence_files
+          EVIDENCE
+          cat evidence-manifest.txt
+          echo "Evidence complete - 20 files present, each digested and bound to commit ${GITHUB_SHA:-<unknown>}."
+
       - name: Publish the scan evidence
         if: always()
         # F29: pinned to an immutable commit SHA. This action publishes the
@@ -3935,7 +4156,13 @@ jobs:
         # artefacts the audit report cites.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: security-scan-evidence
+          # COMMIT-BOUND ARTIFACT NAME - review finding GATE-01. A single fixed name
+          # made every run's evidence indistinguishable once downloaded, and on a
+          # re-run of the same workflow the name collides. The commit is in the name
+          # so an artifact states which tree it examined before it is opened, and the
+          # manifest inside repeats it with a digest per file so the claim can be
+          # checked rather than trusted.
+          name: security-scan-evidence-${{ github.sha }}
           # RETENTION IS SET EXPLICITLY RATHER THAN INHERITED. The default is a
           # repository or organisation setting that can be up to 90 days and can be
           # changed without touching this file, so the lifetime of gate evidence
@@ -3952,8 +4179,10 @@ jobs:
           # derived, path-free analyzer-build-summary.txt, and the three coverage
           # set files the comment describes as making the 17 + 2 = 19 claim
           # "checkable after the fact" are published, because a set that is never
-          # published cannot be checked by anybody. Twenty paths; every one of
-          # them is written by a named step above.
+          # published cannot be checked by anybody. Twenty-one paths; every one of
+          # them is written by a named step above, the last of them being the
+          # evidence manifest that binds the other twenty to a commit with a digest
+          # each (review finding GATE-01).
           path: |
             analyzer-build-summary.txt
             history-exposure-commits.txt
@@ -3975,7 +4204,14 @@ jobs:
             negative-control.txt
             editorconfig-items.txt
             manual-verification-matrix.txt
-          if-no-files-found: warn
+            evidence-manifest.txt
+          # FAIL, DO NOT WARN - review finding GATE-01. `warn` meant a run that
+          # published no evidence at all recorded that fact in a warning and passed.
+          # Evidence the audit report cites has to exist for the citation to mean
+          # anything, so its absence is an error. The step above additionally asserts
+          # that each individual file is present once the evidence-producing part of
+          # the job has run, because this setting only reacts to finding NOTHING.
+          if-no-files-found: error
 
       # THE RELEASE GATE - review finding OBS-07, CWE-1390-adjacent (a control that
       # reports rather than enforces), OWASP A08:2021 Software and Data Integrity

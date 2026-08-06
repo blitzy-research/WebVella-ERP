@@ -234,6 +234,16 @@ _Pvt_Extensions
 # the secret-sweep output.
 /all-ca-diagnostics.txt
 /analyzer-build.txt
+# Review finding GATE-01: the derived, path-free analyzer summary the workflow
+# publishes was absent from this list while the raw log it replaced was still on
+# it, so running the gate's commands locally - which is how its baselines are
+# re-measured - left this one file untracked in the working tree and inviting a
+# commit. The raw name is kept alongside it because the intermediate log is still
+# written when the analyzer build is run by hand.
+/analyzer-build-summary.txt
+# The commit-bound evidence manifest, for the same reason as every artifact here:
+# a committed copy would state a commit and a set of digests it did not measure.
+/evidence-manifest.txt
 /declared-non-members.txt
 /history-exposure-commits.txt
 /editorconfig-items.txt
