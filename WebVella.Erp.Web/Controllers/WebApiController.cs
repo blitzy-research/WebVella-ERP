@@ -367,6 +367,35 @@ namespace WebVella.Erp.Web.Controllers
 			};
 		}
 
+		// THREAT ADDRESSED - review finding CR-01, CWE-94 (code injection) reached through CWE-862, OWASP
+		// A03 + A01. Reads a page node's STORED options blob so PageComponentRenderViews can render from it
+		// instead of from the request body. This is the substitution that removes the attacker's channel to
+		// CodeEvalService: whatever a DataSourceVariable in here says, an administrator put it there through
+		// one of the five audited node-mutation actions.
+		//
+		// A malformed or absent stored blob yields an EMPTY options object rather than a fault. That is the
+		// safe direction and it is deliberate: the alternative - propagating a parse failure - would turn a
+		// legacy node with an unparseable options string into a 500 on a runtime page, and falling back to
+		// the request body would silently restore the very channel this method exists to close. A component
+		// receiving empty options renders its own defaults, which is what it already does for a node whose
+		// options were never set.
+		private static JObject ParsePersistedNodeOptions(string persistedOptions)
+		{
+			if (string.IsNullOrWhiteSpace(persistedOptions))
+			{
+				return new JObject();
+			}
+
+			try
+			{
+				return JObject.Parse(persistedOptions) ?? new JObject();
+			}
+			catch (JsonReaderException)
+			{
+				return new JObject();
+			}
+		}
+
 		// THREAT ADDRESSED - finding F26, CWE-209 (generation of an error message containing sensitive
 		// information), OWASP A05 Security Misconfiguration. Thirty-six error paths in this controller
 		// copied an exception message - ten of them the complete stack trace as well - straight into the
@@ -1308,6 +1337,57 @@ namespace WebVella.Erp.Web.Controllers
 				if (pid == null)
 					return BadRequest("The page Id is required to be set as query parameter 'pid', when requesting this component");
 
+				// THREAT ADDRESSED - review finding CR-01 (Critical), CWE-94 (code injection) reached through
+				// CWE-862 (missing authorization) and CWE-863 (incorrect authorization), OWASP A03:2021
+				// Injection compounding A01:2021 Broken Access Control.
+				//
+				// THE THREAT, precisely. This action took the request BODY as the component's options and handed
+				// it verbatim to PageComponentContext. A page component may resolve any of its option values as
+				// a DataSourceVariable, and PageDataModel.GetPropertyValueByDataSource EVALUATES a variable of
+				// type CODE - or a C# SNIPPET - through CodeEvalService, which calls CSScript.Evaluator.LoadCode
+				// with ReferenceDomainAssemblies = true. PcHtmlBlock does exactly that with its `html` option.
+				// So ANY authenticated principal - including the lowest-privileged Regular-role account - could
+				// POST a body naming a CODE variable and have arbitrary C# compiled and executed in this
+				// process, under this process's identity and database credentials. PageDataModel's
+				// SafeCodeDataVariable flag is NOT a sandbox: it only swallows faults, and it is set for the
+				// `options` render mode alone. The five page-node MUTATION actions above were already guarded
+				// against authoring code - this route reached the very same evaluator without persisting
+				// anything first, which made the guard on those five bypassable by going round them.
+				//
+				// WHY THE FIX IS SPLIT BY RENDER MODE rather than closing the whole route to non-administrators.
+				// The two groups have different callers, and refusing both would have broken working screens:
+				//   * `design`, `options` and `help` are reached ONLY from PageComponentLibraryService's
+				//     design_view_url / options_view_url / help_view_url, which the SDK page-builder bundle
+				//     (Plugins.SDK/wwwroot/js/wv-pb-manager) consumes. That is the same developer authoring
+				//     surface the five node-mutation actions serve, so it takes the same deny-by-default
+				//     administrator check, with the same audited refusal;
+				//   * `display` is reached from the RUNTIME lazy-load web component: Components/PcLazyLoad's
+				//     Display view emits <wv-lazyload ... node-options="@childNode.Options"> and the bundle
+				//     POSTs that value back with nid and pid. Ordinary users legitimately render it on every
+				//     page, so it must keep working - and it already sends nothing but the node's OWN PERSISTED
+				//     options. That is what makes the fix below both safe and invisible: the request body is
+				//     DISCARDED and the persisted options are read from the resolved node instead, so there is
+				//     no attacker-supplied value left for the evaluator to compile.
+				//
+				// The node is resolved from THIS page's own node list rather than by identifier alone, which
+				// binds nid to pid (CWE-639, a user-controlled key), and its component name must match the
+				// route, which stops a caller pointing a code-bearing node's options at a different component.
+				bool codeAuthoringAuthorized = false;
+				bool isAuthoringRenderMode = renderMode == "design" || renderMode == "options" || renderMode == "help";
+				if (isAuthoringRenderMode || nid == null)
+				{
+					// The nid-less path is grouped with the authoring modes deliberately: without a node there
+					// is nothing persisted to read, so PageUtils.GetAjaxPageBodyNode has to carry the REQUEST
+					// options - which is precisely the attacker-controlled channel. It stays available to an
+					// administrator, because component development uses it, and to nobody else.
+					codeAuthoringAuthorized = IsCodeAuthoringAuthorized("PageComponentRenderViews",
+						"component=" + fullComponentName + "; render_mode=" + renderMode + "; page_id=" + pid + "; node_id=" + nid);
+					if (!codeAuthoringAuthorized)
+					{
+						return CodeAuthoringForbidden();
+					}
+				}
+
 				var type = FileService.GetType(fullComponentName);
 				if (type == null)
 					return NotFound();
@@ -1327,7 +1407,30 @@ namespace WebVella.Erp.Web.Controllers
 
 					if (nid != null)
 					{
-						pagebodyNode = pageServ.GetPageNodeById(nid ?? Guid.Empty);
+						// CR-01: resolved from the page's own flat node list - the same SingleOrDefault test
+						// UpdatePageBodyNode, DeletePageBodyNode and UpdatePageBodyNodeOptions already use -
+						// rather than through GetPageNodeById, which reads a node by identifier alone and so
+						// never proved the node belongs to {pid}, and whose contract is to THROW rather than
+						// return null for an unknown identifier.
+						pagebodyNode = pageServ.GetPageNodes(pid ?? Guid.Empty).SingleOrDefault(x => x.Id == nid);
+						if (pagebodyNode == null)
+							return NotFound();
+
+						// CR-01: the node must actually BE an instance of the component the route names.
+						// Without this a caller could render one component's persisted options through a
+						// different component's type, which is a second way of choosing which option value
+						// gets resolved - and therefore evaluated.
+						if (!string.Equals(pagebodyNode.ComponentName, fullComponentName, StringComparison.Ordinal))
+							return NotFound();
+
+						// CR-01: THE REQUEST BODY IS DISCARDED HERE. Options come from the persisted node, so
+						// nothing a caller sent can reach a DataSourceVariable of type CODE or SNIPPET. The
+						// runtime lazy-load caller posts exactly these persisted options, so its behaviour is
+						// unchanged; an administrator authoring a component keeps the request-supplied options,
+						// because the authorization above has already established the privilege that authoring
+						// code requires.
+						if (!codeAuthoringAuthorized)
+							options = ParsePersistedNodeOptions(pagebodyNode.Options);
 					}
 					else
 					{
