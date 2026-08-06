@@ -20,7 +20,10 @@ public interface IAuthenticationService
 
 public class AuthenticationService : IAuthenticationService
 {
-	private const string apiAuthRoot = "v3/en_US/auth/jwt/";
+	//Review finding C-01. This value was correct but duplicated; it now aliases the shared constant so the
+	//auth route root is defined in exactly one place. Kept as a local alias rather than replacing every use
+	//site, which keeps the change to a single line and leaves the call sites below byte-identical.
+	private const string apiAuthRoot = WasmConstants.ApiAuthRoot;
 
 	private readonly HttpClient _httpClient;
 	private readonly ITokenManagerService _tokenManagerService;

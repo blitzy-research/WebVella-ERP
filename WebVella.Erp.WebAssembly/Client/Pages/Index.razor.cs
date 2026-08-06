@@ -24,7 +24,16 @@ public partial class Index : ComponentBase
         if (firstRender)
         {
             _isAuthenticated = await _authService.HasTokenAsync();
-            _user = await _apiService.GetCurrentUserAsync();
+
+            //Review finding C-02. The current user was requested UNCONDITIONALLY, on the very line after
+            //this page had already established that no token exists. For an anonymous visitor - the normal
+            //case for "/" - that request cannot succeed: it reaches GetAuthorizedHttpClientAsync, which has
+            //no token to attach, and the visit ends in an exception rather than in a rendered page. Asking
+            //only when the answer can be obtained uses the result this page has already computed, so the
+            //anonymous path becomes an ordinary render with a Login button instead of a failed one.
+            if (_isAuthenticated)
+                _user = await _apiService.GetCurrentUserAsync();
+
             await InvokeAsync(StateHasChanged);
         }
     }

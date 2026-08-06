@@ -135,6 +135,58 @@ namespace WebVella.Erp.WebAssembly.Utilities
 			return defaultValue;
 		}
 
+		/// <summary>
+		/// Reads a return-URL query parameter and returns it only if it is a LOCAL path.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - CWE-601, open redirect / unvalidated forward, OWASP A01:2021. Review finding
+		/// M-02. NavigationManager.NavigateTo accepts an ABSOLUTE URI and will leave the application, so a
+		/// crafted "returnUrl" carried the user to an attacker's origin at the exact moment they had just
+		/// authenticated - the most convincing possible phishing hand-off, because the journey demonstrably
+		/// began on this application and the credential prompt that follows looks like a re-login.
+		/// <para>
+		/// The rule is an ALLOW-LIST: a value is accepted only if it starts with a single '/' and does not
+		/// begin a scheme-relative or backslash-relative reference. Each rejected shape is a real bypass, not
+		/// a hypothetical one: "//evil.example" is a scheme-relative URL that navigates off-origin while
+		/// looking like a path; "/\evil.example" is treated as scheme-relative by browsers because they
+		/// normalise a backslash to a forward slash; and "https://evil.example" is simply absolute. This runs
+		/// AFTER <see cref="ProcessQueryValueFromUrl"/> has decoded the value, which matters because the
+		/// encoded form "%2F%2Fevil.example" only becomes recognisable once decoded - validating before
+		/// decoding would pass it through.
+		/// </para>
+		/// <para>
+		/// Returns <paramref name="defaultValue"/> for anything rejected, so a caller cannot accidentally
+		/// treat a refused value as usable, and the server-side Razor pages already apply the same local-only
+		/// policy - this brings the WebAssembly client to the same standard rather than inventing one.
+		/// </para>
+		/// </remarks>
+		public static string GetLocalReturnUrlFromQuery(NavigationManager navigator, string paramName, string defaultValue = null)
+		{
+			var candidate = GetStringFromQuery(navigator, paramName, null);
+			return IsLocalUrl(candidate) ? candidate : defaultValue;
+		}
+
+		/// <summary>
+		/// True only for a value that is a path on THIS origin. See
+		/// <see cref="GetLocalReturnUrlFromQuery"/> for the threat and the reasoning behind each rejection.
+		/// </summary>
+		public static bool IsLocalUrl(string url)
+		{
+			if (String.IsNullOrWhiteSpace(url))
+				return false;
+
+			//A single leading '/' is the only accepted shape. Anything else - absolute, scheme-relative,
+			//protocol-relative via backslash, or a bare relative segment that could be read as a host - is
+			//refused rather than repaired.
+			if (url[0] != '/')
+				return false;
+
+			if (url.Length == 1)
+				return true;
+
+			return url[1] != '/' && url[1] != '\\';
+		}
+
 		public static List<string> GetStringListFromQuery(NavigationManager navigator, string paramName, List<string> defaultValue = null)
 		{
 			//We use comma separated before encoding

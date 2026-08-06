@@ -60,7 +60,22 @@ public partial class AppState : ComponentBase, IAsyncDisposable
 		if (firstRender)
 		{
 			_objectRef = DotNetObjectReference.Create((AppState)this);
-			User = await ApiService.GetCurrentUserAsync();
+			//Review finding C-02. This component already models "no logged-in user" as a first-class outcome
+			//in the branch just below, but it could never reach it: with no token the call did not return
+			//null, it failed - originally by dereferencing a null HttpClient, and now by raising the typed
+			//ApiTokenException that replaced that dereference. Either way the render was abandoned by an
+			//exception instead of taking the graceful path this component had already written for exactly
+			//this condition. Catching only ApiTokenException keeps that distinction intact: an absent or
+			//unusable credential falls through to the message below, while any OTHER failure - a transport
+			//error, a server fault - still propagates and is not silently reported as "not signed in".
+			try
+			{
+				User = await ApiService.GetCurrentUserAsync();
+			}
+			catch (ApiTokenException)
+			{
+				User = null;
+			}
 
 			if (User == null)
 			{

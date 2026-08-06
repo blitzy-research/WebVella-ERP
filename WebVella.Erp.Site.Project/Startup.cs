@@ -335,7 +335,17 @@ namespace WebVella.Erp.Site.Project
 				  options.ForwardDefaultSelector = context =>
 				  {
 					  string authorization = context.Request.Headers[HeaderNames.Authorization];
-					  if (!string.IsNullOrEmpty(authorization) && authorization.StartsWith("Bearer "))
+
+					  // THREAT ADDRESSED - CWE-178 (improper handling of case sensitivity) leading to an
+					  // authentication bypass of the intended scheme. Review finding C-02. RFC 7235 defines
+					  // the authorization scheme token as case-INSENSITIVE, so "bearer <jwt>" is a valid
+					  // credential that this ordinal, case-sensitive test did not recognise. Such a request
+					  // was forwarded to the COOKIE handler instead, which finds no cookie, so a correctly
+					  // authenticated API caller was answered as anonymous - and, because the cookie handler
+					  // owns the challenge, was issued a login redirect rather than a 401. The platform's own
+					  // JwtMiddleware already compares this prefix with StringComparison.OrdinalIgnoreCase;
+					  // this brings the scheme selector into line with it rather than inventing a new rule.
+					  if (!string.IsNullOrEmpty(authorization) && authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
 						  return JwtBearerDefaults.AuthenticationScheme;
 
 					  return CookieAuthenticationDefaults.AuthenticationScheme;
