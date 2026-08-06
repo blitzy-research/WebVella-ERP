@@ -28,6 +28,15 @@ namespace WebVella.Erp.Plugins.Mail.Services
 		private static object lockObject = new object();
 		private static bool queueProcessingInProgress = false;
 
+		//QUEUE RESILIENCE - review finding M-OPEN-06, CWE-703 / CWE-755. Retry policy applied when the
+		//message's OWN smtp_service could not be read, which is the one failure for which the service's
+		//configured max_retries_count and retry_wait_minutes are by definition unavailable. These are the
+		//platform's own seeded defaults for those two fields (MailPlugin.20190215: 3 retries, 60 minutes),
+		//so a message whose service is momentarily unreadable is treated exactly as the service itself
+		//would have treated a momentary send failure, rather than to a policy invented here.
+		private const int ServiceLookupFailureMaxRetriesCount = 3;
+		private const int ServiceLookupFailureRetryWaitMinutes = 60;
+
 		#region <--- Hooks Logic --->
 
 		public void ValidatePreCreateRecord(EntityRecord rec, List<ErrorModel> errors)
@@ -1017,20 +1026,57 @@ namespace WebVella.Erp.Plugins.Mail.Services
 						//first, threw again, and delivered nothing: one orphaned row STARVED THE WHOLE QUEUE
 						//indefinitely, which is a denial of service on mail delivery reachable by an ordinary
 						//administrative action.
-						//CATCHING PER ROW is what makes the failure local: the row is aborted, saved and skipped by the
-						//pre-existing branch below, and because that clears ScheduledOn the row also leaves the pending
-						//selection, so the loop always makes progress. Exception rather than a narrower type because the
-						//lookup throws the base type; the reason is not lost - it is recorded on the row itself.
+						//CATCHING PER ROW is what makes the failure local: the row leaves the pending selection either
+						//way - aborted with ScheduledOn cleared, or rescheduled into the future - so the loop always
+						//makes progress and no single row can hold the queue.
+						//
+						//SECURITY / RESILIENCE - review finding M-OPEN-06, CWE-703 improper check or handling of
+						//exceptional conditions with CWE-755, OWASP A04:2021. THE TWO HANDLERS BELOW ARE THE FIX AND
+						//MUST NOT BE MERGED BACK INTO ONE. A single catch (Exception) here treated EVERY lookup failure
+						//as proof that the service was gone, so a momentary datastore, connection, timeout or query
+						//fault - a condition that clears by itself - permanently aborted every message in the page
+						//being processed and cleared its schedule, which put it beyond the reach of any later pass.
+						//Mail was destroyed by a transient fault, silently, and an operator's only trace was a
+						//server_error string. The distinction is now carried by the exception TYPE thrown at the four
+						//lookup sites in Api/EmailServiceManager: SmtpServiceNotFoundException means the absence is
+						//PROVEN, so aborting is right; anything else is presumed transient and the message keeps its
+						//retry budget.
 						SmtpService service;
 						try
 						{
 							service = serviceManager.GetSmtpService(email.ServiceId);
 						}
-						catch (Exception ex)
+						catch (SmtpServiceNotFoundException ex)
 						{
+							//PROVEN missing: the lookup ran and returned no row, so this message can never be
+							//delivered as addressed. Retrying would only re-prove it. Unchanged behaviour.
 							email.Status = EmailStatus.Aborted;
 							email.ServerError = ex.Message;
 							email.ScheduledOn = null;
+							SaveEmail(email);
+							continue;
+						}
+						catch (Exception ex)
+						{
+							//PRESUMED TRANSIENT: the lookup did not get far enough to establish anything about the
+							//service. The message is kept and retried on the same budget a send failure spends,
+							//using the platform's seeded defaults because the service that carries the configured
+							//ones is exactly what could not be read. Only the exception TYPE is recorded, never its
+							//message: unlike a relay's response text - which finding INT-14 keeps verbatim on purpose
+							//- a datastore fault message can quote query text and connection detail, and server_error
+							//is rendered on the administrative queue screens.
+							email.ServerError = $"The SMTP service for this message could not be read ({ex.GetType().FullName}). Delivery will be retried.";
+							email.RetriesCount++;
+							if (email.RetriesCount >= ServiceLookupFailureMaxRetriesCount)
+							{
+								email.ScheduledOn = null;
+								email.Status = EmailStatus.Aborted;
+							}
+							else
+							{
+								email.ScheduledOn = DateTime.UtcNow.AddMinutes(ServiceLookupFailureRetryWaitMinutes);
+								email.Status = EmailStatus.Pending;
+							}
 							SaveEmail(email);
 							continue;
 						}
