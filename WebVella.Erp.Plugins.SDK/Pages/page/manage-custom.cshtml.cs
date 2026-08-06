@@ -106,7 +106,15 @@ namespace WebVella.Erp.Plugins.SDK.Pages.Page
 				}
 				else
 				{
-					return Redirect($"/sdk/objects/application/r/{ErpPage.Id}/");
+					// Review finding M-03. This handler saves a PAGE, and ErpPage.Id is a page identifier -
+					// but the route it redirected to, "/sdk/objects/application/r/{RecordId}", is served by
+					// Pages/application/details.cshtml, which resolves its RecordId as an APPLICATION. A page
+					// identifier can never name an application, so a successful save always landed the user
+					// on a record that does not exist: the save worked and the interface reported failure.
+					// The correct target is the page details route below, which is exactly what the sibling
+					// handler for the non-custom page body already returns - see manage.cshtml.cs. Only the
+					// no-returnUrl branch is affected; the LocalRedirect branch above is unchanged.
+					return Redirect($"/sdk/objects/page/r/{ErpPage.Id}/");
 				}
 			}
 			catch (ValidationException ex)
