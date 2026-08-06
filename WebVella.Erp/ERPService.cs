@@ -11,6 +11,9 @@ using System.Security.Cryptography;
 // existing preferences column through the ErpUserPreferences model, so the persisted property name cannot
 // drift from the type and no JSON literal is hand-written.
 using Newtonsoft.Json;
+// SECURITY (review finding L-OPEN-02, CWE-367): supplies NpgsqlParameter for the transaction-scoped
+// advisory lock that serialises provisioning and the version-gated migration across hosts.
+using Npgsql;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Api.Models.AutoMapper;
@@ -50,6 +53,22 @@ namespace WebVella.Erp
 		private const int PasswordMinLength = Utilities.PasswordUtil.MinPasswordLength;
 
 		/// <summary>
+		/// Fixed advisory-lock key that serialises schema provisioning and version-gated migration.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding L-OPEN-02, CWE-367. The value is the ASCII of "WvErpSch" read as a
+		/// 64-bit integer: arbitrary, but stable and documented, which is what a shared lock key has to be.
+		/// It must never be computed from anything that varies by host, environment or release, because two
+		/// hosts that derive different keys are not serialised at all - which is the defect this closes.
+		/// </remarks>
+		private const long SchemaMigrationLockKey = 0x5776457270536368L;
+
+		/// <summary>
+		/// Upper bound, in seconds, on waiting for a peer host to finish provisioning.
+		/// </summary>
+		private const int SchemaMigrationLockTimeoutSeconds = 300;
+
+		/// <summary>
 		/// Maximum length provisioned onto the user entity's password field.
 		/// </summary>
 		/// <remarks>
@@ -79,6 +98,32 @@ namespace WebVella.Erp
 				try
 				{
 					connection.BeginTransaction();
+
+					//THREAT ADDRESSED - review finding L-OPEN-02, CWE-367 (time-of-check to time-of-use race
+					//condition), OWASP A04:2021 with A07:2021. The schema version was READ at the bottom of
+					//this block and acted on with nothing serialising the two, so two hosts starting at the
+					//same moment - the ordinary case behind a load balancer, and the guaranteed case for a
+					//rolling deployment or a container restart of a replica set - could BOTH observe version
+					//3 and BOTH execute the version 4 migration. That migration rewrites the administrator
+					//credential, so with any configuration drift between the two hosts the LAST WRITER
+					//decides what the bootstrap password ends up being, and the operator reading the
+					//provisioning notice on the first host would hold a credential that no longer works.
+					//It also creates entities, fields, relations and permission grants, so a concurrent
+					//second run means duplicate-key failures on a half-provisioned installation.
+					//THE LOCK MUST BE TAKEN HERE, before CheckCreateSystemTables and before the version is
+					//read, and it is transaction-scoped so PostgreSQL releases it on COMMIT or ROLLBACK
+					//without any unlock call that an exception path could skip. The loser of the race does
+					//not skip provisioning: it waits, then reads the version the winner committed, and so
+					//correctly finds nothing left to do. pg_advisory_xact_lock BLOCKS, unlike the existing
+					//pg_try_advisory_xact_lock helper on DbConnection, because "another host is migrating"
+					//must mean "wait for it", never "carry on regardless".
+					var migrationLockCommand = connection.CreateCommand("SELECT pg_advisory_xact_lock(@key);");
+					migrationLockCommand.Parameters.Add(new NpgsqlParameter("@key", SchemaMigrationLockKey));
+					//First-time provisioning of a large installation can outlast the 30-second default, and a
+					//timeout here would surface as a failed start rather than a silent skip - fail closed,
+					//loudly - but five minutes is long enough that only a genuinely stuck peer reaches it.
+					migrationLockCommand.CommandTimeout = SchemaMigrationLockTimeoutSeconds;
+					migrationLockCommand.ExecuteNonQuery();
 
 					//THREAT ADDRESSED (CWE-532, OWASP A09:2021): the one-time provisioning notices are held
 					//back until this transaction actually commits, so the buffer starts empty for every
