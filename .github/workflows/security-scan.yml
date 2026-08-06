@@ -1428,19 +1428,57 @@ jobs:
           fi
           printf 'AnalysisLevelSecurity = %s\n' "$seclevel"
 
-          # THE ONE EXCLUSION MUST STILL BE EXACTLY ONE FAMILY, AND STILL BE
-          # PRESENT. CA3001-CA3012 (interprocedural taint dataflow) are excluded
-          # for a measured TERMINATION reason: armed and untuned, the solution
-          # build produced no further output for over thirty-five minutes with 3 of
-          # 17 projects finished, because WebVella.Erp.Web compiles 395 Razor views
-          # into one compilation. Excluded, the same build takes about 106 seconds.
-          # Both directions are asserted: losing the exclusion hangs CI, and
-          # widening it to any other CA identifier would silence a family this gate
-          # claims to cover.
-          nowarn=$(dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
-                    -getProperty:NoWarn | tr -d '[:space:]')
-          printf 'NoWarn = %s\n' "$nowarn"
-          for taint in CA3001 CA3002 CA3003 CA3004 CA3005 CA3006 CA3007 CA3008 CA3009 CA3010 CA3011 CA3012; do
+          # THE TAINT EXCLUSION IS A BOUNDARY NOW, NOT A BLANKET, AND BOTH SIDES OF
+          # IT ARE ASSERTED PER PROJECT - review finding GATE-03.
+          #
+          # WHAT THIS CHECK USED TO DO, AND WHY IT WAS NOT ENOUGH. It read NoWarn
+          # from ONE project and required CA3001-CA3012 to be present there. That
+          # passed identically whether the exclusion covered one project or all
+          # nineteen, so the gate could not tell a measured exception from a blanket
+          # silence - and the silence was blanket.
+          #
+          # WHAT THE MEASUREMENT ACTUALLY SUPPORTS. Re-run per project: 18 of 19
+          # complete with the family armed, each in 0 to 6 seconds and reporting
+          # ZERO CA3001-CA3012 diagnostics, with armed and unarmed times within
+          # noise of each other (45s against 43s summed). WebVella.Erp.Web alone
+          # does not terminate - killed at a 600-second timeout - because it
+          # compiles 395 Razor views into one compilation and this family's
+          # dataflow analysis is superlinear in compilation size. The exclusion is
+          # therefore conditioned on that one project in Directory.Build.props, and
+          # this step asserts the boundary in BOTH directions for EVERY tracked
+          # project: excluded there, armed everywhere else. Widening it silences a
+          # family this gate claims to cover; losing it stops CI finishing.
+          #
+          # THE BOUNDARY IS READ OUT OF Directory.Build.props RATHER THAN COPIED
+          # HERE, so the workflow and the build configuration cannot drift into
+          # disagreeing about which project is excluded or which rules the family
+          # contains. The expected values are still asserted literally below, so a
+          # silent edit to either property fails this step rather than moving the
+          # boundary with it.
+          excluded_project=$(dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
+                    -getProperty:ErpTaintAnalysisExcludedProject < /dev/null | tr -d '[:space:]')
+          taint_family=$(dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
+                    -getProperty:ErpTaintAnalysisFamily < /dev/null | tr -d '[:space:]')
+          printf 'ErpTaintAnalysisExcludedProject = %s\n' "$excluded_project"
+          printf 'ErpTaintAnalysisFamily = %s\n' "$taint_family"
+          if [ "$excluded_project" != 'WebVella.Erp.Web' ]; then
+            echo "::error::Gate 1 - the measured taint exclusion now names '${excluded_project}' rather than WebVella.Erp.Web, which is the only compilation the per-project measurement found unable to terminate. Re-run that measurement before moving the boundary, and record the result in Directory.Build.props and docs/security/risk-register.md together with this expected value."
+            exit 1
+          fi
+          if [ "$taint_family" != 'CA3001;CA3002;CA3003;CA3004;CA3005;CA3006;CA3007;CA3008;CA3009;CA3010;CA3011;CA3012' ]; then
+            echo "::error::Gate 1 - ErpTaintAnalysisFamily no longer lists exactly CA3001 through CA3012. Widening it silences security rules this gate claims to cover; narrowing it changes what the exclusion means without changing what this workflow asserts. Fix Directory.Build.props, or move this expected value deliberately in the same commit."
+            exit 1
+          fi
+          # Every tracked project is checked, reading from FILE DESCRIPTOR 3 with an
+          # explicit status accumulator, for the three shell hazards this workflow
+          # documents at the WebAssembly steps: a pipeline subshell reports only its
+          # last iteration, an unterminated final line is dropped by `read`, and
+          # `dotnet` drains stdin. All three make a loop like this fail OPEN.
+          boundary_status=0
+          while IFS= read -r proj <&3 || [ -n "$proj" ]; do
+            [ -n "$proj" ] || continue
+            name=$(basename "$proj" .csproj)
+            nowarn=$(dotnet msbuild "$proj" -nologo -getProperty:NoWarn < /dev/null | tr -d '[:space:]')
             # MSBuild NoWarn is SEMICOLON-delimited, not comma-delimited. Getting
             # this wrong made the guard fail on a correctly configured tree -
             # measured: the property evaluated to ";CA3001;...;CA3012" and a
@@ -1448,20 +1486,36 @@ jobs:
             # exclusion missing while it was plainly present. A guard that fails
             # closed on a correct tree gets disabled, which is how the real check
             # dies.
-            case ";${nowarn};" in
-              *";${taint};"*) ;;
-              *) echo "::error::Gate 1 - ${taint} is no longer excluded through NoWarn. The interprocedural taint family is armed by AnalysisLevelSecurity=latest-all and, untuned, it does not terminate on this repository - measured: no output for over thirty-five minutes with 3 of 17 projects done. Restore the exclusion in Directory.Build.props, or tune the family's cost properties and re-measure before removing it."; exit 1 ;;
-            esac
-          done
-          printf 'Taint family CA3001-CA3012: excluded, as measured and documented\n'
-          extra_ca=$(printf '%s' "$nowarn" | tr ';' '\n' \
-            | { grep -E '^CA[0-9]+$' || true; } \
-            | { grep -vE '^CA30(0[1-9]|1[0-2])$' || true; } | sort -u)
-          if [ -n "$extra_ca" ]; then
-            echo "::error::Gate 1 - a CA rule outside the measured taint exclusion has been added to NoWarn, which silences a security family this gate claims to cover while every step here still reports green. Remove it, or - if the exclusion is genuinely required - record it in docs/security/risk-register.md and move its baseline and allow-list entries in the same commit."
-            printf '%s\n' "$extra_ca" | sed 's/^/  SILENCED /'
+            if [ "$name" = "$excluded_project" ]; then
+              for taint in CA3001 CA3002 CA3003 CA3004 CA3005 CA3006 CA3007 CA3008 CA3009 CA3010 CA3011 CA3012; do
+                case ";${nowarn};" in
+                  *";${taint};"*) ;;
+                  *) echo "::error::Gate 1 - ${taint} is no longer excluded for ${name}, the one compilation measured unable to finish with the interprocedural taint family armed: killed at a 600-second timeout, 395 Razor views in a single compilation. Restore the conditioned exclusion in Directory.Build.props, or tune the family's cost properties and re-measure before removing it."; boundary_status=1 ;;
+                esac
+              done
+              printf 'ARMED=no  %-34s (measured exception) NoWarn = %s\n' "$name" "$nowarn"
+            else
+              armed=yes
+              for taint in CA3001 CA3002 CA3003 CA3004 CA3005 CA3006 CA3007 CA3008 CA3009 CA3010 CA3011 CA3012; do
+                case ";${nowarn};" in
+                  *";${taint};"*) echo "::error::Gate 1 - ${taint} is excluded for ${name}, which is NOT the measured exception. This is the blanket suppression GATE-03 reported reappearing: that project builds with the family armed in seconds, so silencing it removes real coverage for no measured reason. Remove it from Directory.Build.props."; armed=no; boundary_status=1 ;;
+                esac
+              done
+              [ "$armed" = yes ] && printf 'ARMED=yes %-34s NoWarn = %s\n' "$name" "$nowarn"
+            fi
+            extra_ca=$(printf '%s' "$nowarn" | tr ';' '\n' \
+              | { grep -E '^CA[0-9]+$' || true; } \
+              | { grep -vE '^CA30(0[1-9]|1[0-2])$' || true; } | sort -u)
+            if [ -n "$extra_ca" ]; then
+              echo "::error::Gate 1 - a CA rule outside the measured taint exclusion has been added to NoWarn for ${name}, which silences a security family this gate claims to cover while every step here still reports green. Remove it, or - if the exclusion is genuinely required - record it in docs/security/risk-register.md and move its baseline and allow-list entries in the same commit."
+              printf '%s\n' "$extra_ca" | sed "s/^/  SILENCED in ${name}: /"
+              boundary_status=1
+            fi
+          done 3< tracked-projects.txt
+          if [ "$boundary_status" -ne 0 ]; then
             exit 1
           fi
+          printf 'Taint family CA3001-CA3012: armed for every tracked project except %s, as measured and documented\n' "$excluded_project"
 
           # THE ANALYZER CONFIGURATION IS ASSERTED IN BOTH DIRECTIONS, and the
           # previous single check could not do either.
@@ -1612,7 +1666,130 @@ jobs:
             sed 's/^/  UNREVIEWED /' security-unreviewed.txt
             exit 1
           fi
-          echo "Gate 1 passed - the Security category is armed at latest-all with only the measured taint exclusion, no repository-supplied analyzer configuration exists, the SDK's Security 'all' configuration is provably loaded into the compilation, and every Security-category diagnostic that fired across all 19 projects is an accepted, documented residual."
+          echo "Gate 1 passed - the Security category is armed at latest-all with the taint exclusion narrowed to its one measured exception, no repository-supplied analyzer configuration exists, the SDK's Security 'all' configuration is provably loaded into the compilation, and every Security-category diagnostic that fired across all 19 projects is an accepted, documented residual."
+
+      # Gate 1, RUNTIME-COMPILATION CONTROL FLOW - review finding GATE-03,
+      # CWE-94 (code injection) with CWE-862/CWE-863 (missing and incorrect
+      # authorization), OWASP A03:2021 feeding A01:2021.
+      #
+      # WHAT WAS WRONG. Gate 1's other parts measure ANALYZER diagnostics, and no
+      # analyzer in the pinned toolchain reports "this route compiles C# supplied
+      # in the request body and does not check a privilege first". The authenticated
+      # remote-code-execution finding CR-01 was therefore invisible to every gate in
+      # this workflow: the build was green, the diagnostic ratchet was green, the
+      # dependency scan was green, and the defect was live. A gate that cannot see
+      # the worst finding the audit produced is not covering it.
+      #
+      # WHY THIS SHAPE. The control is a source-level assertion of the four
+      # invariants the CR-01 remediation rests on, plus an INVENTORY RATCHET over
+      # the runtime-compilation surface itself. It is deliberately textual: the
+      # invariants below are exact strings that name this route's own parameters, so
+      # they cannot be satisfied from anywhere else in the tree, and each one has to
+      # be DELETED for the vulnerability to return. That is what makes a grep an
+      # adequate control here - it is asserting the presence of a specific guard, not
+      # attempting to infer reachability.
+      #
+      # ORDER IS ASSERTED, NOT ONLY PRESENCE. The authorization call must appear
+      # BEFORE the type resolution that begins processing the request-supplied
+      # options; a guard that runs after the payload has been resolved is not a
+      # guard. Line numbers are compared for exactly that reason.
+      #
+      # FAIL CLOSED IN EVERY DIRECTION: the file must exist, the route must still be
+      # declared, every invariant must be present, and the set of files that can
+      # compile code at run time must be exactly the reviewed set. Any of those
+      # missing is an error, never a pass - a `grep -q` against a moved file reports
+      # "no match" and would otherwise read as clean.
+      - name: Gate 1 - assert runtime code compilation stays authorization-gated
+        run: |
+          target='WebVella.Erp.Web/Controllers/WebApiController.cs'
+          if [ ! -f "$target" ]; then
+            echo "::error::Gate 1 cannot run - ${target} is absent, so the CR-01 authorization invariants cannot be asserted. The controller was moved or renamed; update this step in the same commit. An assertion that cannot run is a failure, never a pass."
+            exit 1
+          fi
+          status=0
+          # LAYER 1 - the route this control is written against still exists. If it
+          # were renamed, every invariant below would be absent for an innocent
+          # reason and this step would fail loudly rather than silently drift.
+          if ! grep -qF '[Route("api/v3.0/pc/{fullComponentName}/view/{renderMode}")]' "$target"; then
+            echo "::error::Gate 1 - the page-component render route api/v3.0/pc/{fullComponentName}/view/{renderMode} is no longer declared in ${target}. This control asserts the CR-01 guards on that route; if the route moved, move this step with it in the same commit rather than leaving the assertion pointing at nothing."
+            exit 1
+          fi
+          # LAYER 2 - the four invariants of the CR-01 remediation, as exact source
+          # text. Each names this route's own identifiers, so a match cannot come
+          # from another method.
+          while IFS='|' read -r label needle <&3 || [ -n "$label" ]; do
+            [ -n "$label" ] || continue
+            if grep -qF "$needle" "$target"; then
+              printf 'PASS %s\n' "$label"
+            else
+              echo "::error::Gate 1 - the CR-01 invariant '${label}' is no longer present in ${target}. Removing it restores the authenticated remote-code-execution path: the render route would again resolve request-supplied component options, which reach CodeEvalService and CSScript.Evaluator.LoadCode with ReferenceDomainAssemblies enabled. Restore the guard; do not weaken this assertion."
+              status=1
+            fi
+          done 3<<'INVARIANTS'
+          authoring render modes are identified explicitly|bool isAuthoringRenderMode = renderMode == "design" || renderMode == "options" || renderMode == "help";
+          authoring modes and the node-less path are gated together|if (isAuthoringRenderMode || nid == null)
+          the render route consults the code-authoring privilege|IsCodeAuthoringAuthorized("PageComponentRenderViews",
+          an unauthorized caller is refused|return CodeAuthoringForbidden();
+          the node is resolved from the page's own node list, binding nid to pid|pageServ.GetPageNodes(pid ?? Guid.Empty).SingleOrDefault(x => x.Id == nid)
+          the node must be an instance of the component the route names|string.Equals(pagebodyNode.ComponentName, fullComponentName, StringComparison.Ordinal)
+          an unauthorized caller renders the PERSISTED options, never the request body|options = ParsePersistedNodeOptions(pagebodyNode.Options);
+          INVARIANTS
+          # LAYER 3 - ORDER. The privilege check must precede the type resolution
+          # that begins processing the supplied options.
+          auth_line=$(grep -nF 'IsCodeAuthoringAuthorized("PageComponentRenderViews",' "$target" | head -1 | cut -d: -f1)
+          type_line=$(grep -nF 'FileService.GetType(fullComponentName)' "$target" | head -1 | cut -d: -f1)
+          if [ -z "$auth_line" ] || [ -z "$type_line" ]; then
+            echo "::error::Gate 1 - the render route's authorization call or its component type resolution could not be located in ${target}, so their ORDER cannot be asserted. Failing closed rather than assuming the guard still runs first."
+            status=1
+          elif [ "$auth_line" -ge "$type_line" ]; then
+            echo "::error::Gate 1 - the code-authoring privilege check is at line ${auth_line} but the component type resolution is at line ${type_line}, so authorization no longer happens FIRST. A guard that runs after the request-supplied options have begun to be resolved is not a guard. This is the CR-01 ordering requirement."
+            status=1
+          else
+            printf 'PASS authorization at line %s precedes component type resolution at line %s\n' "$auth_line" "$type_line"
+          fi
+          # LAYER 4 - THE RUNTIME-COMPILATION INVENTORY RATCHET. The whole finding
+          # exists because one code path can compile and load C# at run time. That
+          # surface is enumerated here so a NEW call site cannot appear without this
+          # gate failing, whatever its own authorization looks like. Comment lines
+          # are excluded deliberately - this controller and AuthService both DISCUSS
+          # these APIs in prose, and a control that counted prose would fail on a
+          # documentation edit and teach the next reader to disable it.
+          # `/dev/null` is passed to grep so the file:line: prefix is present even
+          # when xargs hands it a single path, and awk removes that prefix before
+          # deciding whether the line is a comment - deciding on the raw grep output
+          # would treat the path itself as content.
+          compiler_files=$(git ls-files '*.cs' | xargs grep -n 'CSScript\.' /dev/null \
+            | awk -F: '{ rest = $0; sub(/^[^:]*:[0-9]+:[ \t]*/, "", rest); if (rest !~ /^\/\//) print $1 }' \
+            | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+          if [ "$compiler_files" != 'WebVella.Erp.Web/Services/CodeEvalService.cs' ]; then
+            echo "::error::Gate 1 - the set of files that invoke the CSScript evaluator has changed. Expected exactly WebVella.Erp.Web/Services/CodeEvalService.cs; found: ${compiler_files:-<none>}. A second runtime-compilation site is a second CR-01, and it must be reviewed for an authorization guard and recorded in docs/security/security-audit-report.md before this expectation is moved."
+            status=1
+          else
+            printf 'PASS the CSScript evaluator is invoked from exactly one file\n'
+          fi
+          eval_files=$(git ls-files '*.cs' | xargs grep -n 'CodeEvalService\.Evaluate(' /dev/null \
+            | awk -F: '{ rest = $0; sub(/^[^:]*:[0-9]+:[ \t]*/, "", rest); if (rest !~ /^\/\//) print $1 }' \
+            | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+          expected_eval_files='WebVella.Erp.Site/Pages/EQL.cshtml.cs WebVella.Erp.Web/Models/PageDataModel.cs'
+          if [ "$eval_files" != "$expected_eval_files" ]; then
+            echo "::error::Gate 1 - the set of callers of CodeEvalService.Evaluate has changed. Expected exactly '${expected_eval_files}'; found '${eval_files:-<none>}'. The first is a developer page that evaluates a compile-time CONSTANT, the second resolves an administrator-authored DataSourceVariable; a third caller is a new path into runtime compilation and must be reviewed before this expectation is moved."
+            status=1
+          else
+            printf 'PASS runtime script evaluation is reached from exactly the two reviewed files\n'
+          fi
+          eval_calls=$(git ls-files '*.cs' | xargs grep -n 'CodeEvalService\.Evaluate(' /dev/null \
+            | awk -F: '{ rest = $0; sub(/^[^:]*:[0-9]+:[ \t]*/, "", rest); if (rest !~ /^\/\//) print rest }' \
+            | grep -c 'CodeEvalService\.Evaluate(' || true)
+          if [ "${eval_calls:-0}" -ne 5 ]; then
+            echo "::error::Gate 1 - the number of CodeEvalService.Evaluate call sites is ${eval_calls}, not the reviewed 5 (four in PageDataModel for CODE and SNIPPET data-source variables, one compile-time constant in the EQL developer page). Review the new site for an authorization guard, then move this count deliberately."
+            status=1
+          else
+            printf 'PASS runtime script evaluation has exactly the 5 reviewed call sites\n'
+          fi
+          if [ "$status" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Gate 1 runtime-compilation control passed - the render route checks the code-authoring privilege before it resolves anything, binds the node to its page and to the named component, renders persisted options for every unauthorized caller, and the runtime-compilation surface is still exactly the reviewed one file, two callers and five call sites."
 
       # Gate 1 substitute, part 3 of 3 - POSITIVE CONTROL. Parts 1 and 2 are both
       # green-when-clean, and a green run is indistinguishable from a gate that
@@ -1776,13 +1953,18 @@ jobs:
             echo '    return new TokenValidationParameters { ValidateLifetime = false, ValidateAudience = false, ValidateIssuer = false };'
             echo '  }'
             echo '}'
-            echo '// MUST NOT FIRE. These two actions carry DELIBERATE taint flows from an'
-            echo '// ASP.NET Core request parameter into a file path and into a command'
-            echo '// text. Measured both ways on this toolchain: with the repository'
-            echo '// NoWarn exclusion in force the build reports NO CA30xx, and with the'
-            echo '// exclusion removed (-p:NoWarn=) the same source reports CA3001 and'
-            echo '// CA3003. That is what makes the silence below evidence rather than an'
-            echo '// absence of evidence - the flows exist and are provably reportable.'
+            echo '// MUST FIRE, since review finding GATE-03 narrowed the taint exclusion'
+            echo '// to WebVella.Erp.Web alone. These two actions carry DELIBERATE taint'
+            echo '// flows from an ASP.NET Core request parameter into a file path and into'
+            echo '// a command text, and this probe is not the excluded project, so the'
+            echo '// interprocedural family is armed for it. Measured both ways on this'
+            echo '// toolchain against this exact source: with the family suppressed the'
+            echo '// build reports NO CA30xx, and with it armed the same source reports'
+            echo '// CA3001 at the command-text flow and CA3003 at the path flow. Asserting'
+            echo '// that they FIRE is strictly stronger evidence than observing that they'
+            echo '// stay quiet: it proves the family runs, which is what makes the ZERO'
+            echo '// CA30xx measured across the other 18 real projects an absence of'
+            echo '// defects rather than an absence of analysis.'
             echo 'public class ProbeController : Controller'
             echo '{'
             echo '  [HttpGet]'
@@ -1832,21 +2014,25 @@ jobs:
               status=1
             fi
           done
-          # The other direction. The taint family is excluded for a measured
-          # termination reason; if it fires, the exclusion has been lost and the
-          # next full solution build will not finish rather than gate.
-          for rule in CA3001 CA3002 CA3003 CA3004 CA3005 CA3006 CA3007 CA3008 CA3009 CA3010 CA3011 CA3012; do
+          # THE INTERPROCEDURAL TAINT FAMILY, ASSERTED AS A MUST FIRE - review
+          # finding GATE-03. It is excluded for WebVella.Erp.Web alone, for a
+          # measured termination reason, and this probe is not that project, so the
+          # family is armed here and the two deliberate flows above must be
+          # reported. Silence now means the family stopped running, which would make
+          # the zero CA30xx measured across the other 18 projects worthless.
+          for rule in CA3001 CA3003; do
             if grep -qE "Probe\.cs\([0-9]+,[0-9]+\): (warning|error) ${rule}" positive-control.txt; then
-              echo "::error::Gate 1 boundary changed - ${rule} fired, but CA3001-CA3012 are excluded through NoWarn in Directory.Build.props for a MEASURED termination reason: armed and untuned, the solution build produced no further output for over thirty-five minutes with 3 of 17 projects finished. Losing the exclusion does not improve coverage, it stops CI finishing. Restore it, or tune the family's cost properties, re-measure the full solution build, and move the baselines, the allow-list and docs/security/risk-register.md in the same commit."
+              printf 'PASS %s reported against the deliberate taint flow in the probe\n' "$rule" | tee -a positive-control.txt
+            else
+              echo "::error::Gate 1 is NOT gating the interprocedural taint family - ${rule} was not reported against a probe carrying a deliberate taint flow, even though the exclusion in Directory.Build.props is conditioned on WebVella.Erp.Web and this probe is a different project. Either the exclusion was widened back to every project, AnalysisLevelSecurity no longer arms the Security category, or the probe shape stopped provoking the rule. Until this reports, the zero CA3001-CA3012 measured across the other 18 projects is an absence of analysis rather than an absence of defects."
               status=1
             fi
           done
-          printf 'PASS CA3001-CA3012 stayed silent against deliberate taint flows, so the measured exclusion is intact\n' | tee -a positive-control.txt
           if [ "$status" -ne 0 ]; then
             redact_tail positive-control.txt 40
             exit 1
           fi
-          echo "Positive control passed - all nine ratcheted security families provably report defects in the probe rather than merely being listed, and the one measured exclusion is still in force."
+          echo "Positive control passed - all nine ratcheted security families provably report defects in the probe rather than merely being listed, and the interprocedural taint family reports its two deliberate flows now that its exclusion is narrowed to WebVella.Erp.Web alone."
 
       # Gate 2, part 2 - corroborates the restore with an explicit advisory
       # listing. H-01/H-20 (A06): --include-transitive is MANDATORY, not
