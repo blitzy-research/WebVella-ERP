@@ -533,8 +533,25 @@ namespace WebVella.Erp.Web.Services
 			// the same change for the same reason - at exactly 24 hours it would have clamped the skew straight back
 			// off again, silently reinstating the defect. The two are one contract expressed in two files; keep them
 			// in step.
-			SessionRevocationService.RevokeSessionIdentifier(sessionId,
+			bool revocationRecorded = SessionRevocationService.RevokeSessionIdentifier(sessionId,
 				DateTime.UtcNow.AddMinutes(AUTH_TICKET_EXPIRY_DURATION_MINUTES + JwtClockSkew.TotalMinutes));
+
+			// THREAT ADDRESSED - review finding H-OPEN-01 (CWE-613 insufficient session expiration,
+			// CWE-636 not failing securely), OWASP A07. The revocation is now DURABLE, which means it can
+			// also FAIL - and a sign-out whose revocation was not recorded has deleted this browser's
+			// cookie while leaving every copy of the credential working. That outcome used to be
+			// unreportable because the write could not fail visibly; it is recorded here rather than
+			// swallowed, because it is the one event that distinguishes "this session is closed
+			// everywhere" from "this browser forgot its cookie". Recorded whatever the audit outcome, and
+			// BEFORE the transition record below, so a reader sees the failure even if the trail then
+			// shows nothing else. No exception is raised: the sign-out itself must still complete, since
+			// leaving the user signed in as well would be strictly worse.
+			if (!revocationRecorded)
+			{
+				SecurityAuditLog.Write(Diagnostics.LogType.Error, "AuthService:Logout",
+					"Session revocation could not be recorded durably; copies of this credential remain valid until it expires.",
+					"user_id=" + SecurityAuditLog.Field(httpContext.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value, MaxLogDetailLength));
+			}
 
 			if (alreadyRevoked)
 				return;

@@ -1,18 +1,21 @@
 ﻿using System;
+using System.Globalization;
 using Microsoft.Extensions.Caching.Memory;
+using WebVella.Erp.Database;
 
 namespace WebVella.Erp.Web.Services
 {
 	// Threat addressed - finding F8 (session hijacking; CWE-613 insufficient session expiration,
-	// CWE-384 session fixation), OWASP A07 Identification and Authentication Failures.
+	// CWE-384 session fixation), OWASP A07 Identification and Authentication Failures; extended by
+	// review finding H-OPEN-01 (CWE-613 plus CWE-636 not failing securely).
 	//
 	// THE THREAT, precisely. The cookie authentication ticket is SELF-CONTAINED: the browser presents an
 	// encrypted blob and the server validates it purely by unprotecting it, consulting no server-side
 	// state at all. Signing out therefore only deleted the cookie from the ONE browser that asked. Anyone
 	// holding a copy - taken from a shared machine, a stolen backup, a proxy log, or a cross-site
-	// scripting payload - kept a fully valid credential for the remainder of the eight-hour ticket
-	// lifetime, and the legitimate user had no way whatsoever to end that session. "Log out" was a
-	// client-side gesture, not a security control.
+	// scripting payload - kept a fully valid credential for the remainder of the ticket lifetime, and the
+	// legitimate user had no way whatsoever to end that session. "Log out" was a client-side gesture, not
+	// a security control.
 	//
 	// THE CONTROL. Every ticket minted by AuthService.Authenticate carries a random session identifier
 	// claim. Logging out records that identifier here, and the cookie authentication pipeline consults
@@ -27,18 +30,35 @@ namespace WebVella.Erp.Web.Services
 	// bearer validators consult this store, and sign-out revokes whichever identifier the current
 	// principal carries. One identifier, one store, both credential kinds.
 	//
-	// WHY A REVOCATION LIST RATHER THAN A SECURITY STAMP COLUMN. A per-user stamp persisted on the user
-	// record would survive a restart and span instances, and is the stronger design - but it requires a
-	// schema change, which the change constraints for this remediation exclude, and a database read on
-	// every authenticated request, which is a measurable cost on every page. A short-lived in-process
-	// list needs neither, and is strictly better than the nothing that exists today.
+	// H-OPEN-01: WHY THE STORE IS NOW DURABLE AND SHARED RATHER THAN IN-PROCESS. The revocation list used
+	// to be a process-local, size-bounded MemoryCache, and EVERY boundary of that store was a fail-open:
+	//   * a process restart discarded every revocation, so a copied cookie or token started working again
+	//     after any deployment, recycle or crash - for the remainder of its own lifetime;
+	//   * a second instance behind a load balancer never observed the revocation at all, so "log out"
+	//     protected exactly one instance and the copy kept working on the others;
+	//   * cache compaction at the size ceiling could evict a STILL-LIVE revocation, and the code
+	//     acknowledged that eviction was fail-open in its own comment.
+	// A revocation that any of those three events can silently undo is not a revocation. State therefore
+	// moved to Database/DbSecurityStateRepository, which is durable (it survives restart), shared (every
+	// instance against the same database observes the same revocation), atomic, and reclaims entries by
+	// EXPIRY ONLY - never by capacity - so no live revocation can ever be displaced by a newer one.
+	// Crucially it needs NO SCHEMA CHANGE: it stores under a reserved key prefix in the plugin_data table
+	// that every installation already has. See that type for the full rationale.
 	//
-	// SCOPE LIMITATION, documented rather than hidden. The store is in-process and does not survive a
-	// restart, so in a multi-instance deployment a logout revokes the session only on the instance that
-	// handled it. This mirrors the same documented limitation as the login throttle and is recorded in the
-	// risk register. A restart is not a weakening in itself: the data-protection keys that decrypt the
-	// cookie are the same across restarts only when key persistence is configured, and a revoked session
-	// surviving a restart is bounded by the ticket lifetime in any case.
+	// AND IT NOW FAILS CLOSED. When the durable store cannot be consulted at all, this type answers
+	// "revoked". That is the direction H-OPEN-01 requires - "fail closed when revocation state cannot be
+	// established" - and it costs nothing real: every authenticated request in this platform already
+	// re-resolves its user from the same database, so a database this code cannot reach is a database no
+	// request could have been served from anyway. The alternative, answering "not revoked" when the answer
+	// is unknown, is precisely how an outage would have become an authorisation.
+	//
+	// THE LOCAL CACHE THAT REMAINS IS POSITIVE-ONLY, and that asymmetry is the whole design. A session
+	// once known to be revoked can never become valid again, so caching a POSITIVE answer can only ever
+	// make this control stricter and saves a round trip on exactly the requests an attacker generates. A
+	// NEGATIVE answer is deliberately NOT cached: caching "not revoked" for any interval would recreate a
+	// window in which a revoked credential is still accepted, which is the very defect being closed. The
+	// cost is one indexed point lookup per authenticated request, which is accepted and documented in
+	// docs/security/secure-configuration.md.
 	//
 	// STATIC deliberately, and that shape is what finding F-02 required rather than a stylistic preference.
 	// This began as an injected singleton holding a private instance cache, which confined the control to
@@ -52,30 +72,14 @@ namespace WebVella.Erp.Web.Services
 	//   * the consult path can FAIL CLOSED. With injection every consumer had to tolerate an unresolvable
 	//     service, and "no service" was indistinguishable from "not revoked". A static store cannot be
 	//     absent, so a missing control can no longer be mistaken for an authorisation.
-	// Nothing is injected and nothing is disposed: every entry is individually bounded by MaxRetention and
-	// the whole store by MaxRevokedSessions, so process lifetime introduces no unbounded growth. This
-	// mirrors the platform's own process-lifetime cache in ErpAppContext.
 	public static class SessionRevocationService
 	{
-		// Hard ceiling on tracked revocations, which is what keeps CWE-770 (allocation without limits)
-		// unreachable: the store evicts rather than grows once this many entries are live. Reaching it
-		// requires twenty thousand DISTINCT AUTHENTICATED logouts inside one retention window, because
-		// only a successful sign-out can write here - an unauthenticated caller cannot add a single
-		// entry. The residual is stated plainly rather than hidden: eviction is fail-OPEN, so an evicted
-		// revocation lets a copied cookie work again for the remainder of its own lifetime. That is
-		// accepted deliberately, because the alternative - an unbounded store - is a denial-of-service
-		// primitive, and a bounded fail-open list is still strictly stronger than today's no list at all.
-		private const long MaxRevokedSessions = 20000;
-
-		// Fraction discarded when the ceiling is hit. Matches LoginThrottleService so the two bounded
-		// stores in this assembly behave identically under pressure.
-		private const double EvictionCompactionPercentage = 0.2;
-
-		// Namespaced so revocation entries cannot collide with any other consumer's cache keys.
-		private const string KeyPrefix = "wv_session_revoked_";
+		// Namespace for revocation keys inside the durable store. Every key written by this type begins
+		// with it, so reclamation of expired revocations can never reach another control's rows.
+		private const string KeyPrefix = DbSecurityStateRepository.ReservedKeyPrefix + "revoked_";
 
 		// Ceiling on how long a single revocation is retained, applied to whatever the caller asks for.
-		// A revocation only has to outlive the ticket it revokes; retaining it longer pins memory for no
+		// A revocation only has to outlive the ticket it revokes; retaining it longer pins storage for no
 		// benefit, and clamping here means no caller can turn this store into an unbounded one by
 		// passing an absurd expiry.
 		//
@@ -105,39 +109,22 @@ namespace WebVella.Erp.Web.Services
 		}
 
 		// Floor on retention. A revocation written with a near-past expiry would otherwise be discarded
-		// by the cache immediately, silently doing nothing; one minute guarantees the entry is actually
-		// observable by the requests it exists to reject.
+		// immediately, silently doing nothing; one minute guarantees the entry is actually observable by
+		// the requests it exists to reject.
 		private static readonly TimeSpan MinRetention = TimeSpan.FromMinutes(1);
 
-		// A dedicated, size-bounded cache rather than the platform's Utils.Cache helper, for exactly the
-		// reason recorded on LoginThrottleService: that helper constructs its MemoryCache with default
-		// options and exposes no way to set a SizeLimit, so entries written through it are bounded only
-		// by their expiration. No new package dependency is introduced: MemoryCache is the same type that
-		// helper already uses.
-		//
-		// THREAT ADDRESSED - finding F-02 (session hijacking via a non-revocable bearer token; CWE-613
-		// insufficient session expiration), OWASP A07. The store used to be a PRIVATE INSTANCE field
-		// reachable only through dependency injection, and that placement is what confined the control to
-		// the cookie pipeline. Bearer tokens are validated by STATIC code - AuthService.GetValidSecurityTokenAsync
-		// and the token-validated hook the two token-issuing hosts install - which has no service provider
-		// to resolve from, so the revocation list was structurally unreachable from the one credential
-		// class that most needed it. Making the store static is the minimum change that closes that gap,
-		// and it strengthens the control in two further ways rather than merely relocating it:
-		//   * there is now exactly ONE store per process. An instance field gave a host that builds more
-		//     than one service provider one independent, empty store per provider, so a logout recorded in
-		//     one would be invisible to the other - a silent fail-open;
-		//   * the consult path can now FAIL CLOSED. With injection the consumer had to tolerate a null
-		//     service (a host that never called AddErp), and "no service" was indistinguishable from "not
-		//     revoked". A static store cannot be absent, so a missing store can no longer be mistaken for
-		//     an authorisation.
-		// The store outlives every service instance deliberately: revocations must survive the disposal of
-		// any one provider, and they are individually bounded by MaxRetention plus the ceiling below, so
-		// process lifetime introduces no unbounded growth. This mirrors the platform's own ErpAppContext
-		// cache, which is likewise process-lifetime.
-		private static readonly MemoryCache revokedSessions = new MemoryCache(new MemoryCacheOptions
+		// H-OPEN-01: the POSITIVE-ONLY local cache described in the header. It holds only identifiers the
+		// durable store has already confirmed revoked, so a hit can only refuse a credential that is
+		// already refused - it can never authorise one, and it can never mask a revocation recorded by
+		// another instance, because a miss always consults the durable store. Entries expire with the
+		// revocation they mirror and the store is size-bounded, so eviction here loses nothing: the next
+		// request for an evicted identifier simply asks the database again and re-learns the same answer.
+		// This is the one place a bounded cache is safe in this type, precisely because its failure mode
+		// is a redundant query rather than an accepted credential.
+		private static readonly MemoryCache confirmedRevocations = new MemoryCache(new MemoryCacheOptions
 		{
-			SizeLimit = MaxRevokedSessions,
-			CompactionPercentage = EvictionCompactionPercentage
+			SizeLimit = 20000,
+			CompactionPercentage = 0.2
 		});
 
 		// Records that a session identifier must no longer be accepted, until <paramref name="absoluteExpiryUtc"/>.
@@ -148,12 +135,18 @@ namespace WebVella.Erp.Web.Services
 		// absent or malformed claim parses to - is ignored rather than recorded, so it can never revoke
 		// every credential that happens to carry no session claim.
 		//
+		// H-OPEN-01: returns whether the revocation was DURABLY recorded, so the caller can tell the
+		// difference between "this session is now closed everywhere" and "the store could not be written".
+		// The local mirror is populated only on success, because a mirror entry written after a failed
+		// durable write would make this instance believe a revocation exists that no other instance can
+		// see - the single-instance illusion this change exists to remove.
+		//
 		// Assembly-internal deliberately: no public surface is widened by this finding's fix, and every caller
 		// - AuthService and the cookie ticket-validation hook in ErpMvcExtensions - lives in this assembly.
-		internal static void RevokeSessionIdentifier(Guid sessionId, DateTime absoluteExpiryUtc)
+		internal static bool RevokeSessionIdentifier(Guid sessionId, DateTime absoluteExpiryUtc)
 		{
 			if (sessionId == Guid.Empty)
-				return;
+				return false;
 
 			var retention = absoluteExpiryUtc - DateTime.UtcNow;
 			if (retention < MinRetention)
@@ -161,31 +154,96 @@ namespace WebVella.Erp.Web.Services
 			if (retention > MaxRetention)
 				retention = MaxRetention;
 
-			// Size is mandatory because the cache above declares a SizeLimit; every revocation counts as
-			// one tracked entry. Priority is High so that a burst of new revocations evicts nothing that
-			// is still holding a session closed in preference to something else - every entry here is
-			// equally load-bearing, and NeverRemove is deliberately NOT used because it would exempt
-			// entries from the ceiling and hand back the unbounded growth this store exists to prevent.
-			revokedSessions.Set(KeyPrefix + sessionId.ToString("N"), true, new MemoryCacheEntryOptions
+			DateTime expiresUtc = DateTime.UtcNow.Add(retention);
+
+			// The payload is the expiry restated in round-trip form. It carries no credential material and
+			// no user identifier - deliberately: a row in this namespace is readable by anything with
+			// database access, so it must not become a session-correlation source (CWE-532). The KEY is the
+			// session identifier and is unavoidable, which is why the retention above is bounded.
+			if (!DbSecurityStateRepository.TryWrite(BuildKey(sessionId),
+				expiresUtc.ToString("O", CultureInfo.InvariantCulture), expiresUtc))
+			{
+				return false;
+			}
+
+			confirmedRevocations.Set(BuildKey(sessionId), true, new MemoryCacheEntryOptions
 			{
 				AbsoluteExpirationRelativeToNow = retention,
 				Size = 1,
 				Priority = CacheItemPriority.High
 			});
+
+			return true;
 		}
 
 		// Consulted on every authenticated request, by the cookie ticket-validation hook and by both bearer
-		// validators. Non-throwing and allocation-free on the overwhelmingly common negative path.
+		// validators. Non-throwing.
 		//
 		// F-02: an empty identifier is reported as NOT revoked, and that stays correct only because every
 		// caller now treats an absent or unparseable session claim as a refusal in its own right, before it
 		// ever reaches this method. This method answers "is this specific identifier revoked?", nothing more.
+		//
+		// H-OPEN-01: three outcomes collapse into two, and the collapse is the control.
+		//   * the local mirror already knows it is revoked  -> revoked, no query;
+		//   * the durable store answers                     -> its answer;
+		//   * the durable store CANNOT be consulted         -> REVOKED. Failing closed is what makes this a
+		//     control rather than a courtesy: an unreachable store used to be indistinguishable from a
+		//     clean one, so an outage granted every copied credential the benefit of the doubt.
 		internal static bool IsSessionIdentifierRevoked(Guid sessionId)
 		{
 			if (sessionId == Guid.Empty)
 				return false;
 
-			return revokedSessions.TryGetValue(KeyPrefix + sessionId.ToString("N"), out _);
+			string key = BuildKey(sessionId);
+			if (confirmedRevocations.TryGetValue(key, out _))
+				return true;
+
+			if (!DbSecurityStateRepository.TryRead(key, out string payload))
+			{
+				// Fail closed. Deliberately NOT mirrored locally: a transient outage must not pin a
+				// legitimate session as revoked for the rest of the retention window.
+				return true;
+			}
+
+			if (payload == null)
+				return false;
+
+			// Mirrored for exactly as long as the DURABLE entry has left to live, so the mirror can never
+			// outlast the fact it mirrors. The payload is the durable expiry in round-trip form; an
+			// unparseable one falls back to the floor rather than to the ceiling, because a mirror that
+			// guessed high would keep refusing after the durable revocation had gone.
+			// RoundtripKind alone, and never combined with AdjustToUniversal or AssumeUniversal: the
+			// framework REFUSES that combination with an ArgumentException rather than ignoring it, and a
+			// throw from this method would surface as a 500 on the authenticated request path. The "O"
+			// format carries its own offset, so RoundtripKind already yields the correct instant; the
+			// conversion below then normalises the Kind rather than relying on a style flag to do it.
+			TimeSpan mirrorLifetime = MinRetention;
+			if (DateTime.TryParse(payload, CultureInfo.InvariantCulture,
+				DateTimeStyles.RoundtripKind, out DateTime storedExpiry))
+			{
+				DateTime storedExpiryUtc = storedExpiry.Kind == DateTimeKind.Utc
+					? storedExpiry
+					: storedExpiry.ToUniversalTime();
+				mirrorLifetime = storedExpiryUtc - DateTime.UtcNow;
+				if (mirrorLifetime < MinRetention)
+					mirrorLifetime = MinRetention;
+				if (mirrorLifetime > MaxRetention)
+					mirrorLifetime = MaxRetention;
+			}
+
+			confirmedRevocations.Set(key, true, new MemoryCacheEntryOptions
+			{
+				AbsoluteExpirationRelativeToNow = mirrorLifetime,
+				Size = 1,
+				Priority = CacheItemPriority.High
+			});
+
+			return true;
+		}
+
+		private static string BuildKey(Guid sessionId)
+		{
+			return KeyPrefix + sessionId.ToString("N");
 		}
 	}
 }
