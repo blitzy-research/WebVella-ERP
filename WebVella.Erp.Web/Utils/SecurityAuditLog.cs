@@ -47,11 +47,14 @@ namespace WebVella.Erp.Web.Utils
 	/// <c>WebVella.Erp/Api/Models/ErpSerializationBinder.cs</c> for exactly the same reason.
 	/// </para>
 	/// <para>
-	/// WHY THE CORE <see cref="Log"/> AND NOT <c>Services/LogService</c>. <c>LogService.Create</c> hands the
-	/// record to <c>MailService.SendLogMessage</c> BEFORE persisting it whenever the notification status is
-	/// <c>NotNotified</c> - which is its default. Every route audited through this helper is reachable
-	/// without credentials, so that default turns a request flood into an outbound mail flood and puts
-	/// audit detail on an off-box transport ahead of the database. Passing
+	/// WHY THE CORE <see cref="Log"/> AND NOT <c>Services/LogService</c>. <c>LogService.Create</c> sends an
+	/// operator notification whenever the notification status is <c>NotNotified</c> - which is its default.
+	/// Every route audited through this helper is reachable without credentials, so that default turns a
+	/// request flood into an outbound mail flood. It was worse before the finding M-OPEN-03 remediation,
+	/// which mailed the full record BEFORE persisting it and so also put audit detail on an off-box
+	/// transport ahead of the database; that ordering is now reversed and the notification carries only the
+	/// severity, the source and the identifier of the stored record. The VOLUME argument stands unchanged,
+	/// which is why this helper still does not use that wrapper. Passing
 	/// <see cref="LogNotificationStatus.DoNotNotify"/> to <c>LogService</c> would also avoid it, but relies
 	/// on every present and future call site remembering to. The core <see cref="Log"/> has no mail branch
 	/// at all: it opens a connection, executes one parameterised INSERT into <c>system_log</c> and returns.

@@ -365,10 +365,13 @@ namespace WebVella.Erp.Web.Pages
 		// restated here: that writer uses the core WebVella.Erp.Diagnostics.Log writer, which performs a
 		// parameterized INSERT into system_log and does nothing else, and passes
 		// LogNotificationStatus.DoNotNotify EXPLICITLY. It must NOT use
-		// WebVella.Erp.Web.Services.LogService: that wrapper calls MailService.SendLogMessage BEFORE
-		// persisting whenever the notification status is NotNotified - its parameter default - so routing a
-		// per-attempt audit record through it would turn this anonymous endpoint into an attacker-triggered
-		// mail bomb and amplify finding M-17. Moving that guarantee into the shared writer is what stops it
+		// WebVella.Erp.Web.Services.LogService: that wrapper sends an operator notification whenever the
+		// notification status is NotNotified - its parameter default - so routing a per-attempt audit record
+		// through it would turn this anonymous endpoint into an attacker-triggered mail bomb and amplify
+		// finding M-17. Before the finding M-OPEN-03 remediation it also mailed the full record BEFORE
+		// persisting it; that ordering is now reversed and the notification carries only the severity, the
+		// source and the stored record's identifier, but one message per attempt is still one message per
+		// attempt, so this choice stands. Moving that guarantee into the shared writer is what stops it
 		// depending on this and every future call site remembering it.
 		// OBS-05: the suppressedRefusals parameter this signature used to carry has been removed along with the
 		// refusal sampling it existed to report. A count of records the trail deliberately did not write is only

@@ -6287,14 +6287,21 @@ namespace WebVella.Erp.Web.Controllers
 					|| string.Equals(e.Message, AuthService.InvalidCredentialMessage, StringComparison.Ordinal);
 
 				// THREAT ADDRESSED - finding M-17, CWE-778 / CWE-779 on an [AllowAnonymous] route.
-				// LogService.Create's Exception overload hands the record to MailService.SendLogMessage
-				// BEFORE persisting it whenever the notification status is left at its NotNotified default,
-				// which this call did. Every rejected credential therefore sent an outbound e-mail carrying
-				// the fault detail off-box, ahead of the database, on a route requiring no authentication and
-				// no antiforgery token - so a credential-stuffing run doubled as a mail flood, and the audit
-				// record an operator needed was the slowest and least reliable part of handling it. The write
-				// is also now guarded, so a datastore fault during it can no longer escape this catch block
-				// and turn a handled rejection into an unhandled 500.
+				// LogService.Create's Exception overload used to hand the record to
+				// MailService.SendLogMessage BEFORE persisting it whenever the notification status was left
+				// at its NotNotified default, which this call did. Every rejected credential therefore sent
+				// an outbound e-mail carrying the fault detail off-box, ahead of the database, on a route
+				// requiring no authentication and no antiforgery token - so a credential-stuffing run
+				// doubled as a mail flood, and the audit record an operator needed was the slowest and
+				// least reliable part of handling it. The write is also now guarded, so a datastore fault
+				// during it can no longer escape this catch block and turn a handled rejection into an
+				// unhandled 500.
+				// STILL LOAD-BEARING after finding M-OPEN-03. That remediation reordered LogService so the
+				// record is persisted first and the notification carries only the severity, the source and
+				// the record identifier, which removes the off-box DISCLOSURE - but not the outbound message
+				// per record. On an anonymous route a request flood is still a notification flood, so this
+				// route continues to write through the core Log with DoNotNotify rather than through
+				// LogService, and SecurityAuditLog continues to enforce that choice structurally.
 				//
 				// The exception is passed ONLY for a genuine server fault. A rejected credential carries
 				// nothing but the sentinel message AuthService throws, and it is the one outcome an attacker
