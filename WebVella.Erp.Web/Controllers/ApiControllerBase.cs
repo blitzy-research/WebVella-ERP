@@ -3,9 +3,22 @@ using System;
 using System.Net;
 using WebVella.Erp.Api.Models;
 using Microsoft.AspNetCore.Authorization;
+using WebVella.Erp.Web.Security;
 
 namespace WebVella.Erp.Web.Controllers
 {
+	// THREAT ADDRESSED - review finding M-OPEN-02, CWE-352 cross-site request forgery, OWASP A01:2021.
+	// Every mutating action reachable through this controller and its derivatives is authorised by the
+	// authentication cookie alone, and a browser attaches that cookie to a request another site caused - so
+	// any page anywhere could drive a POST, PUT or DELETE as whoever was signed in. SameSite=Lax does not
+	// close it, because Lax is a registrable-domain test and a sibling origin is therefore "same-site".
+	// PLACED ON THE BASE CLASS, once, rather than on each action: the attribute is inherited, so no action
+	// on any derived controller can be forgotten, and no existing route, verb or response envelope changes.
+	// It is NOT registered globally, because Razor Pages forms already carry antiforgery tokens and a second
+	// differently-shaped refusal there would be change without benefit.
+	// Antiforgery tokens are deliberately NOT the mechanism; see the attribute's own remarks and the Agent
+	// Action Plan section 0.3.2, which records that enforcing them here would refuse every existing client.
+	[RequireSameOriginRequest]
 	[Authorize]
 	public class ApiControllerBase : Controller
 	{
