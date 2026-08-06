@@ -2,8 +2,8 @@ apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
   name: blitzy-WebVella-ERP
-  description: WebVella ERP monolith decomposition — cloud-native microservices, serverless
-    architecture, and OWASP security audit
+  description: WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, with a
+    completed OWASP Top 10 (2021) security audit and remediation.
   tags:
   - audit
   - csharp
@@ -30,6 +30,9 @@ metadata:
     icon: github
   - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/tree/master/blitzy/documentation
     title: Blitzy Documentation
+    icon: docs
+  - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/docs/security/security-audit-report.md
+    title: OWASP Security Audit Report
     icon: docs
 spec:
   type: website

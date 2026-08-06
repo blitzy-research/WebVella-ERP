@@ -462,11 +462,15 @@ boundary, and routed here. All four are part of finding `L-08`.
 2. **`README.md:L18`** states that the platform "targets ASP.NET Core 9" with "PostgreSQL 16", while the
    manifests showed 17 × `net10.0` and 2 × `net7.0` at the audit baseline and 19 × `net10.0` now.
    Documented, not fixed.
-3. **`catalog-info.yaml`** — its `description` at L5–L6 reads "WebVella ERP monolith decomposition —
+3. **`catalog-info.yaml`** — its `description` at L5–L6 read "WebVella ERP monolith decomposition —
    cloud-native microservices, serverless architecture, and OWASP security audit", which describes work
-   this repository does not contain. **Verified at this commit: that description is still present, and the
-   identical sentence is still present at `docs/index.md:L3`.** An earlier revision of this report recorded
-   both as corrected; they are not, and the observation is stated as measured rather than as expected. The
+   this repository does not contain. **Corrected at this commit, and stated as measured:** the value at
+   L5–L6 is now "WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, with a completed
+   OWASP Top 10 (2021) security audit and remediation.", which is the identical sentence published at
+   `docs/index.md:L3`, so the descriptor and the documentation set now agree; and the descriptor carries a
+   fifth link straight to this report, which is what turns its security-audit claim from an assertion into
+   an evidenced one. An earlier revision of this report recorded the correction before it had happened and
+   a later one recorded it as still outstanding; both are superseded by this measurement. The
    stale `PR #2: Serverless Microservices Rewrite` link at L28–L30 is **retained** as a historical pointer,
    on the reasoning that a link to a pull request records history rather than asserting anything about the
    current tree — verified present at this commit. Its `Blitzy Documentation` link at L31–L33 points at
@@ -1277,7 +1281,7 @@ submission to the anonymous login endpoint is refused for the cost of one intege
 | **DESCRIPTION** | The service catalogue descriptor advertises capabilities the repository does not contain: its description names cloud-native microservices and a serverless architecture alongside the security audit, and it links a pull request titled *Serverless Microservices Rewrite*. No container definition, orchestration manifest or serverless artifact exists anywhere in the tree. The four further drift items deferred into this report by other work in this engagement — the licence badge, the framework claim, the catalogue description and pull-request links, and the developer documentation's historical claims — are enumerated under [documentation drift deferred into this report](#documentation-drift-deferred-into-this-report). Maps to **OWASP A05:2021 — Security Misconfiguration**. |
 | **IMPACT** | Inaccurate catalogue metadata misdirects a reader about the platform's actual shape and attack surface, and an inventory that overstates what exists is a weak basis for risk decisions. |
 | **EVIDENCE** | The `metadata.description` field and the `links` entries in `catalog-info.yaml`, read against a repository that contains no Dockerfile, no compose file and no infrastructure manifest. |
-| **REMEDIATION** | Documented, deliberately not rewritten beyond what the audit required: the descriptor's security-audit claim is now true, because this report exists and is referenced from the documentation navigation. Correcting the microservices and serverless claims is the owner's editorial call on their own catalogue entry, not a security fix. |
+| **REMEDIATION** | **Partly corrected, the remainder documented.** The service-catalogue half is fixed, because an inventory that misstates a platform's shape is a weak basis for risk decisions and this is the inventory a reader reaches first: `catalog-info.yaml:L5-L6` no longer claims cloud-native microservices or a serverless architecture, and the descriptor now links this report directly, so its security-audit claim is evidenced rather than asserted. Two deliberate non-changes, recorded so the reasoning is traceable rather than inferred: the `PR #2: Serverless Microservices Rewrite` link at `:L28-L30` is **retained**, because a link to a pull request records history and does not describe the current tree, and removing it would delete a historical pointer to close nothing; and the `Blitzy Documentation` link at `:L31-L33` is left pointing at an absent directory, because creating that directory was declined as outside the change boundary. The entity's identity, `labels`, `tags`, `annotations` and `spec` were held byte-identical, since a Backstage rename orphans the catalog entry and re-tagging is unrelated scope. The remaining items — the licence badge and stack claim in `README.md`, the developer documentation set, and `WebVella.Erp/WebVella.Erp.csproj:L19` — stay **documented, not fixed**: they are editorial rather than security defects, and rewriting them is outside the minimal-change boundary. |
 
 #### L-09 — No server-side request forgery surface
 
