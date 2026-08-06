@@ -184,10 +184,6 @@ namespace WebVella.Erp.Plugins.Mail.Services
 							//try/catch this replaces was unreachable and every integer was accepted: an undefined value
 							//passed validation here and failed much later inside SmtpClient.Connect. Enum.IsDefined is the
 							//test that actually rejects it, and the generic overload avoids boxing and analyzer rule CA2263.
-							//EVERY DEFINED MODE STAYS PERMITTED, deliberately: narrowing the permitted set would reject
-							//existing service rows, including the cleartext `None` mode real deployments use, which the
-							//preservation requirement forbids. The risk carried by a cleartext row is a deployment
-							//responsibility recorded in docs/security/risk-register.md, not a rule imposed retroactively here.
 							if (!Enum.IsDefined((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
 							{
 								errors.Add(new ErrorModel
@@ -195,6 +191,35 @@ namespace WebVella.Erp.Plugins.Mail.Services
 									Key = "connection_security",
 									Value = (string)rec["connection_security"],
 									Message = $"Invalid connection security setting selected."
+								});
+								continue;
+							}
+
+							//SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
+							//information, CWE-311 missing encryption of sensitive data, OWASP A02:2021.
+							//THREAT ADDRESSED: this hook used to accept every defined mode, and the comment it replaces said
+							//so deliberately - narrowing was declined then on preservation grounds. That decision is
+							//SUPERSEDED: `None` sends the relay credential and every message in cleartext, and both `Auto`
+							//and `StartTlsWhenAvailable` continue in cleartext whenever the relay does not advertise
+							//STARTTLS, which an active man-in-the-middle arranges by stripping the advertisement. Accepting
+							//them here meant an administrator could reintroduce a cleartext relay at any time through the UI.
+							//THE PRESERVATION CONCERN IS STILL HONOURED, in two ways rather than by permitting cleartext.
+							//First, the check is POSTURE-GATED on ErpSettings.DevelopmentMode - the same gate the transport
+							//policy uses - so a development installation may still select a plaintext local mail catcher.
+							//Second, this validates only what is being WRITTEN NOW: an existing row keeps its stored value
+							//and keeps sending, because SmtpService.ResolveConnectionSecurity hardens Auto and
+							//StartTlsWhenAvailable to a mandatory mode at send time rather than refusing them. Only a row
+							//being saved has to name a mode that is already mandatory.
+							//NO SECRET IS NAMED: the message names modes and the posture setting, never the relay or its
+							//credential.
+							if (!ErpSettings.DevelopmentMode
+								&& !SmtpService.IsMandatoryEncryptedMode((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
+							{
+								errors.Add(new ErrorModel
+								{
+									Key = "connection_security",
+									Value = (string)rec["connection_security"],
+									Message = $"Connection security must be SslOnConnect or StartTls. The selected mode permits an unencrypted session, which is not allowed outside development posture."
 								});
 							}
 						}
@@ -366,10 +391,6 @@ namespace WebVella.Erp.Plugins.Mail.Services
 							//try/catch this replaces was unreachable and every integer was accepted: an undefined value
 							//passed validation here and failed much later inside SmtpClient.Connect. Enum.IsDefined is the
 							//test that actually rejects it, and the generic overload avoids boxing and analyzer rule CA2263.
-							//EVERY DEFINED MODE STAYS PERMITTED, deliberately: narrowing the permitted set would reject
-							//existing service rows, including the cleartext `None` mode real deployments use, which the
-							//preservation requirement forbids. The risk carried by a cleartext row is a deployment
-							//responsibility recorded in docs/security/risk-register.md, not a rule imposed retroactively here.
 							if (!Enum.IsDefined((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
 							{
 								errors.Add(new ErrorModel
@@ -377,6 +398,35 @@ namespace WebVella.Erp.Plugins.Mail.Services
 									Key = "connection_security",
 									Value = (string)rec["connection_security"],
 									Message = $"Invalid connection security setting selected."
+								});
+								continue;
+							}
+
+							//SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
+							//information, CWE-311 missing encryption of sensitive data, OWASP A02:2021.
+							//THREAT ADDRESSED: this hook used to accept every defined mode, and the comment it replaces said
+							//so deliberately - narrowing was declined then on preservation grounds. That decision is
+							//SUPERSEDED: `None` sends the relay credential and every message in cleartext, and both `Auto`
+							//and `StartTlsWhenAvailable` continue in cleartext whenever the relay does not advertise
+							//STARTTLS, which an active man-in-the-middle arranges by stripping the advertisement. Accepting
+							//them here meant an administrator could reintroduce a cleartext relay at any time through the UI.
+							//THE PRESERVATION CONCERN IS STILL HONOURED, in two ways rather than by permitting cleartext.
+							//First, the check is POSTURE-GATED on ErpSettings.DevelopmentMode - the same gate the transport
+							//policy uses - so a development installation may still select a plaintext local mail catcher.
+							//Second, this validates only what is being WRITTEN NOW: an existing row keeps its stored value
+							//and keeps sending, because SmtpService.ResolveConnectionSecurity hardens Auto and
+							//StartTlsWhenAvailable to a mandatory mode at send time rather than refusing them. Only a row
+							//being saved has to name a mode that is already mandatory.
+							//NO SECRET IS NAMED: the message names modes and the posture setting, never the relay or its
+							//credential.
+							if (!ErpSettings.DevelopmentMode
+								&& !SmtpService.IsMandatoryEncryptedMode((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
+							{
+								errors.Add(new ErrorModel
+								{
+									Key = "connection_security",
+									Value = (string)rec["connection_security"],
+									Message = $"Connection security must be SslOnConnect or StartTls. The selected mode permits an unencrypted session, which is not allowed outside development posture."
 								});
 							}
 						}
@@ -874,7 +924,21 @@ namespace WebVella.Erp.Plugins.Mail.Services
 					if (SmtpService.AllowInvalidRemoteCertificates)
 						client.ServerCertificateValidationCallback = (s, c, h, e) => SmtpService.AllowInvalidRemoteCertificates;
 
-					client.Connect(service.Server, service.Port, service.ConnectionSecurity);
+					// SECURITY H-OPEN-03 (CWE-319 cleartext transmission, CWE-311 missing encryption, OWASP A02):
+					// this is the path the BACKGROUND QUEUE JOB drives, and it handed the stored mode to MailKit
+					// unexamined, so a service configured with None, with the shipped Auto default, or with
+					// StartTlsWhenAvailable sent every queued message - and authenticated the relay credential two
+					// lines below - over an unencrypted session on which the certificate validation restored by H-11
+					// never ran. It shares the single SmtpService policy member with the four interactive paths, so
+					// one posture decision governs all five; see ResolveConnectionSecurity for the threat and for why
+					// Auto and StartTlsWhenAvailable are hardened while None is refused.
+					// QUEUE-SPECIFIC CONSEQUENCE, worth knowing before diagnosing a stalled queue: a refusal here
+					// surfaces not as an exception an operator sees but as the message text recorded in
+					// server_error, because the handler below catches it. RequireApprovedTransport then VERIFIES the
+					// resulting session - encrypted, at TLS 1.2 or better - before the credential below is presented
+					// on it, so a downgraded session is abandoned while there is still nothing secret on the wire.
+					client.Connect(service.Server, service.Port, SmtpService.ResolveConnectionSecurity(service.ConnectionSecurity, service.Port));
+					SmtpService.RequireApprovedTransport(client);
 
 					if (!string.IsNullOrWhiteSpace(service.Username))
 						client.Authenticate(service.Username, service.Password);

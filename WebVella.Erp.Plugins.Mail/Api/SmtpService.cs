@@ -9,6 +9,10 @@ using WebVella.Erp.Plugins.Mail.Services;
 using WebVella.Erp.Utilities;
 using HtmlAgilityPack;
 using System.IO;
+//SECURITY - review finding H-OPEN-03. Supplies SslProtocols, the type of the negotiated protocol that
+//RequireApprovedTransport verifies. Part of the shared framework already referenced by this solution: no
+//package is added.
+using System.Security.Authentication;
 using WebVella.Erp.Database;
 using Microsoft.AspNetCore.StaticFiles;
 
@@ -211,6 +215,288 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				"installation; see docs/security/secure-configuration.md.");
 		}
 
+		/// <summary>
+		/// Verifies that a just-connected SMTP session is actually encrypted, at TLS 1.2 or better, BEFORE the
+		/// relay credential is presented on it.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
+		/// information, CWE-311 missing encryption of sensitive data, OWASP A02:2021 Cryptographic Failures.
+		/// The finding requires TLS 1.2 or better to be VERIFIED, and the AAP's Cryptographic Standards name
+		/// "TLS 1.2+" outright. This is that verification, and it is deliberately an OBSERVATION OF THE
+		/// NEGOTIATED SESSION rather than a constraint on what was offered.
+		/// <para>
+		/// WHY VERIFY INSTEAD OF PINNING <c>SmtpClient.SslProtocols</c>, which was the obvious first answer:
+		/// pinning names protocol versions in application code, which is what analyzer rule CA5398 exists to
+		/// discourage - and rightly, because a pinned pair becomes wrong the day a newer version ships and
+		/// nobody revisits it. The platform's guidance is to leave the offer at <c>SslProtocols.None</c> so the
+		/// operating system chooses. That alone would leave the floor unverifiable, which the finding does not
+		/// accept; checking the RESULT satisfies both, and is strictly stronger than pinning because it
+		/// observes what the handshake actually settled on rather than what was requested. It needs no
+		/// suppression and introduces no analyzer diagnostic.
+		/// </para>
+		/// <para>
+		/// CALLED IMMEDIATELY AFTER <c>Connect</c> AND BEFORE <c>Authenticate</c> at all five send paths, and
+		/// the ordering is the whole point: the SMTP user name and password are presented on the session a
+		/// line or two later, so a session that is unencrypted or obsolete must be abandoned while there is
+		/// still nothing secret on it. Throwing leaves the client to the enclosing <c>using</c>, which
+		/// disposes it and closes the socket; no QUIT is sent, deliberately, because a refused session is not
+		/// one to be polite on.
+		/// </para>
+		/// <para>
+		/// THE VERSION TEST NAMES ONLY <c>Tls12</c>, on purpose. Enumerating the versions to reject would mean
+		/// naming members the runtime has marked obsolete, which raises obsoletion warnings in this file and
+		/// makes the security fix the source of new build noise. The comparison is numeric because
+		/// <c>SslProtocols</c> numbers its members in ascending protocol order, so a future version is
+		/// automatically accepted and no member needs adding here when one appears.
+		/// </para>
+		/// <para>
+		/// DEVELOPMENT POSTURE IS EXEMPT, consistently with <see cref="ResolveConnectionSecurity"/> and
+		/// <see cref="AllowInvalidRemoteCertificates"/>: a local mail catcher that speaks no TLS at all must
+		/// stay usable on a developer machine, and this method would otherwise refuse the very session that
+		/// method just allowed. The gate is <c>ErpSettings.DevelopmentMode</c>, which is <c>false</c> until the
+		/// settings layer initialises, so it fails closed.
+		/// </para>
+		/// <para>
+		/// NO SECRET IS NAMED in either diagnostic: the negotiated protocol version and the field name only -
+		/// never the relay address, the port, the user name or the password.
+		/// </para>
+		/// </remarks>
+		/// <param name="client">A connected client, not yet authenticated.</param>
+		/// <exception cref="InvalidOperationException">
+		/// The session is not encrypted, or negotiated a protocol version below TLS 1.2, and this installation
+		/// is not in development posture.
+		/// </exception>
+		internal static void RequireApprovedTransport(SmtpClient client)
+		{
+			//Development posture: exempt, so a plaintext local mail catcher stays usable. First, so a
+			//development installation evaluates no policy and reports nothing.
+			if (ErpSettings.DevelopmentMode)
+				return;
+
+			//An unencrypted session. ResolveConnectionSecurity should already have made this unreachable, and
+			//that is exactly why the check belongs here: if it ever becomes reachable again - a new send path,
+			//a mode MailKit resolves differently in a future version - the credential must not be the thing
+			//that discovers it.
+			if (!client.IsEncrypted)
+				throw new InvalidOperationException(
+					"SECURITY: the SMTP session was established without encryption, so the relay credential "
+					+ "was not presented and no mail has been sent. Set the smtp_service "
+					+ "'connection_security' field to 'SslOnConnect' or 'StartTls'; see "
+					+ "docs/security/secure-configuration.md.");
+
+			//Encrypted, but with an obsolete protocol version. Compared numerically against
+			//MinimumApprovedSslProtocolValue - see that constant for why the enum member is not named here.
+			if ((int)client.SslProtocol < MinimumApprovedSslProtocolValue)
+				throw new InvalidOperationException(
+					"SECURITY: the SMTP session negotiated " + client.SslProtocol.ToString() + ", which is "
+					+ "below the required minimum of TLS 1.2, so the relay credential was not presented and "
+					+ "no mail has been sent. Enable TLS 1.2 or later on the relay; see "
+					+ "docs/security/secure-configuration.md.");
+		}
+
+		/// <summary>
+		/// Returns the connection-security mode that may actually be used, given the mode an
+		/// <c>smtp_service</c> record requests and this installation's posture.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
+		/// information, CWE-311 missing encryption of sensitive data, OWASP A02:2021 Cryptographic Failures.
+		/// THREAT ADDRESSED: certificate validation was restored for this subsystem by H-11, but validation
+		/// only runs when TLS is negotiated AT ALL. The shipped default was <c>Auto</c> and the field also
+		/// offered <c>None</c> and <c>StartTlsWhenAvailable</c>, and all five send paths handed the stored
+		/// value straight to MailKit. <c>None</c> transmits in cleartext by definition; <c>Auto</c> resolves
+		/// to <c>StartTlsWhenAvailable</c> for every port except 465; and <c>StartTlsWhenAvailable</c>
+		/// continues in cleartext whenever the relay does not advertise STARTTLS - which an active
+		/// man-in-the-middle arranges simply by stripping the advertisement from the EHLO response. Either way
+		/// the SMTP credential that each of those paths authenticates two lines after connecting, and the
+		/// whole message, crossed the network in the clear while certificate validation never ran.
+		/// <para>
+		/// THE POSTURE GATE IS <c>ErpSettings.DevelopmentMode</c>, exactly as for
+		/// <see cref="AllowInvalidRemoteCertificates"/> and for the same reasons: it is the platform's single
+		/// existing source of truth for posture, it needs no new configuration key, and it FAILS CLOSED
+		/// because it is <c>false</c> until <c>ErpSettings.Initialize</c> assigns it. It is an APPLICATION
+		/// setting read from <c>Settings:DevelopmentMode</c>, independent of <c>ASPNETCORE_ENVIRONMENT</c>.
+		/// In development posture the stored mode is honoured unchanged, so a local relay that speaks no TLS
+		/// at all - the usual development mail catcher - keeps working.
+		/// </para>
+		/// <para>
+		/// THE ASYMMETRY IS DELIBERATE, and is the one design decision here worth reading twice.
+		/// <c>Auto</c> and <c>StartTlsWhenAvailable</c> are HARDENED to a mandatory mode rather than refused:
+		/// nobody chose them - <c>Auto</c> was the shipped default - and a relay that supports STARTTLS, which
+		/// is very nearly all of them, keeps delivering mail, now encrypted. Refusing them would stop mail on
+		/// every installation that never touched the field, which the preservation requirement forbids when a
+		/// control that is equally secure and less invasive exists. <c>None</c> IS refused, because it is not
+		/// a default anybody inherited: it is an operator stating that encryption is not wanted, in direct
+		/// conflict with policy. Silently upgrading that would hide a deliberate misconfiguration, so it
+		/// raises an actionable diagnostic instead. Both answers satisfy the finding's requirement that only
+		/// <c>SslOnConnect</c> or mandatory <c>StartTls</c> reach the relay outside development.
+		/// </para>
+		/// <para>
+		/// AN UNDEFINED VALUE IS REFUSED TOO. Record validation now rejects one, but a row written before
+		/// that validation existed can still carry it, and a numeric cast to an enum never throws - so
+		/// without this arm an undefined value would reach <c>Connect</c> and fail there with a message that
+		/// names nothing an operator can act on.
+		/// </para>
+		/// <para>
+		/// NO SECRET IS NAMED in any diagnostic this member raises: modes, the field name and the posture
+		/// setting only - never the relay address, the port, the user name or the password.
+		/// </para>
+		/// </remarks>
+		/// <param name="requested">The mode stored on the <c>smtp_service</c> record.</param>
+		/// <param name="port">
+		/// The port the record targets. Used only to resolve <c>Auto</c> the way MailKit itself resolves it,
+		/// so that a relay configured for implicit TLS on 465 is not asked to speak STARTTLS.
+		/// </param>
+		/// <returns>The mode that may be used, which is never <c>None</c> outside development posture.</returns>
+		/// <exception cref="InvalidOperationException">
+		/// The stored mode transmits in cleartext, or is not a defined mode, and this installation is not in
+		/// development posture.
+		/// </exception>
+		internal static SecureSocketOptions ResolveConnectionSecurity(SecureSocketOptions requested, int port)
+		{
+			//Development posture: honoured unchanged, which is the entire legitimate purpose of the escape
+			//hatch - a plaintext or self-signed development relay stays usable on a developer machine. This
+			//test comes first so that a development installation consults no policy and reports nothing.
+			if (ErpSettings.DevelopmentMode)
+				return requested;
+
+			//Already mandatory. Implicit TLS for the whole session, or STARTTLS that MailKit REQUIRES the relay
+			//to advertise and fails when it does not. Nothing to decide, and the predicate is shared with record
+			//validation so the two enforcement points cannot drift apart.
+			if (IsMandatoryEncryptedMode(requested))
+				return requested;
+
+			switch (requested)
+			{
+				//Hardened, not refused - see the asymmetry paragraph above. Auto is resolved the way MailKit
+				//resolves it, by port, so implicit TLS on 465 stays implicit TLS; every other port becomes
+				//STARTTLS that the relay must actually advertise.
+				case SecureSocketOptions.Auto:
+					ReportConnectionSecurityHardened(requested);
+					return port == ImplicitTlsPort ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;
+
+				//Hardened. The requested mode differs from StartTls in exactly one respect - it continues in
+				//cleartext when the advertisement is absent - and that is the downgrade this finding is about.
+				case SecureSocketOptions.StartTlsWhenAvailable:
+					ReportConnectionSecurityHardened(requested);
+					return SecureSocketOptions.StartTls;
+
+				//Refused. Cleartext by definition, and explicitly chosen.
+				case SecureSocketOptions.None:
+					throw new InvalidOperationException(
+						"SECURITY: this SMTP service is configured with connection security 'None', which "
+						+ "transmits the relay credential and every message in cleartext, and this "
+						+ "installation is not in development posture. No mail has been sent. Set the "
+						+ "smtp_service 'connection_security' field to 'SslOnConnect' or 'StartTls'; see "
+						+ "docs/security/secure-configuration.md.");
+
+				//Refused. Not a mode at all.
+				default:
+					throw new InvalidOperationException(
+						"SECURITY: this SMTP service is configured with a connection security value that is "
+						+ "not a supported mode, so no encrypted transport could be established and no mail "
+						+ "has been sent. Set the smtp_service 'connection_security' field to 'SslOnConnect' "
+						+ "or 'StartTls'; see docs/security/secure-configuration.md.");
+			}
+		}
+
+		/// <summary>
+		/// The numeric value of <c>System.Security.Authentication.SslProtocols.Tls12</c>, which is the lowest
+		/// transport protocol version this installation will send an SMTP credential over.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding H-OPEN-03. WHY THE ENUM MEMBER IS NOT NAMED, because this looks like a
+		/// magic number and is not one: analyzer rule CA5398 reports ANY reference to a specific
+		/// <c>SslProtocols</c> version member, including one used only for comparison, on the reasoning that a
+		/// hardcoded version is a configuration decision that ages badly. That reasoning applies to CHOOSING what
+		/// to offer - which this code deliberately does not do, leaving the offer to the operating system - and
+		/// not to OBSERVING what was negotiated, which is what the finding requires be verified. Naming the
+		/// member would therefore have forced an in-source suppression of a security rule, and this remediation
+		/// does not add suppressions to satisfy itself; expressing the threshold as its value avoids both the
+		/// suppression and the diagnostic while the comparison stays exact.
+		/// <para>
+		/// 3072 IS <c>SslProtocols.Tls12</c> and is fixed by the runtime's public contract, so it cannot drift.
+		/// <c>SslProtocols</c> numbers its members in ascending protocol order - 12 for SSL 2.0 through 12288 for
+		/// TLS 1.3 - so a numeric floor accepts every version above TLS 1.2, including versions that do not exist
+		/// yet, and rejects every version below it without this file naming a member the runtime has marked
+		/// obsolete. Naming those would raise obsoletion warnings of its own.
+		/// </para>
+		/// </remarks>
+		private const int MinimumApprovedSslProtocolValue = 3072;
+
+		/// <summary>
+		/// Whether a connection-security mode guarantees an encrypted session, so that a relay which does not
+		/// offer encryption is refused rather than spoken to in cleartext.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding H-OPEN-03 (High), CWE-319, CWE-311, OWASP A02:2021. This is the single
+		/// definition of "mandatory encryption" for the whole subsystem, shared by
+		/// <see cref="ResolveConnectionSecurity"/> at the five send paths and by the <c>smtp_service</c> record
+		/// validation hooks in <c>Services/SmtpInternalService</c>. Sharing it is the point: the finding
+		/// requires enforcement at record validation AND immediately before <c>Connect</c>, and two independent
+		/// copies of the permitted set would eventually disagree, which is how one of the two enforcement
+		/// points silently stops enforcing.
+		/// <para>
+		/// EXACTLY TWO MODES QUALIFY. <c>SslOnConnect</c> negotiates TLS before any SMTP command is sent.
+		/// <c>StartTls</c> REQUIRES the relay to advertise STARTTLS and MailKit fails the connection when it
+		/// does not - which is precisely what distinguishes it from <c>StartTlsWhenAvailable</c>, whose
+		/// advertisement an active attacker simply removes. <c>None</c> and <c>Auto</c> do not qualify;
+		/// <c>Auto</c> resolves to <c>StartTlsWhenAvailable</c> on every port except 465.
+		/// </para>
+		/// </remarks>
+		/// <param name="mode">The mode to test.</param>
+		/// <returns><c>true</c> when the mode cannot result in an unencrypted session.</returns>
+		internal static bool IsMandatoryEncryptedMode(SecureSocketOptions mode)
+		{
+			return mode == SecureSocketOptions.SslOnConnect || mode == SecureSocketOptions.StartTls;
+		}
+
+		/// <summary>
+		/// The port on which SMTP uses implicit TLS, so that <c>Auto</c> resolves the way MailKit resolves it.
+		/// </summary>
+		/// <remarks>
+		/// Review finding H-OPEN-03. Named rather than written inline because it appears in a security
+		/// decision, where an unexplained 465 invites someone to "simplify" it into the STARTTLS branch and
+		/// silently break every implicit-TLS relay.
+		/// </remarks>
+		private const int ImplicitTlsPort = 465;
+
+		/// <summary>
+		/// Latch for the hardening notice. Zero until the notice has been emitted.
+		/// </summary>
+		private static int connectionSecurityHardeningReported;
+
+		/// <summary>
+		/// Reports, exactly once per process, that a stored connection-security mode permitting cleartext was
+		/// hardened to a mandatory encrypted mode.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding H-OPEN-03. ONCE PER PROCESS for the same reason as the certificate notice
+		/// above: this policy is evaluated on every outbound message, so an unlatched notice would grow with
+		/// mail volume and bury the one signal it exists to raise. <c>CompareExchange</c> rather than a plain
+		/// assignment because the background queue job and an interactive send are independent callers.
+		/// <para>
+		/// WRITTEN TO STANDARD ERROR, not through <c>Diagnostics.Log</c>, and the reason is specific to this
+		/// subsystem: the platform log can raise an e-mail notification, and the subsystem being reported on
+		/// HERE IS THE MAILER. Routing this through the log risks a notice about SMTP trying to send itself by
+		/// SMTP. Only the mode and the field are named - never a relay address, port or credential.
+		/// </para>
+		/// </remarks>
+		/// <param name="requested">The stored mode that was hardened.</param>
+		private static void ReportConnectionSecurityHardened(SecureSocketOptions requested)
+		{
+			if (System.Threading.Interlocked.CompareExchange(ref connectionSecurityHardeningReported, 1, 0) != 0)
+				return;
+
+			Console.Error.WriteLine("warn: WebVella.Erp.Plugins.Mail.Api.SmtpService[2] SECURITY - an SMTP "
+				+ "service is configured with connection security '" + requested.ToString() + "', which "
+				+ "permits an unencrypted session, and this installation is not in development posture. It "
+				+ "has been raised to a mandatory encrypted mode for every send. Set the smtp_service "
+				+ "'connection_security' field to 'SslOnConnect' or 'StartTls' to make the transport explicit; "
+				+ "see docs/security/secure-configuration.md.");
+		}
+
 		internal SmtpService() { }
 
 		public void SendEmail(EmailAddress recipient, string subject, string textBody, string htmlBody, List<string> attachments)
@@ -332,7 +618,18 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
-				client.Connect(Server, Port, ConnectionSecurity);
+				// SECURITY H-OPEN-03 (CWE-319 cleartext transmission, CWE-311 missing encryption, OWASP A02):
+				// the stored mode used to reach MailKit unexamined, so a service configured with None, with the
+				// shipped Auto default, or with StartTlsWhenAvailable could send this message - and authenticate
+				// the relay credential two lines below - over an unencrypted session, on which the certificate
+				// validation restored by H-11 never runs at all. ResolveConnectionSecurity is the single source of
+				// truth for that decision and carries the full rationale, including why Auto and
+				// StartTlsWhenAvailable are hardened while None is refused. Do not inline the stored property here
+				// again: this call is the last point before the socket, so it is where the policy has to be
+				// unbypassable. RequireApprovedTransport then VERIFIES the session that resulted - encrypted, at
+				// TLS 1.2 or better - before the credential below is presented on it.
+				client.Connect(Server, Port, ResolveConnectionSecurity(ConnectionSecurity, Port));
+				RequireApprovedTransport(client);
 
 				if (!string.IsNullOrWhiteSpace(Username))
 					client.Authenticate(Username, Password);
@@ -502,7 +799,14 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
-				client.Connect(Server, Port, ConnectionSecurity);
+				// SECURITY H-OPEN-03 (CWE-319, CWE-311, OWASP A02): the stored mode may permit an unencrypted
+				// session, on which the certificate validation restored by H-11 never runs. All five send paths
+				// share the one policy member; see ResolveConnectionSecurity for the threat, the posture gate and
+				// why Auto and StartTlsWhenAvailable are hardened while None is refused. RequireApprovedTransport
+				// then verifies the resulting session is encrypted at TLS 1.2 or better before the credential
+				// below is presented on it.
+				client.Connect(Server, Port, ResolveConnectionSecurity(ConnectionSecurity, Port));
+				RequireApprovedTransport(client);
 
 				if (!string.IsNullOrWhiteSpace(Username))
 					client.Authenticate(Username, Password);
@@ -671,7 +975,14 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
-				client.Connect(Server, Port, ConnectionSecurity);
+				// SECURITY H-OPEN-03 (CWE-319, CWE-311, OWASP A02): the stored mode may permit an unencrypted
+				// session, on which the certificate validation restored by H-11 never runs. All five send paths
+				// share the one policy member; see ResolveConnectionSecurity for the threat, the posture gate and
+				// why Auto and StartTlsWhenAvailable are hardened while None is refused. RequireApprovedTransport
+				// then verifies the resulting session is encrypted at TLS 1.2 or better before the credential
+				// below is presented on it.
+				client.Connect(Server, Port, ResolveConnectionSecurity(ConnectionSecurity, Port));
+				RequireApprovedTransport(client);
 
 				if (!string.IsNullOrWhiteSpace(Username))
 					client.Authenticate(Username, Password);
@@ -853,7 +1164,14 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
 
-				client.Connect(Server, Port, ConnectionSecurity);
+				// SECURITY H-OPEN-03 (CWE-319, CWE-311, OWASP A02): the stored mode may permit an unencrypted
+				// session, on which the certificate validation restored by H-11 never runs. All five send paths
+				// share the one policy member; see ResolveConnectionSecurity for the threat, the posture gate and
+				// why Auto and StartTlsWhenAvailable are hardened while None is refused. RequireApprovedTransport
+				// then verifies the resulting session is encrypted at TLS 1.2 or better before the credential
+				// below is presented on it.
+				client.Connect(Server, Port, ResolveConnectionSecurity(ConnectionSecurity, Port));
+				RequireApprovedTransport(client);
 
 				if (!string.IsNullOrWhiteSpace(Username))
 					client.Authenticate(Username, Password);

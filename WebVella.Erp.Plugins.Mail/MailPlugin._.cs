@@ -250,6 +250,31 @@ namespace WebVella.Erp.Plugins.Mail
 							}
 						}
 
+						//SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
+						//information, CWE-311 missing encryption of sensitive data, OWASP A02:2021.
+						//Carries the connection-security metadata correction made in MailPlugin.20190215 to
+						//installations that an earlier release already provisioned: the field defaulted to Auto, which
+						//MailKit resolves to StartTlsWhenAvailable on every port except 465, so the next SMTP service
+						//an administrator created would still have sent the relay credential and every message in
+						//cleartext against a relay that does not advertise STARTTLS. Without this block the seed is
+						//fixed while every deployed instance keeps offering that default.
+						//A SEPARATE, LATER PATCH VERSION than 20260806 deliberately, for the same reason that one is
+						//separate from 20260802: the earlier versions have already been applied wherever this branch
+						//has run, so folding this migration into one of them would silently skip every such
+						//installation. Its own version gate is what makes this reach them.
+						//NO INNER try/catch, as with the two blocks above: the outer handler already rolls the
+						//transaction back and rethrows both exception families, while the ValidationException arm of
+						//the legacy blocks rethrows the caught variable and resets the stack trace of a failed
+						//security migration.
+						{
+							var patchVersion = 20260807;
+							if (currentPluginSettings.Version < patchVersion)
+							{
+								currentPluginSettings.Version = patchVersion;
+								Patch20260807(entMan, relMan, recMan);
+							}
+						}
+
 						#endregion
 
 

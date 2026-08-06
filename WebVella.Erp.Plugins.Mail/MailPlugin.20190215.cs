@@ -940,14 +940,34 @@ namespace WebVella.Erp.Plugins.Mail
 				dropdownField.Searchable = false;
 				dropdownField.Auditable = false;
 				dropdownField.System = true;
-				dropdownField.DefaultValue = "1";
+				//SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
+				//information, CWE-311 missing encryption of sensitive data, OWASP A02:2021.
+				//THREAT ADDRESSED: this default was "1" - Auto - which MailKit resolves to StartTlsWhenAvailable on
+				//every port except 465, so a freshly provisioned service sent the relay credential and every message
+				//in cleartext against any relay that did not advertise STARTTLS. An active man-in-the-middle
+				//produces exactly that condition by stripping the advertisement from the EHLO response, and on an
+				//unencrypted session the certificate validation restored by H-11 never runs at all. "3" is StartTls,
+				//which MailKit REQUIRES the relay to advertise and fails when it does not.
+				//THE PORT DEFAULT ABOVE IS LEFT AT 25 deliberately: this finding is about the transport mode, and an
+				//internal MTA on 25 accepts STARTTLS. Changing a working default port is not remediation.
+				dropdownField.DefaultValue = "3";
+				//SECURITY - review finding H-OPEN-03. THE THREE CLEARTEXT-CAPABLE MODES ARE RETAINED AS VALUES AND
+				//RELABELLED, rather than deleted from the list, and the reason is that the permitted set is
+				//POSTURE-DEPENDENT while an option list is not. SmtpService.ResolveConnectionSecurity honours the
+				//stored mode in development posture so a plaintext local mail catcher stays usable, and the
+				//smtp_service validation hooks in Services/SmtpInternalService reject these three outside it.
+				//Deleting the values would break that development path through the UI and would strand every
+				//already-stored value outside its own field definition, where an administrator editing an unrelated
+				//column would be blocked by a value they never chose. The labels are what stop this dropdown
+				//silently advertising a mode production refuses - which is the half of the finding a validation
+				//message alone cannot answer, because the administrator reads the label first.
 				dropdownField.Options = new List<SelectOption>
 	{
-		new SelectOption() { Label = "None", Value = "0", IconClass = "", Color = ""},
-		new SelectOption() { Label = "Auto", Value = "1", IconClass = "", Color = ""},
+		new SelectOption() { Label = "None (cleartext - development posture only)", Value = "0", IconClass = "", Color = ""},
+		new SelectOption() { Label = "Auto (raised to StartTls outside development posture)", Value = "1", IconClass = "", Color = ""},
 		new SelectOption() { Label = "SslOnConnect", Value = "2", IconClass = "", Color = ""},
 		new SelectOption() { Label = "StartTls", Value = "3", IconClass = "", Color = ""},
-		new SelectOption() { Label = "StartTlsWhenAvailable", Value = "4", IconClass = "", Color = ""}
+		new SelectOption() { Label = "StartTlsWhenAvailable (raised to StartTls outside development posture)", Value = "4", IconClass = "", Color = ""}
 	};
 				dropdownField.EnableSecurity = false;
 				dropdownField.Permissions = new FieldPermissions();
