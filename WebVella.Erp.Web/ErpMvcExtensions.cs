@@ -76,10 +76,50 @@ namespace WebVella.Erp.Web
 		// HTTPS port. Held as a constant so the transport-posture check below and the diagnostic it
 		// produces cannot drift from the key the middleware actually consults. Both
 		// ASPNETCORE_HTTPS_PORT and HTTPS_PORT land on it, as does an ANCM-hosted site's
-		// ASPNETCORE_ANCM_HTTPS_PORT; the PLURAL spelling ASPNETCORE_HTTPS_PORTS is a Kestrel
-		// default-binding key that this application's WebHost pipeline never reads at all, which is
-		// exactly why the diagnostic names it as a non-remedy rather than staying silent about it.
+		// ASPNETCORE_ANCM_HTTPS_PORT. It configures the REDIRECT TARGET only; it never binds a
+		// listener. The plural spelling is a different key entirely - see the pair below.
 		private const string HttpsRedirectionPortConfigurationKey = "HTTPS_PORT";
+
+		// The configuration key the ASP.NET Core Module writes when the IIS site hosting this process has
+		// an HTTPS binding. Distinct from the key above and treated differently on purpose: this one is
+		// produced by the module rather than asserted by an operator, so it reports an OBSERVED topology.
+		// The framework's HTTPS redirection middleware consults it too, after HTTPS_PORT.
+		private const string AncmHttpsPortConfigurationKey = "ANCM_HTTPS_PORT";
+
+		// Bounds of a TCP port, used to range-check every port this class reads from configuration. A
+		// value outside them cannot name a listening endpoint, so accepting one would mean accepting
+		// "there is HTTPS somewhere" on the strength of a typo.
+		private const int MinimumTcpPort = 1;
+		private const int MaximumTcpPort = 65535;
+
+		// The hosting-layer port keys, WebHostDefaults.HttpPortsKey and WebHostDefaults.HttpsPortsKey.
+		// ASPNETCORE_HTTP_PORTS and ASPNETCORE_HTTPS_PORTS land on them.
+		//
+		// These are NOT Kestrel keys and they are NOT synonyms of the singular redirect key above. They
+		// are read by GenericWebHostService while it resolves server addresses, where each listed port is
+		// expanded into an http:// or https:// address - but ONLY when 'urls' is empty, and ONLY under the
+		// GENERIC host. Every one of this platform's seven hosts is built by
+		// WebHost.CreateDefaultBuilder(args).UseStartup<Startup>(), whose legacy IWebHost resolves
+		// addresses from 'urls' alone, so on these hosts the plural keys are visible in configuration and
+		// consumed by nothing.
+		//
+		// That was measured rather than inferred, with every competing endpoint variable cleared: under
+		// WebHost.CreateDefaultBuilder, ASPNETCORE_HTTPS_PORTS=<port> plus a valid default certificate
+		// bound http://localhost:5000 - identical to setting nothing at all - while configuration
+		// reported https_ports=<port>; the same variable under
+		// Host.CreateDefaultBuilder().ConfigureWebHostDefaults(...) bound https://*:<port>. Adding
+		// ASPNETCORE_URLS on top of it there logs "Overriding HTTP_PORTS '' and HTTPS_PORTS '<port>'.
+		// Binding to values defined by URLS instead", which is the precedence rule.
+		//
+		// THREAT ADDRESSED - review finding F4, OWASP A05:2021 Security Misconfiguration. These keys are
+		// held here so the check below can recognise an operator who set one and answer with the reason
+		// and the remedy, instead of a generic "no HTTPS path" notice that reads as though the setting
+		// had been ignored for no reason. They are deliberately NOT accepted as evidence of an HTTPS
+		// request path: on this hosting model no listener follows from them, so treating them as evidence
+		// would return early - silently - on a deployment measured to bind plaintext only, turning a
+		// working control into one that fails open.
+		private const string HttpsPortsConfigurationKey = "https_ports";
+		private const string HttpPortsConfigurationKey = "http_ports";
 
 		// Kestrel's declarative endpoint section. Consulted alongside the bound addresses so that an
 		// operator who declares an HTTPS endpoint there, rather than through ASPNETCORE_URLS, is never
@@ -578,13 +618,25 @@ namespace WebVella.Erp.Web
 						// JSON file then environment variables.
 						// The entry assembly is the host executable, so each host resolves its own store rather
 						// than this library's - this library declares no UserSecretsId and must not.
-						// optional: true is stated EXPLICITLY rather than left to an overload default, because
-						// only ONE of the seven hosts declares a UserSecretsId at all and every AddUserSecrets
-						// overload given optional: false throws InvalidOperationException when that attribute is
-						// absent - which would abort startup for the other six hosts and the console
-						// application, turning a secret-management fix into an outage. Pinning the value here
-						// means the tolerant behaviour is a contract at this call site rather than an
-						// invisible default that a later overload change could silently flip.
+						//
+						// THREAT ADDRESSED - review finding CR3-M-07 (secret management, OWASP A05:2021). The
+						// note that used to sit here recorded that "only ONE of the seven hosts declares a
+						// UserSecretsId at all", and left it at that. That made this provider a no-op for the
+						// other six hosts and for the console application: AddUserSecrets resolves the store
+						// FROM the entry assembly's UserSecretsIdAttribute, so with no id there is no store to
+						// read, and because the call is optional it could not even say so. The advertised
+						// Development supply channel therefore did not exist for seven of the eight
+						// executables, leaving a developer with no way to supply a secret except editing the
+						// tracked, blanked Config.json - which is what the scrub exists to stop. All eight
+						// manifests now declare a stable id, so this call resolves a real store for every one
+						// of them.
+						// optional: true is RETAINED rather than tightened. It is stated explicitly rather
+						// than left to an overload default because the tolerant behaviour is deliberate: a
+						// developer who has never run 'dotnet user-secrets set' has no store file yet, and
+						// startup must not fail for that - the fail-fast that matters is ErpSettings' missing
+						// secret validation, which reports the actual problem. Pinning the value here means
+						// the behaviour is a contract at this call site rather than an invisible default that
+						// a later overload change could silently flip.
 						var entryAssembly = Assembly.GetEntryAssembly();
 						if (entryAssembly != null)
 							configurationBuilder.AddUserSecrets(entryAssembly, optional: true);
@@ -854,23 +906,33 @@ namespace WebVella.Erp.Web
 				.Where(entry => entry.Length > 0);
 		}
 
-		// Refuses - or at minimum reports - a deployment in which no request can ever reach this
+		// Refuses - or, in Development only, reports - a deployment in which no request can ever reach this
 		// application over HTTPS. The threat is stated at the call site in UseErp.
 		//
-		// The decision is evidence-based rather than heuristic: any ONE of the four channels below gives
-		// this process a way to see an HTTPS request, and finding one ends the check silently. Nothing is
+		// The decision is evidence-based rather than heuristic: any ONE of the channels below gives this
+		// process a way to SEE an HTTPS request, and finding one ends the check silently. Nothing is
 		// inferred from the environment name alone, and no cookie policy is weakened.
 		//
-		// The refusal is deliberately narrow, because a check that aborts a deployment which would have
-		// worked is worse than the failure it prevents. It fires only when the endpoints were DECLARED -
-		// through ASPNETCORE_URLS, UseUrls or a host binding, all of which reach
-		// IServerAddressesFeature.Addresses before Configure runs - and every declared endpoint is
-		// plaintext. When nothing is declared the endpoints come from the server's own defaults or from
-		// host code this method cannot inspect, so the identical diagnosis is WRITTEN AS A WARNING
-		// instead: the condition is never silent, but an unknown posture is never grounds to refuse.
-		// Development is exempt from the refusal because its antiforgery cookie follows the request
-		// scheme, so local plaintext sign-in remains supported while the warning keeps an absent HTTPS
-		// path visible. The authentication cookie remains Secure-only in every environment.
+		// THREAT ADDRESSED - review finding "transport validator accepts non-evidence and continues under a
+		// known unusable Production default", CWE-1188 (insecure default initialization) and CWE-755, OWASP
+		// A05:2021 Security Misconfiguration. The previous implementation could pass, or merely warn, on
+		// exactly the posture it exists to prevent, in three separate ways:
+		//   * ANY non-blank HTTPS_PORT satisfied it. That key only selects the TARGET of a redirect; it
+		//     neither binds an endpoint nor makes one exist, and the value was never even parsed, so
+		//     "HTTPS_PORT=yes" counted as transport security. It is no longer evidence on its own, and every
+		//     port this method reads is now parsed and range-checked.
+		//   * MERELY DECLARING a trusted proxy satisfied it. Trusting a proxy says who may be believed, not
+		//     that anything in front of this process terminates TLS. It now counts only together with a
+		//     declared public HTTPS port, which is the operator asserting that the public endpoint is HTTPS.
+		//   * WHEN NO ENDPOINTS WERE DECLARED the identical diagnosis was written as a warning and startup
+		//     continued - but the server's own default binding is PLAINTEXT, so that branch waved through
+		//     the single most likely broken deployment there is. Outside Development an unproven posture is
+		//     now refused: this application cannot serve a form over plaintext at all, because its
+		//     antiforgery cookie is Secure-only there, so "start and fail one request at a time" is not a
+		//     kinder outcome than refusing - it is the same outcome, discovered later and by a user.
+		// Development remains exempt from the refusal because its antiforgery cookie follows the request
+		// scheme, so local plaintext sign-in keeps working while the warning keeps an absent HTTPS path
+		// visible. The authentication cookie remains Secure-only in every environment.
 		private static void ValidateTransportSecurityPosture(IApplicationBuilder app, IConfiguration configuration, IWebHostEnvironment env)
 		{
 			ICollection<string> declaredEndpoints = app?.ServerFeatures
@@ -885,23 +947,64 @@ namespace WebVella.Erp.Web
 			if (IsKestrelHttpsEndpointDeclared(configuration))
 				return;
 
-			// 3. A public HTTPS port. This counts even though the process binds no HTTPS endpoint,
-			// because UseHttpsRedirection answers a plaintext request with a redirect to that port
-			// before it can reach a form - which is precisely the behaviour that is silently inert
-			// while the key is absent.
-			if (!string.IsNullOrWhiteSpace(configuration?[HttpsRedirectionPortConfigurationKey]))
+			// Both ports are parsed and range-checked here rather than at their point of use, so a
+			// mistyped value aborts startup with a message naming it instead of silently counting as
+			// evidence or silently disarming the redirect.
+			int? ancmHttpsPort = ReadPublicHttpsPort(configuration, AncmHttpsPortConfigurationKey);
+			int? redirectionHttpsPort = ReadPublicHttpsPort(configuration, HttpsRedirectionPortConfigurationKey);
+
+			// 3. A public HTTPS port supplied by the ASP.NET Core Module. This one IS evidence on its own,
+			// and the distinction from the key below is the whole reason both are read: ANCM_HTTPS_PORT is
+			// written by the module itself, and only when the IIS site in front of this process actually
+			// has an HTTPS binding - so it reports an observed topology rather than an operator's
+			// assertion. In-process hosting also preserves the original request scheme, so Request.IsHttps
+			// is true for such a request and the Secure cookie policy is satisfied without any
+			// forwarded-header configuration. Refusing this posture would break the deployment shape this
+			// repository's own web.config describes.
+			if (ancmHttpsPort.HasValue)
 				return;
 
-			// 4. A trusted reverse proxy that terminates TLS and forwards the scheme. The forwarded-header
-			// option builder is REUSED rather than its keys re-read, so "a proxy is trusted" here means
-			// exactly what UseErpForwardedHeaders acts on; a null result is that method's own encoding of
-			// "nothing is trusted". Whether the proxy actually sends X-Forwarded-Proto cannot be known at
-			// startup, which is why the diagnosis below says so explicitly.
-			if (BuildForwardedHeadersOptions(configuration) != null)
+			// 4. A trusted reverse proxy that terminates TLS and forwards the scheme, TOGETHER WITH the
+			// public HTTPS port. The forwarded-header option builder is REUSED rather than its keys
+			// re-read, so "a proxy is trusted" here means exactly what UseErpForwardedHeaders acts on; a
+			// null result is that method's own encoding of "nothing is trusted". Neither half is
+			// sufficient alone: a trusted proxy that terminates plaintext leaves this host unusable, and a
+			// redirect port with nothing trusted in front of it means X-Forwarded-Proto is ignored and
+			// every request still reads as plaintext. Whether the proxy actually sends the header cannot
+			// be known at startup, which is why the diagnosis below says so explicitly.
+			if (redirectionHttpsPort.HasValue && BuildForwardedHeadersOptions(configuration) != null)
 				return;
 
 			bool endpointsWereDeclared = declaredEndpoints != null && declaredEndpoints.Count > 0;
 			bool isDevelopment = env != null && env.IsDevelopment();
+
+			// The plural hosting-layer port keys, read for the DIAGNOSTIC only - never as evidence, for the
+			// reason recorded at their declaration. An operator who set one of them has already decided to
+			// serve HTTPS and believes they have said so, so the message they need is not "no HTTPS path
+			// was found" but "this hosting model does not read that key, here is the one it does read".
+			// Without this the setting looks arbitrarily ignored and the natural next move - weakening the
+			// cookie policy to make /login answer - reinstates the very finding these controls closed.
+			string configuredHttpsPorts = configuration?[HttpsPortsConfigurationKey];
+			string configuredHttpPorts = configuration?[HttpPortsConfigurationKey];
+			bool pluralPortKeyWasSet = !string.IsNullOrWhiteSpace(configuredHttpsPorts)
+				|| !string.IsNullOrWhiteSpace(configuredHttpPorts);
+
+			// The key NAME an operator set, so the message can quote it back. The value is not echoed: a
+			// port is not a secret, but naming only the key keeps this message's one rule - no
+			// configuration VALUE is ever printed (CWE-532) - true without exception.
+			string pluralPortKeyNote = string.Empty;
+			if (pluralPortKeyWasSet)
+			{
+				pluralPortKeyNote = $"{Environment.NewLine}  '"
+					+ (!string.IsNullOrWhiteSpace(configuredHttpsPorts)
+						? "ASPNETCORE_HTTPS_PORTS"
+						: "ASPNETCORE_HTTP_PORTS")
+					+ "' IS set, and it is the reason this message may look wrong. That variable supplies the hosting-layer key '"
+					+ (!string.IsNullOrWhiteSpace(configuredHttpsPorts)
+						? HttpsPortsConfigurationKey
+						: HttpPortsConfigurationKey)
+					+ "', which binds a listener only under the GENERIC host - it is resolved by GenericWebHostService, and only when 'urls' is empty. This host is built by WebHost.CreateDefaultBuilder, whose legacy IWebHost resolves its addresses from 'urls' alone, so the value is visible in configuration and consumed by nothing: no endpoint is bound and no redirect is armed. Translate it to 'ASPNETCORE_URLS=https://*:<that port>' and supply a certificate, which is the first option below. Do not confuse it with the singular 'ASPNETCORE_HTTPS_PORT', which sets the redirect TARGET and likewise binds nothing.";
+			}
 
 			// The endpoint list is operator-supplied deployment topology, not a secret - the same
 			// reasoning that lets the KnownProxies diagnostic name the offending address - so quoting it
@@ -924,34 +1027,69 @@ namespace WebVella.Erp.Web
 			}
 			else
 			{
-				closingNote = "The endpoints this process will bind are not declared in configuration, so this is reported rather than refused; if they resolve to plaintext only, no sign-in will be possible.";
+				// Previously a warning. It is a refusal now because "not declared" is not an unknown
+				// posture in practice: it means the server binds its own defaults, and those are plaintext,
+				// which is the exact condition this check exists to prevent.
+				closingNote = "No endpoint is declared in configuration, so this process will bind the server's own defaults - which are plaintext - and no sign-in would be possible. Startup is therefore refused rather than continued; declare the endpoints, or one of the alternatives above, and start again. Development is exempt from the refusal.";
 			}
 
 			string diagnosis = "no HTTPS request path was found in the transport configuration visible at startup."
 				+ $"{Environment.NewLine}  Observed endpoints: " + observedEndpoints + "."
+				+ pluralPortKeyNote
 				+ $"{Environment.NewLine}  Outside Development, the antiforgery cookie is Secure-only BY DESIGN (finding M-02 - CWE-614, CWE-319), so if this host resolves to plaintext only, form generation fails inside DefaultAntiforgery.CheckSSLConfig with 'the current request is not an SSL request' and every form-bearing page - '/login' included - answers HTTP 500. The authentication cookie remains Secure-only in every environment (finding H-15 - CWE-614, CWE-1004, CWE-319). Development deliberately makes only the antiforgery cookie follow the request scheme so local plaintext forms remain usable. Weakening the non-Development antiforgery policy or the authentication-cookie policy is NOT the remedy: it reinstates the vulnerability those findings closed."
 				+ $"{Environment.NewLine}  Supply ANY ONE of the following, then restart:"
 				+ $"{Environment.NewLine}    - an HTTPS endpoint of this process: 'ASPNETCORE_URLS' including an https:// address, together with 'Kestrel__Certificates__Default__Path' and 'Kestrel__Certificates__Default__Password' - or a '"
 				+ KestrelEndpointsConfigurationSection
 				+ "' entry whose Url is https;"
-				+ $"{Environment.NewLine}    - the public HTTPS port, when TLS is terminated in front of this process and plaintext requests should be redirected: 'ASPNETCORE_HTTPS_PORT' or 'HTTPS_PORT' (configuration key '"
-				+ HttpsRedirectionPortConfigurationKey
-				+ "'). 'ASPNETCORE_HTTPS_PORTS' - plural - is a Kestrel default-binding key that this application never reads: it neither binds an endpoint nor arms the redirect;"
-				+ $"{Environment.NewLine}    - trust for the reverse proxy that terminates TLS: '"
+				+ $"{Environment.NewLine}    - BOTH trust for the reverse proxy that terminates TLS AND the public HTTPS port, when TLS is terminated in front of this process: '"
 				+ ForwardedHeadersConfigurationSection.Replace(":", "__", StringComparison.Ordinal)
 				+ "__KnownProxies' or '"
 				+ ForwardedHeadersConfigurationSection.Replace(":", "__", StringComparison.Ordinal)
-				+ "__KnownNetworks', AND configure that proxy to forward 'X-Forwarded-Proto: https' - trusting a proxy that does not send it leaves this failure in place."
+				+ "__KnownNetworks', TOGETHER WITH 'ASPNETCORE_HTTPS_PORT' or 'HTTPS_PORT' (configuration key '"
+				+ HttpsRedirectionPortConfigurationKey
+				+ "'), and configure that proxy to forward 'X-Forwarded-Proto: https' - trusting a proxy that does not send it leaves this failure in place. Neither half counts on its own: the port only selects the target of a redirect and does not make an HTTPS endpoint exist, and trusting a proxy says who may be believed rather than that anything terminates TLS. The port must be a whole number between 1 and 65535. The PLURAL 'ASPNETCORE_HTTPS_PORTS' is a DIFFERENT key ('"
+				+ HttpsPortsConfigurationKey
+				+ "', WebHostDefaults.HttpsPortsKey) and substitutes for neither half: it is resolved by GenericWebHostService, and only under the GENERIC host with 'urls' empty, so on this host - built by WebHost.CreateDefaultBuilder - it binds no endpoint and arms no redirect;"
+				+ $"{Environment.NewLine}    - nothing at all when hosted in-process behind IIS: the ASP.NET Core Module supplies '"
+				+ AncmHttpsPortConfigurationKey
+				+ "' by itself whenever the site has an HTTPS binding, and in-process hosting preserves the request scheme."
 				+ $"{Environment.NewLine}  See docs/security/secure-configuration.md for the complete transport-security configuration."
 				+ $"{Environment.NewLine}  " + closingNote;
 
-			if (endpointsWereDeclared && !isDevelopment)
+			if (!isDevelopment)
 				throw new InvalidOperationException("WebVella ERP startup aborted - " + diagnosis);
 
 			// Reported in the same shape as the platform's other startup security notice - the disabled
 			// token-route warning in ErpSettings - so both read alike in a host log and an operator has
 			// one idiom to recognise rather than two.
 			Console.Error.WriteLine("warn: WebVella.Erp.Web.ErpMvcServicesExtensions[1] SECURITY - " + diagnosis);
+		}
+
+		// Reads one public HTTPS port from configuration, or null when the key is absent or blank.
+		//
+		// THREAT ADDRESSED - review finding "transport validator accepts non-evidence", CWE-1188, OWASP
+		// A05:2021. The port used to be tested for non-blankness alone, so any string whatsoever - a word,
+		// a range, a port number with a stray character - counted as proof that this application had an
+		// HTTPS request path. Parsing it is the difference between reading a declaration and reading a
+		// typo. A malformed value ABORTS startup rather than being treated as absent, for the same reason
+		// every other malformed setting in this file does: the redirect it was meant to arm is silently
+		// inert, so an operator who mistyped it would otherwise be told nothing at all and would go on
+		// believing plaintext requests were being redirected. The offending value is quoted because a port
+		// is operator-supplied topology and not a secret (CWE-532 does not apply to it), and naming it is
+		// the difference between an actionable message and a hunt.
+		private static int? ReadPublicHttpsPort(IConfiguration configuration, string configurationKey)
+		{
+			string configuredValue = configuration?[configurationKey];
+			if (string.IsNullOrWhiteSpace(configuredValue))
+				return null;
+
+			if (!int.TryParse(configuredValue.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int port)
+				|| port < MinimumTcpPort || port > MaximumTcpPort)
+			{
+				throw new InvalidOperationException($"Configuration key '{configurationKey}' is set to '{configuredValue}', which is not a TCP port. Supply the public HTTPS port as a whole number between {MinimumTcpPort.ToString(CultureInfo.InvariantCulture)} and {MaximumTcpPort.ToString(CultureInfo.InvariantCulture)} - for example 443 - or remove the setting. While it is malformed, HTTPS redirection is silently inert and no plaintext request is redirected. See docs/security/secure-configuration.md.");
+			}
+
+			return port;
 		}
 
 		// True when Kestrel's configuration declares at least one endpoint whose Url is https. Read

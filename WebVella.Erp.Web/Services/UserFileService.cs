@@ -7,6 +7,7 @@ using WebVella.Erp.Api.Models;
 using WebVella.Erp.Api.Models.AutoMapper;
 using WebVella.Erp.Database;
 using WebVella.Erp.Utilities;
+using WebVella.Erp.Web.Utils;
 
 namespace WebVella.Erp.Web.Services
 {
@@ -23,8 +24,73 @@ namespace WebVella.Erp.Web.Services
 		//   the staged file must belong to the caller, because staging is per-user.
 		// Refusal is reported as UnauthorizedAccessException so the calling action can answer with a generic
 		// denial rather than the exception text, which is why a distinct type is used rather than the plain
-		// Exception this class throws for a missing file.
+		// Exception this class throws for genuinely unexpected faults.
 		private const string PROMOTION_DENIED_MESSAGE = "The requested file could not be published.";
+
+		// Bound applied to the caller-supplied path before it reaches an audit record. Matches the bound the
+		// sibling refusal writers in WebApiController and DbFileRepository apply.
+		private const int MAX_LOGGED_PATH_LENGTH = 400;
+
+		/// <summary>
+		/// Records one promotion refusal and returns the exception that reports it to the calling action.
+		/// </summary>
+		/// <param name="requestedPath">The normalised, caller-supplied path the refusal concerns.</param>
+		/// <param name="reason">
+		/// One of this class's own fixed literals. It is the ONLY place the specific cause of the refusal
+		/// survives, and it never leaves the server.
+		/// </param>
+		/// <param name="recordedByRepository">
+		/// True when <see cref="DbFileRepository.Find(string, out bool)"/> has already written this exact
+		/// refusal, in which case no second record is written here.
+		/// </param>
+		/// <remarks>
+		/// THREAT ADDRESSED - CWE-200 (exposure of sensitive information to an unauthorized actor) and
+		/// CWE-639 (authorization bypass through a user-controlled key), OWASP A01:2021. The five refusal
+		/// outcomes of a promotion did not answer identically. Four raised
+		/// <see cref="UnauthorizedAccessException"/> and reached the caller as this class's generic denial,
+		/// but the fifth - "no row at that staged path" - raised a plain exception, fell through to the
+		/// calling action's general fault handler and came back as the platform's INTERNAL error message
+		/// instead. Two distinguishable production responses over one caller-supplied path is an ORACLE: a
+		/// caller could enumerate which staged paths hold real files belonging to somebody else, which is
+		/// precisely the information the ownership rule exists to withhold. Every outcome now produces the
+		/// same status, the same envelope and the same text, and the distinction survives only in the
+		/// server-side record - which is where a distinction between "absent" and "not yours" is useful and
+		/// harmless.
+		/// <para>
+		/// THREAT ADDRESSED - CWE-779 (logging of excessive data), OWASP A09:2021, and the reason this method
+		/// owns the record rather than the calling action. The action wrote a refusal row for every
+		/// <see cref="UnauthorizedAccessException"/> it caught, and one of the five outcomes - a staged row
+		/// withheld by the ownership rule - had ALREADY been recorded, accurately and with the acting
+		/// identity, by the repository at the moment it withheld the row. One probe therefore persisted two
+		/// rows, so an attacker's own volume inflated the table that the authentication and authorization
+		/// trail shares. Exactly one layer owns each refusal now: the repository owns the withheld case, this
+		/// method owns the four it can observe and the repository cannot, and the action writes none.
+		/// </para>
+		/// <para>
+		/// The sink is <see cref="SecurityAuditLog"/> rather than <c>LogService</c>, whose exception overload
+		/// sends an outbound SMTP message BEFORE it persists and whose notification parameter defaults to
+		/// that mailing path - so a caller probing paths could otherwise generate one e-mail per attempt.
+		/// SecurityAuditLog owns that choice centrally, never throws, and counts any record it cannot
+		/// persist. The caller-supplied path is bounded, quoted and control-character neutralised by
+		/// <see cref="SecurityAuditLog.Field(string, int)"/> (CWE-117) so it can forge neither a field nor a
+		/// record; <c>user_id</c> and <c>reason</c> are left unquoted because both are values this code
+		/// chooses rather than values the caller supplies.
+		/// </para>
+		/// </remarks>
+		private static UnauthorizedAccessException PromotionRefused(string requestedPath, string reason, bool recordedByRepository = false)
+		{
+			if (!recordedByRepository)
+			{
+				var currentUser = SecurityContext.CurrentUser;
+				SecurityAuditLog.Write(Diagnostics.LogType.Error, "UserFileService:CreateUserFile",
+					"Authorization failure: user file publication refused.",
+					"user_id=" + (currentUser == null ? "anonymous" : currentUser.Id.ToString())
+						+ "; requested_path=" + SecurityAuditLog.Field(requestedPath, MAX_LOGGED_PATH_LENGTH)
+						+ "; reason=" + reason);
+			}
+
+			return new UnauthorizedAccessException(PROMOTION_DENIED_MESSAGE);
+		}
 
 		public List<UserFile> GetFilesList(string type = "", string search = "",  int sort = 1, int page = 1, int pageSize = 30)
 		{
@@ -51,7 +117,7 @@ namespace WebVella.Erp.Web.Services
 				filters.Add(EntityQuery.QueryContains("type",type));
 			}
 			var filterQuery = EntityQuery.QueryAND(filters.ToArray());
-			
+
 			EntityQuery query = new EntityQuery("user_file", UserFile.GetQueryColumns(), filterQuery, listSorts.ToArray(),skipCount,pageSize);
 			QueryResponse response = RecMan.Find(query);
 			if (!response.Success)
@@ -141,7 +207,7 @@ namespace WebVella.Erp.Web.Services
 
 			var temporaryNamespacePrefix = DbFileRepository.FOLDER_SEPARATOR + DbFileRepository.TMP_FOLDER_NAME + DbFileRepository.FOLDER_SEPARATOR;
 			if (!normalizedSourcePath.StartsWith(temporaryNamespacePrefix, StringComparison.Ordinal))
-				throw new UnauthorizedAccessException(PROMOTION_DENIED_MESSAGE);
+				throw PromotionRefused(normalizedSourcePath, "source path is outside the staging namespace");
 
 			//THREAT ADDRESSED - CWE-778 (insufficient logging) and the audit MISCLASSIFICATION it produces,
 			//OWASP A09:2021. The ownership guard immediately below was UNREACHABLE for the case it was
@@ -154,20 +220,29 @@ namespace WebVella.Erp.Web.Services
 			//exactly the signal the "log authorization failures" requirement exists to produce correctly.
 			//
 			//The overload reports the withheld case WITHOUT changing the access decision or the response
-			//text: both outcomes still answer the caller with a generic denial, so no existence oracle is
-			//created - a withheld row now answers PROMOTION_DENIED_MESSAGE, which is the SAME message this
-			//method already returns for the namespace test above and for the pinned-move refusal below.
+			//text: a withheld row answers PROMOTION_DENIED_MESSAGE, the SAME message the namespace test above
+			//and the pinned-move refusal below return.
+			//
+			//That alone did NOT close the existence oracle, and an earlier revision of this comment claimed
+			//it did. Reclassifying the withheld case left the NOT-FOUND case still raising a plain exception,
+			//which the calling action answered with a different production message - so the two remained
+			//distinguishable on the wire and the oracle survived where the two lines below now close it.
 			var tempFile = Fs.Find(path, out var withheldByStagedOwnership);
 
 			//Ordered BEFORE the not-found test, because a withheld row is an authorization outcome and must
-			//be reported as one. The distinct exception type is what the calling action switches on - see the
-			//PROMOTION_DENIED_MESSAGE remarks at the top of this class for why refusals use a type of their
-			//own rather than the plain Exception a missing file raises.
+			//be classified as one server-side. recordedByRepository suppresses a SECOND audit row here: the
+			//repository wrote this exact refusal, with the acting identity and the neutralised path, at the
+			//moment it withheld the row - see the PromotionRefused remarks at the top of this class.
 			if (withheldByStagedOwnership)
-				throw new UnauthorizedAccessException(PROMOTION_DENIED_MESSAGE);
+				throw PromotionRefused(normalizedSourcePath, "staged file withheld by the ownership rule", recordedByRepository: true);
 
+			//THREAT ADDRESSED - CWE-200, OWASP A01:2021. This raised a plain Exception, which the calling
+			//action's general fault handler answered with the platform's INTERNAL error message while every
+			//other refusal here answered with the generic denial - so the two were distinguishable and a
+			//caller could use the difference to learn whether a staged path it did not own actually existed.
+			//It now answers exactly as the other four do, and only the server-side record says which it was.
 			if(tempFile == null) {
-				throw new Exception("File not found on that path");
+				throw PromotionRefused(normalizedSourcePath, "no file exists at the staged path");
 			}
 
 			//the staged file must be the caller's own. Deny-by-default at every uncertain edge: an
@@ -180,7 +255,17 @@ namespace WebVella.Erp.Web.Services
 				&& (currentUser.IsAdmin || (tempFile.CreatedBy.HasValue && tempFile.CreatedBy.Value == currentUser.Id));
 
 			if (!isPromotionAuthorized)
-				throw new UnauthorizedAccessException(PROMOTION_DENIED_MESSAGE);
+			{
+				//The three reasons are the same three the repository's staged-refusal writer records, so the
+				//two audit trails describe the same decision in the same vocabulary. Each is a fixed literal
+				//chosen here rather than any caller-supplied value.
+				var refusalReason = currentUser == null
+					? "unresolved principal"
+					: (tempFile.CreatedBy.HasValue ? "caller is not the owner of the staged file" : "staged file has no recorded owner");
+
+				throw PromotionRefused(normalizedSourcePath, refusalReason);
+			}
+
 			var newFileId = Guid.NewGuid();
 			userFileRecord["id"] = newFileId;
 			userFileRecord["alt"] = alt;
@@ -202,12 +287,12 @@ namespace WebVella.Erp.Web.Services
 			else if(mimeType.StartsWith("audio")) {
 				userFileRecord["type"] = "audio";
 			}
-			else if(fileExtension == ".doc" || fileExtension == ".docx"  || fileExtension == ".odt"  || fileExtension == ".rtf" 
-			 || fileExtension == ".txt"  || fileExtension == ".pdf"  || fileExtension == ".html"  || fileExtension == ".htm"  || fileExtension == ".ppt" 
+			else if(fileExtension == ".doc" || fileExtension == ".docx"  || fileExtension == ".odt"  || fileExtension == ".rtf"
+			 || fileExtension == ".txt"  || fileExtension == ".pdf"  || fileExtension == ".html"  || fileExtension == ".htm"  || fileExtension == ".ppt"
 			  || fileExtension == ".pptx"  || fileExtension == ".xls"  || fileExtension == ".xlsx"  || fileExtension == ".ods"  || fileExtension == ".odp" ) {
 				userFileRecord["type"] = "document";
 			}
-			else { 
+			else {
 				userFileRecord["type"] = "other";
 			}
 
@@ -226,7 +311,7 @@ namespace WebVella.Erp.Web.Services
 					//than reported as a failure.
 					var file = Fs.Move(path,newFilePath,false,tempFile.Id);
 					if(file == null) {
-						throw new UnauthorizedAccessException(PROMOTION_DENIED_MESSAGE);
+						throw PromotionRefused(normalizedSourcePath, "the authorized staged row is no longer at that path");
 					}
 
 					userFileRecord["path"] = newFilePath;

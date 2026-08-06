@@ -77,9 +77,32 @@ namespace WebVella.Erp.Web.Services
 		// Ceiling on how long a single revocation is retained, applied to whatever the caller asks for.
 		// A revocation only has to outlive the ticket it revokes; retaining it longer pins memory for no
 		// benefit, and clamping here means no caller can turn this store into an unbounded one by
-		// passing an absurd expiry. Comfortably above the eight-hour authentication ticket lifetime, so
-		// a legitimate revocation is never dropped early.
-		private static readonly TimeSpan MaxRetention = TimeSpan.FromHours(24);
+		// passing an absurd expiry.
+		//
+		// THREAT ADDRESSED - review finding CR3-H-03, CWE-613 (insufficient session expiration), OWASP
+		// A07. This ceiling was 24 hours, and the comment justifying it described an eight-hour ticket
+		// lifetime that no longer existed: the frozen session contract is 1440 MINUTES, so the ceiling
+		// and the credential lifetime were exactly equal. A ceiling equal to the lifetime it is meant to
+		// outlive is not a ceiling - it silently truncated the clock-skew allowance
+		// AuthService.RevokeCurrentSession must add, because a bearer credential is honoured until its
+		// exp PLUS AuthService.JwtClockSkew. The clamp therefore reinstated the very off-by-skew window
+		// the caller had just computed away.
+		// 25 hours is the smallest round value that leaves the longest legitimate request - 1440 minutes
+		// of credential lifetime plus the 1-minute skew, i.e. 1441 minutes - unclamped, while still
+		// bounding a caller that asks for something absurd. It is deliberately NOT derived from
+		// AuthService's constants: this type is the lower layer of the two and must not take a
+		// dependency on its caller. The relationship is asserted in the remarks at both ends instead, and
+		// RetentionCeilingMinutes below exposes the number so a test or a caller can check it rather than
+		// restate it.
+		private static readonly TimeSpan MaxRetention = TimeSpan.FromHours(25);
+
+		// The ceiling above, in minutes, readable by the callers and verifications that have to prove
+		// their requested retention is not being clamped. Exposing the value is what makes that provable
+		// instead of assumed; it is assembly-internal, so no public surface is widened.
+		internal static double RetentionCeilingMinutes
+		{
+			get { return MaxRetention.TotalMinutes; }
+		}
 
 		// Floor on retention. A revocation written with a near-past expiry would otherwise be discarded
 		// by the cache immediately, silently doing nothing; one minute guarantees the entry is actually

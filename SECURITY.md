@@ -1,4 +1,4 @@
-# Security Policy
+﻿# Security Policy
 
 This is the security policy for **WebVella ERP**, a free and open-source .NET 10 / ASP.NET Core modular monolith on PostgreSQL, distributed under the terms in [LICENSE.txt](LICENSE.txt).
 
@@ -10,17 +10,17 @@ It covers how to report a vulnerability, what happens after you do, and what the
 
 Use one of these channels instead:
 
-* **GitHub private vulnerability reporting** on this repository — open the **Security** tab and choose **Report a vulnerability**. This is preferred: it opens a private draft advisory visible only to you and the maintainers.
-* **The security contact listed at <https://webvella.com>**, if private reporting is unavailable at the time you need it. Ask for a private channel first, and keep vulnerability details out of that opening message.
+- **GitHub private vulnerability reporting** on this repository — open the **Security** tab and choose **Report a vulnerability**. This is preferred: it opens a private draft advisory visible only to you and the maintainers.
+- **The security contact listed at <https://webvella.com>**, if private reporting is unavailable at the time you need it. Ask for a private channel first, and keep vulnerability details out of that opening message.
 
 A report is actionable when a maintainer can reproduce it without guessing. Please include:
 
-* The **affected version, commit hash or branch** you tested.
-* The **affected component** — a file path, a route, or a host application name.
-* **Reproduction steps**, ideally the smallest sequence that demonstrates the problem.
-* The **observed impact**: what an attacker gains, and what privileges they need to start.
-* Where you know them, a **CWE identifier** and an **OWASP Top 10 (2021) category** — these are fields the platform's own findings already carry, so supplying them lets your report be filed straight against the same scheme.
-* Any proof-of-concept request, payload, log or screenshot you captured.
+- The **affected version, commit hash or branch** you tested.
+- The **affected component** — a file path, a route, or a host application name.
+- **Reproduction steps**, ideally the smallest sequence that demonstrates the problem.
+- The **observed impact**: what an attacker gains, and what privileges they need to start.
+- Where you know them, a **CWE identifier** and an **OWASP Top 10 (2021) category** — these are fields the platform's own findings already carry, so supplying them lets your report be filed straight against the same scheme.
+- Any proof-of-concept request, payload, log or screenshot you captured.
 
 Please also **do not test against deployments you do not own**. Scanners, fuzzers and load tests belong on your own installation, never on somebody else's production system or a third party's hosted instance. Do not access, modify or exfiltrate anyone else's data, and use a vulnerability no further than the minimum needed to demonstrate it.
 
@@ -53,8 +53,8 @@ Low:      Missing security headers, verbose errors, minor misconfigurations
 
 This matrix is **prescriptive, not advisory**: it names the vulnerability classes that belong in each tier, and a finding is placed by matching it against the matrix rather than by scoring it independently. Two consequences are worth stating, because they surprise readers who expect a generic scoring system:
 
-* **Unsalted password hashing is Critical**, as *data breach exposure* — not Medium "weak cryptography". The stored hashes were directly recoverable, so what is exposed is the credentials themselves.
-* **Missing security headers are Low**, not Medium. They are defence-in-depth, and their absence is not by itself an information disclosure.
+- **Unsalted password hashing is Critical**, as *data breach exposure* — not Medium "weak cryptography". The stored hashes were directly recoverable, so what is exposed is the credentials themselves.
+- **Missing security headers are Low**, not Medium. They are defence-in-depth, and their absence is not by itself an information disclosure.
 
 ## Supported Versions
 
@@ -71,22 +71,29 @@ Running an unsupported runtime is a security condition in its own right, not mer
 
 ## Security Posture
 
-The platform has been audited against the **OWASP Top 10 (2021)**, categories **A01 through A10**. The audit produced **5 Critical, 20 High, 18 Medium and 10 Low findings — 53 in total**. Every one carries a CWE identifier, an OWASP category and a file-and-line evidence locator, and every one is written up in the [security audit report](docs/security/security-audit-report.md) in a fixed eight-field format.
+The platform has been audited against the **OWASP Top 10 (2021)**, categories **A01 through A10**. The audit produced **5 Critical, 20 High, 18 Medium and 10 Low findings — 53 in total**.
 
-The disposition rule is that **every Critical and High finding is remediated**, while **Medium and Low findings are documented with recommended fixes**. A Medium is *additionally* remediated only where it is a compensating control for a confirmed Critical or High, is mandated by one of the audit's Fix Implementation Standards, or is an unavoidable by-product of a Critical or High fix in the same method.
+> **Implemented is not the same as verified, and this section describes what is implemented.** Every Critical and High finding has a fix in the tree with its own recorded verification. Two of the engagement's five validation gates nevertheless do **not** pass at this revision — the static-analysis gate is **PARTIAL** (only four of eleven relevant analyzer families execute at the frozen analysis level) and the manual-verification gate is **DEFERRED** (one mandatory scenario, `M16`, has not been executed) — while a third is **vacuous by construction** because no test suite exists. One engagement process requirement, *atomic commits per vulnerability class*, **FAILED**: seven of thirteen commits carry more than one class, and acknowledging that is not the same as complying with it. The authoritative, gate-by-gate status table is [Status at this revision](docs/security/security-audit-report.md#status-at-this-revision-gate-by-gate) in the audit report. Where any sentence below reads as a completion claim, that table governs. Every one carries a CWE identifier, an OWASP category and a file-and-line evidence locator, and every one is written up in the [security audit report](docs/security/security-audit-report.md) in a fixed eight-field format. Five records reached an earlier revision with the CWE field asserting no identifier — for a missing header set, an unobserved asynchronous call, commented-out package references, a committed binary and an unpinned toolchain — on the reasoning that each was a hygiene observation rather than a weakness. CWE has classes for all five (CWE-693, CWE-252, CWE-1164, CWE-1357 and CWE-494), so the abstentions were withdrawn and the claim above now holds without exception.
+
+The original fifty-three-finding audit used this disposition rule: **Critical and High findings require remediation**, while **Medium and Low findings require documentation with recommended fixes**. Within that original inventory, all five Critical and all twenty High findings are remediated. That statement is deliberately scoped to the audit inventory rather than presented as a blanket claim about every defect later found in the product: independent post-remediation reviews added further `P-`, `F-`, `CR2-F-` and `B3-` records to the [audit report](docs/security/security-audit-report.md). The most recent eight-finding review, `F-01` through `F-08`, is closed as of this revision — seven findings by code changes and `F-08` by synchronising this documentation set. Accepted residuals, documented-only issues and owner decisions remain visible in the [risk register](docs/security/risk-register.md), so this posture must not be read as a claim that no further risk or undiscovered instance exists.
+
+A Medium is *additionally* remediated only where it is a compensating control for a confirmed Critical or High, is mandated by one of the audit's Fix Implementation Standards, or is an unavoidable by-product of a Critical or High fix in the same method.
+
+**What "remediated" means here, stated precisely.** It means a code change is in place and is covered by the automated gate: the analyzer build, the dependency audit and the secret sweep all pass on every push. It does **not** mean every fix has been observed working against a running deployment. Nineteen of the verification scenarios need a live PostgreSQL instance, a browser or an SMTP server, and a workflow runner has none of the three — so CI records those rows as deferred and a separate **blocking release gate** refuses to pass while any of them is unattested. That gate is red until dated, attributed attestations are committed, which is deliberate: an earlier revision of the workflow counted deferred rows without failing, so a green tick did not mean the manual verification had happened. Anyone deploying this platform should read the [risk register](docs/security/risk-register.md) for what is accepted rather than fixed — including one **open owner decision** on a dependency licence — and should not read this section as a clearance to skip verification.
 
 The controls now in force:
 
-* **Credential storage** — salted, work-factored, fixed-time password hashing replaces unsalted MD5 (C-03), with stored hashes upgraded transparently on each user's next successful login, so no password reset is forced and no user is locked out.
-* **Secret management** — no secrets in the repository: all eight `Config.json` files ship with empty values, the compiled-in encryption key and its silent fallback are gone, and startup **fails fast** when a required secret is absent (C-04, H-04, H-05).
-* **Authorization** — deny-by-default provisioning, with the Guest-role grants on the user and role entities revoked and administrator-only permissions assigned to the password field (C-02, C-05).
-* **Session and token handling** — a bounded authentication ticket, token lifetime validation with an explicit clock-skew allowance, UTC timestamps, logged validation failures, and secure cookie attributes across all seven hosts (H-02, H-03, H-15).
-* **Transport and response headers** — the seven mandated response headers, HSTS and HTTPS redirection guarded to non-development environments, and SMTP certificate validation restored (H-11, H-15, M-01).
-* **Injection and deserialisation** — a validate-and-quote helper for SQL identifiers, and a serialisation binder with an explicit type allow-list (H-09, H-10).
-* **File handling** — extension allow-listing, size limits, content-type verification, filename sanitisation, attachment disposition on download, and ownership checks on move and delete (H-08).
-* **Brute-force protection** — a five-attempt account lockout plus framework rate limiting (H-16).
-* **Dependencies** — four version changes clearing three advisories, and a retarget off an end-of-life runtime (H-01, H-18, H-20).
-* **Build-level enforcement** — dependency auditing and .NET security analyzers configured in [`Directory.Build.props`](Directory.Build.props) and exercised in CI by [`.github/workflows/security-scan.yml`](.github/workflows/security-scan.yml).
+- **Credential storage** — salted, work-factored, fixed-time password hashing replaces unsalted MD5 (C-03), with stored hashes upgraded transparently on each user's next successful login, so no password reset is forced and no user is locked out.
+- **Secret management** — no secrets in the repository: all eight `Config.json` files ship with empty values, the compiled-in encryption key and its silent fallback are gone, and startup **fails fast** when a required secret is absent (C-04, H-04, H-05).
+- **Authorization** — deny-by-default provisioning, with the Guest-role grants on the user and role entities revoked and administrator-only permissions assigned to the password field (C-02, C-05).
+- **Session and token handling** — a bounded authentication ticket, token lifetime validation with an explicit clock-skew allowance, UTC timestamps, logged validation failures, and secure cookie attributes across all seven hosts (H-02, H-03, H-15).
+- **Transport and response headers** — the seven mandated response headers, HSTS and HTTPS redirection guarded to non-development environments, invariant parsing and range validation for a configured public HTTPS port, and SMTP certificate validation restored (H-11, H-15, M-01, F-07).
+- **Injection and deserialisation** — a validate-and-quote helper for SQL identifiers, and a serialisation binder with an explicit type allow-list (H-09, H-10).
+- **File handling** — extension allow-listing, size limits, content-type verification, filename sanitisation, attachment disposition on download, private caching for authenticated files, `no-store` for staged files, ownership checks on move and delete, and transactionally pinned destination state for overwrite moves (H-08, F-04, F-05).
+- **Brute-force protection** — a five-attempt account lockout plus framework rate limiting (H-16).
+- **Error handling and security auditing** — the two unconditional stack-trace responses are gone, and every fault path on the web API surface now answers with a generic message while recording the full detail server-side (H-13). Diagnostics are written through a single failure-isolated boundary, so a logging fault can never replace the response a caller was owed, and every record is written non-notifying so an error path cannot be driven into a mail flood. The authentication surface emits one bounded record per evaluated attempt *and per refusal* — sampling refusals would let an account under attack be refused hundreds of times behind a single row — plus records for sign-out, session revocation and replay of a revoked token (M-12). Records that an attacker can repeat at will are rate-bounded and report the volume they withheld, so the evidence exists without becoming a log-growth primitive.
+- **Dependencies** — four version changes clearing three advisories, and a retarget off an end-of-life runtime (H-01, H-18, H-20).
+- **Build-level enforcement** — dependency auditing and .NET security analyzers configured in [`Directory.Build.props`](Directory.Build.props) and exercised in CI by [`.github/workflows/security-scan.yml`](.github/workflows/security-scan.yml).
 
 One thing the fixes cannot undo: **every secret value that ever appeared in this repository's history must still be treated as public.** See the [Secure Deployment Checklist](#secure-deployment-checklist).
 
@@ -98,26 +105,29 @@ The gate is the build itself, so it runs wherever the project is built rather th
 | --- | --- | --- |
 | Dependency auditing | `NuGetAudit`, `NuGetAuditMode=all`, `NuGetAuditLevel=low` | Every direct **and transitive** package is checked against the advisory database, at every severity |
 | Advisories fail the build | `NU1900`–`NU1905` promoted through `WarningsAsErrors` | The four advisory-severity codes `NU1901`–`NU1904`, plus the two availability codes `NU1900` and `NU1905` so that an audit which *could not run* also fails rather than reporting green |
-| Static analysis | `EnableNETAnalyzers`, `AnalysisLevel=latest-recommended` | The .NET analyzers run on every compilation at the recommended level |
+| Static analysis | `EnableNETAnalyzers`, `AnalysisLevel=latest-recommended`, `AnalysisLevelSecurity=latest-all` | The .NET analyzers run on every compilation: the general rule set at the recommended level, and the **whole Security category** at every rule the pinned SDK defines in it. The category level is what makes the audit's own static-analysis gate checkable — nine of the eleven security families the gate names do not execute at `latest-recommended`. It is delivered through a configuration the **SDK ships**, so no `.globalconfig` exists in this repository and the workflow asserts that none does |
+| The one analyzer exclusion | `NoWarn` carries `CA3001`–`CA3012` | The interprocedural taint-dataflow family is excluded for a **measured termination** reason, not a scope preference: armed and untuned the solution build produced no further output for over thirty-five minutes with 3 of 17 projects finished; excluded, it completes in about 106 seconds. The workflow asserts the exclusion in both directions, so it can neither be lost nor widened unobserved. Carried as `RISK-138` |
 
 **A dependency advisory fails the build by design.** That is the whole point of the gate: a package carrying a published advisory cannot be introduced without somebody dealing with it. Analyzer diagnostics deliberately stay *warnings* — enabling them across roughly 700 pre-existing source files surfaces a large legacy backlog, and failing the build on that would force exactly the repository-wide refactor the remediation scope forbids. [`global.json`](global.json) pins the SDK exactly, so the audit defaults and the analyzer rule set are reproducible rather than dependent on whichever toolchain a machine happens to have. [`.github/workflows/security-scan.yml`](.github/workflows/security-scan.yml) runs restore with auditing, then the analyzer build, then `dotnet list package --vulnerable --include-transitive`.
 
 Three substitutions are disclosed rather than concealed, because a validation claim is worth only as much as its provenance:
 
-* **The external SAST, container/dependency and secrets scanners named in the audit brief could not be installed in the audit environment.** They were not run, and nothing here implies otherwise. The disclosed substitutes are the .NET analyzers, `NuGetAudit`, and a signature sweep of the tracked tree for credential patterns, which the CI workflow performs on every run.
-* **The "existing test suite passes completely" gate is vacuous by construction** — there is no test project, no test file and no test-framework reference in any of the 19 projects. The substitute is a solution-wide restore, an analyzer-enabled build with zero errors, and a written manual verification checklist recorded in the [remediation log](docs/security/remediation-log.md). Creating a test suite was out of scope as feature work.
-* **Advisory, version and licence data was obtained by direct retrieval** from the GitHub Advisory REST API and the NuGet flat-container API, because web search returned no results in the audit environment.
+- **The external SAST, container/dependency and secrets scanners named in the audit brief could not be installed in the audit environment.** They were not run, and nothing here implies otherwise. The disclosed substitutes are the .NET analyzers, `NuGetAudit`, and a signature sweep of the tracked tree for credential patterns, which the CI workflow performs on every run.
+- **There is no test suite, and the "existing test suite passes completely" gate is vacuous by construction** — there is no test project, no test file and no test-framework reference in any of the 19 projects. The substitute is a solution-wide restore, an analyzer-enabled build with zero errors, and a written manual verification checklist recorded in the [remediation log](docs/security/remediation-log.md). Creating a test suite was out of scope as feature work.
+- **Advisory, version and licence data was obtained by direct retrieval** from the GitHub Advisory REST API and the NuGet flat-container API, because web search returned no results in the audit environment.
 
 ## Known Accepted Risks
 
 Each item below is recorded in full — with its reasoning, its compensating control and the conditions for revisiting it — in the [risk register](docs/security/risk-register.md). An accepted risk is still a risk; the register exists so that these stay owned rather than forgotten.
 
-* **The AutoMapper licence question is unresolved, and it is a repository-owner decision.** The advisory half is closed: the pin is on a patched version, with nothing suppressed. The licensing half is open — every patched version ships under the Reciprocal Public License 1.5, which conflicts with this project's Apache-2.0 posture and with publishing packages for third-party consumption, and there is no patched permissive version to retreat to. The documented fallback is to revert the pin behind a narrowly scoped, per-advisory audit suppression together with a formal recorded risk acceptance. Nothing in this remediation settles it.
-* **The Content-Security-Policy ships in report-only mode first.** Four components emit inline script, so enforcing the mandated policy immediately would break the interface. The mandated header value is emitted exactly as specified; only the delivery mode is staged, with a documented report-then-enforce rollout.
-* **Four by-design raw-output channels are not encoded** — the HTML-block page component and the generated inline-script emitters. Encoding them would disable the features they implement, so the compensating control is that authoring markup or script requires a privileged role.
-* **The password-hashing algorithm deviates from the literal wording of the cryptographic standard**, which names bcrypt, scrypt or Argon2 at cost factor 12 or above. A high-iteration PBKDF2-HMAC-SHA256 primitive is used instead: sanctioned by the authoritative password-storage guidance at the iteration count applied, satisfying the rule's unambiguous intent of slow, salted, work-factored, fixed-time verification, and adding no dependency. Substituting a dedicated bcrypt or Argon2 package for literal compliance is recorded as an owner option.
-* **The login throttle is per-instance.** It is backed by the existing in-process cache, to avoid both a schema change and a new dependency, so a multi-instance deployment is not protected by it. A distributed backing store is a recorded recommendation.
-* **Login latency increases by design.** A high-iteration key-derivation function is deliberately slow. This is a pre-declared, accepted trade-off confined to the authentication path — not a regression.
+- **The AutoMapper licence question is unresolved, and it is a repository-owner decision.** The advisory half is closed: the pin is on a patched version, with nothing suppressed. The licensing half is open — every patched version ships under the Reciprocal Public License 1.5, which conflicts with this project's Apache-2.0 posture and with publishing packages for third-party consumption, and there is no patched permissive version to retreat to. The documented fallback is to revert the pin behind a narrowly scoped, per-advisory audit suppression together with a formal recorded risk acceptance. Nothing in this remediation settles it.
+- **The Content-Security-Policy ships in report-only mode first.** Four components emit inline script, so enforcing the mandated policy immediately would break the interface. The mandated header value is emitted exactly as specified; only the delivery mode is staged, with a documented report-then-enforce rollout.
+- **Four by-design raw-output channels are not encoded** — the HTML-block page component and the generated inline-script emitters. Encoding them would disable the features they implement, so the compensating control is that authoring markup or script requires a privileged role.
+- **The password-hashing algorithm deviates from the literal wording of the cryptographic standard**, which names bcrypt, scrypt or Argon2 at cost factor 12 or above. A high-iteration PBKDF2-HMAC-SHA256 primitive is used instead: sanctioned by the authoritative password-storage guidance at the iteration count applied, satisfying the rule's unambiguous intent of slow, salted, work-factored, fixed-time verification, and adding no dependency. Substituting a dedicated bcrypt or Argon2 package for literal compliance is recorded as an owner option.
+- **The login throttle is per-instance.** It is backed by an in-process `MemoryCache` — a dedicated, size-bounded instance the service owns privately, not the platform's shared cache helper — to avoid both a schema change and a new dependency, so a multi-instance deployment is not protected by it. A distributed backing store is a recorded recommendation.
+- **Twenty-four runtime verifications are not proven by the automated gate, and the project is therefore not release-ready.** Each of them verifies a Critical or High fix and each needs a live PostgreSQL instance, a browser or an SMTP server, which the gate does not have. They are **not** recorded as passed: the verification matrix classifies every one as REQUIRED, prints `RELEASE-READY=no` on every run while any remains unproven, and **fails** a version-tag push or a release-candidate dispatch outright. A manual row leaves that state only on an attestation bound to a commit that is an ancestor of the commit under test, to a hash of the scenario and its procedure and prerequisites, and to a named environment — in a committed file. So a green ordinary run means the automated evidence is clean; it does not mean the remediation has been verified end to end.
+- **Three armed analyzer rules have never been observed to fire.** `CA5382`, `CA5383` and `CA5402` are enabled by the category level above, but no probe in this environment has provoked any of them, so they are deliberately left out of the per-rule ratchet rather than baselined at zero — a zero from a rule nothing has proven can speak is not evidence. Carried as `RISK-137`.
+- **Login latency increases by design.** A high-iteration key-derivation function is deliberately slow. This is a pre-declared, accepted trade-off confined to the authentication path — not a regression.
 
 ## Security Documentation
 
@@ -135,14 +145,14 @@ Each item below is recorded in full — with its reasoning, its compensating con
 
 Before exposing an installation to an untrusted network:
 
-* **Rotate every secret this repository ever published — do not merely replace it.** The example encryption key and the example bearer-token signing key were committed here, so they are permanently public to anyone able to read the history, and scrubbing the working tree does not undo that. Generate fresh material. Both published defaults are additionally refused by digest comparison, so they cannot be reused even deliberately.
-* **Supply every required secret from your own secret store**, by environment variable or user secrets — the connection string, the encryption key, and the bearer-token signing key on hosts that serve tokens. The application refuses to start without them, by design.
-* **Never set `ASPNETCORE_ENVIRONMENT=Development` in production.** Development mode enables a developer exception page that returns stack traces.
-* **Terminate TLS, and make sure the application can actually see an HTTPS request.** HTTPS redirection and HSTS are active outside Development, and the authentication and antiforgery cookies are `Secure`-only, so a plaintext-only host cannot complete a sign-in.
-* **Configure the cross-origin allow-list** rather than relying on a default. No permissive any-origin policy remains on any host; supply the allowed origins for any host a browser client calls cross-origin.
-* **Change the seeded administrator credential immediately**, and confirm the previous one no longer authenticates.
-* **Leave e-mail transport certificate validation enabled.** It is the secure default; do not opt out of it.
-* **Review the Content-Security-Policy rollout before enforcing it**, working through the inline-script inventory in the secure configuration guide.
+- **Rotate every secret this repository ever published — do not merely replace it.** The example encryption key and the example bearer-token signing key were committed here, so they are permanently public to anyone able to read the history, and scrubbing the working tree does not undo that. Generate fresh material. Both published defaults are additionally refused by digest comparison, so they cannot be reused even deliberately.
+- **Supply every required secret from your own secret store**, by environment variable or user secrets — the connection string, the encryption key, and the bearer-token signing key on hosts that serve tokens. The application refuses to start without them, by design.
+- **Never set `ASPNETCORE_ENVIRONMENT=Development` in production.** Development mode enables a developer exception page that returns stack traces.
+- **Terminate TLS, and make sure the application can actually see an HTTPS request.** HTTPS redirection and HSTS are active outside Development, and the authentication and antiforgery cookies are `Secure`-only, so a plaintext-only host cannot complete a sign-in.
+- **Configure the cross-origin allow-list** rather than relying on a default. No permissive any-origin policy remains on any host; supply the allowed origins for any host a browser client calls cross-origin.
+- **Change the seeded administrator credential immediately**, and confirm the previous one no longer authenticates.
+- **Leave e-mail transport certificate validation enabled.** It is the secure default; do not opt out of it.
+- **Review the Content-Security-Policy rollout before enforcing it**, working through the inline-script inventory in the secure configuration guide.
 
 The [secure configuration guide](docs/security/secure-configuration.md) expands every item above, including the exact variable names and the reasoning behind each default.
 

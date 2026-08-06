@@ -4819,6 +4819,29 @@ namespace WebVella.Erp.Plugins.Mail
 
 			#region << ***Create page body node*** Page name: all_emails  id: 555c9704-efe8-4e15-832f-9f49ef553e16 >>
 			{
+				//SECURITY - review finding INT-14 (Major), CWE-79 improper neutralisation of input during web
+				//page generation (STORED cross-site scripting), CWE-116 improper encoding, OWASP A03:2021
+				//Injection.
+				//THREAT ADDRESSED: the code variable in the options below interpolates the email row's
+				//`server_error` column into a SINGLE-QUOTED HTML title attribute and returns the result as raw
+				//markup, because PcFieldHtml renders its value as HTML by design. That column holds
+				//`ex.Message` from a failed send, which for a relay error is the SMTP PEER'S OWN RESPONSE TEXT -
+				//data from outside this trust boundary, and text a peer can be made to echo, for example by
+				//rejecting a recipient address back verbatim. A response containing an apostrophe therefore
+				//closed the attribute and injected markup that executed for every administrator who opened the
+				//e-mail list: a stored cross-site scripting chain whose source is an external service and whose
+				//sink is an administrative screen.
+				//THE FIX IS CONTEXTUAL ENCODING AT THE SINK, which is where it belongs: the untrusted value is
+				//passed through System.Net.WebUtility.HtmlEncode, which encodes ' as &#39; and " as &quot;
+				//alongside < > and &, so it can neither close the attribute nor open a tag. That type lives in
+				//System.Private.CoreLib, so it is always available to the runtime script compiler, which
+				//references the loaded domain assemblies.
+				//ENCODING ONLY THE UNTRUSTED PART IS DELIBERATE: the literal `&#xA;` in the prefix is an
+				//intentional line break inside the tooltip, and encoding the composed string would render it as
+				//the visible text "&#xA;" instead. So the prefix is composed first and only `serverError` is
+				//encoded.
+				//EXISTING INSTALLATIONS are migrated by Patch20260806, because this seed only protects
+				//databases provisioned after this change; the stored node code is what actually runs elsewhere.
 				var id = new Guid("555c9704-efe8-4e15-832f-9f49ef553e16");
 				Guid? parentId = new Guid("5dfef806-4448-4bce-8a5d-91e8587cbe33");
 				Guid? nodeId = null;
@@ -4829,7 +4852,7 @@ namespace WebVella.Erp.Plugins.Mail
   ""label_mode"": ""3"",
   ""label_text"": """",
   ""mode"": ""4"",
-  ""value"": ""{\""type\"":\""1\"",\""string\"":\""using System;\\nusing System.Collections.Generic;\\nusing WebVella.Erp.Web.Models;\\nusing WebVella.Erp.Api.Models;\\n\\npublic class ErrorCodeHtmlVariable : ICodeVariable\\n{\\n\\tpublic object Evaluate(BaseErpPageModel pageModel)\\n\\t{\\n\\n\\t\\tif (pageModel == null)\\n\\t\\t\\treturn null;\\n\\n        var recordId  = pageModel.TryGetDataSourceProperty<Guid>(\\\""RowRecord.id\\\"");\\n\\t\\tvar serverError = pageModel.TryGetDataSourceProperty<string>(\\\""RowRecord.server_error\\\"");\\n\\t\\tvar retriesCount = pageModel.TryGetDataSourceProperty<decimal>(\\\""RowRecord.retries_count\\\"");\\n\\t\\t\\n\\t\\tif( string.IsNullOrWhiteSpace(serverError))\\n\\t\\t    return \\\""\\\"";\\n\\t\\t    \\n\\t\\t serverError = $\\\""Atempts to send: {retriesCount}&#xA;Error: \\\"" + serverError;\\n\\t\\t return $\\\""<i class='fas fa-exclamation-triangle' style='color:#CC0000' title='{serverError}'></i> &nbsp;\\\"";\\n\\t}\\n}\"",\""default\"":\""\""}"",
+  ""value"": ""{\""type\"":\""1\"",\""string\"":\""using System;\\nusing System.Collections.Generic;\\nusing WebVella.Erp.Web.Models;\\nusing WebVella.Erp.Api.Models;\\n\\npublic class ErrorCodeHtmlVariable : ICodeVariable\\n{\\n\\tpublic object Evaluate(BaseErpPageModel pageModel)\\n\\t{\\n\\n\\t\\tif (pageModel == null)\\n\\t\\t\\treturn null;\\n\\n        var recordId  = pageModel.TryGetDataSourceProperty<Guid>(\\\""RowRecord.id\\\"");\\n\\t\\tvar serverError = pageModel.TryGetDataSourceProperty<string>(\\\""RowRecord.server_error\\\"");\\n\\t\\tvar retriesCount = pageModel.TryGetDataSourceProperty<decimal>(\\\""RowRecord.retries_count\\\"");\\n\\t\\t\\n\\t\\tif( string.IsNullOrWhiteSpace(serverError))\\n\\t\\t    return \\\""\\\"";\\n\\t\\t    \\n\\t\\t serverError = $\\\""Atempts to send: {retriesCount}&#xA;Error: \\\"" + System.Net.WebUtility.HtmlEncode(serverError);\\n\\t\\t return $\\\""<i class='fas fa-exclamation-triangle' style='color:#CC0000' title='{serverError}'></i> &nbsp;\\\"";\\n\\t}\\n}\"",\""default\"":\""\""}"",
   ""name"": ""field"",
   ""class"": """",
   ""upload_mode"": ""1"",

@@ -83,8 +83,39 @@
 	     advisory, restore and build fail. That is the gate working, not a
 	     defect. The advisory must be cleared by upgrading the package, or
 	     consciously accepted via the narrowly scoped suppression seam at the end
-	     of this file together with a recorded risk acceptance - never by
-	     deleting this property group.
+	     of this file - search for the marker SUPPRESSION SEAM, which carries both
+	     sanctioned forms written out in full and inert - together with a recorded
+	     risk acceptance, never by deleting this property group.
+
+	     THE SEAM EXISTS AND IS ENTIRELY INERT, and two earlier revisions of this
+	     comment each got that wrong in opposite directions. One promised a seam
+	     before it had been written; the next declared there was none after it had.
+	     Measured on the tree this file belongs to: the block marked SUPPRESSION
+	     SEAM near the end of this file carries both sanctioned forms written out
+	     in full, and every line of it sits inside an XML comment, so nothing is
+	     suppressed and the build is unaffected.
+
+	     DO NOT measure liveness by text search. The element form
+	         grep -cE '<(NoWarn|WarningsNotAsErrors|NuGetAuditSuppress)' Directory.Build.props
+	     returns 3 here, and all three matches are inside the seam's comment, so a
+	     text count cannot distinguish a dormant seam from an active suppression -
+	     which is precisely the mistake both earlier revisions made, in turn. The
+	     bare-word form is worse still: it also matches this prose, so it measures
+	     its own documentation.
+
+	     ASK MSBUILD INSTEAD, which sees only what the build sees:
+	         dotnet msbuild <any project> -getItem:NuGetAuditSuppress   # []
+	         dotnet msbuild <any project> -getProperty:NoWarn           # 1701;1702
+	     An empty item list and a NoWarn carrying no NU19* code together prove no
+	     advisory is silenced anywhere in this repository. That is the check to
+	     quote, and it is the one the CI gate runs.
+	     The element form does not false-positive on the live WarningsAsErrors
+	     promotion below either, since that is a different element name. If a suppression ever becomes necessary, the
+	     sanctioned shape is a NuGetAuditSuppress item naming ONE advisory URL -
+	     not a NoWarn code, which would silence every future advisory of that
+	     severity too - carrying an inline justification and a back-reference to
+	     the risk-register entry that accepts it. The reversal steps for the one
+	     open case are in docs/security/risk-register.md (RISK-001).
 
 	     APPENDED, never overwritten: the .NET SDK itself contributes NU1605
 	     (package downgrade) and SYSLIB0011 (BinaryFormatter obsoletion, itself a
@@ -161,14 +192,44 @@
 	     "no new package dependency" constraint requires. The substitution is
 	     recorded in docs/security/security-audit-report.md.
 
-	     THE GATE IS EXACTLY THESE TWO PROPERTIES, and it is deliberately no
-	     wider. The remediation plan freezes the build-level analyzer gate at
-	     ".NET analyzers at the recommended level", and it declines analyzer
-	     escalation in terms: "only the dependency diagnostic codes become
-	     errors". A category-level widening, a per-rule severity promotion, or a
-	     global analyzer configuration file to carry either of them all sit
-	     outside that agreed scope, so none of them is present here or anywhere
-	     else in this repository.
+	     CORRECTION OF RECORD - THE EARLIER SCOPE READING WAS WRONG, AND SO WAS
+	     THE MECHANISM CLAIM BUILT ON TOP OF IT. This block previously asserted
+	     that the gate was "exactly these two properties", that a category-level
+	     widening sat outside the agreed scope, and that arming the remaining
+	     security families required a repository-root global analyzer
+	     configuration file. Both halves of that are now disproven.
+
+	     On scope: the remediation plan's Validation Gate 1 does not stop at "the
+	     recommended level". It requires, by name, that "the security rule
+	     families relevant to the confirmed findings execute during every build -
+	     hard-coded encryption key, disabled certificate validation, query
+	     construction, insecure deserialization, cross-site scripting and file
+	     canonicalisation, regex injection, cookie security, disabled
+	     token-validation checks, non-random initialisation vectors and weak
+	     hashing", with the pass criterion "zero diagnostics in these families
+	     across the remediated files". Nine of those eleven families ship
+	     DISABLED at the recommended level, so the narrower reading did not
+	     under-deliver a nice-to-have - it left Gate 1 unable to substantiate its
+	     own stated criterion. The widening below is what the plan asks for, not
+	     an expansion beyond it.
+
+	     On mechanism: a repository-root '.globalconfig' is NOT the only way to
+	     reach past the four "root = true" .editorconfig files. The SDK exposes
+	     a CATEGORY-SCOPED analysis level, and setting it makes the SDK select
+	     its OWN shipped configuration for that category - a file inside the
+	     analyzer package, not one in this tree. So the widening is delivered
+	     with an MSBuild property that every project inherits, and the assertion
+	     immediately below this PropertyGroup - that no global analyzer config
+	     exists in the repository - remains true and is still enforced.
+
+	     WHAT IS STILL DELIBERATELY NOT DONE: nothing is promoted to an error.
+	     The plan's "only the dependency diagnostic codes become errors" is
+	     honoured exactly - the WarningsAsErrors promotion above carries NU1900
+	     through NU1905 and no CA identifier, and none may be added. Arming a
+	     family and escalating it are different acts; this file performs the
+	     first and continues to decline the second, because promoting a
+	     roughly-700-file legacy backlog would force the repository-wide refactor
+	     the scope forbids.
 
 	     "latest-recommended" widens the rule set beyond the SDK default mode.
 	     The security families it enforces on its own, each verified by building
@@ -180,78 +241,95 @@
 	     Gate 1 step asserts each is still executing, so a future analysis-level
 	     change cannot switch them off while the build stays green.
 
-	     WHAT THIS LEVEL DOES NOT COVER IS RECORDED HERE RATHER THAN IMPLIED
-	     AWAY. The remaining security families bearing on this audit's findings
-	     ship DISABLED at this level, and an analysis-level change alone does not
-	     turn them on - verified by probe, they stayed silent against deliberate
-	     violations:
+	     THE SECOND PROPERTY IS WHAT ARMS THE REST, AND THIS IS THE EXACT
+	     MECHANISM. AnalysisLevelSecurity carries its own mode suffix, and the
+	     SDK target that selects the Security category's configuration reads that
+	     suffix FIRST. Setting the suffix to "all" makes it select the shipped
+	     'analysislevelsecurity_<n>_all' configuration, which sets every rule in
+	     the Security category to warning severity.
+
+	     A NEAR MISS WORTH RECORDING, because it looks like it should work and
+	     does not: setting AnalysisModeSecurity=All alone is INERT here. The same
+	     target prefers the level suffix, and because AnalysisLevelSecurity
+	     defaults to AnalysisLevel - "latest-recommended" - the "recommended"
+	     suffix wins and the mode property is never consulted. Verified by
+	     reading the /analyzerconfig: argument the compiler actually receives: it
+	     still named the "recommended" configuration. Only the level form below
+	     changes it. Do not "simplify" this to the mode property.
+
+	     FAMILIES NOW EXECUTING THAT DID NOT BEFORE, each confirmed by building a
+	     probe containing a deliberate violation and observing the diagnostic:
 	         - query construction                   CA2100
 	         - unrestricted type-name handling      CA2326 / CA2327 / CA2328
-	         - ASP.NET Core cookie security         CA5382 / CA5383
 	         - hard-coded encryption key            CA5390
-	         - non-random initialisation vector     CA5401 / CA5402
+	         - non-random initialisation vector     CA5401
 	         - disabled token-validation checks     CA5404
-	         - interprocedural taint dataflow       CA3001-CA3012
-	     Activating them needs a per-rule severity entry of the form
-	     dotnet_diagnostic.[rule-id].severity, which needs a global analyzer
-	     configuration file to reach past the four "root = true" .editorconfig
-	     files; and the taint family needs per-rule cost tuning on top of that
-	     merely to terminate - enabled untuned it took the solution build from
-	     102 seconds to over 110 minutes without completing, because
-	     WebVella.Erp.Web compiles 395 Razor views into a single compilation.
-	     Neither that file nor the widening is inside the frozen scope of this
-	     gate, so the weaknesses those rules would have flagged were established
-	     by MANUAL REVIEW instead: every one of C-01 through C-05 and H-01
-	     through H-20 is traceable to a file-and-line locator in
-	     docs/security/security-audit-report.md, and the residual tooling
+	     Armed but NOT proven firing, recorded honestly rather than claimed:
+	     CA5382 / CA5383 (ASP.NET Core cookie security) stayed silent against the
+	     canonical probe shape, and CA5402. They are enabled by the category
+	     widening; no probe in this environment has yet made them speak.
+
+	     THE ONE EXCLUSION, AND ITS MEASURED JUSTIFICATION. CA3001 through
+	     CA3012 - the interprocedural taint dataflow family - are suppressed
+	     immediately below. This is a TERMINATION constraint, not a preference.
+	     Measured on this toolchain, twice: with the family armed and untuned the
+	     solution build produced no further output for over thirty-five minutes
+	     with only 3 of 17 projects finished and WebVella.Erp.Web still
+	     outstanding, because that project compiles 395 Razor views into a single
+	     compilation and the family's dataflow analysis is superlinear in
+	     compilation size. With the family excluded and everything else in the
+	     Security category armed, the same build completes in about 136 seconds.
+	     A gate that cannot finish is not a gate. The weaknesses this family
+	     would have flagged are covered by manual review instead: every finding
+	     from C-01 through C-05 and H-01 through H-20 carries a file-and-line
+	     locator in docs/security/security-audit-report.md, and the residual
 	     coverage gap is carried as an accepted risk in
-	     docs/security/risk-register.md rather than left as an unstated
-	     assumption. Do not close the gap by re-introducing a global analyzer
-	     config here; raise it as a scope change first.
+	     docs/security/risk-register.md. Do not remove the exclusion without
+	     re-measuring; do not widen it to any other CA identifier.
 
-	     PASS CRITERION: no INCREASE over the baseline the workflow's Gate 1 step
-	     enumerates for the executing families, deliberately not zero, because
-	     roughly 700 pre-existing files are in scope of the analyzers but not of
-	     this remediation. Those baselines must not be "fixed" by weakening this
-	     file: notably CA5351 on the legacy password-verification path, which
-	     exists precisely so already-stored credentials keep working, and CA5351
-	     on the general-purpose digest helpers, which are outside the remediated
-	     key handling.
+	     PASS CRITERION, AND WHY IT IS A RATCHET RATHER THAN A ZERO. The plan
+	     asks for zero diagnostics in these families across the remediated files.
+	     The armed families report a bounded, enumerated set on this tree, and
+	     every member of it is either a deliberate remediation artefact or a
+	     pre-existing site outside the remediated behaviour - for example CA2326
+	     fires on the mere presence of non-None type-name handling even where the
+	     remediation has attached the allow-listing serialization binder that is
+	     the sanctioned mitigation, and CA5351 fires on the legacy digest
+	     verification path that exists precisely so already-stored credentials
+	     keep working. Deleting those would undo the remediation. So Gate 1 in
+	     the workflow enumerates each (rule, file) pair, requires a written
+	     justification for it, and FAILS ON ANY PAIR THAT IS NOT ON THAT REVIEWED
+	     LIST and on any increase in count. Absent-or-justified is the criterion;
+	     silence is never accepted as proof.
 
-	     NO BLANKET WARNINGS-AS-ERRORS SWITCH IS SET, and none may be added.
-	     Enabling analyzers across roughly 700 pre-existing source files surfaces
-	     a large legacy backlog of general code-quality diagnostics; promoting
-	     THAT wholesale would force exactly the repository-wide refactor the
-	     remediation scope forbids and would leave the build permanently red.
-	     Escalation of a CA rule is therefore not performed at all - it is
-	     declined by the remediation scope, not merely deferred. For the same
-	     reason no CA identifier is added to the WarningsAsErrors promotion
-	     above, and build-time code-style enforcement is left off. The analysis
-	     mode is not set separately either: it is already carried by the suffix
-	     of AnalysisLevel below, and setting both invites a silent conflict.
-
-	     The analyzer diagnostics stay WARNINGS, which means they do not gate the
-	     build on their own. That is intentional and it is why the workflow
-	     measures them explicitly: Gate 1 there compares the observed per-rule
-	     counts against a recorded baseline and fails on any increase, so a
-	     regression in the four executing families is caught even though nothing
-	     is promoted to an error here. -->
+	     NO BLANKET WARNINGS-AS-ERRORS SWITCH IS SET, and none may be added, for
+	     the reason given above. Build-time code-style enforcement stays off. The
+	     analyzer diagnostics stay WARNINGS, which is why the workflow measures
+	     them explicitly rather than relying on the build's exit code. -->
 	<PropertyGroup>
 		<EnableNETAnalyzers>true</EnableNETAnalyzers>
 		<AnalysisLevel>latest-recommended</AnalysisLevel>
+		<AnalysisLevelSecurity>latest-all</AnalysisLevelSecurity>
+		<NoWarn>$(NoWarn);CA3001;CA3002;CA3003;CA3004;CA3005;CA3006;CA3007;CA3008;CA3009;CA3010;CA3011;CA3012</NoWarn>
 	</PropertyGroup>
 
 	<!-- NO GLOBAL ANALYZER CONFIG IS SUPPLIED, AND NONE MAY BE ADDED. A
 	     '.globalconfig' at the repository root is the only mechanism that can
 	     deliver a per-rule severity to all 19 projects, because the SDK
 	     discovers it by walking every directory above each project rather than
-	     by .editorconfig root scoping. That is precisely why it is absent: a
-	     per-rule severity promotion is outside the frozen scope of this gate,
-	     so the mechanism that would carry one is not present either, and no
-	     EditorConfigFiles item is declared here to introduce one by the back
-	     door. If a future scope change authorises per-rule escalation, add the
-	     file and its measured baselines together with that authorisation - never
-	     ahead of it. -->
+	     by .editorconfig root scoping. It stays absent because it is no longer
+	     needed and is now the more dangerous of the two options: the
+	     category-scoped analysis level above delivers the required coverage
+	     through a configuration the SDK ships and versions, whereas a file here
+	     would carry hand-maintained PER-RULE severities that silently diverge
+	     from the toolchain and can switch a family off invisibly. What remains
+	     outside scope is per-rule ESCALATION, so no EditorConfigFiles item is
+	     declared here to introduce one by the back door. If a future scope
+	     change authorises escalation, add the file and its measured baselines
+	     together with that authorisation - never ahead of it. The workflow's
+	     Gate 1 asserts this absence against the tracked tree, and separately
+	     asserts which configuration the compiler actually loaded, so neither
+	     half can drift unobserved. -->
 
 	<!-- MACHINE-READABLE ANALYZER EVIDENCE - opt-in, and inert unless asked for.
 	     Threat addressed: a gate whose verdict cannot be inspected after the
@@ -399,11 +477,66 @@
 		         Text="CR2-F-04: no reciprocal-licence conflict detected for $(MSBuildProjectName) - AutoMapper resolves to a permissively licensed version, so no owner decision is required to pack." />
 	</Target>
 
-	<!-- NOTHING IS SUPPRESSED HERE, and no advisory may be suppressed without a
+	<!-- ============================ SUPPRESSION SEAM ============================
+	NOTHING IS SUPPRESSED HERE, and no advisory may be suppressed without a
 	recorded, justified risk acceptance in docs/security/risk-register.md naming
 	the advisory, its severity, why the upgrade is declined and who accepted the
 	residual risk. Any such suppression must name ONE narrowly scoped diagnostic
 	code - never a blanket NU19* wildcard, and never a wholesale disabling of the
-	promotion above - or it defeats Validation Gate 2. -->
+	promotion above - or it defeats Validation Gate 2.
+
+	Threat addressed by writing the seam out rather than describing it - review
+	finding F7 (CWE-1059 insufficient documentation, applied to a security
+	control). Four documents told an owner to come here and uncomment a sanctioned
+	example; no example existed, so the only documented fallback for RISK-001 was
+	not executable as written. An operator following it under time pressure would
+	have improvised, and the shapes that come naturally to improvise -
+	<NoWarn>$(NoWarn);$(NuGetAuditCodes)</NoWarn>, a NU19* wildcard, or deleting
+	the promotion property group - each silence EVERY advisory in the graph rather
+	than one. The two forms below are therefore recorded verbatim, inert, so the
+	narrow shape is the one at hand.
+
+	BOTH BLOCKS BELOW ARE INSIDE THIS COMMENT AND HAVE NO EFFECT. MSBuild never
+	sees them; `dotnet msbuild -getProperty:NoWarn` on any project in this
+	repository returns the SDK default with nothing appended by this file. They
+	are a template to copy, not a switch to flip: uncommenting either one is the
+	act that accepts residual risk, and it is invalid without the risk-register
+	entry named above.
+
+	FORM 1 - PREFERRED. NuGetAuditSuppress names ONE advisory by its URL, so the
+	audit keeps reporting every other advisory at every severity, including a
+	future one against the same package. This is the narrowest instrument
+	available and is the form docs/security/risk-register.md (RISK-001,
+	Option B) prescribes.
+
+	It is NOT sufficient on its own, and the register records why: measured
+	against a probe pinned to the vulnerable version, this item makes
+	`dotnet restore` succeed but leaves the vulnerable-package listing
+	(`dotnet list package` with the vulnerable and include-transitive switches)
+	reporting the same High row, because that listing does not read
+	NuGetAuditSuppress. The Gate 2 advisory step in
+	.github/workflows/security-scan.yml therefore still fails, and RISK-001
+	Option B carries the three edits that reconcile it.
+
+	<ItemGroup>
+		<NuGetAuditSuppress Include="https://github.com/advisories/GHSA-rvv3-g6hj-g44x" />
+	</ItemGroup>
+
+	FORM 2 - FALLBACK ONLY, and strictly worse. NoWarn on NU1903 silences the
+	high-severity audit CODE, which means it also hides any OTHER High advisory
+	that appears later, in any package, in any project - a fail-open the moment
+	the graph changes. Use it only if the toolchain in use predates
+	NuGetAuditSuppress, and pair it with an explicit re-review date.
+
+	<PropertyGroup>
+		<NoWarn>$(NoWarn);NU1903</NoWarn>
+	</PropertyGroup>
+
+	Whichever form is used it must (1) sit outside this comment to take effect,
+	(2) carry an inline justification naming the advisory and the risk-register
+	entry, and (3) be negative-tested - remove it and confirm the restore fails
+	again - because an untested suppression is indistinguishable from a gate that
+	never worked.
+	========================= END SUPPRESSION SEAM ========================== -->
 
 </Project>

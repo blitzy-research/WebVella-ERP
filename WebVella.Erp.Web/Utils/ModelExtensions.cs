@@ -68,7 +68,7 @@ namespace WebVella.Erp.Web.Utils
 			}
 			return selectOptions;
 		}
-	
+
 		public static List<KeyValuePair<string, string>> ToErrorList(this ValidationException validation, List<string> includeFields = null, List<string> excludeFields = null)
 		{
 			if(validation == null)
@@ -84,7 +84,7 @@ namespace WebVella.Erp.Web.Utils
 			foreach (var valError in validation.Errors)
 			{
 				var isIncluded = false;
-				
+
 				if(includeFields.Count == 0)
 					isIncluded = true;
 				else if(includeFields.Contains(valError.PropertyName))
@@ -97,7 +97,7 @@ namespace WebVella.Erp.Web.Utils
 			}
 
 			return result;
-		}		
+		}
 
 		public static List<KeyValuePair<string, string>> ToKeyValuePair(this List<ValidationError> errors)
 		{
@@ -105,7 +105,7 @@ namespace WebVella.Erp.Web.Utils
 				return null;
 
 			return errors.Select(x=> new KeyValuePair<string, string>(x.PropertyName,x.Message)).ToList();
-		}	
+		}
 
 		public static List<WvSelectOption> ToWvSelectOption(this List<SelectOption> originOptions)
 		{
@@ -125,11 +125,24 @@ namespace WebVella.Erp.Web.Utils
 			//Allow-listing here closes both, product-wide, for every wv-field-select and
 			//wv-field-multiselect, and it has to sit on this side of the boundary because the component
 			//ships inside a NuGet package this work may only version-update.
-			//Label is deliberately NOT altered here: the same component already encodes it in edit
-			//mode, so encoding it at this boundary would double-encode every legitimate label
-			//containing an ampersand, an apostrophe or an angle bracket. That residual is recorded in
-			//docs/security/risk-register.md rather than closed with a user-visible regression.
-			return originOptions.Select(x=> new WvSelectOption{Color = SafeStyleValue.CssColor(x.Color),IconClass = SafeStyleValue.IconClass(x.IconClass),Label = x.Label, Value = x.Value}).ToList();
+			//
+			//THREAT ADDRESSED - review finding F-01, the SAME weakness in the third member of this type.
+			//Label is now guarded too, and the earlier note here - that it was "deliberately NOT
+			//altered" because the component encodes it in edit mode - was wrong on the facts and is
+			//retracted. The component encodes the label ONLY where it writes it with Append: into
+			//<option> text, and into the Display and Simple spans when no icon is configured. Wherever
+			//an icon IS configured it writes "<i class=..></i> {Label}" with AppendHtml, and
+			//WvFieldCheckboxList and WvFieldRadioList write the label with AppendHtml unconditionally.
+			//A stored label therefore executed, which QA reproduced live with an <img onerror> payload.
+			//Encoding at this boundary is the wrong control twice over: it would double-encode wherever
+			//the Append path is taken - the regression the earlier note correctly feared - and it would
+			//not even close the raw path, because those components initialise select2 with
+			//escapeMarkup: markup => markup and their templates re-insert record.text, the DECODED text
+			//of the option element, through innerHTML. SafeStyleValue.DisplayText therefore RESTRICTS
+			//the value instead, removing only the two characters that can create markup at those sinks,
+			//so every legitimate label - including one containing an ampersand or an apostrophe - is
+			//returned byte-for-byte unchanged and renders exactly as it does today.
+			return originOptions.Select(x=> new WvSelectOption{Color = SafeStyleValue.CssColor(x.Color),IconClass = SafeStyleValue.IconClass(x.IconClass),Label = SafeStyleValue.DisplayText(x.Label), Value = x.Value}).ToList();
 		}	
 
 		public static WvSelectOptionsAjaxDatasource ToWvSelectOptionsAjaxDatasource(this SelectOptionsAjaxDatasource origin){

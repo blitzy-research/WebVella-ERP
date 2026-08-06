@@ -228,6 +228,28 @@ namespace WebVella.Erp.Plugins.Mail
 							}
 						}
 
+						//SECURITY - review finding INT-14 (Major), CWE-79 stored cross-site scripting, CWE-116, OWASP
+						//A03:2021. Carries the output-encoding correction made to the all_emails error-icon node in
+						//MailPlugin.20190215 to installations an earlier release already provisioned. Without this block
+						//the seed is fixed while the node code that actually runs - already stored in
+						//app_page_body_node.options - keeps interpolating unencoded SMTP response text into an HTML
+						//attribute on an administrator-facing screen.
+						//A SEPARATE, LATER PATCH VERSION than 20260802 deliberately: that one has already been applied
+						//wherever this branch has run, so folding this migration into it would silently skip every such
+						//installation. Its own version gate is what makes this reach them.
+						//NO INNER try/catch, for the same reason as the block above: the outer handler already rolls the
+						//transaction back and rethrows both exception families, and the ValidationException arm of the
+						//legacy blocks rethrows the caught variable, which resets the stack trace of a failed security
+						//migration.
+						{
+							var patchVersion = 20260806;
+							if (currentPluginSettings.Version < patchVersion)
+							{
+								currentPluginSettings.Version = patchVersion;
+								Patch20260806(entMan, relMan, recMan);
+							}
+						}
+
 						#endregion
 
 

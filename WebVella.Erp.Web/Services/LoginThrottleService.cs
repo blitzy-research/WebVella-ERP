@@ -87,7 +87,8 @@ namespace WebVella.Erp.Web.Services
 		private const string MissingValuePlaceholder = "(unspecified)";
 
 		// Number of suppressed refusals after which another audit record is emitted for the same
-		// source address - see TryClaimRefusalAudit.
+		// source address - see TryClaimRefusalAudit, whose scope review finding OBS-05 narrowed to the
+		// anonymous bearer-token refresh route alone.
 		//
 		// Coalescing refusal audits without this would trade one defect for another. The suppressed
 		// count is carried into the NEXT audited refusal, so a flood that stops mid-window would have
@@ -230,10 +231,21 @@ namespace WebVella.Erp.Web.Services
 		//     deserves its own record, and obtaining one requires a proxy pool rather than a different
 		//     string in a form field.
 		//
-		// Login refusals and token-route refusals share one claim per address, which is also
-		// deliberate: an attacker alternating between the two must not be able to double the audit
-		// volume. The first record identifies which route tripped, and the suppressed count aggregates
-		// everything after it - the actionable datum in every case is the source, not the route.
+		// SCOPE, NARROWED BY REVIEW FINDING OBS-05, and the distinction is the reason this member still
+		// exists rather than being deleted. It now serves ONLY the anonymous bearer-token refresh route,
+		// where the refused request names no principal - a token names nobody trustworthy until it
+		// validates - so a refusal there is aggregate telemetry about a source rather than an
+		// authentication outcome about an account, and aggregating it loses nothing an audit reader
+		// needed.
+		//
+		// It is NO LONGER used by the interactive login page. A refusal there IS an authentication
+		// outcome against a named principal, and OBS-05 established that sampling those outcomes - the
+		// first of a window and then one per hundred - broke the property the trail is read for: its
+		// cardinality no longer matched the attempt cardinality, so an attack could not be reconstructed
+		// from it and rate-based detection reading it undercounted by a factor of a hundred. That page
+		// writes one bounded record per refusal instead, with volume bounded at the transport by the
+		// framework's global fixed-window rate limiter rather than by discarding evidence here. Do not
+		// reintroduce this claim on a path that has a principal to attribute.
 		//
 		// Returns true when the caller should write an audit record, with suppressedRefusals set to the
 		// number of refusals suppressed since the previous audited one - report it in that record, then

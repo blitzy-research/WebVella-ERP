@@ -23,11 +23,11 @@ consequences are in the [secure configuration guide](secure-configuration.md) an
 > them.** The platform has now been through two code-review rounds, and both numbered their findings
 > `F-01` upward. They mean different things, and conflating them would misattribute fixes:
 >
-> * **`F-01` … `F-13` unqualified** are the **first** round's findings — for example `F-01` *Guest
+> - **`F-01` … `F-13` unqualified** are the **first** round's findings — for example `F-01` *Guest
 >   permissions restored after the migration by two plugin patches* and `F-03` *The CI gate covered
 >   17 of 19 projects*. Every unqualified reference in this document, the risk register and the audit
 >   report carries this first-round meaning, and none of them was rewritten.
-> * **`CR2-F-01` … `CR2-F-13`** are the **second** round's findings — for example `CR2-F-01` *the
+> - **`CR2-F-01` … `CR2-F-13`** are the **second** round's findings — for example `CR2-F-01` *the
 >   session and revocation validators failed open on a missing marker* and `CR2-F-03` *the
 >   record-filter regular expression was unbounded*. The `CR2-` prefix exists only because the bare
 >   numbers were already taken; the review report itself numbers them `F-01` upward, so drop the
@@ -44,6 +44,19 @@ integration that attached the new controls to live request paths, one records th
 counts, and one records the corrections made to comments and documentation that overstated what was
 deployed. Read them as complementary sections of a single log rather than as alternatives.
 
+> **Every measurement in this log is historical by construction, and that is a reading rule rather than a
+> disclaimer.** This log is append-only: a `#### Verification` table records the figures measured by the
+> checkpoint that wrote it, against the tree as it stood then, and it is deliberately **not** rewritten when
+> a later checkpoint moves the figure — a security document that silently updates its own measurements
+> destroys the record of what was believed when a decision was taken. The consequence is that **no count in
+> this log should be quoted as a current figure.** Counts that describe the tree as it stands now are stated
+> once, with the command that produces each of them, in
+> [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate) in the audit
+> report, which is the single authoritative status surface for the engagement. Where a table below disagrees
+> with it, the table is the older measurement and the status section governs. Figures known to have moved
+> more than once are the workflow shape, the Gate 5 row total, this log's own section count and the solution
+> build's warning total; each is tracked in that section.
+
 | Section | What it records |
 | --- | --- |
 | [Dependency class](#dependency-class-the-authoritative-record) | The `AutoMapper` and mail-stack version changes, and the licensing escalation they produced |
@@ -56,6 +69,24 @@ deployed. Read them as complementary sections of a single log rather than as alt
 | [Manual verification checklist](#the-manual-verification-checklist-with-the-outcome-of-every-line) | Validation gate 5's artefact: every checklist line with the outcome **as it actually was**, mapped to the CI matrix row that carries it |
 | [Deletions, dependencies and residual coverage](#deletions-dependencies-and-residual-coverage-stated-explicitly) | The four closing figures: what was not deleted, that no package was added, the four version changes, and the coverage gap that remains |
 
+> **The `Class` label is reserved, and this is the rule.** The remediation has **exactly fourteen**
+> vulnerability classes, and the only headings that *declare* one are the fourteen
+> `### Class <n> — <name>` entries under
+> [*Remediation by vulnerability class*](#remediation-by-vulnerability-class). Every other heading in
+> this log that mentions a class **references** one of those fourteen by number and never introduces a
+> fifteenth — a verification transcript, an integration record, a measured result or a comment
+> correction *for* `Class <n>`. Reproduce the contract mechanically:
+> `grep -cE '^### Class [0-9]+ — ' docs/security/remediation-log.md` returns **14**, and
+> `grep -c '^### Class:' docs/security/remediation-log.md` returns **0**.
+>
+> This was a real ambiguity, not a hypothetical one. Thirty-one headings in the later sections of this
+> log were written as `### Class: <name>` — the same word, no number, and the same subject names as the
+> canonical fourteen — so a reader counting `Class` headings found forty-five and could not tell which
+> fourteen were the contract. They are retitled rather than removed, because each one records real
+> executed evidence; only the label changed. Two of them do not map to a single class and say so: the
+> HTTP-edge integration record names **Classes 8 and 12**, and the documentation integration record names
+> no class at all, because the documentation set is a deliverable rather than a vulnerability class.
+>
 > **A note on project counts — read this before trusting any count below. This note governs, and it has
 > itself been corrected once.** The repository contains **19** `.csproj` files, and `WebVella.ERP3.sln`
 > enumerates **17** of them. `WebVella.Erp.WebAssembly/Server` and `.../Shared` are not solution members,
@@ -106,10 +137,10 @@ deployed. Read them as complementary sections of a single log rather than as alt
 >
 > Two consequences are worth stating explicitly, because they are easy to get backwards:
 >
-> * **The retarget was never affected.** Both WebAssembly projects target `net10.0` throughout, so
+> - **The retarget was never affected.** Both WebAssembly projects target `net10.0` throughout, so
 >   finding H-18 (end-of-life framework) has been closed the whole time. Solution membership and target
 >   framework are independent.
-> * **The gate reached them throughout.** `Directory.Build.props` is **directory-scoped, not
+> - **The gate reached them throughout.** `Directory.Build.props` is **directory-scoped, not
 >   solution-scoped**, so both projects always inherited all six gate properties. Verified by evaluating
 >   `NuGetAudit`, `NuGetAuditMode`, `NuGetAuditLevel`, `WarningsAsErrors`, `EnableNETAnalyzers` and
 >   `AnalysisLevel` on each directly. What membership affected was **which projects a solution-level
@@ -122,6 +153,8 @@ deployed. Read them as complementary sections of a single log rather than as alt
 > steps cover those two and additionally assert each resolved `TargetFramework`. The workflow therefore
 > enforces the governing arithmetic: **17 solution members + 2 explicitly gated non-members = 19
 > tracked manifests**.
+
+<!-- Two distinct block quotes; this comment keeps them separate rather than one quote with a gap. -->
 
 > **A note on the Site and Site.Project cross-origin allow-lists — read this before trusting any
 > statement below about which origins those hosts permit. SUPERSEDED, and this note governs.** Both
@@ -158,14 +191,14 @@ Measured at this commit:
 | Check | Result |
 | --- | --- |
 | `dotnet restore WebVella.ERP3.sln` | exit 0, zero `NU19xx` diagnostics |
-| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore --no-incremental` | exit 0, **0 errors**, **3,044** analyzer warnings (this row read 3,096 while a repository-root `.globalconfig` armed additional rules; that file has since been removed and the figure re-measured). Plus, run separately because they are not solution members: `WebVella.Erp.WebAssembly/Shared` 0 warnings and `/Server` 53 warnings, both **0 errors** |
+| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore --no-incremental` | exit 0, **0 errors**, **3,044** analyzer warnings as measured for this class (this row read 3,096 while a repository-root `.globalconfig` armed additional rules, then 3,044 after it was removed; the shipped figure is **3,094** because `AnalysisLevelSecurity=latest-all` now arms the category through an SDK-shipped configuration — see the warning-baseline note near the top of this log). Plus, run separately because they are not solution members: `WebVella.Erp.WebAssembly/Shared` 0 warnings and `/Server` 53 warnings, both **0 errors** |
 | `dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive` | no vulnerable package in any of the **17 solution** projects |
 | `dotnet list <csproj> package --vulnerable --include-transitive` on `WebVella.Erp.WebAssembly/Server` and `/Shared` | no vulnerable package. **No longer run separately by hand:** these two non-member projects have permanent per-project restore, analyzer-build and audit steps in `.github/workflows/security-scan.yml`, so all **19 of 19** projects are gated on every push — coverage by two routes, with the solution supplying 17 and these steps the remaining 2. The command-coverage split itself stays disclosed as `RISK-030` rather than closed |
 | Gate properties, evaluated per project with `dotnet msbuild -getProperty` | all six present on **19 of 19** projects — including the two non-members, because `Directory.Build.props` is directory-scoped rather than solution-scoped |
 | Target frameworks | **19 of 19** on `net10.0` |
 | Analyzer escalation check | no `CA`, `NU` or `SCS` diagnostic reported as an error; only the six NuGet audit codes `NU1900`–`NU1905` are configured as errors and none fires |
 | Diagnostic yardstick against the pre-remediation baseline | unchanged: `CA2200`×52, `ASPDEPR008`×42, `CS0618`×6, `CS0168`×4 — each a raw log-occurrence count, and each identical to the baseline measurement. `ASP0019` was previously listed here at ×2 and has been **removed**, because that figure no longer describes this tree: it counted the one `HttpContext.Response.Headers.Add("last-modified", …)` call in `WebApiController.cs`, which the file-endpoint hardening of Class 11 deleted when it took over that response’s header handling. No `Headers.Add(` call remains anywhere in the tree, so the rule fires zero times — confirmed in the post-remediation baseline log and again at this commit. |
-| Security-family analyzer diagnostics remaining, by design | `CA5351`×10 (the retained legacy MD5 verification path, `RISK-004`). `CA5359` no longer fires anywhere: a certificate-validation callback is installed only when the configuration-gated policy member allows it, and the callback yields that member rather than a literal `true`, so the rule has nothing left to report — H-11 is closed at all five sites and the opt-out is refused outside Development posture (`RISK-033`) |
+| Security-family analyzer diagnostics remaining, by design | `CA5351`×**5** — one in `WebVella.Erp/Utilities/PasswordUtil.cs` on the retained legacy MD5 verification path and four in `WebVella.Erp/Utilities/CryptoUtility.cs` on content hashing and key derivation (`RISK-004`, `RISK-006`). An earlier revision of this cell read ×10, which double-counted the two target-framework spellings of the same diagnostic; the de-duplicated figure on `(file, line, column, rule)` is five, and it matches the five MD5 API uses in the tree exactly. `CA5359` no longer fires anywhere: a certificate-validation callback is installed only when the configuration-gated policy member allows it, and the callback yields that member rather than a literal `true`, so the rule has nothing left to report — H-11 is closed at all five sites and the opt-out is refused outside Development posture (`RISK-033`) |
 
 **What this log does not claim.** Two of the items previously listed here have since been closed and
 three have not; the difference matters, so both halves are stated.
@@ -173,26 +206,26 @@ three have not; the difference matters, so both halves are stated.
 *Closed since the sections below were written* — see
 [Checkpoint corrections](#checkpoint-corrections-gate-honesty-solution-graph-fidelity-and-the-secret-scrub):
 
-* The shipped `Config.json` files **no longer** carry a live connection string, encryption key, token
+- The shipped `Config.json` files **no longer** carry a live connection string, encryption key, token
   signing key, storage connection string or mail password, and all eight now set
   `"DevelopmentMode": "false"`. `WebVella.Erp.Site/web.config` now sets `Production`.
-* The seeded administrator credential is **no longer a literal**. `WebVella.Erp/ERPService.cs`
+- The seeded administrator credential is **no longer a literal**. `WebVella.Erp/ERPService.cs`
   resolves it from a required operator-supplied setting and from nowhere else; nothing is generated,
   and no credential is written to standard error, to the log table or into an exception message.
 
 *Still open **at the time of this change**, with each item's later disposition recorded so that this
 list is not read as a present-tense statement:*
 
-* `AllowAnyOrigin()` is applied at **no** host (`RISK-013`). This entry read "two hosts", then "one
+- `AllowAnyOrigin()` is applied at **no** host (`RISK-013`). This entry read "two hosts", then "one
   host"; both readings are superseded and are quoted rather than deleted, because each was published as
   the status at the time. `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` both serve an explicit
   origin allow-list now, and the call survives only inside explanatory comments.
 
 *Closed at the code-review checkpoint — the two entries that used to sit in the list above:*
 
-* The password bounds in `WebVella.Erp/ERPService.cs` are **no longer 6-to-24**. They are **12 and
+- The password bounds in `WebVella.Erp/ERPService.cs` are **no longer 6-to-24**. They are **12 and
   128**, held in the named constants `PasswordMinLength` and `PasswordMaxLength` (finding M-13).
-* The **guest-role grants** on the user and role entities are no longer unchanged (findings C-02 and
+- The **guest-role grants** on the user and role entities are no longer unchanged (findings C-02 and
   C-05). Guest `CanCreate` on the user entity, `CanRead` on the user entity and `CanCreate` on the role
   entity are removed from the seed **and** from the two plugin patches that used to re-grant them, and the
   **version-4** migration revokes all three on an installation that crosses the ladder.
@@ -225,7 +258,6 @@ outside the authorised file set, has since been **removed** — cumulative-revie
 file explicitly and supersedes the scope judgement. No credential-shaped literal remains in the
 tracked tree; `RISK-026` now covers repository history alone.
 
-
 ## Verification method, and what substitutes for the test-suite gate
 
 Stated first, because every entry below depends on it.
@@ -247,13 +279,13 @@ The substitute regime, applied to every class:
 | Dependency scan | Solution-wide restore with `NuGetAudit`, plus `dotnet list package --vulnerable --include-transitive` | No unaccepted advisory; the one accepted advisory is recorded in the risk register |
 | Compilation | `dotnet build WebVella.ERP3.sln --no-incremental` | **0 errors**, and no new warning attributable to a changed line |
 | Behavioural | Purpose-built ad-hoc harnesses per class, plus interactive browser verification | All assertions pass |
-| Secrets | Signature sweep over the tracked tree | No hardcoded credential |
+| Secrets | Signature sweep over the tracked tree, plus a **known-published-value layer** that fingerprints every length-matched candidate token in every tracked text file — documentation included, with **no evidence-field exemption** — against the SHA-256 digests of the five published secrets | No hardcoded credential, and no reproduction of a known published value anywhere in the tracked tree |
 
 Two measurement notes that materially affect whether these numbers mean anything:
 
-* **A plain solution build is incremental and under-reports warnings.** `--no-incremental` is
+- **A plain solution build is incremental and under-reports warnings.** `--no-incremental` is
   mandatory; without it the count is roughly a third of the true figure.
-* **`dotnet list package --vulnerable` exits 0 even when it reports advisories.** Its exit status must
+- **`dotnet list package --vulnerable` exits 0 even when it reports advisories.** Its exit status must
   never be used as a pass/fail signal; its *output* must be parsed. The CI workflow greps it.
 
 **Warning baseline.** Enabling analyzers repository-wide raised the warning count from 106 to 3072 —
@@ -261,31 +293,81 @@ a pre-existing backlog surfaced by the new analysis, not damage. The count at th
 remediation was **3065**, i.e. **7 fewer**, with **zero warnings on any line added by the
 remediation**.
 
-> **The current baseline is 3,044. The full chain, because several later passes moved it.**
+> **The current baseline is 3,093. The full chain, because several later passes moved it.**
 > The code-review pass that followed this remediation cleared a further 18, taking the total to
 > **3,047**. It then added a repository-root `.globalconfig`, which made 49 previously *invisible*
 > security diagnostics visible — `CA2100`, `CA2326` and `CA2328` — taking the total to **3,096**. That
-> `.globalconfig` has since been **removed**, because the remediation plan of record freezes the analyzer
-> gate at `EnableNETAnalyzers` plus `AnalysisLevel=latest-recommended`; the 49 became invisible again and
-> the total fell to **3,046**. Withdrawing the version-5 migration then deleted two methods that carried
-> `CA1822` diagnostics, giving the current **3,044**.
+> `.globalconfig` was then **removed** on the reading that the plan froze the analyzer gate at
+> `EnableNETAnalyzers` plus `AnalysisLevel=latest-recommended`; the 49 became invisible again and the total
+> fell to **3,046**. Withdrawing the version-5 migration then deleted two methods that carried `CA1822`
+> diagnostics, giving **3,044**.
 >
-> **Every figure in the later sections of this log that reads 3,096 warnings or 622 `(file, rule)` pairs was
+> **A later review reversed that reading, and the current figure rose again — by a different
+> mechanism.** AAP 0.9.1 Gate 1 names eleven security families by name and sets the pass criterion "zero
+> diagnostics in these families across the remediated files", and nine of them do not execute at
+> `latest-recommended` — so freezing there left the gate unable to substantiate its own criterion. The
+> families are now armed by **`AnalysisLevelSecurity=latest-all`** in `Directory.Build.props`, which selects
+> a configuration the **SDK ships**, so no `.globalconfig` exists in this repository and the workflow still
+> asserts that none does. The interprocedural taint family `CA3001`-`CA3012` is excluded through `NoWarn`
+> for a measured termination reason: armed and untuned the solution build produced no further output for
+> over thirty-five minutes with 3 of 17 projects finished, because `WebVella.Erp.Web` compiles 395 Razor
+> views into one compilation; excluded, the same build completes in about **106 seconds**.
+>
+> **Re-measured on the tree this commit publishes:** `3,093` warnings, `0` errors, and **55 distinct
+> Security-category diagnostics across 5 rules** — `CA2100` 20, `CA2326` 20, `CA2328` 9, `CA5351` 5,
+> `CA5362` 1 — reducing to **21 `(rule, file)` pairs**, every one of them enumerated with a written
+> justification in the workflow's Gate 1 allow-list and failed upon if it is not. Across all categories the
+> same normalisation yields **3,066 distinct `CA` diagnostics** and **650 `(rule, file)` pairs**. Any later
+> claim of "no new warnings" is measured against **3,093**.
+>
+> **Why 3,094 and not 3,096, and what that means for every later figure in this log.** The final
+> regression pass compared the shipped build against the pre-remediation baseline rule by rule AND file by
+> file, and the per-file decomposition caught something the per-rule totals had hidden: `CA2201` showed a
+> net **+2**, all of it in `WebVella.Erp/Database/DbFileRepository.cs`, from two `throw new Exception`
+> statements the file-mutation race fix had added. `CA2201` refuses the reserved base type in new code, so
+> both were changed to the specific `FileNotFoundException` — same message, same behaviour for every
+> caller, and none of the four in-repository `Move` call sites can even reach them, because all four pass
+> `expectedSourceId` and take the `return null` above. That removed exactly two warnings, and the four
+> pre-existing bare-`Exception` raises in that file are left untouched under the minimal-change
+> constraint. **Consequence for reading this log:** any later section that says "3,096 today", "current
+> baseline 3,096" or "3,096 on the tree this commit publishes" was written before that fix and resolves to
+> **3,093** - see the further single-warning step recorded below; its *conclusions* are unaffected, because every one of them is a parity or delta comparison
+> whose two sides were measured under the same configuration, and the Security-category figures above are
+> unchanged by it — `CA2201` is not a Security-category rule and does not appear in the Gate 1 ratchet.
+>
+> **And why 3,093 rather than 3,094 — the last single-warning step.** Reconciling the two competing
+> output-encoding strategies for the page-header description removed one further `CA` diagnostic. The
+> description is encoded exactly once, at the tag-helper sink, so the supplier-side
+> `HtmlEncoder.Default.Encode` in `WebVella.Erp.Web/Components/PcPageHeader/PcPageHeader.cs` was
+> redundant — it would have double-encoded every legitimate description, rendering `R&D backlog` as
+> `R&amp;D backlog` — and was removed together with the `using System.Text.Encodings.Web;` it was the
+> only consumer of. The superseded `SafeStyleValue.OptionLabel` helper went with it, because the
+> retained `SafeStyleValue.DisplayText` closes the same option-label sink more completely: an ESCAPED
+> delimiter is decoded back to markup by the select2 templates before they re-insert it through
+> `innerHTML`, whereas a REMOVED one cannot come back, and removal also drops the `"` that one
+> inline-edit script concatenates into a `title` attribute. Both files now emit **zero** analyzer
+> diagnostics. Measured on the tree this commit publishes: **3,093 warnings, 0 errors**, **3,066**
+> distinct `CA` diagnostics, and the Gate 1 per-rule baselines unchanged and re-measured exactly —
+> `CA2100` 20, `CA2326` 20, `CA2328` 9, `CA5351` 5, `CA5362` 1, and `CA2327`, `CA5350`, `CA5359`,
+> `CA5364`, `CA5390`, `CA5401`, `CA5404` all 0, being **55** Security-category diagnostics over **21**
+> `(rule, file)` pairs within **650** `CA` pairs. The total is deliberately not asserted by the
+> workflow; the per-rule baselines are.
+>
+> **Figures in the later sections of this log that read 3,096 warnings or 622 `(file, rule)` pairs were
 > measured while that `.globalconfig` was still in force.** Their *conclusions* - parity, `added=0`,
 > `removed=0`, zero count differences - are unaffected, because both sides of each comparison were measured
-> under the same configuration. Their *absolute* values are not the shipped ones. Re-measured on the tree
-> this commit publishes, with the same normalisation Gate 1 applies: **3,044 warnings, 0 errors, 631
-> distinct `(rule, file)` CA pairs**, and exactly **two** Security-category pairs - `CA5351` in
-> `WebVella.Erp/Utilities/CryptoUtility.cs` and in `WebVella.Erp/Utilities/PasswordUtil.cs`, 10 raw
-> occurrences over 5 distinct sites, both accepted documented residuals. `CA2100`, `CA2326`, `CA2328` and
-> `CA5362` report **zero**, because they do not execute at `latest-recommended` without a global analyzer
-> config; the 631 figure is identical whether or not the two non-members' build output is appended, which
-> is the measurement that proves they emit no Security-category diagnostic of their own.
+> under the same configuration. Their *absolute* warning total now happens to agree with the shipped one
+> again, and that agreement is a coincidence of arithmetic rather than the same configuration: the
+> `.globalconfig` promoted individual rules by name, whereas `AnalysisLevelSecurity=latest-all` arms the
+> whole category and `NoWarn` removes the taint family. The `(rule, file)` pair count is **not** the same:
+> re-measured on the tree this commit publishes, with the same normalisation Gate 1 applies, there are
+> **650 distinct `(rule, file)` CA pairs across all categories**, of which **21 are Security-category
+> pairs**. The pairs are identical whether or not the two non-members' build output is appended, which is
+> the measurement that proves they emit no Security-category diagnostic of their own.
 >
 > Reproduce it with `dotnet build WebVella.ERP3.sln -t:Rebuild -v n` and read the `N Warning(s)` summary
 > line. `-t:Rebuild` is mandatory: an incremental build skips unchanged projects and undercounts badly —
-> measured at **1** warning instead of ~3,000. Any later claim of "no new warnings" is measured against
-> 3,044.
+> measured at **1** warning instead of ~3,000.
 >
 > **Two counting corrections, because earlier revisions of this log got both wrong.** First, an earlier
 > revision recorded 3,097 and attributed the extra warning to a later pass; that warning is not present in
@@ -300,7 +382,7 @@ remediation**.
 >   | grep -oE '[^ (]+\([0-9]+,[0-9]+\): warning (CA|CS|NU)[0-9]+' | sort -u | wc -l
 > ```
 >
-> On that basis the 3,044 total resolves to **3,022 distinct diagnostic sites**, the largest groups being
+> On that basis the earlier 3,044 total resolved to **3,022 distinct diagnostic sites**, the largest groups being
 > `CA2201` 1,080, `CA1305` 340, `CA1310` 303 and `CA1862` 246 — not the doubled 2,168 / 682 / 612 / 494 an
 > earlier revision reported. It is also why `CA5351` counts **5** and not 10.
 
@@ -330,25 +412,23 @@ provenance classes, and the distinction is material:
 
 Three consequences worth stating plainly, because they are what the distinction is for:
 
-* **Contemporaneous observations are honest but not durable.** Where this log reports a latency, a row
+- **Contemporaneous observations are honest but not durable.** Where this log reports a latency, a row
   count, or an interactive result, that is a faithful record of what was observed at the time. It is
   not a re-runnable proof, and it should not be cited as one. Timings in particular are
   hardware-dependent and were taken on a heavily contended shared host; treat their *ratio* and their
   *direction* as the finding, never their absolute value.
-* **The CI-enforced class is the only one that cannot silently rot.** A locally reproducible claim can
+- **The CI-enforced class is the only one that cannot silently rot.** A locally reproducible claim can
   drift as the tree changes and nothing will announce it. A CI-enforced claim breaks the build. This
   is why the remediation moved as much verification as possible into that class — the analyzer gate,
   the dependency listing, the secrets sweep, the project-graph assertion — rather than leaving it as
   prose in this file.
-* **Where a claim's class is not obvious from its wording, the class is named inline.** Ambiguous
+- **Where a claim's class is not obvious from its wording, the class is named inline.** Ambiguous
   claims have been requalified in place rather than deleted, so the original assertion and its
   provenance are both visible.
 
-
-
 ## Dependency class — the authoritative record
 
-### Class: Dependencies
+### Authoritative record for Class 13 — Dependencies
 
 **Findings closed in this class:** H-01 (`AutoMapper`, CWE-674, GHSA-rvv3-g6hj-g44x /
 CVE-2026-32933, OWASP A06:2021).
@@ -438,7 +518,6 @@ suite was out of scope for this remediation.
   warnings exist in the data layer; and requests for two third-party vendor source-map files that
   are absent from disk are answered `405` instead of `404` by the embedded file provider. None is a
   security finding and none was changed, in keeping with the minimal-change constraint.
-
 
 ## Remediation by vulnerability class
 
@@ -587,15 +666,18 @@ commits only, and carries no implication about the earlier history acknowledged 
 | --- | --- | --- | --- | --- | --- |
 | 1 | `bcc16a12` | Build and Scan Integrity | `F-13` | Four `.csproj` manifests, comment removal only | Yes |
 | 2 | `696659b1` | Scan Gate Enforcement | `F-12`, `F-11`, `F-05` | `global.json`, `.github/workflows/security-scan.yml` | Yes |
-| 3 | `3fda6659` | Output Encoding | `F-01` | `risk-register.md` (`RISK-032`), `security-audit-report.md` | Yes |
-| 4 | `f8432fcb` | File Upload and Download | `F-02` | `risk-register.md` (`RISK-033`), `security-audit-report.md` | Yes |
+| 3 | `3fda6659` | Output Encoding | `F-01` | `risk-register.md` (`RISK-037`), `security-audit-report.md` | Yes |
+| 4 | `f8432fcb` | File Upload and Download | `F-02` | `risk-register.md` (`RISK-133`), `security-audit-report.md` | Yes |
 | 5 | `9437e993` | Injection and Deserialisation | `F-03` | `ErpSerializationBinder.cs`, plus this log, the register and the report | Yes |
 
 Two of the five — commits 3 and 4 — close their findings by **documentation rather than by code**, and
 that is deliberate rather than a shortfall: in both cases the affected file's frozen contract forbade
 the code change the finding's suggested resolution proposed, and mandated recording the residual as an
-accepted risk with an owner escalation instead. The reasoning for each is recorded in `RISK-032` and
-`RISK-033` respectively, and the contract clause relied upon is named there.
+accepted risk with an owner escalation instead. The reasoning for each is recorded in `RISK-037` and
+`RISK-133` respectively, and the contract clause relied upon is named there. Both citations were
+originally written as `RISK-032` and `RISK-033`; those identifiers describe the sitemap-scheme residual
+and the SMTP certificate posture respectively, and were re-aimed at the entries that actually carry
+these two subjects when the register's identifiers were made unique.
 
 #### Per-file attribution — every changed path, and the class that owns it
 
@@ -742,7 +824,7 @@ qualified.
 | 2 | Preserve functionality and workflows exactly | Held. Legitimate return URLs render and navigate identically, verified in a browser; the mapping bootstrap is byte-identical to its pre-remediation form; the identifier reordering was proven to change no accept/reject verdict over 200 000 generated inputs; legacy credentials continue to verify. |
 | 3 | Do not modify unrelated code | Held with one recorded exception, above: `login.cshtml.cs` moved with the asynchronous propagation it is compelled by, and the three documentation files are the mandated deliverable. Nothing else outside a class's scope was touched. |
 | 4 | Do not enhance or optimise beyond remediation | Held. No feature, no refactor, no test project, no reformatting. Pre-existing mixed indentation in edited files was deliberately preserved rather than normalised. |
-| 5 | Use the least invasive security controls | Held. Every control resolves from framework references already present — no package was added. The lockout uses the existing in-process cache rather than a new store or a schema change. |
+| 5 | Use the least invasive security controls | Held. Every control resolves from framework references already present — no package was added. The lockout uses an in-process `MemoryCache` — the same type the platform's own cache helper uses, in a private size-bounded instance — rather than a new package or a schema change. |
 | 6 | Document changes with comments explaining the threat addressed | Held. Every corrected reference site, every gate property, every guarded sink and every fail-fast path carries a comment naming the threat, and all fifteen corrected reference sites now carry the *same* comment so the policy reads as a policy rather than as fifteen opinions. |
 | 7 | Choose the solution requiring the least modification | Held. The mail advisory is one line; the mapping advisory is accepted rather than patched because the patch changes the product's licence posture; the current data provider version is already safe and was therefore left alone. |
 | 8 | Document out-of-scope concerns but do not fix unless Critical | Held. Documented-not-fixed items include the deterministic initialisation vector, the analyzer backlog, the bypassable-encoder's platform-wide root cause, the lock file, the unbounded script cache and the antiforgery gap. |
@@ -983,11 +1065,20 @@ are selected by the SDK, so an unpinned toolchain makes the gate's verdict non-r
 consolidation commits and `80042d8c`, `58eab192`. Reproduce with
 `git log --oneline c8ea6bd4..HEAD -- Directory.Build.props global.json .github/workflows/security-scan.yml`.
 
-**Line locators.** `Directory.Build.props:L71-L73` (`NuGetAudit`, `NuGetAuditMode`, `NuGetAuditLevel`),
-`:L149` (`WarningsAsErrors` appended with `NU1900`–`NU1905`) and `:L240-L241` (`EnableNETAnalyzers`,
-`AnalysisLevel`); `global.json:L20-L23` (the `sdk` block, `10.0.302` with `rollForward: disable`); and
-`.github/workflows/security-scan.yml`, 2,768 lines, which runs restore, then the analyzer build, then
-`dotnet list package --vulnerable --include-transitive`.
+**Line locators, re-read against the tree at this commit rather than carried forward.**
+`Directory.Build.props:L71-L73` (`NuGetAudit`, `NuGetAuditMode`, `NuGetAuditLevel`), `:L180`
+(`WarningsAsErrors` appended with `NU1900`–`NU1905`) and `:L310-L313` — `EnableNETAnalyzers`,
+`AnalysisLevel`, and the two properties that arm and bound the Security category,
+`AnalysisLevelSecurity` and the `CA3001`–`CA3012` `NoWarn`; `global.json:L20-L23` (the `sdk` block,
+`10.0.302` with `rollForward: disable`); and `.github/workflows/security-scan.yml`, **3,898** lines,
+which runs restore, then the analyzer build, then `dotnet list package --vulnerable
+--include-transitive`.
+
+Two of those figures were stale and are corrected here rather than left to be discovered: the analyzer
+properties sat at `:L240-L241` before the Security category was armed, and the workflow was 2,768 lines
+before the SAST-coverage, evidence-binding and Gate 5 work extended it. Both moved in the same change
+that added `AnalysisLevelSecurity`, which is why the analyzer locator is now a four-line range: the two
+properties it previously named are still there, and two more now sit immediately beneath them.
 
 **What this class delivers:** the automated validation gates themselves. Until this class landed,
 every "the scan is clean" statement in this repository was an assertion rather than a measurement,
@@ -1179,12 +1270,14 @@ with
 - **Malformed stored values fail verification rather than throw.** Only the two exception types a
   corrupt value can actually produce are caught, so one damaged row cannot become a denial of service
   on the login path while a genuine platform fault still propagates and stays visible.
-- **Two deviations from the letter of the mandated cryptographic standard are recorded, not
-  absorbed** — the algorithm family, and the pseudo-random function that the framework's versioned
-  format fixes. Both, with their measurements and the owner option for literal compliance, are
-  `RISK-003` in the [risk register](risk-register.md) — that register renumbered this subject from
-  `RISK-005`, which now carries the Content-Security-Policy collector's bounds. The retained MD5
-  surface is `RISK-004`.
+- **One deviation from the letter of the mandated cryptographic standard is recorded, not
+  absorbed** — the algorithm family, PBKDF2 where the standard names bcrypt, scrypt or Argon2. With its
+  measurement and the owner option for literal compliance it is `RISK-003` in the
+  [risk register](risk-register.md) — that register renumbered this subject from `RISK-005`, which now
+  carries the retired Content-Security-Policy collector. **A second deviation this bullet used to
+  record is withdrawn:** the pseudo-random function is HMAC-SHA-256, exactly as mandated, because the
+  versioned payload is written by `PasswordUtil.cs` rather than by the framework type whose format
+  fixes it at HMAC-SHA-512. The retained MD5 surface is `RISK-004`.
 
 #### The accepted latency cost, measured rather than asserted
 
@@ -1212,7 +1305,7 @@ count to chase a latency target.
 | Salted and non-deterministic | hash the same password twice | different values; each carries its own 128-bit random salt |
 | Self-describing, so the work factor can be raised later | inspect the produced value | encodes the format marker, the function, the iteration count and the salt; 84 Base64 characters beginning with `A` |
 | The rehash signal actually fires | verify a value written at a lower iteration count | `SuccessRehashNeeded`, so a future work-factor increase needs no further code change |
-| The literally mandated function was tested, not assumed unavailable | hand-build a versioned payload with the HMAC-SHA-256 function identifier at 600,000 iterations and verify it | `SuccessRehashNeeded` rather than `Success` — every login would rewrite the credential, which is why the versioned format's own function is kept. Recorded in `RISK-005` |
+| The literally mandated function was tested, not assumed unavailable | hand-build a versioned payload with the HMAC-SHA-256 function identifier at 600,000 iterations and verify it **through `Microsoft.AspNetCore.Identity.PasswordHasher<T>`** | `SuccessRehashNeeded` rather than `Success` — that type always rehashes a payload whose function is not its own, so delegating to it would rewrite the credential on every login. **This is the measurement that was over-read.** It establishes a property of that *type*, not of the versioned payload format, and the conclusion drawn from it — that HMAC-SHA-256 was unreachable — was wrong: `PasswordUtil.cs` now writes and reads the payload itself with the mandated function and no rehash loop. Review finding `M-3` records the correction; the surviving deviation is `RISK-003` |
 | Cost measured | 20-run medians, single-threaded | the table above |
 | Module compiles | `dotnet build WebVella.Erp/WebVella.Erp.csproj -c Debug -t:Rebuild` | exit 0, **0 errors** |
 | Solution compiles under the enforced gate | `dotnet restore WebVella.ERP3.sln` then `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore -t:Rebuild` | restore exit 0 with zero `NU19xx`; build exit 0, **0 errors** across all 17 solution projects |
@@ -1252,11 +1345,14 @@ compares a digest inside a SQL predicate — it fetches by e-mail and verifies i
 
 #### Deviations and out-of-scope observations
 
-- **Deviation, recorded twice on purpose** — in `RISK-005` and in the file's own header comment, so a
+- **Deviation, recorded twice on purpose** — in `RISK-003` and in the file's own header comment, so a
   reader of either artefact learns of it without needing the other: the algorithm family is PBKDF2
-  rather than bcrypt, scrypt or Argon2, and the pseudo-random function is HMAC-SHA-512 rather than the
-  literally named HMAC-SHA-256, because the mandated versioned format fixes it and the alternative was
-  empirically shown to break the upgrade signal.
+  rather than bcrypt, scrypt or Argon2. **One deviation this bullet used to record is gone.** It read
+  "the pseudo-random function is HMAC-SHA-512 rather than the literally named HMAC-SHA-256, because the
+  mandated versioned format fixes it"; the shipped primitive derives with **HMAC-SHA-256** at 600,000
+  iterations and writes the versioned payload itself, so both mandated parameters are met and only the
+  algorithm-family deviation remains. The bullet also cited `RISK-005`, which is the retired
+  Content-Security-Policy report-endpoint entry; the correct reference is `RISK-003`.
 - **Pre-existing mixed indentation inside `GetMd5Hash` was deliberately left alone.** Two lines in
   that member are tab-indented while the file otherwise uses spaces. That inconsistency is inherited
   verbatim from the pre-audit revision, not introduced here, and normalising it would be an unrelated
@@ -1397,7 +1493,7 @@ these are Critical and High rather than "weak cryptography".
 | File | Change |
 | --- | --- |
 | `WebVella.Erp/Utilities/CryptoUtility.cs` | The `defaultCryptKey` constant is **deleted**, and the silent fallback in the `CryptKey` property is replaced by an `InvalidOperationException` naming the setting, the environment variable, the legacy misspelled `Settings:EncriptionKey` spelling, the finding, and the operator guide. |
-| `WebVella.Erp/ErpSettings.cs` | The `"ThisIsMySecretKey"` fallback on `JwtKey` is removed, and a new `ValidateRequiredSecurityConfiguration` accumulates every missing required secret and throws once with an actionable message. |
+| `WebVella.Erp/ErpSettings.cs` | The compiled-in signing-key fallback on `JwtKey` — `[REDACTED — 17 characters, SHA-256 prefix 82794e7c1030b896]` — is removed, and a new `ValidateRequiredSecurityConfiguration` accumulates every missing required secret and throws once with an actionable message. |
 
 #### Design decisions
 
@@ -1414,10 +1510,17 @@ these are Critical and High rather than "weak cryptography".
   (CWE-532).
 - **All missing secrets are reported at once.** A mis-provisioned deployment learns about every gap
   from a single startup failure instead of one restart per variable.
-- **The signing key is required only where a `Settings:Jwt` section exists.** Only the token-issuing
-  hosts configure one; the remaining hosts and the console application legitimately ship none, and
-  demanding a key from them would stop them starting — which the preservation requirement forbids.
-  Where the section *is* present the key is mandatory, because its fallback was removed.
+- **The signing key is never a startup requirement on any host — and an earlier revision of this
+  bullet said it was.** It read *"where the section is present the key is mandatory"*, which sits in a
+  list about startup failure and therefore reads as startup-fatal. **Withdrawn.** The key is not added
+  to the `missingSecrets` accumulator at all, so no host is stopped for want of it; demanding one would
+  stop the five hosts that legitimately ship no `Settings:Jwt` section, which the preservation
+  requirement forbids. What absence costs is the capability: the token issue and refresh routes disable
+  themselves and refuse every request, every presented bearer token fails validation, and cookie login
+  is unaffected. The `Settings:Jwt` section governs only whether a `warn:` line is emitted, because a
+  host that declares a section plainly intended to serve tokens. Reproduce with
+  `grep -n 'missingSecrets +=' WebVella.Erp/ErpSettings.cs` — every name that can appear in the
+  startup-abort message is there, and the signing key is not among them.
 - **Validation runs before `IsInitialized` is set**, so a failed validation leaves the settings
   explicitly un-initialised rather than half-applied.
 - **The legacy misspelling is still honoured.** `Settings:EncriptionKey` is resolved into
@@ -1452,14 +1555,27 @@ What *was* live, and is the reason rotation is mandatory rather than advisable:
 
 | Value | Distribution before the scrub | How it is written here |
 | --- | --- | --- |
-| Connection string | **Seven** of the eight pointed at an internal database host; the eighth, `WebVella.Erp.Site`, pointed its live string at `localhost`. The `User Id`/`Password` pairs were `test`/`test` in six files and `dev`/`dev` in two | Described, never reproduced — no pasteable connection string appears in this documentation set |
-| Encryption key | Byte-identical in all eight, a 64-hex-character value beginning `BC93B776A428…` | Truncated to its first bytes, because the finding is provable from the prefix |
-| Token signing key | Present in the two hosts that issue tokens, as a thrice-repeated phrase beginning `ThisIsMySecretKey…`, 51 characters | Truncated for the same reason |
+| Connection string | **Seven** of the eight pointed at an internal database host; the eighth, `WebVella.Erp.Site`, pointed its live string at `localhost`. In every file the `User Id` and the `Password` were the same word as each other, and there were two such words across the eight: `[REDACTED — 4 characters, SHA-256 prefix 9f86d081884c7d65]` in six files and `[REDACTED — 3 characters, SHA-256 prefix ef260e9aa3c673af]` in two | Described, never reproduced — no pasteable connection string appears in this documentation set |
+| Encryption key | Byte-identical in all eight, 64 hexadecimal characters | `[REDACTED — 64 characters, SHA-256 prefix 7810b2fe1ad52ed5]` — fingerprinted, not truncated |
+| Token signing key | Present in the two hosts that issue tokens, 51 characters, a short phrase padded to length rather than a random value | `[REDACTED — 51 characters, SHA-256 prefix 87184b56659256b8]` — fingerprinted, not truncated |
+| Seeded administrator password | A literal assigned by provisioning, 3 characters | `[REDACTED — 3 characters, SHA-256 prefix d24f1f612642b77b]` |
+| Internal database host and port | Present in seven of the eight connection strings and, as a UNC storage path, in all eight | `[REDACTED — host:port, SHA-256 prefix 72858cca8cb5df2d]` |
 
 **The full values remain in repository history and are therefore permanently compromised, so rotation is
 mandatory** — scrubbing the working tree does not un-publish a value that was committed. The operator
 procedure is in the [secure configuration guide](secure-configuration.md), and the residual history
 exposure is tracked as `RISK-026` in the [risk register](risk-register.md).
+
+**A correction to how this table used to be written.** Earlier revisions *truncated* the encryption key
+and named the signing key's phrase and repetition count, on the reasoning that "the finding is provable
+from the prefix". Both are withdrawn. Truncation is not redaction — a prefix narrows a search space, and
+naming a phrase plus a repetition count reconstructs the whole value — so those rows were a second
+publication of a compromised secret inside a tracked file, which is precisely what Validation Gate 3
+exists to prevent. Every historic value in this document set is now written as
+`[REDACTED — <n> characters, SHA-256 prefix <16 hexadecimal characters>]`, which keeps the length that
+several findings turn on and gives an operator a way to test their own value
+(`printf '%s' "$VALUE" | sha256sum | cut -c1-16`) without any document holding it. The convention is
+stated once, in [the audit report](security-audit-report.md#how-compromised-historic-values-are-written-in-this-document-set).
 
 `WebVella.Erp.Site/web.config` moves its `ASPNETCORE_ENVIRONMENT` from `Development` to `Production`,
 which is what actually stops the developer exception page engaging under IIS. CI row `A14` asserts it
@@ -1475,8 +1591,8 @@ so.
 
 | Step | Command / method | Result |
 | --- | --- | --- |
-| The default key is gone | `git grep` of the tracked tree for the 64-hex-character constant and for `defaultCryptKey` | **no occurrence** anywhere. Recorded honestly: when this row was first written it described only the removal of the compiled-in constant from `CryptoUtility.cs`, and the constant still appeared in the shipped `Config.json` files. It became true of the whole tracked tree only once the configuration files were scrubbed — see [Checkpoint corrections](#checkpoint-corrections-gate-honesty-solution-graph-fidelity-and-the-secret-scrub) |
-| The placeholder signing key is gone | `git grep` of the tracked tree for `ThisIsMySecretKey` | **no occurrence outside this audit documentation's EVIDENCE fields**, where the mandated eight-field finding format requires the observed construct to be quoted. Same correction as the row above: the literal was still republished by `WebVella.Erp.Site/JWT_README.txt` and carried in two `Config.json` files when this row was written, and both were reconciled in the checkpoint corrections |
+| The default key is gone | `git grep` of the tracked tree for the 64-hex-character constant and for `defaultCryptKey` | **no occurrence** anywhere, and — since the redaction pass — no occurrence in the documentation set either. Recorded honestly: when this row was first written it described only the removal of the compiled-in constant from `CryptoUtility.cs`, and the constant still appeared in the shipped `Config.json` files. It became true of the whole tracked tree only once the configuration files were scrubbed — see [Checkpoint corrections](#checkpoint-corrections-gate-honesty-solution-graph-fidelity-and-the-secret-scrub) |
+| The placeholder signing key is gone | `git grep` of the tracked tree for the published signing-key literal | **no occurrence anywhere in the tracked tree, documentation included.** This row has been corrected twice. It first read "no occurrence" while the literal was still republished by `WebVella.Erp.Site/JWT_README.txt` and carried in two `Config.json` files; those were reconciled in the checkpoint corrections. It then read "no occurrence **outside** this documentation's `EVIDENCE` fields", on the argument that the mandated eight-field format requires the observed construct to be quoted. **That argument is withdrawn.** The format requires the observed *construct* — the conditional, the fallback, the file and the line — not the *secret value* the construct carried, and an exemption for evidence fields is exactly the exemption that let a compromised key stay in a tracked file. The values are redacted and fingerprinted instead, and the Gate 3 sweep now covers tracked documentation with no evidence-field exemption, so the claim is enforced rather than asserted |
 | The fallback is genuinely removed, not merely hidden — the negative test | resolve the key property with no key configured | throws `InvalidOperationException` with an actionable message; no key is returned |
 | Startup refuses to proceed without required secrets | initialise settings with the connection string and encryption key absent | throws, listing both missing key names and neither value |
 | Core module compiles | `dotnet build WebVella.Erp/WebVella.Erp.csproj -c Debug -t:Rebuild` | exit 0, **0 errors** |
@@ -1899,7 +2015,9 @@ own HSTS middleware emitted its default `max-age=2592000` and **overwrote** the 
 two writers disagreed on the wire. Registering the mandated parameters centrally makes both writers
 emit the identical string. The wire result was then confirmed by direct observation rather than
 inferred from registration — all seven headers were present on a dynamic response and on a static
-file, which is a *contemporaneous observation* in the provenance table above, whereas every row of
+file, which is a *contemporaneous observation* in the provenance table above, and one whose
+posture is worth naming: a **seven**-header result places the observed host outside Development,
+since `Strict-Transport-Security` is deliberately suppressed there, whereas every row of
 the table here is *locally reproducible*. That observation originally also covered a `204` and a
 `405` produced by a Content-Security-Policy violation-report endpoint. Those two response classes no
 longer exist: the endpoint was removed, precisely because it terminated the request itself and so
@@ -2106,7 +2224,9 @@ scope, so the harness proves the change and then leaves no trace.
 Both files in this class are **helpers that no caller invokes yet**. A repository-wide search for
 `DbIdentifier.` and for `ErpSerializationBinder` outside their own files returns nothing. The six
 identifier-concatenation sites and the fourteen polymorphic-deserialisation sites the plan
-enumerates were attached in a later checkpoint, **which has since landed - all sites are now attached.**
+enumerates were attached in a later checkpoint, **which has since landed - all sites are now attached, and
+the attachment count is 20 rather than 14: the plan's fourteen plus six write-side counterparts
+(`JobDataService.cs` 4, `NotificationContext.cs` 2) found after the plan was written.**
 At this entry, and until then, the standalone presence of these
 helpers is **not** runtime protection. Nothing in this entry should be read as claiming otherwise.
 
@@ -2233,9 +2353,11 @@ failed attempts* clause, implemented at literally five rather than at a rounder 
 (`TryBeginAttempt`); registration at `WebVella.Erp.Web/ErpMvcExtensions.cs:L255`
 (`AddSingleton<LoginThrottleService>()` — a transient or scoped registration would silently disable the
 control); consultation at the single login entry point `WebVella.Erp.Web/Pages/login.cshtml.cs:L152`;
-and the borrowed store `WebVella.Erp.Web/Utils/Cache.cs:L10` and `:L16`, 54 lines in total — **not**
-the dead 61-line `WebVella.Erp.Web/Security/AuthCache.cs`, which is a different file and is left in
-place.
+and the service's **own** size-bounded `MemoryCache`, declared at
+`WebVella.Erp.Web/Services/LoginThrottleService.cs:L109-L113`. *An earlier revision of this sentence
+described a store borrowed from `WebVella.Erp.Web/Utils/Cache.cs:L10`/`:L16`; that is withdrawn — the
+helper cannot be given a `SizeLimit`, which is the CWE-770 bound this store needs.* Neither is the dead
+61-line `WebVella.Erp.Web/Security/AuthCache.cs`, which is a different file again and is left in place.
 
 No lockout mechanism existed anywhere in the platform. The login page accepted an unlimited number of
 authentication attempts, which is the precondition for both credential stuffing and offline-free
@@ -2254,9 +2376,22 @@ attacker had both a fast offline attack and an unmetered online one.
   failed attempts", so `MaxFailedAttempts` is 5 and not a rounder or safer-feeling number. The sixth
   attempt is refused *without authentication being attempted at all*, so a locked-out principal costs
   no key derivation.
-- **The existing in-process cache is the backing store.** This is the least invasive control
-  available: it needs no database schema change and no new package. The alternative — a counter
-  column on the user record — would have meant a schema change the remediation boundary forbids.
+- **A dedicated, size-bounded in-process `MemoryCache` is the backing store.** This is the least
+  invasive control available: it needs no database schema change and no new package, because it is the
+  same `MemoryCache` type the platform's own cache helper already uses. The alternative — a counter
+  column on the user record — would have meant a schema change the remediation boundary forbids. It is
+  **not** the shared `Utils.Cache` helper, and that distinction is load-bearing rather than incidental:
+  the helper exposes no way to set a `SizeLimit`, so entries written through it are bounded only by
+  their expiration, which is precisely the CWE-770 unbounded-growth exposure this store has to close;
+  and raising a limit on the shared instance would change eviction behaviour for every other consumer.
+  The instance here is private, never shared, owned for the service's lifetime, and bounded at
+  `SizeLimit = 20000` tracked principals with `CompactionPercentage = 0.2`.
+- **Eviction order, not eviction exemption, is what protects an in-force lockout.**
+  `CacheItemPriority.NeverRemove` is deliberately **not** used: it would exempt lockout entries from
+  the ceiling and hand back the unbounded growth the ceiling prevents. A lockout is stored `High` and a
+  still-counting entry `Low`, so size pressure discards partial counts first. The residual — a full
+  20,000-entry store turnover displaces one account's partial count and buys at most four guesses — is
+  accepted and recorded as `RISK-008`.
 - **Keyed by username *and* address together.** Keying on username alone would let an attacker lock a
   known account out from anywhere, turning a defence into a denial of service against real users.
   Keying on address alone would let one shared NAT egress lock out an office.
@@ -2267,12 +2402,14 @@ attacker had both a fast offline attack and an unmetered online one.
   indefinitely".
 - **An in-force lockout is never extended.** Counting further attempts during a lockout would let an
   attacker keep a real account locked out permanently by attempting it once every few minutes.
-- **An explicit absolute expiration is mandatory and is not simplifiable.** The platform cache's
-  default entry options use `CacheItemPriority.NeverRemove`, so an entry written without one would
-  never expire and a user who mistyped five times would be locked out permanently. A private options
-  instance is passed rather than `null`, because the cache adopts and mutates its shared default
-  options object when handed `null` — which would leak this service's expiration onto every other
-  consumer of that cache.
+- **An explicit absolute expiration is mandatory and is not simplifiable.** A `MemoryCache` entry
+  written with no expiration never expires, so a user who mistyped five times would be locked out
+  permanently. A private options instance is passed rather than `null`, because a cache adopts and
+  mutates its shared default options object when handed `null` — which would leak this service's
+  expiration onto every other consumer of that instance. (The platform's shared
+  `WebVella.Erp.Web/Utils/Cache.cs` helper additionally defaults its entry options to
+  `CacheItemPriority.NeverRemove` at `:L16`; this service does not write through that helper, for the
+  reason in the next bullet, so that default never applies to a throttle entry.)
 - **Every public member is non-throwing.** Malformed input must not turn into a denial of service on
   the login path, so a missing username or address normalises to a placeholder rather than failing.
 
@@ -2298,7 +2435,7 @@ The service is registered and consumed:
 | --- | --- | --- |
 | Singleton registration, at the one canonical point all seven hosts inherit | `WebVella.Erp.Web/ErpMvcExtensions.cs:96` — `services.AddSingleton<LoginThrottleService>();` | `git grep -n 'AddSingleton<LoginThrottleService>' -- '*.cs'` |
 | Razor login page — injected, then the full attempt lifecycle | `WebVella.Erp.Web/Pages/login.cshtml.cs:83`, with `TryBeginAttempt` at `:124`, `TryClaimRefusalAudit` at `:145`, `AbandonAttempt` at `:166`, `RegisterFailedAttempt` at `:178`, `RegisterSuccess` at `:183` | `git grep -n 'loginThrottle\.' -- '*.cs'` |
-| JWT token endpoint — the **second** entry point, which the original finding did not name | `WebVella.Erp.Web/Controllers/WebApiController.cs:4909` | `git grep -n 'LoginThrottleService' -- '*.cs'` |
+| JWT token endpoint — the **second** entry point, which the original finding did not name | `WebVella.Erp.Web/Controllers/WebApiController.cs:5653` (`GetJwtToken`), consulting the throttle at `:5692` | `git grep -n 'LoginThrottleService' -- '*.cs'` |
 | Transport-level rate limiter — registered centrally and enabled in **all seven** pipelines | `services.AddRateLimiter(...)` at `WebVella.Erp.Web/ErpMvcExtensions.cs:116`; `app.UseRateLimiter()` in each host `Startup.cs` | `git grep -l 'UseRateLimiter' -- 'WebVella.Erp.Site*/Startup.cs'` returns 7 |
 
 Both layers the original note said were missing are therefore present, and the login path is metered
@@ -2510,9 +2647,9 @@ the finding.
 | File | Change |
 | --- | --- |
 | `WebVella.Erp.Web/Controllers/WebApiController.cs` | The two audited sinks return a generic message and keep their server-side log record. The remediation then went further than the two sites the audit found: the same disclosure persisted at thirty-six further response sinks in this controller, ten of them concatenating the stack trace, and every one now routes through the single `SafeErrorMessage` helper. |
-| `WebVella.Erp.Plugins.SDK/Controllers/AdminController.cs`, `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs`, `WebVella.Erp/Api/RecordManager.cs` and the query builder | A solution-wide sweep found thirteen more unguarded sinks outside the controller and closed all of them, leaving no unguarded exception-text response sink anywhere in the tree. |
+| `WebVella.Erp.Plugins.SDK/Controllers/AdminController.cs`, `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs`, `WebVella.Erp/Api/RecordManager.cs` and the query builder | A solution-wide sweep found thirteen more unguarded sinks outside the controller and closed all of them. *The sentence that followed — "leaving no unguarded exception-text response sink anywhere in the tree" — is withdrawn as an over-claim: it is literally true, but **25** statements in four core-library manager classes still concatenate a message and a stack trace behind `if (ErpSettings.DevelopmentMode)`, so the surface is configuration-guarded rather than clear. Inventoried with its guard status as `RISK-129`.* |
 | `WebVella.Erp.Web/Utils/SecurityAuditLog.cs` | **New.** The single neutralisation-and-writing boundary shared by the login page, the bearer-token endpoints and the file-mutation guard, so every audited event has one implementation rather than one per call site. |
-| `WebVella.Erp.Web/Pages/login.cshtml.cs` | Records all three outcomes — lockout refusal, authentication failure and authentication success — at the platform's single login entry point. |
+| `WebVella.Erp.Web/Pages/login.cshtml.cs` | Records all three outcomes — lockout refusal, authentication failure and authentication success — at the platform's single **interactive** login page. Not at its only credential-verification surface: the anonymous bearer-token routes in `WebApiController.cs` verify the same e-mail and password and record their own outcomes through the same `SecurityAuditLog` boundary, which is why that boundary is a shared file in this very table |
 
 #### Design decisions
 
@@ -2562,7 +2699,6 @@ the finding.
   [consolidated record](#deletions-dependencies-and-residual-coverage-stated-explicitly) at the end of
   this log.
 
-
 ## Executed verification transcripts, class by class
 
 > **Correction — the `AutoMapper` disposition recorded below is the alternative, not the one that
@@ -2582,7 +2718,7 @@ the finding.
 > kept in full, because it is the documented reversal path `RISK-001` records and because its
 > exploitability assessment and negative-control evidence hold either way.
 
-### Class: Build and Scan Integrity
+### Verification transcript for Class 1 — Build and Scan Integrity
 
 **What this class establishes:** trustworthy scan evidence. Nothing else in this log means anything
 until it holds, which is why it is sequenced first. Two defects made the platform's security posture
@@ -2622,7 +2758,11 @@ switch, no `CA` rule in the promoted-code list, and no build-time code-style enf
 diagnostics remain **warnings**, because escalating a large pre-existing backlog across roughly
 seven hundred source files would demand exactly the repository-wide refactor the change scope
 forbids. Only the six NuGet audit codes are errors. The suppression seam for a declined dependency
-upgrade is present but **commented out** — nothing is suppressed today.
+upgrade is present but **commented out** — the block marked `SUPPRESSION SEAM` at
+`Directory.Build.props:L403`-`L463` carries both sanctioned forms written out in full, the preferred
+`NuGetAuditSuppress` naming one advisory by URL at `L445` and the weaker `NoWarn` on `NU1903` at
+`L455`, and nothing is suppressed today: `-getProperty:NoWarn` returns the SDK's own `1701;1702` and
+`-getItem:NuGetAuditSuppress` returns an empty list.
 
 #### Verification
 
@@ -2659,14 +2799,14 @@ audit already said they would — which is the point of a scanner-derived gate:
 > under `RISK-052`. The measurements in this subsection are retained as the record of what was true when
 > this class shipped.
 
-* `CA5359` (certificate validation disabled) ×5, at `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs`
+- `CA5359` (certificate validation disabled) ×5, at `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs`
   lines 145, 288, 417 and 559 and `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` line
   791 — **the exact five locations recorded for H-11**, independently corroborated by the analyzer.
   H-11's remediation belonged to the transport-security class, not this one, and has since landed: at
   this commit the rule reports **no** `CA5359` diagnostics anywhere, because a callback is installed
   only when the configuration-gated policy member allows it and yields that member rather than a
   literal `true`.
-* `CA5351` (broken algorithm MD5) ×5, at `WebVella.Erp/Utilities/PasswordUtil.cs` line 261 — the
+- `CA5351` (broken algorithm MD5) ×5, at `WebVella.Erp/Utilities/PasswordUtil.cs` line 261 — the
   deliberately retained legacy-verification-only `GetMd5Hash`, an **accepted and recorded** warning
   whose own doc comment predicts it — and at four pre-existing MD5 helpers in
   `WebVella.Erp/Utilities/CryptoUtility.cs` (lines 188, 200, 210, 227) that carry no finding and are
@@ -2722,16 +2862,16 @@ section previously read.** An earlier revision described the two projects as ver
 which was honest but weak: it depended on someone remembering to run two extra commands. Three things
 now make the coverage automatic:
 
-* **Explicit workflow steps.** `.github/workflows/security-scan.yml` restores, builds and
+- **Explicit workflow steps.** `.github/workflows/security-scan.yml` restores, builds and
   vulnerability-lists both projects by name on every push and pull request. Their build step sits in
   the *same* step as the solution build, deliberately — Gate 1 reaches its verdict by reading the
   analyzer log and SARIF directory, so anything built after it would be invisible. Same-step placement
   makes the coverage structural rather than positional.
-* **A self-enforcing invariant.** The workflow computes the set of tracked project files minus the set
+- **A self-enforcing invariant.** The workflow computes the set of tracked project files minus the set
   of solution members and fails if any project in that difference is not covered by an explicit step.
   A twentieth project added tomorrow and left out of both the solution and the steps **fails the
   build** rather than silently escaping the gate.
-* **Their evidence joins the same cross-check.** Both emit SARIF into the shared directory, taking the
+- **Their evidence joins the same cross-check.** Both emit SARIF into the shared directory, taking the
   report count from 17 to **19**, and their vulnerability listing is written to
   `vulnerable-packages-nonmembers.txt`, which the dependency assertion reads alongside the solution's.
 
@@ -2796,7 +2936,7 @@ branch triggers when it is pushed.
   for `WebVella.Erp.Site`. The package is effectively inert because no client-library manifest is
   present. It is a build-noise issue, not a security finding, and changing it is outside this class.
 
-### Class: Credential Integrity
+### Verification transcript for Class 3 — Credential Integrity
 
 **Findings closed in this class:** C-03 (unsalted MD5 password hashing, CWE-916/CWE-759, OWASP
 A02:2021), M-05 (non-constant-time hash comparison, CWE-208) and M-06 (shared mutable hash
@@ -2806,7 +2946,7 @@ instance, CWE-362).
 
 | File | Change |
 | --- | --- |
-| `WebVella.Erp/Utilities/PasswordUtil.cs` | Salted, work-factored `HashPassword`/`VerifyPassword` pair over the framework `PasswordHasher`; legacy MD5 retained for verification only, behind `CryptographicOperations.FixedTimeEquals`; shared MD5 instance replaced by the static one-shot `MD5.HashData` |
+| `WebVella.Erp/Utilities/PasswordUtil.cs` | Salted, work-factored `HashPassword`/`VerifyPassword` pair deriving in-file with `Rfc2898DeriveBytes.Pbkdf2` over `HashAlgorithmName.SHA256`; legacy MD5 retained for verification only, behind `CryptographicOperations.FixedTimeEquals`; shared MD5 instance replaced by the static one-shot `MD5.HashData`. An earlier revision of this row said "over the framework `PasswordHasher`", which described an intermediate revision of the file and is withdrawn |
 
 #### Executed verification
 
@@ -2818,10 +2958,10 @@ framework reference or package reference was added. **68 checks, 68 passed, 0 fa
 | Property verified | Observed result |
 | --- | --- |
 | Stored format | 84-character Base64 — fits the existing 500-character password column, so no schema change |
-| Format marker | `0x01` = ASP.NET Core IdentityV3 |
-| Iteration count embedded in the value | `600000` (OWASP floor for PBKDF2-HMAC-SHA512 is 210,000) |
+| Format marker | `0x01` — the same versioned payload layout ASP.NET Core Identity V3 uses, written by this file rather than by that type |
+| Iteration count embedded in the value | `600000` — exactly the OWASP floor for PBKDF2-HMAC-SHA-256 |
 | Salt length embedded in the value | 16 bytes = 128 bit |
-| Pseudo-random function identifier | `2` = HMAC-SHA-512 |
+| Pseudo-random function identifier | `1` = HMAC-SHA-256. **Re-verified at this commit against the shipped constant `PrfHmacSha256`.** This row read `2` = HMAC-SHA-512 while the harness ran against an intermediate revision; the value is now `1`, and the verifier still *accepts* a stored `2` payload without rehashing it, for the work-factor reason recorded in `RISK-003` |
 | Derived subkey length | 32 bytes = 256 bit |
 | Salt uniqueness | 12 hashes of one password produced 12 distinct values with 12 distinct salts |
 | Correct password | verifies, `needsRehash=false` |
@@ -2870,14 +3010,25 @@ comparison remains** — the single surviving mention is comment prose.
 
     | Pseudo-random function | Median per derivation (3 runs) |
     | --- | --- |
-    | HMAC-SHA-512 — what IdentityV3 uses | 381.0 ms, 361.1 ms, 364.7 ms |
-    | HMAC-SHA-256 — the contrast in the claim | 125.3 ms, 117.5 ms, 117.9 ms |
+    | HMAC-SHA-512 — the function an intermediate revision of this file used | 381.0 ms, 361.1 ms, 364.7 ms |
+    | **HMAC-SHA-256 — the shipped function** | **125.3 ms, 117.5 ms, 117.9 ms** |
     | **Measured ratio** | **3.04x, 3.07x, 3.09x** |
 
-    End-to-end through `PasswordUtil` on the same host: `HashPassword` mean 366.6 / 382.3 / 365.6 ms,
-    `VerifyPassword` mean 366.7 / 379.9 / 363.4 ms, against `GetMd5Hash` at 0.1 ms — the legacy
-    primitive was roughly three to four thousand times cheaper per attacker guess, which is precisely
-    why C-03 was Critical.
+    **Which column is the shipped one changed, and the rows are relabelled rather than reordered.**
+    When this measurement was taken the file derived with HMAC-SHA-512, so the first row described the
+    shipped setting and the second was "the contrast in the claim". Review finding `M-3` moved the
+    implementation to HMAC-SHA-256, so the second row is now the shipped setting and the first is the
+    comparison. The measurement is unchanged and remains valid for both; only which of them is
+    load-bearing has swapped.
+
+    End-to-end through `PasswordUtil` **at this commit**, medians over 20 single-threaded runs against
+    the shipped HMAC-SHA-256 setting: `HashPassword` **150 ms** and `VerifyPassword` **151 ms** on a
+    quiet run, rising to 344 ms and 321 ms under contention on the same shared host, with an in-process
+    SHA-512 cross-check at 477 ms confirming the ~3.2x ratio. The figures this paragraph used to carry —
+    `HashPassword` mean 366.6 / 382.3 / 365.6 ms and `VerifyPassword` mean 366.7 / 379.9 / 363.4 ms —
+    measured the HMAC-SHA-512 revision and are superseded. Against `GetMd5Hash` at 0.0007 ms the shipped
+    primitive is roughly **210,000x** more expensive per attacker guess, which is precisely why C-03 was
+    Critical.
 
     Reference host for every figure above: .NET 10.0.10 on Ubuntu 25.10, x64, 4 logical cores, Intel
     Xeon at 2.60 GHz, workstation GC. **Re-measure on the target host before relying on the absolute
@@ -2890,7 +3041,7 @@ comparison remains** — the single surviving mention is comment prose.
   to be call-site compatible — `HashPassword` returns empty for absent input exactly as
   `GetMd5Hash` did — so those switches need no behavioural adaptation.
 
-### Class: Secret Management
+### Verification transcript for Class 5 — Secret Management
 
 **Findings closed in this class:** C-04 (hard-coded encryption key with a silent fallback, CWE-798 /
 CWE-321, OWASP A02:2021), and the settings-layer half of H-04 and H-05.
@@ -2954,7 +3105,7 @@ the harness and never printed.
   `WebVella.Erp/Utilities/CryptoUtility.cs` state this pending state in the same terms, so neither the
   code nor this log can be read as claiming a clean repository.
 
-### Class: Session and Token Handling
+### Verification transcript for Class 6 — Session and Token Handling
 
 **Findings closed in this class:** H-02 (token lifetime validation disabled, CWE-613/CWE-347, OWASP
 A07:2021), H-03 (authentication ticket expiry set 100 years ahead, CWE-613), M-03 (sign-in call not
@@ -3061,7 +3212,7 @@ data was touched.
   weakness rather than a tidiness issue, and it is now `async Task LogoutAsync()`, awaited at both
   handlers. See *Session revocation, bearer token validation and cross-origin policy* below.
 
-### Class: Output Encoding
+### Verification transcript for Class 7 — Output Encoding
 
 **Findings closed in this class:** the three confirmed **reflected** cross-site-scripting sinks in the
 SDK page views (CWE-79, OWASP A03:2021), and M-18 (defective output encoder, CWE-116). M-18 is
@@ -3244,7 +3395,7 @@ from which the same end tag is reachable.
   here rather than modified. Removing the redundant decode is the single-line fix if exact preservation
   of doubly-encoded nested values is ever required.
 
-### Class: Transport Security and Response Headers
+### Verification transcript for Class 8 — Transport Security and Response Headers
 
 **Findings closed in this class:** M-01 (no security response headers) and the response-header half
 of H-15 (CWE-319/CWE-614, OWASP A02:2021 and A05:2021).
@@ -3387,7 +3538,7 @@ discriminator so that it is visible which middleware wrote last.
   behaviour, it must additionally have its excluded-host list reviewed, since the default list
   suppresses the header for loopback hosts.
 
-### Class: Injection and Deserialisation
+### Verification transcript for Class 10 — Injection and Deserialisation
 
 **Findings closed in this class:** H-09 (SQL identifier injection through string concatenation,
 CWE-89, OWASP A03:2021) and H-10 (unsafe polymorphic deserialisation, CWE-502, OWASP A08:2021).
@@ -3397,7 +3548,7 @@ CWE-89, OWASP A03:2021) and H-10 (unsafe polymorphic deserialisation, CWE-502, O
 | File | Change |
 | --- | --- |
 | `WebVella.Erp/Database/DbIdentifier.cs` | New. Allow-list validation plus double-quoting for the identifiers this layer must concatenate, because PostgreSQL cannot bind an identifier as a parameter |
-| `WebVella.Erp/Api/Models/ErpSerializationBinder.cs` | New. Type allow-list binder: an explicitly enumerated inventory of **45** core-library persisted types plus **27** explicitly permitted framework types, with the whole resolved type graph re-validated. The inventory reached 44 in two narrowing steps; the second is recorded under *Narrowing the allow-list* below, which supersedes several rows of the original verification table |
+| `WebVella.Erp/Api/Models/ErpSerializationBinder.cs` | New. Type allow-list binder: an explicitly enumerated inventory of **45** core-library persisted types plus **27** explicitly permitted framework types, with the whole resolved type graph re-validated. The 45 decompose as **44 + 1**: 44 are the transitive closure over data members only, reached in two narrowing steps, and the 45th is `DbSystemSettings`, a deliberate addition annotated at its entry so the `DbDocumentBase` subclass set stays complete. The second narrowing is recorded under *Narrowing the allow-list* below, which supersedes several rows of the original verification table |
 
 #### Executed verification — `DbIdentifier` (H-09)
 
@@ -3569,7 +3720,7 @@ refused. That obligation is recorded in the risk register so it is not discovere
   superset is deliberate and is not removed. The harness still constructs the serializer settings
   itself, mirroring those sites, so the round-trip claim remains about real payload shapes.
 
-### Class: Brute Force and Rate Limiting
+### Verification transcript for Class 12 — Brute Force and Rate Limiting
 
 **Findings closed in this class:** the account-lockout half of H-16 (no account lockout and no rate
 limiting, CWE-307, OWASP A07:2021).
@@ -3578,8 +3729,8 @@ limiting, CWE-307, OWASP A07:2021).
 
 | File | Change |
 | --- | --- |
-| `WebVella.Erp.Web/Services/LoginThrottleService.cs` | New. Five-attempt lockout with a fifteen-minute window, keyed by username **and** address, over the platform's existing in-process `Cache`. No schema change and no new package dependency, which is the least invasive control available |
-| `WebVella.Erp.Web/Services/LoginThrottleService.cs` | **Corrected during verification.** `Store()` now sets `CacheItemPriority.NeverRemove` on the entry options it passes. Measuring eviction rather than assuming it showed that the previous private options instance defaulted to `CacheItemPriority.Normal`, so memory-pressure compaction evicted an in-force lockout and handed the attacker a fresh five-attempt window. Priority governs compaction only and never expiration, so the explicit `absoluteExpiration` still ends the lockout on time. See the eviction subsection below for the measurement that forced this change |
+| `WebVella.Erp.Web/Services/LoginThrottleService.cs` | New. Five-attempt lockout with a fifteen-minute window, keyed by username **and** address, over a **dedicated, size-bounded `MemoryCache` the service owns privately** (`SizeLimit = 20000`, `CompactionPercentage = 0.2`). *An earlier revision of this row said it wrote through the platform's shared `Utils.Cache` helper; that is withdrawn — the helper exposes no way to set a `SizeLimit`, which is the CWE-770 bound this store needs, and raising a limit on the shared instance would change eviction for every other consumer.* It is the same `MemoryCache` type the helper uses, so no schema change and no new package dependency, which is the least invasive control available |
+| `WebVella.Erp.Web/Services/LoginThrottleService.cs` | **Corrected during verification, and then corrected again — the shipped strategy is the second correction, not the first.** Measuring eviction rather than assuming it showed that the private options instance defaulted to `CacheItemPriority.Normal`, so compaction evicted an in-force lockout and handed the attacker a fresh five-attempt window. The first fix set `CacheItemPriority.NeverRemove`; **that is not what ships, and the claim that it does is withdrawn.** `NeverRemove` exempts an entry from the size ceiling entirely, which would have restored the unbounded growth the ceiling exists to prevent. What ships instead is eviction **order**: `Priority = (state.LockedOutUntilUtc > now) ? CacheItemPriority.High : CacheItemPriority.Low`, so an in-force lockout is written `High` and a still-counting entry `Low`. Priority governs compaction only and never expiration, so the explicit `absoluteExpiration` still ends the lockout on time. The residual this trade leaves is stated below and carried as `RISK-008` |
 
 #### Executed verification
 
@@ -3610,7 +3761,7 @@ the file's comments. **54 checks, 54 passed, 0 failed.**
 | 200 **concurrent** failures | Locked out, and the counter stopped at exactly `5` — no increment lost, none double-counted. A lost increment would mean the lockout fails under exactly the load it exists to defend against |
 | 300 interleaved register/read/reset operations | 0 exceptions |
 | Counter and deadline | One single cache entry, so eviction cannot drop the lockout while keeping the counter, nor the reverse |
-| Entry lifetime versus lockout | Remaining lockout 15 minutes against a requested lifetime of at least 15, so expiry cannot release a locked-out principal early. `Store()` takes the greater of the two, and passes an explicit `absoluteExpiration` so an entry cannot inherit the cache's `NeverRemove` default and lock a user out permanently |
+| Entry lifetime versus lockout | Remaining lockout 15 minutes against a requested lifetime of at least 15, so expiry cannot release a locked-out principal early. `Store()` takes the greater of the two, and passes an explicit `absoluteExpiration` so an entry cannot outlive its window and lock a user out permanently. *Measured against the withdrawn build that wrote through the shared helper, whose entry-option default is `NeverRemove`; the property still holds on the shipped private instance, whose entries have no default expiration either* |
 | A principal with no entry | Not treated as locked out — and the only ways to have no entry are a reset after a **success** or a fully served window |
 | A second service instance | Has its own counters. The documented per-process scope is therefore real and measurable, which is why the host must register this as a singleton and why the limitation is documented rather than hidden |
 
@@ -3655,7 +3806,7 @@ would pass. That is why the later-boundary registration in `ErpMvcExtensions.cs`
 | --- | --- |
 | An entry written the way `Store()` writes one | Present immediately |
 | The same entry after its absolute expiration elapses | **Gone**, so a lockout cannot become permanent |
-| **CONTROL** an entry written with **no** explicit `absoluteExpiration` | Never expires — the cache's own default entry options are `CacheItemPriority.NeverRemove` with no expiration. This is precisely why `Store()` must pass an expiration: without it, a user who failed five logins would be locked out permanently |
+| **CONTROL** an entry written with **no** explicit `absoluteExpiration` | Never expires. *This row measured the platform's shared `Utils.Cache` helper, whose default entry options are `CacheItemPriority.NeverRemove` with no expiration (`WebVella.Erp.Web/Utils/Cache.cs:L16`) — and the throttle no longer writes through that helper at all.* It is retained because the property it establishes still governs the shipped code for a different reason: this service's own `MemoryCache` has no default expiration either, so `Store()` must pass one or a user who failed five logins would be locked out permanently |
 | A locked-out principal before any eviction pressure | Locked out |
 | The same principal after `MemoryCache.Compact(1.0)`, full-pressure eviction of every compactable entry | **Still locked out**, with the counter still at the threshold of `5` |
 | The caller-reachable surface | `IsLockedOut`, `RegisterFailedAttempt`, `Reset`. `Reset` is the only removal path and is only called after a **successful** authentication, so no reachable path shortens or discards an in-force lockout |
@@ -3664,11 +3815,36 @@ The compaction row is the reason the source changed. On the first execution of t
 lockout did **not** survive `Compact(1.0)`: the entry vanished and the principal was handed a fresh
 five-attempt window, which contradicts the fail-closed-on-eviction requirement. The cause was that
 `Store()` passed a private `MemoryCacheEntryOptions`, whose priority defaults to
-`CacheItemPriority.Normal` — the cache's own `NeverRemove` default applies only to entries that pass
-no options at all, and `Store()` deliberately passes its own instance to avoid the mutation hazard
-recorded above. Setting `CacheItemPriority.NeverRemove` on that instance closes the last path by
-which an in-force lockout could be released early, while keeping the shared cache defaults
-unmutated. The row above is the re-measured result after that one-line change.
+`CacheItemPriority.Normal`, and a `Normal` entry is compactable.
+
+> **The fix recorded here was then superseded, and this note states the shipped design so the two are
+> not confused.** The first fix set `CacheItemPriority.NeverRemove` on that options instance. It was
+> withdrawn, because `NeverRemove` exempts an entry from the cache's **size ceiling** as well as from
+> compaction — and the ceiling is what bounds the CWE-770 exposure this store was built to close, so the
+> fix would have traded a lockout-release path for unbounded growth. **What ships is eviction order, not
+> exemption:**
+>
+> ```csharp
+> Priority = (state.LockedOutUntilUtc > now) ? CacheItemPriority.High : CacheItemPriority.Low
+> ```
+>
+> paired with `SizeLimit = 20000` and `CompactionPercentage = 0.2` on the service's own `MemoryCache`, and
+> `Size = 1` on every entry so each tracked principal counts against the ceiling.
+>
+> **What that guarantees, and what it does not — stated as a trade rather than a win.** Under the only
+> pressure a caller can actually create, reaching the size ceiling, the cache discards the
+> lowest-priority entries first: flooding the store with fabricated usernames evicts other attackers'
+> **partial counts** long before it reaches anyone's **in-force lockout**. Under an explicit
+> `MemoryCache.Compact(1.0)` — an API call, not a state a login request can drive — every compactable
+> entry goes, `High` included, because only `NeverRemove` is exempt. So the earlier
+> "still locked out after `Compact(1.0)`" measurement describes the withdrawn `NeverRemove` build and
+> **must not be read as a property of the shipped one.**
+>
+> **The residual is bounded and accepted, and it is quantified.** Displacing a specific account's partial
+> count costs an attacker a full turnover of a 20,000-entry store — tens of thousands of requests, against
+> a transport rate limiter — to buy back at most **four** guesses. It is recorded as `RISK-008` in the
+> [risk register](risk-register.md), whose entry carries the same reasoning, and the reasoning is written
+> into the source beside the `Priority` assignment so the two cannot drift apart again.
 
 #### Deviations and out-of-scope observations
 
@@ -3683,14 +3859,15 @@ unmutated. The row above is the re-measured result after that one-line change.
   no consumer in this boundary, which is why its behaviour was proven by executing it directly.
   **Superseded, with a scope correction:** registration landed at `ErpMvcExtensions.cs:216` (`services.AddSingleton<LoginThrottleService>()`), the rate
   limiter is enabled in all seven hosts, and the throttle is consulted at **two** credential entry
-  points rather than the single one the plan named — `Pages/login.cshtml.cs:124`/`:178` and
-  `Controllers/WebApiController.cs:5614`/`:5656`. Throttling only the login form would have left the
+  points rather than the single one the plan named — `Pages/login.cshtml.cs:152`/`:205` and
+  `Controllers/WebApiController.cs:5692`/`:5734`, each pair being the consultation and the
+  failed-attempt registration. Throttling only the login form would have left the
   anonymous bearer-token route as an unthrottled credential oracle.
 - **Recorded recommendation, not implemented:** a distributed backing store would be required for a
   multi-instance deployment. It is a new dependency and therefore excluded here; it is carried in the
   [risk register](risk-register.md).
 
-### Class: Dependencies
+### Verification transcript for Class 13 — Dependencies
 
 **Findings closed in this class:** H-01 (`AutoMapper`, CWE-674, GHSA-rvv3-g6hj-g44x /
 CVE-2026-32933, OWASP A06:2021).
@@ -3781,7 +3958,6 @@ suite was out of scope for this remediation.
   are absent from disk are answered `405` instead of `404` by the embedded file provider. None is a
   security finding and none was changed, in keeping with the minimal-change constraint.
 
-
 ## Integration record — attaching the controls to live request paths
 
 > **Correction — the `AutoMapper` disposition recorded below is the alternative, not the one that
@@ -3801,9 +3977,9 @@ suite was out of scope for this remediation.
 > kept in full, because it is the documented reversal path `RISK-001` records and because its
 > exploitability assessment and negative-control evidence hold either way.
 
-### Class: Build and scan integrity
+### Integration record for Class 1 — Build and scan integrity
 
-**Findings closed:** H-9 (audit gate absent), H-10 (projects outside the solution), M-6 (unpinned
+**Findings closed:** H-9 (audit gate absent), HR-10 (projects outside the solution), M-6 (unpinned
 toolchain).
 
 Sequenced **first**, because every dependency and analyzer claim made anywhere else is unfounded until
@@ -3823,17 +3999,17 @@ that scoping. This was the deciding constraint, not a preference.
 
 #### Verification
 
-* Restore exits 0; the full solution rebuild exits 0.
-* **Negative test proving the gate is not blind:** injecting a package with a known advisory produced
+- Restore exits 0; the full solution rebuild exits 0.
+- **Negative test proving the gate is not blind:** injecting a package with a known advisory produced
   `NU1903` as a **build error**. Removing it restored a clean build. A gate that has never failed on
   purpose is not known to work.
-* `dotnet sln list` and `dotnet list package` both report **17** projects, agreeing with each other; the
+- `dotnet sln list` and `dotnet list package` both report **17** projects, agreeing with each other; the
   remaining two tracked projects are reached by dedicated steps, so gate coverage is 19 of 19 while the
   solution stays at 17. An intermediate revision reported 19 here because both had been enrolled in the
   solution; that enrollment was reverted under `CR2-F-06` and this figure is corrected back.
-* No `NoWarn`, `WarningsNotAsErrors`, `ContinueOnError` or blanket audit suppression was introduced.
+- No `NoWarn`, `WarningsNotAsErrors`, `ContinueOnError` or blanket audit suppression was introduced.
 
-### Class: Data layer — SQL identifiers and deserialisation
+### Integration record for Class 10 — Data layer — SQL identifiers and deserialisation
 
 **Findings closed:** H-2 (identifier injection), M-4 (identifier length semantics), H-3 (unsafe
 polymorphic deserialisation), M-1 (over-broad type allow-list).
@@ -3857,11 +4033,11 @@ installations.
 
 #### Verification
 
-* Identifier harness **24/24**, binder harness **45/45**, query-builder harness **9/9**.
-* **Live PostgreSQL validation** of all four generated SQL shapes, including the decisive
+- Identifier harness **24/24**, binder harness **45/45**, query-builder harness **9/9**.
+- **Live PostgreSQL validation** of all four generated SQL shapes, including the decisive
   `Quote`-versus-`Validate` counterfactual.
-* Rebuild: 0 errors, **4 fewer warnings** than baseline.
-* Interactive verification across 11 authenticated pages; zero occurrences of any failure signature
+- Rebuild: 0 errors, **4 fewer warnings** than baseline.
+- Interactive verification across 11 authenticated pages; zero occurrences of any failure signature
   across four independent observation channels.
 
 #### `JobProfile.cs` — the four job and schedule attachment sites, measured
@@ -3907,7 +4083,7 @@ statement — and inside any `dynamic` or `object`-typed member of such a target
 where the confirmed-then-closed exploit above sits. Stating this is more useful than claiming four
 uniformly closed sinks.
 
-### Class: HTTP edge — headers, transport, cookies, rate limiting
+### Integration record for Classes 8 and 12 — HTTP edge — headers, transport, cookies, rate limiting
 
 **Findings closed:** H-8 (headers middleware never invoked), L-1 (policy publicly replaceable;
 report-only with no collection endpoint).
@@ -3916,7 +4092,7 @@ The middleware existed but **no host called it**, so not one header was ever emi
 
 | File | Change |
 | --- | --- |
-| `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs` | The mandated policy made **immutable** (`public const`, compiler-enforced — it previously had a public setter that could silently weaken it). An intermediate revision also added a `/csp-violation-report` collection endpoint handled inside the middleware ahead of routing; **that endpoint and its `report-uri` directive were subsequently removed** — see *§ The violation-report collector was removed* below. The emitted policy is now byte-identical to the mandated value, and the middleware has exactly one path through `Invoke`, so every response receives all seven headers |
+| `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs` | The mandated policy made **immutable** (`public const`, compiler-enforced — it previously had a public setter that could silently weaken it). An intermediate revision also added a `/csp-violation-report` collection endpoint handled inside the middleware ahead of routing; **that endpoint and its `report-uri` directive were subsequently removed** — see *§ The violation-report collector was removed* below. The emitted policy is now byte-identical to the mandated value, and the middleware has exactly one path through `Invoke`, so every covered response receives the same set from the same call. **One qualification, which an earlier revision of this cell omitted:** the **six fixed headers** are attached unconditionally, while `Strict-Transport-Security` is attached only **outside the Development environment** - a single constructor decision at `SecurityHeadersMiddleware.cs:L43-L71` that mirrors the guard every host already applies to `UseHsts()`, because HSTS is browser-persisted for a year and would pin the whole `localhost` origin. The qualified wording used by the Gate 5 matrix in this document is the correct one and this cell now agrees with it |
 | `WebVella.Erp.Web/ErpMvcExtensions.cs` | Options registered at the single canonical registration point, so all seven hosts inherit them from one edit |
 | 7 × `WebVella.Erp.Site*/Startup.cs` | `UseSecurityHeaders` inserted **early** — ahead of response compression and both static-file middlewares; `UseHsts` then `UseHttpsRedirection` guarded to non-Development and placed **after** CORS; authentication-cookie hardening, later revised by the HTTP-pipeline class to the frozen contract now in force — `SecurePolicy=Always` unconditionally, `SameSite=Lax`, `ExpireTimeSpan` 1440 minutes, `SlidingExpiration=true`, `AllowRefresh=true`, all supplied from a **single** shared configurator so the seven hosts cannot drift, and bounded by a 7-day absolute horizon; rate limiter added and positioned so static assets are not throttled |
 
@@ -3952,7 +4128,10 @@ shared. The full record is in
 
 Rebuild at exactly the baseline warning count, zero warnings on any added line. Interactive
 verification confirmed all seven headers present on **both** a dynamic response and a static file
-response, the policy in report-only mode, no console errors, and pages rendering unchanged.
+response, the policy in report-only mode, no console errors, and pages rendering unchanged. That
+was a Production-posture observation, and it has to be: six of the seven are attached
+unconditionally, while `Strict-Transport-Security` is emitted only outside Development, so a
+seven-header result is itself evidence of the posture rather than of an unconditional guarantee.
 
 Two gaps in this evidence were closed later and are recorded in
 *[Response header operability and the violation collector's bounds](#response-header-operability-and-the-violation-collectors-bounds)*:
@@ -3960,7 +4139,7 @@ the collector's **own** response was never checked for the seven headers (it was
 them and carried none), and "the policy in report-only mode" was the only mode reachable, because
 the options type was registered without a binding.
 
-### Class: Brute-force protection
+### Integration record for Class 12 — Brute-force protection
 
 **Findings closed:** H-6 (service never registered, never called), H-7 (four design defects).
 
@@ -3989,7 +4168,7 @@ symptom. Interactive verification confirmed five failures then a sixth refused, 
 that attempts five and six are **pixel-for-pixel identical**, so nothing reveals whether an account
 exists.
 
-### Class: Credential integrity
+### Integration record for Class 3 — Credential integrity
 
 **Findings closed:** CR-1 (hashing helpers had zero consumers; MD5 live at four sites), M-3 (wrong
 hash algorithm).
@@ -4021,7 +4200,7 @@ plain `=` comparison was shown not to work at all. Login latency was measured an
 pre-declared accepted trade-off. Full detail in
 [the credential migration guide](credential-migration.md).
 
-### Class: Session and token lifetime
+### Integration record for Class 6 — Session and token lifetime
 
 **Findings closed:** H-4 (anonymous refresh renews a stolen token indefinitely; no absolute horizon),
 H-5 (ticket refresh enabled; sliding expiration not disabled).
@@ -4065,7 +4244,7 @@ failure. The later HTTP-pipeline class verified it the only way that actually wo
 a real server-issued cookie** and asserting on its contents, 25 checks, rather than by reading
 headers.
 
-### Class: Configuration provider chain and secret validation
+### Integration record for Class 5 — Configuration provider chain and secret validation
 
 **Findings closed:** M-2 (validation checked only for non-blank values; JWT required only when a
 section existed; providers promised but not consumed; known published defaults passed).
@@ -4097,7 +4276,7 @@ CRLF file to LF, inflating a ~50-line change to 4400 insertions — restored, an
 88. A stray byte-order mark added to the one host file that has none was removed. Final line-ending and
 BOM drift across all changed files: **zero**.
 
-### Class: Output encoding and open redirect
+### Integration record for Class 7 — Output encoding and open redirect
 
 **Findings closed:** H-1 (`javascript:` and protocol-relative redirects still worked), M-5
 (single-character replacement is not JavaScript-string encoding).
@@ -4133,10 +4312,10 @@ view reproduced the identical exception. A load-bearing assumption was also **di
 views in the referenced library *are* compiled at build time, so a rebuild is mandatory for such edits
 to take effect.
 
-### Class: Dependencies
+### Integration record for Class 13 — Dependencies
 
 **Findings closed:** H-20 (mail stack advisories), H-18 (end-of-life framework).
-**Finding accepted, not closed:** H-01 / H-11 (`AutoMapper`).
+**Finding accepted, not closed:** H-01 / HR-11 (`AutoMapper`).
 
 **This entry previously recorded an `AutoMapper` upgrade to `[15.1.3]` as complete, with a clean
 dependency scan. That upgrade has been reverted and those verification claims were withdrawn as
@@ -4183,15 +4362,15 @@ introduced — a version behind the 8.15.0 this solution already references dire
 
 #### Deviations and out-of-scope observations
 
-* **Deviation, recorded not absorbed:** the planned `AutoMapper` upgrade was reverted for the licensing
+- **Deviation, recorded not absorbed:** the planned `AutoMapper` upgrade was reverted for the licensing
   reason above. This is the one place the plan's intended action was not carried out, and it is
   documented in four places rather than quietly dropped.
-* **Observed, not fixed:** the configuration-validity assertion reports unmapped members, but the
+- **Observed, not fixed:** the configuration-validity assertion reports unmapped members, but the
   platform never calls it, so it is not on any functional path; several pre-existing obsolete-API
   warnings exist in the data layer; two vendored source-map files answer `405` rather than `404`. None
   is a security finding.
 
-### Class: Documentation
+### Integration record for the documentation set
 
 **Findings closed:** M-7 (unsupported pass claims, omitted transitives, links to absent documents).
 
@@ -4211,10 +4390,9 @@ introduced — a version behind the 8.15.0 this solution already references dire
 documentation tree to root-level files deliberately use absolute URLs, because a relative link outside
 the documentation root fails the strict build.
 
-
 ## Measured results for the dependency and credential classes
 
-### Class: Dependencies
+### Measured results for Class 13 — Dependencies
 
 **Findings closed in this class:** H-01 (`AutoMapper`, CWE-674, GHSA-rvv3-g6hj-g44x /
 CVE-2026-32933, OWASP A06:2021).
@@ -4305,7 +4483,7 @@ suite was out of scope for this remediation.
   are absent from disk are answered `405` instead of `404` by the embedded file provider. None is a
   security finding and none was changed, in keeping with the minimal-change constraint.
 
-### Class: Credential integrity — storage primitive
+### Measured results for Class 3 — Credential integrity — storage primitive
 
 **Findings closed in this class:** M-06 (CWE-362, shared mutable hash instance) and M-05 (CWE-208,
 non-constant-time comparison), both fully. C-03 (CWE-916 password hash with insufficient
@@ -4362,20 +4540,31 @@ record that the comments in `PasswordUtil.cs` refer to.
 Measured on the verification host (4 cores, `linux-x64`, Release build, median of 9 samples after
 warm-up), through the same API the utility uses:
 
+> **These figures measure the HMAC-SHA-512 revision this class shipped at the time, not the tree.**
+> Review finding `M-3` subsequently moved the derivation to **HMAC-SHA-256** at the same 600,000
+> iterations, so the row labelled "the shipped setting" below describes a superseded configuration and
+> the row labelled "the HMAC-SHA-256 counterfactual" describes what is shipped now. The table is
+> relabelled rather than deleted, because the derived checks below still depend on it and because the
+> comparison it establishes is the reason the SHA-512 → SHA-256 change was made without rehashing
+> already-stored SHA-512 values. The **current** measurement, re-taken at this commit, is in
+> [`RISK-003`](risk-register.md#risk-003-credential-hashing-uses-pbkdf2-rather-than-bcrypt-scrypt-or-argon2):
+> hash **150 ms**, verify **151 ms** on a quiet run of this build host.
+
 | Configuration | Cost per operation |
 | --- | --- |
-| PBKDF2-HMAC-SHA512, 600,000 iterations — `HashPassword` (the shipped setting) | **362.7 ms** |
-| PBKDF2-HMAC-SHA512, 600,000 iterations — `VerifyHashedPassword` | **362.3 ms** |
+| PBKDF2-HMAC-SHA512, 600,000 iterations — `HashPassword` (**superseded** setting) | **362.7 ms** |
+| PBKDF2-HMAC-SHA512, 600,000 iterations — `VerifyHashedPassword` (**superseded**) | **362.3 ms** |
 | Framework default of 100,000 iterations, same format | 60.1 ms |
-| Raw `Rfc2898DeriveBytes.Pbkdf2`, SHA512, 600,000 — cross-check of the shipped setting | 361.3 ms |
-| Raw `Rfc2898DeriveBytes.Pbkdf2`, SHA256, 600,000 — the HMAC-SHA-256 counterfactual | 117.5 ms |
+| Raw `Rfc2898DeriveBytes.Pbkdf2`, SHA512, 600,000 — cross-check of the superseded setting | 361.3 ms |
+| Raw `Rfc2898DeriveBytes.Pbkdf2`, SHA256, 600,000 — **the setting now shipped** | 117.5 ms |
 
 Three derived checks confirm the figures are sound rather than incidental: hashing and verification
 are symmetric (ratio 1.00), cost scales linearly with the iteration count (600,000 against 100,000
 gives 6.02, against an expected 6.0), and the SHA512 setting does 3.07 times the work per attacker
-guess that HMAC-SHA-256 would at the same iteration count. That last ratio is the reason the
-deviation described in the [risk register](risk-register.md) leaves the outcome stronger than the
-named requirement, not weaker.
+guess that HMAC-SHA-256 does at the same iteration count. That last ratio is what makes the later move
+to HMAC-SHA-256 a work-factor *reduction* on paper — which is why the shipped verifier accepts an
+already-stored SHA-512 value without rehashing it, as `RISK-003` records — while the outcome remains
+stronger than the named requirement, because 600,000 is exactly the OWASP floor for HMAC-SHA-256.
 
 How this reconciles with the "performance within 10% of baseline" boundary:
 
@@ -4389,8 +4578,11 @@ How this reconciles with the "performance within 10% of baseline" boundary:
   follows it is a single `HashPassword`. There is no doubled cost and no second slow login.
 
 **Do not lower the iteration count to chase a latency target.** 600,000 is set explicitly because
-the framework default of 100,000 is well below what this remediation requires, and because the
-OWASP floor for PBKDF2-HMAC-SHA512 is 210,000. A methodological note, so the number is reproducible
+the framework default of 100,000 is well below what this remediation requires, and because 600,000 is
+exactly the OWASP floor for the pseudo-random function now shipped, PBKDF2-HMAC-SHA-256. (When this
+paragraph was written the function was HMAC-SHA-512, whose OWASP floor is 210,000; the iteration count
+did not change, but the margin above the floor did — from 2.9x down to 1.0x, which is another reason not
+to lower it.) A methodological note, so the number is reproducible
 and does not resurface as an apparent contradiction: an initial mean-of-five measurement taken
 without adequate warm-up reported roughly 489 ms, which is a JIT and first-call artefact. The
 warm-up-corrected median of nine reported above is the trustworthy figure, and the linearity and
@@ -4403,7 +4595,7 @@ raw-KDF cross-checks corroborate it.
 | Module build | `dotnet build WebVella.Erp/WebVella.Erp.csproj -c Debug` | exit 0, **0 errors** |
 | Solution build | `dotnet build WebVella.ERP3.sln -c Debug -m:2` | exit 0, **0 errors** across all projects |
 | Restore with dependency audit | `dotnet restore WebVella.ERP3.sln` | exit 0, **zero `NU19xx` diagnostics** |
-| Shipped parameters are the ones actually in effect | read back `CompatibilityMode` and `IterationCount` from the constructed hasher | `IdentityV3`, `600000` — the format marker, salt and iteration count are encoded in each stored value, so the work factor can be raised later without invalidating anything already written |
+| Shipped parameters are the ones actually in effect | read back the format marker, pseudo-random-function identifier and iteration count out of a produced payload — the harness read them from the framework hasher when this row was written, and the current form reads them from the payload the file writes | format marker `0x01`, function identifier **`1` (HMAC-SHA-256)**, `600000` — the format marker, salt and iteration count are encoded in each stored value, so the work factor can be raised later without invalidating anything already written |
 | Salting is real | hashed the same plaintext repeatedly | every result differs, confirming a fresh random salt per call and that the value must never be compared for equality |
 | Verification round-trip | verified a freshly hashed value | succeeds, and reports no re-hash needed |
 | Legacy round-trip | verified a value in the legacy 32-character hexadecimal shape | succeeds, and reports a re-hash **is** needed — the signal that drives upgrade-on-next-authentication |
@@ -4420,12 +4612,15 @@ with the build, restore and behavioural checks above.
 
 #### Deviations and out-of-scope observations
 
-- **Two deviations from the letter of the mandated cryptographic standard**, both surfaced rather
-  than absorbed: PBKDF2 is used where the standard names bcrypt, scrypt or Argon2; and the
-  versioned (V3) format is PBKDF2-HMAC-SHA512, which is mutually exclusive with the mandated
-  HMAC-SHA-256 because `PasswordHasherOptions` exposes no pseudo-random-function selector. Both are
-  recorded with their full reasoning, and with the owner option to substitute a dedicated bcrypt or
-  Argon2 package, in the [risk register](risk-register.md).
+- **One deviation from the letter of the mandated cryptographic standard**, surfaced rather than
+  absorbed: PBKDF2 is used where the standard names bcrypt, scrypt or Argon2. It is recorded with its
+  full reasoning, and with the owner option to substitute a dedicated bcrypt or Argon2 package, in the
+  [risk register](risk-register.md). **A second deviation recorded here has been withdrawn:** this
+  bullet used to add that "the versioned (V3) format is PBKDF2-HMAC-SHA512, which is mutually exclusive
+  with the mandated HMAC-SHA-256 because `PasswordHasherOptions` exposes no pseudo-random-function
+  selector". That is true of `Microsoft.AspNetCore.Identity.PasswordHasher<T>` and false of this
+  repository, which writes the versioned payload itself and derives with HMAC-SHA-256. Review finding
+  `M-3` closed it.
 - **The legacy MD5 path is retained deliberately**, solely so that credentials written by earlier
   releases keep working. It must not be deleted and its analyzer warning must not be suppressed;
   removing it would lock out every existing user, which the preservation requirement forbids. The
@@ -4440,10 +4635,9 @@ with the build, restore and behavioural checks above.
   separate public API surface, are not credential storage, and are recorded in the risk register
   rather than changed.
 
-
 ## Accuracy corrections to shipped comments and documentation
 
-### Class: Dependencies
+### Comment and documentation corrections for Class 13 — Dependencies
 
 **Findings closed in this class:** H-01 (`AutoMapper`, CWE-674, GHSA-rvv3-g6hj-g44x /
 CVE-2026-32933, OWASP A06:2021).
@@ -4534,7 +4728,7 @@ suite was out of scope for this remediation.
   are absent from disk are answered `405` instead of `404` by the embedded file provider. None is a
   security finding and none was changed, in keeping with the minimal-change constraint.
 
-### Class: Build and Scan Integrity
+### Comment and documentation corrections for Class 1 — Build and Scan Integrity
 
 **Findings closed in this class:** L-07 (unpinned toolchain, no build-level gate) and the
 Objective 5 requirement that the security posture be verifiable by automated scanning rather than
@@ -4577,7 +4771,7 @@ is therefore the only mechanism that reaches all nineteen projects uniformly.
 | `dotnet build WebVella.ERP3.sln -c Debug --no-incremental` | exit 0, zero errors |
 | No secret material in the file | pass |
 
-### Class: Credential Integrity — partial, primitive only
+### Comment and documentation corrections for Class 3 — Credential Integrity — partial, primitive only
 
 **Status at the time of this entry: NOT complete, C-03 open. Status now: COMPLETE, C-03 closed.** The
 original status line is corrected here rather than overwritten so the staging remains auditable; the
@@ -4604,7 +4798,15 @@ comparison out of its SQL predicate), `WebVella.Erp/Api/RecordManager.cs` and tw
 `WebVella.Erp/ERPService.cs` does not exist yet. The migration design and the operator runbook are in
 the [credential migration guide](credential-migration.md).
 
-#### Measured cost of the work factor — dated evidence
+#### Measured cost of the work factor — dated evidence, superseded by a re-measurement
+
+> **This subsection is a dated historical record and is retained as one.** It measured the
+> `Microsoft.AspNetCore.Identity.PasswordHasher<T>` configuration this class shipped at the time, which
+> is PBKDF2-**HMAC-SHA-512**. The tree no longer uses that type or that function. The current figures,
+> measured against the shipped `Rfc2898DeriveBytes.Pbkdf2` / HMAC-SHA-256 setting, are in
+> [`RISK-003`](risk-register.md#risk-003-credential-hashing-uses-pbkdf2-rather-than-bcrypt-scrypt-or-argon2)
+> and in *Class 3* above: hash **150 ms**, verify **151 ms** on a quiet run of this build host, with the
+> SHA-512 cross-check at **477 ms** in the same process.
 
 Measured 2026-07-31 on the remediation host (Ubuntu 25.10, 4 logical processors, .NET SDK 10.0.302),
 averaged over five repetitions after a discarded warm-up call, against
@@ -4612,17 +4814,19 @@ averaged over five repetitions after a discarded warm-up call, against
 
 | Configuration | Hash | Verify | Encoded length |
 | --- | --- | --- | --- |
-| V3 (PBKDF2-HMAC-SHA512), 600,000 iterations — **as configured** | 363.9 ms | 379.3 ms | 84 chars, leading `A` |
-| V3, 210,000 iterations — the OWASP floor for this pseudo-random function | 129.1 ms | 128.5 ms | 84 chars, leading `A` |
+| V3 (PBKDF2-HMAC-SHA512), 600,000 iterations — **as configured at that date** | 363.9 ms | 379.3 ms | 84 chars, leading `A` |
+| V3, 210,000 iterations — the OWASP floor for *that* pseudo-random function | 129.1 ms | 128.5 ms | 84 chars, leading `A` |
 | V2, 1,000 iterations — for scale only, not a candidate | 0.4 ms | 0.3 ms | 68 chars |
 
-Two conclusions follow. First, the configured cost is roughly three times the OWASP floor for the
-same pseudo-random function, so the parameters exceed the requirement rather than merely meeting it.
-Second, this latency is **pre-declared and accepted**, not a regression: it is confined to the
-authentication path, no other request path is affected, and the cost *is* the control. The figures are
-hardware-specific and are recorded here rather than in source comments, so that a source comment
-cannot drift into a claim about hardware it was never measured on. The iteration count must not be
-lowered to recover latency.
+Two conclusions follow, and one of them has since changed. First, at that date the configured cost was
+roughly three times the OWASP floor **for HMAC-SHA-512**, so the parameters exceeded the requirement
+rather than merely meeting it; the shipped function is now HMAC-SHA-256, whose OWASP floor is 600,000,
+so the same iteration count now *equals* the floor instead of tripling it — still compliant, with no
+margin to give away. Second, and unchanged, this latency is **pre-declared and accepted**, not a
+regression: it is confined to the authentication path, no other request path is affected, and the cost
+*is* the control. The figures are hardware-specific and are recorded here rather than in source
+comments, so that a source comment cannot drift into a claim about hardware it was never measured on.
+The iteration count must not be lowered to recover latency.
 
 The 84-character encoded length with a leading `A` was measured, not assumed, which confirms the
 format discriminator the migration relies on: a legacy value is 32 hexadecimal characters and a
@@ -4635,7 +4839,7 @@ modern value with no schema definition change.
 renumbered from RISK-005 when that register was consolidated)
 are recorded in the [risk register](risk-register.md). Neither is suppressed.
 
-### Class: Session and Token Handling — partial
+### Comment and documentation corrections for Class 6 — Session and Token Handling — partial
 
 **Findings addressed in `WebVella.Erp.Web/Services/AuthService.cs`:** H-02 (CWE-613 + CWE-347),
 H-03 (CWE-613), M-03 and M-04. The host-pipeline half of this class has **not** landed; see below.
@@ -4661,8 +4865,18 @@ does not have to carry it.
    (finding M-17), and `WebVella.Erp.Web/Middleware/JwtMiddleware.cs` calls this validator for every
    request that carries an `Authorization` header. A notifying log here would therefore convert any
    unauthenticated request flood into an attacker-triggered mail flood — a denial-of-service amplifier
-   rather than a fix. This is also why H-11 (mail transport certificate validation) materially bounds
-   the residual exposure of M-17.
+   rather than a fix. **A correction to an earlier claim made here:** this was previously offered as the
+   reason H-11 (mail transport certificate validation) materially bounds the residual exposure of M-17.
+   It does not. H-11 restored certificate validation on the mail *plugin's* five MailKit send paths;
+   `LogService` notifies through `WebVella.Erp.Web/Services/MailService.cs`, a separate
+   `System.Net.Mail.SmtpClient` that never assigns `EnableSsl` and therefore negotiates no TLS at all,
+   so there is no certificate for any policy to act on. The claim is withdrawn under review finding
+   `INT-01`; the notification path's real posture is carried as `RISK-131`. What genuinely bounds M-17
+   is that `Settings:EmailEnabled` ships `false` in all eight configuration files and defaults to
+   `false` when absent, and that F26 later moved the web API surface's response sinks onto the
+   non-notifying audit sink. None of that changes the decision recorded in this invariant — it is the
+   reason the invariant exists, and suppressing notification here is correct whether or not the
+   transport is authenticated.
 2. **Rate-bounded to one entry per minute.** Each write costs a service construction plus a database
    insert. The bound is a plain `lock` over a static UTC timestamp — the same idiom already used in
    `WebVella.Erp.Web/Services/CodeEvalService.cs` — chosen so that a flood produces evidence of a
@@ -4815,11 +5029,11 @@ filename at the same time as the H-18 retarget, and the record omitted it. It is
 
 It is not cosmetic, and it is not scope creep:
 
-* A dangling `ProjectReference` **restores silently** and then fails at build with `MSB9008` plus
+- A dangling `ProjectReference` **restores silently** and then fails at build with `MSB9008` plus
   hard compile errors. The Server project could not build at all once it entered any build graph.
-* The authorised H-18 retarget is only *verifiable* if the project builds. The repair is therefore a
+- The authorised H-18 retarget is only *verifiable* if the project builds. The repair is therefore a
   precondition for verifying the authorised change, not an addition to it.
-* It is the same failure mode as H-19 — a project reference whose path does not resolve, silently
+- It is the same failure mode as H-19 — a project reference whose path does not resolve, silently
   dropping a project out of the restore, audit and analyzer graph and making a clean scan result
   unfounded. The inline comment in the project file names that rationale class.
 
@@ -4854,19 +5068,40 @@ encryption key. Only the setting **name** is echoed; never the value, its length
 
 *Corrected in a later pass — the fix's own disclosure defect.* An interim revision generated a
 20-character password when the setting was absent and wrote **that live credential to standard error**
-so an operator could read it back. That was removed, generator and all, because it was itself a
+so an operator could read it back. The disclosure and the generated-administrator-credential path were
+both removed, because the combination was itself a
 vulnerability (CWE-532, OWASP A09:2021): standard error is captured and retained wholesale by every
 substrate this platform runs on — systemd's journal, the Docker log driver, IIS stdout redirection,
 Kubernetes container logs, CI transcripts — so a notice described as "one-time" was in fact durable
 plaintext readable by anyone holding log or host access and routinely forwarded off-box to
 aggregation, a strictly wider audience than the one administrator the credential belonged to. It was
 also written *before* the surrounding provisioning transaction committed, so a rollback left a
-usable-looking administrator password in the logs of an account that never existed. The generator was
-deleted rather than hardened because every variant of "invent the credential here" ends in the same
-place: an invented value must be communicated back to the operator, and every channel reachable from
-inside a provisioning transaction is durable and multi-reader. Requiring the operator's own value is
-the only shape of the code that never holds a credential it has to disclose, and it removes code
-rather than adding a delivery mechanism.
+usable-looking administrator password in the logs of an account that never existed. The generated
+administrator path was removed rather than hardened because every variant of "invent the credential
+here" ends in the same place: an invented value must be communicated back to the operator, and every
+channel reachable from inside a provisioning transaction is durable and multi-reader. Requiring the
+operator's own value is the only shape of the code that never holds a credential it has to disclose,
+and it removes code rather than adding a delivery mechanism.
+
+*Precise scope of that removal, corrected under review finding `OBS-08`.* An earlier wording of this
+paragraph said the generator was removed "generator and all", and that overstated it. What was removed
+is every path on which a **generated administrator credential could be created and then disclosed**:
+`ResolveInitialAdministratorPassword` now has exactly one supply route, the operator-supplied
+`Settings:InitialAdministratorPassword`, and the version-4 rotation migration reads the replacement
+from that same setting rather than inventing one. Both fail fast, naming only the setting key, when it
+is absent.
+
+`GenerateInitialAdministratorPassword` itself still exists, at `WebVella.Erp/ERPService.cs:1521`, and
+is reached from exactly **one** call site: `WebVella.Erp/ERPService.cs:610`, the local **system**
+account. That account exists only so background work has an identity, nobody is ever intended to
+authenticate as it, and its generated value is hashed on write and is never printed, buffered for
+output, returned, or held anywhere a reader could reach it. Deleting the generator would therefore not
+remove a disclosure — there is none on that path — but it *would* reintroduce one: the value it
+replaced was a lower-case GUID string, which no longer satisfies the mixed-case rule the record-write
+boundary enforces, so provisioning would fail on that line. The distinction matters because a reader
+auditing the credential surface needs to know that a CSPRNG generator is still compiled in, and
+exactly why its remaining use is not a disclosure risk, rather than being told it is gone and finding
+it in the source.
 
 *Residual as originally recorded:* there is no change-required-on-first-login marker; adding one would
 require a schema change, which this remediation's constraints forbid. The generated password is
@@ -4884,7 +5119,7 @@ enforced — an unrotated bootstrap credential cannot mint a JWT. `RISK-027` is 
 | --- | --- | --- |
 | `Settings:ConnectionString` | `Settings__ConnectionString` | Always |
 | `Settings:EncryptionKey` | `Settings__EncryptionKey` | Always |
-| `Settings:Jwt:Key` | `Settings__Jwt__Key` | Only for the two hosts exposing bearer-token routes |
+| `Settings:Jwt:Key` | `Settings__Jwt__Key` | Only for the two hosts that **enable** the bearer scheme — `WebVella.Erp.Site` and `WebVella.Erp.Site.Project`, the only two calling `AddJwtBearer` (`WebVella.Erp.Site/Startup.cs:L255`, `WebVella.Erp.Site.Project/Startup.cs:L251`). Stated that way deliberately, because "the two hosts *exposing* bearer-token routes" was the wrong shape of claim: the routes are declared in `WebVella.Erp.Web`, so **all seven** hosts map them. On the other five the route exists and answers — with `Bearer token authentication is not enabled on this server.` (`WebApiController.cs:L5648`) — rather than 404, so the key is not needed there, but its absence is a refusal rather than a missing endpoint |
 | `Settings:InitialAdministratorPassword` | `Settings__InitialAdministratorPassword` | First provisioning only; otherwise one is generated. A supplied value must satisfy the password policy or provisioning aborts — see the password-policy class record |
 | `Settings:EmailSMTPPassword` | `Settings__EmailSMTPPassword` | Only where outbound mail is configured |
 
@@ -4980,8 +5215,8 @@ is reported as itself rather than as a confusing restore failure.
 
 The casing assertion is two-sided, because either side alone is blind:
 
-* a **negative** assertion that the bad path prefix appears nowhere in any `.csproj` or the solution;
-* a **positive** assertion that `dotnet sln list` enumerates the core project and that every
+- a **negative** assertion that the bad path prefix appears nowhere in any `.csproj` or the solution;
+- a **positive** assertion that `dotnet sln list` enumerates the core project and that every
   enumerated project exists on disk.
 
 *Negative controls, three distinct failure modes, all exit 1 with distinct messages:*
@@ -5010,7 +5245,7 @@ dependency would still be discovered. `pull_request`, `workflow_dispatch` and
 > set is a configuration contract, and `['**']` plus `schedule` was outside it — recorded as finding
 > `CI-02`. `push.branches` is `['master']` again and the `schedule` trigger is gone; `pull_request` on
 > `master` and `workflow_dispatch` remain. The concern that motivated the cron is real and was not
-> dismissed: it is carried as accepted risk `RISK-033`, which records that `workflow_dispatch`
+> dismissed: it is carried as accepted risk `RISK-109`, which records that `workflow_dispatch`
 > preserves the same re-audit capability on demand, so what was lost is the timer rather than the
 > ability. The pre-merge gap this correction was written to close is now closed by the
 > `pull_request` trigger instead of by the push wildcard.
@@ -5046,7 +5281,7 @@ smaller change as well as the compliant one.
 
 | Addition | What it does |
 | --- | --- |
-| `env.EXPLICITLY_GATED_PROJECTS` | The two project paths, declared **once** at job level as a `|` block scalar, so the coverage assertion and the three gate steps below cannot disagree about which projects are meant. Duplicating the list would have created exactly the drift this correction exists to remove. Named `NON_SOLUTION_PROJECTS` in this correction's own draft; renamed later because "non-solution" describes what the projects are *not*, while the guarantee that matters is that they *are* gated. |
+| `env.EXPLICITLY_GATED_PROJECTS` | The two project paths, declared **once** at job level as a `\|` block scalar, so the coverage assertion and the three gate steps below cannot disagree about which projects are meant. Duplicating the list would have created exactly the drift this correction exists to remove. Named `NON_SOLUTION_PROJECTS` in this correction's own draft; renamed later because "non-solution" describes what the projects are *not*, while the guarantee that matters is that they *are* gated. |
 | The coverage assertion, inside `Assert the project graph is complete and correctly cased` | Proves the solution members and the declared list together account for every tracked `.csproj`. Ordered **before** the restore, for the same reason as the casing assertion: a coverage gap should be impossible to reach, not reported afterwards. This correction added it as a separate step named `Assert every tracked project is gated by this job`; a later pass **merged it into** the casing assertion, which was already parsing the solution text and `git ls-files` for its own purposes. The merge removed a duplicate parse, not a check — every assertion listed below survived it verbatim. |
 | `Corroborate the solution membership split with the dotnet CLI` | Added by the later pass, **not** by this correction. The merged assertion reads the solution *text*; this step re-derives the same split from `dotnet sln list` — the tool's own view — and reconciles the two. A hand-rolled parser and the CLI agreeing is worth more than either alone. |
 | `Restore the explicitly gated projects with dependency auditing` | Gate 2 for both. `Directory.Build.props` is directory-scoped, so both inherit `NuGetAudit`/`Mode=all`/`Level=low` and the `NU1900`–`NU1905` promotion — which is what makes a plain per-project restore a real composition gate rather than a formality. |
@@ -5120,7 +5355,7 @@ above the steps it applies to.
 | Step | Command / method | Result |
 | --- | --- | --- |
 | Workflow is valid YAML | `yaml.safe_load` after every edit | parses; job-level `env` carried exactly `NON_SOLUTION_PROJECTS`; step order was casing → coverage → solution restore/build/list → non-member restore/build/list → secrets → negative control → publish |
-| Every `run:` block is syntactically valid | each block extracted from the parsed document, `bash -n` | **10 / 10** exit 0 |
+| Every `run:` block is syntactically valid | each block extracted from the parsed document, `bash -n` | **10 / 10** exit 0 — *historical: the workflow held ten steps at this checkpoint and holds seventeen now, of which fourteen are `run:` blocks; the current figure is in the audit report's status section* |
 | Coverage assertion passes on the real tree | the extracted step, run against this working tree | exit 0 — `PASS all 19 tracked project(s) are gated: 17 by the solution, 2 by their own steps` |
 
 > **The three rows above describe this correction's draft, and two of them no longer match the file.** The
@@ -5170,7 +5405,7 @@ credential hash and its published default administrator password, while the sour
 The version-gated data migration is therefore not a convenience — it is the half of the fix that
 reaches production.
 
-### Class: Authorization
+### Seed and migration work under Class 4 — Authorization
 
 **Findings closed:** C-05 (guest role granted create on the user and role entities — CWE-269,
 CWE-732), C-02 (credential hash readable by guest; password field permissions never assigned —
@@ -5194,7 +5429,7 @@ Deny-by-default is satisfied server-side by the entity-level record permissions,
 interface — a non-administrator receives a clean `401 ACCESS DENIED` on the administration routes, and
 the hash itself is additionally stripped by the read-projection redaction.
 
-### Class: Credential integrity
+### Seed and migration work under Class 3 — Credential integrity
 
 **Findings closed:** C-01 (hardcoded default administrator password in provisioning — CWE-798,
 CWE-1392), M-13 (password bounds of 6 to 24 characters — CWE-521).
@@ -5203,7 +5438,7 @@ CWE-1392), M-13 (password bounds of 6 to 24 characters — CWE-521).
 | --- | --- |
 | Shipped default administrator password | Eliminated. The initial password is resolved from `Settings:InitialAdministratorPassword` and from no other source, on both the provisioning path and the version 4 migration path |
 | Supply route | Exactly one, and it is **required**: the operator's own value, 12–128 characters, validated in `ResolveInitialAdministratorPassword` before any record write. Absent or out-of-bounds aborts startup with an `InvalidOperationException` naming only the setting key |
-| Disclosure | **None.** No credential is written to standard error, standard output, the log table or an exception message. Only the setting *name* is echoed. The generator that previously produced a value and printed it was removed — see the CWE-532 correction above |
+| Disclosure | **None.** No credential is written to standard error, standard output, the log table or an exception message. Only the setting *name* is echoed. The path that previously produced a generated administrator value and printed it was removed — see the CWE-532 correction above. The CSPRNG generator itself survives for the local **system** account only (`ERPService.cs:610`), whose value is hashed on write and never printed, buffered or returned |
 | Password length bounds | 6 → **12** and 24 → **128**, declared as named constants consumed by **both** the provisioning seed and the migration, so a new installation and an upgraded one cannot diverge. The migration raises them **before** it writes the replacement credential, so an operator passphrase longer than 24 characters is never written under the bounds being replaced |
 
 The plaintext is deliberately handed to `RecordManager`, which hashes it with the current primitive.
@@ -5277,12 +5512,11 @@ and the
 Both were artefacts of the verification harness, not product defects, and neither implicates a tracked
 file:
 
-* Static assets returned `405` because the host was run with a production environment on a
+- Static assets returned `405` because the host was run with a production environment on a
   non-published build, so the static-web-assets manifest was never loaded and a catch-all route
   matched. Re-running in development served them normally.
-* A development-mode banner appeared because the copy of the configuration file in the build output
+- A development-mode banner appeared because the copy of the configuration file in the build output
   was a stale pre-scrub artefact. The tracked configuration file correctly has the flag disabled.
-
 
 ## Review-driven remediation — the code-review pass over this remediation
 
@@ -5305,7 +5539,7 @@ findings were defects in the fixes, not in the original product.
 | Stored cross-site scripting in six Project widget views | The root cause was **not** in the views. Three widget code-behinds *composed* HTML strings from database text — username, task key, task subject, icon class, colour, avatar path — and the views then emitted the composed fragment with the raw helper. Encoding in the view would have encoded the server's own tags and broken every widget. | Ten untrusted interpolations are now encoded with the framework HTML encoder **at composition**, while server-authored markup around them stays literal. Avatars and links still render; output is byte-identical for legitimate content. |
 | Object-level authorization missing across the file endpoints | Upload, download, move and delete could each be driven against another user's file. The uploader was also not persisted, so a later ownership check would have denied the legitimate owner. | Bounded validation before the body is read, extension allow-listing, size caps, magic-byte verification, filename sanitisation, forced attachment disposition for non-image types, and owner-predicated compare-and-swap on move and delete. The uploader is now persisted at every upload site. |
 | Staged-file promotion could be pointed at any path | The temp-namespace check omitted the trailing separator, so `/tmpfoo/...` passed it. | A shared `AuthorizeStagedFilePromotion` helper plus a `StagedFileNamespacePrefix` that includes the separator, wired at both the create-path and update-path twins, with the promotion move pinned to the authorized row. |
-| The serialization binder admitted far more than it needed | The binder resolved its allow-list by **namespace reflection**, admitting 267 types of which 41 were name-shaped as side-effecting infrastructure — repositories, services, contexts. | Replaced with an **exact enumerated** `Type` allow-list of the 33 persisted DTO types actually required, measured by a discovery harness rather than guessed: 234 surplus types removed, 0 required types lost. `BindToName` output is byte-identical, so persisted payloads still round-trip. |
+| The serialization binder admitted far more than it needed | The binder resolved its allow-list by **namespace reflection**, admitting 267 types of which 41 were name-shaped as side-effecting infrastructure — repositories, services, contexts. | Replaced with an **exact enumerated** `Type` allow-list of the 33 persisted DTO types actually required, measured by a discovery harness rather than guessed: 234 surplus types removed, 0 required types lost. *Historical: this narrowing was superseded by a second one under review finding `F-03`, which re-derived the list on a stricter basis — the transitive closure over data members only — giving the **45** entries the binder holds today. The canonical basis for the type and site counts is in the `H-10` record of the audit report.* `BindToName` output is byte-identical, so persisted payloads still round-trip. |
 | A permissive cross-origin policy survived at the second host | H-14 was specified for **two** hosts and landed at only one. `WebVella.Erp.Site.Project` still registered `AddDefaultPolicy(AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader())` and applied it with `app.UseCors()`. Every aggregate check stayed green: the solution built, the warning census was clean, no review finding named the file, and the sibling host's own remediation comment made the class look closed. | Replaced with an explicit allow-list drawn from **this host's own** commented-out policy, which names four origins rather than the sibling's three. Verified against a running host: all four listed origins are echoed back, four unlisted origins — including the literal `null` origin — receive no header at all, and a plaintext preflight is still answered by CORS with `204` and no `Location` while a non-preflight plaintext request still receives `307`. |
 
 ### Defects in the remediation's own controls
@@ -5570,10 +5804,10 @@ The substantive corrections, each stated here with the measurement that backs it
 | --- | --- |
 | Solution-wide commands cover "19 of 19" projects, so no project needs separate scanning | `dotnet sln WebVella.ERP3.sln list \| grep -c csproj` returns **17**, against **19** tracked project files on disk. The document now carries an explicit retraction of the "19 of 19" claim rather than a silent edit, and the gap is closed by a standalone CI step — 17 + 2 = 19 |
 | The two WebAssembly projects "are now solution members" | They are not, and membership was deliberately left unchanged because altering it is not a security fix. They are audited one project per invocation, because passing both paths to a single build fails with `MSB1008` |
-| The workflow has "eight of eight" steps passing | **Ten** steps: **seven** `run:` blocks and **three** `uses:` actions. All seven `run:` blocks were re-executed under `bash -e`, GitHub's actual default shell, and all seven exited 0 |
+| The workflow has "eight of eight" steps passing | **Ten** steps: **seven** `run:` blocks and **three** `uses:` actions — *the figure at that checkpoint; it is seventeen steps and fourteen `run:` blocks now.* All seven `run:` blocks were re-executed under `bash -e`, GitHub's actual default shell, and all seven exited 0 |
 | Gate 1 builds `--configuration Release` | It does not, and the phrase now appears **zero** times. The Gate 1 build passes no configuration flag, so it uses the default, **Debug** |
 | Four `NU19xx` codes are promoted to errors | **Six** — `NU1900` through `NU1905`. The two beyond the four severity codes matter most: they fire when the advisory database cannot be reached, so the gate cannot pass merely by being unable to look |
-| A wrong finding identifier, and a stale suppression line number | Corrected to the end-of-life-framework finding, and to the line the suppression seam actually occupies — verified still to be inside an XML comment, so no suppression is active |
+| A wrong finding identifier, and a stale suppression line number | Corrected to the end-of-life-framework finding. *The second half of this row is withdrawn: it corrected a line number for a "suppression seam" that does not exist in `Directory.Build.props` at all — comment-inclusive grep returns 0 matches — so re-pointing its locator was correcting a phantom. No suppression is active, which was the property the row was trying to establish, and it holds for the stronger reason that no suppression is present in any form* |
 
 Two further points were **left alone deliberately** after checking them, which is worth recording
 because both look like errors at a glance. Two statements elsewhere in the same document already
@@ -5596,8 +5830,6 @@ disclaimer was replaced with an accurate description rather than deleted.
 > the job on any Security-category diagnostic outside a two-entry allow-list. So the original disclaimer
 > was right, then wrong, and is now closer to right than the replacement that displaced it — which is why
 > the correction is recorded here rather than by silently editing the sentence above.
-
-
 
 ## Code-review checkpoint — the 13 review findings
 
@@ -5936,7 +6168,7 @@ uppercase, single character, empty, whitespace, null, `a; DROP TABLE x`, `a--b`,
 | Field | Value |
 | --- | --- |
 | **Location** | `WebVella.Erp/Api/Models/ErpSerializationBinder.cs` |
-| **Status** | **Resolved** — see `RISK-033` |
+| **Status** | **Resolved** — the standing allow-list maintenance residual is carried as `RISK-025` |
 
 The binder's allow-list had been narrowed to types reflected out of the pinned core assembly within five
 enumerated namespaces. Persisted payloads originating in plugin and web assemblies were therefore
@@ -5980,7 +6212,7 @@ derives from it). Real Newtonsoft `TypeNameHandling.All` round-trips succeed end
 | --- | --- |
 | **CWE** | CWE-434 (OWASP A04:2021, A03:2021) |
 | **Location** | `WebVella.Erp.Web/Controllers/WebApiController.cs` |
-| **Status** | **Resolved** — see `RISK-034` |
+| **Status** | **Resolved** — the transport-level buffering residual is carried as `RISK-133` |
 
 Four upload actions were hardened; `/fs/upload/` was not. It had no null check, no size cap, no
 extension allow-list, no content-type verification and no filename sanitisation, and it wrote the raw
@@ -5996,7 +6228,7 @@ action's own existing convention and echoes no submitted input.
 an empty file, no extension, a missing file part, and 26 MB against the 25 MB cap. Round-trip preserved,
 the sibling batch endpoint unaffected, and **zero 500s and zero unhandled exceptions** in the host log.
 
-**Decision (o) — the scope of "never buffered" is stated honestly** (`RISK-034`). ASP.NET Core model
+**Decision (o) — the scope of "never buffered" is stated honestly** (`RISK-133`). ASP.NET Core model
 binding has already buffered the multipart body before the action runs. The pre-validation prevents the
 action's own full-file managed allocation, not the framework's request buffering, and no
 `MaxRequestBodySize` or `MultipartBodyLengthLimit` is configured. Documented, not fixed.
@@ -6042,7 +6274,7 @@ behaviour change.
 | --- | --- |
 | **CWE** | CWE-778 |
 | **Location** | `WebVella.Erp.Web/Pages/login.cshtml.cs` |
-| **Status** | **Resolved** — see `RISK-035` |
+| **Status** | **Resolved** — no residual is carried in the risk register |
 
 **Decision (p).** The failure is now reported to `ILogger` — an **independent, non-database, non-mail**
 sink — injected via `[FromServices]` on `OnPost`. The sink choice matters: `LogService` is unusable here
@@ -6078,12 +6310,21 @@ exactly once in the file.
 | Field | Value |
 | --- | --- |
 | **Location** | `WebVella.Erp/Api/SecurityManager.cs` |
-| **Status** | **Resolved** |
+| **Status** | **Resolved — superseded, then eliminated** |
 
-`BuildExactEmailPattern` escaped metacharacters by hand. Replaced with
-`"^" + Regex.Escape(email) + "$"`, retaining the length guard and the anchoring, per the file's frozen
-contract §3.2 Variant A. The PostgreSQL-16 behaviour was **verified rather than assumed** — all 20
-operands checked — and the result recorded in the method's `<remarks>`.
+`BuildExactEmailPattern` escaped metacharacters by hand; it was first replaced with
+`"^" + Regex.Escape(email) + "$"`, retaining the length guard and the anchoring. A later review
+finding established that an anchored, escaped pattern still leaves a regular-expression evaluator on
+the anonymous login path and still deviates from the Agent Action Plan, whose Class 3 wording is that
+the predicate loses the regex match outright. The escaper and its caller were therefore **deleted**
+rather than hardened: `ResolveCredentialCandidates` now issues
+`SELECT id, email FROM rec_user WHERE lower(email) = lower(@email) ORDER BY id LIMIT 2` with the
+address bound as a text parameter, so no pattern is compiled and no metacharacter can be interpreted.
+`Regex.Escape`, the `~*` operator and the `System.Text.RegularExpressions` import are all gone from
+the file. The PostgreSQL-16 behaviour of the replacement was **verified rather than assumed** against
+the provisioned instance — mixed-case, lower-cased and upper-cased submissions of a mixed-case stored
+address all authenticate, six metacharacter operands and a nested-quantifier operand authenticate
+nothing and return in ~120 ms, and the seeded administrator still authenticates.
 
 ### Cross-cutting decisions and corrections
 
@@ -6091,10 +6332,10 @@ operands checked — and the result recorded in the method's `<remarks>`.
 surface change*; these are the only two exceptions and both are purely **additive**, breaking no existing
 caller:
 
-* `ErpUserPreferences.PasswordChangeRequired` — `ErpUserPreferences` is a public serialisation model
+- `ErpUserPreferences.PasswordChangeRequired` — `ErpUserPreferences` is a public serialisation model
   whose members are serialised by Newtonsoft into the existing `preferences` column. A non-public member
   would not round-trip.
-* `AuthService.PasswordRotationRequiredMessage` — the sentinel is compared by callers outside the
+- `AuthService.PasswordRotationRequiredMessage` — the sentinel is compared by callers outside the
   declaring type, so it must be reachable to them.
 
 `OnPost` also gained a `[FromServices] ILogger<LoginModel>` parameter. Razor Pages resolves handler
@@ -6114,10 +6355,17 @@ documentation:
 **What was deliberately *not* changed.** Every one of these was considered and declined under the
 minimal-change clause, with the reason recorded rather than left implicit: the remaining permissive CORS
 policy at `WebVella.Erp.Site.Project` (`RISK-013`, outside the review's finding scope); platform-wide
-`PasswordField` bound enforcement (`RISK-032`); re-narrowing the deserialisation binder (`RISK-033`);
-transport-level upload limits (`RISK-034`); the username uniqueness probe's case sensitivity; extending
-the public `LogType` enum; `.gitignore` entries for gate output (`RISK-038`); and solution membership for
+`PasswordField` bound enforcement; re-narrowing the deserialisation binder (`RISK-025`);
+transport-level upload limits (`RISK-133`); the username uniqueness probe's case sensitivity; extending
+the public `LogType` enum; `.gitignore` entries for gate output; and solution membership for
 the two WebAssembly projects.
+
+Four of those parentheticals were originally written as `RISK-032`, `RISK-033`, `RISK-034` and
+`RISK-038`, none of which described the subject beside it. Two have been re-aimed at the entries that do
+— `RISK-025` for the binder allow-list and `RISK-133` for transport-level buffering — and two carried no
+register entry at any point, so the identifier was removed rather than replaced: the `PasswordField`
+bound decline and the `.gitignore` decline are recorded here and nowhere else, deliberately, because
+neither is an accepted residual that outlives this checkpoint.
 
 ### Validation record for this checkpoint
 
@@ -6158,12 +6406,27 @@ The commit-to-class table earlier in this log stops at row 13 and describes an e
 commits made at this checkpoint and the one before it are recorded in their own sections instead, of
 which this is one.
 
-### Class: Output Encoding
+### Work recorded under Class 7 — Output Encoding
 
-**Findings closed in this class:** the twelve confirmed **stored** cross-site-scripting sink instances
-in the shared navigation and site-menu views and in the six Project widget views (CWE-79, OWASP
-A03:2021). Taken with the reflected sinks and `M-18` closed earlier in this log, this completes `H-06`
-except for the four by-design channels held as accepted risk under `RISK-023`.
+**Findings closed at this checkpoint:** the twelve confirmed **stored** cross-site-scripting sink
+instances in the shared navigation and site-menu views and in the six Project widget views (CWE-79,
+OWASP A03:2021). An earlier revision incorrectly continued, *"this completes H-06"*. That closure was
+premature: a later review found three more executable sinks in the same class, `F-01`, `F-02` and
+`F-03`, plus the companion page-header style/class channel `F-06`. All four are now closed and recorded
+below. The only deliberate raw channels still accepted are the four under `RISK-023`.
+
+#### Later review corrections that complete this class
+
+| Finding | Current control and locator | Verification |
+| --- | --- | --- |
+| `F-01` — stored select-option label reached mixed raw vendor sinks | `WebVella.Erp.Web/Utils/ModelExtensions.cs:L145` now passes `Label` through `SafeStyleValue.DisplayText` (`SafeStyleValue.cs:L132`). This is value restriction rather than pre-encoding: it removes only `<` and `"`, while `&`, `'` and `>` remain byte-identical | Hostile labels produced no element, no `on*` attribute, no DOM mutation and no dialog across the display, inline-edit and open-select2 paths. `R&D` and apostrophe-bearing controls remained exact |
+| `F-02` — data-bound page-header description reached `AppendHtml` | `WvPageHeader.cs:L440-L446` now gives the ordinary `description` attribute the encoded `InnerHtml.Append` path and reserves raw markup for the explicit `description-html` attribute. The five SDK list views that intentionally pass `PageUtils.GenerateListPageDescription` moved to `description-html` | A hostile data-bound description remained text with zero child elements and no execution. All five list pages still rendered their real `ul`/`li`/`strong` structure |
+| `F-03` — legacy multi-file path and display name were interpolated into raw markup | `WvFieldUserFileMultiple.cs`, in the `Files list element` region, now builds the icon and anchor with `TagBuilder`, puts persisted values through encoded attribute/text APIs, and appends the fixed `<em>` as its own child | The pre-fix parse produced injected attributes and a live error handler; the fixed parse contains only the intended `class`, `href`, `target` and `title` attributes, with legitimate output otherwise unchanged |
+| `F-06` — page-header colour and icon metadata reached style/class attributes without a strict boundary | `WvPageHeader.cs:L168-L170` computes `CssColor`-guarded colours and an `ApprovedIconClass` token allow-list once, then uses those values at every style/class sink and for the `has-icon`/`no-icon` layout decision | The hostile colour generated no declaration or outbound request, the hostile utility class generated no icon, and every measured legitimate product colour/icon value retained its exact rendering |
+
+The original audit counted **128** `Html.Raw(` invocation sites across **69** Razor views. The current
+tree contains **114 invocation sites across 62 views**; the reduction is the removed confirmed sinks,
+not a reclassification of the deliberate server-generated-markup or by-design channels.
 
 #### The insight that determined the shape of the fix
 
@@ -6373,8 +6636,16 @@ middleware had acquired a code path that completed a request *without* attaching
 headers. The finding (`CFG-04`) proposed re-ordering the branch so the headers were attached first.
 Deleting the branch is strictly better than re-ordering it: re-ordering leaves a second path that a
 future edit can reintroduce the defect into, whereas removal makes the defect structurally
-impossible. `Invoke` now contains **zero** `return` statements and exactly one `await next(context)`,
-so there is one path and it always attaches all seven headers.
+impossible. `Invoke` now contains **no `return` statement of its own** - the single `return
+Task.CompletedTask;` lexically inside it belongs to the `OnStarting` re-attach callback added
+later by a separate class - and exactly one `await next(context)`, so there is one path through
+the method and it attaches the same set every time. **Stated exactly**, because the earlier
+wording of this sentence claimed *all seven* unconditionally: that one path attaches the **six
+fixed headers** unconditionally, plus `Strict-Transport-Security` whenever the environment is
+not Development - the constructor decision at `SecurityHeadersMiddleware.cs:L43-L71`. The
+invariant the branch removal establishes is that no response class can receive a *different*
+set from another, which is what `CFG-04` was about; it was never that the seventh header is
+environment-independent, and it is deliberately not.
 
 Removal also happens to be what this project's own file specification requires — it forbids a
 violation-report collector endpoint and a `report-uri` property outright — so the intermediate
@@ -6410,9 +6681,9 @@ It is now bound through `.Configure<IConfiguration>(…)` reading
 stays a constant with no setter, so no configuration source can inject `'unsafe-inline'` or
 `default-src *`. The binding is deliberately asymmetric:
 
-* **absent or blank** — the compiled default (report-only) stands. A deployment that says nothing is
+- **absent or blank** — the compiled default (report-only) stands. A deployment that says nothing is
   correct, not broken.
-* **present but unparseable** — startup **aborts**. Silently ignoring a bad value is the exact defect
+- **present but unparseable** — startup **aborts**. Silently ignoring a bad value is the exact defect
   this finding describes, and here the silent direction is the dangerous one: the operator believes
   the policy is enforcing while the platform is only reporting. Guessing `enforcing` instead would
   break the four by-design inline-script components. The exception names the key and its
@@ -6530,7 +6801,7 @@ diagnostics repository-wide.
 | `CA2327` occurrences | **zero**, repository-wide. `CA2327` is the rule for a *missing* serialization binder, so its complete absence is positive evidence that `ErpSerializationBinder` is attached at every `TypeNameHandling` site |
 | Gate 2 | **19 of 19** projects report `has no vulnerable packages`; zero `NU19xx` |
 | Gate 3 | detector self-test **17 / 17** rules fire across ten formats; **1,514** tracked text files swept with no path exclusions; 13 configuration files reached by name; 3 findings, all accepted non-credentials |
-| Full local execution of every shell step, in order | **10 / 10 exit 0** in 918 s; every cleanup trap fired; no tracked file mutated by the run |
+| Full local execution of every shell step, in order | **10 / 10 exit 0** in 918 s; every cleanup trap fired; no tracked file mutated by the run — *historical: ten steps at this checkpoint, seventeen now* |
 | Negative controls | **8 / 8 fail as required** — including a credential planted in a tracked YAML file, which is precisely the blind spot `CI-04` identified |
 
 #### The three accepted residuals this work introduces
@@ -6538,17 +6809,18 @@ diagnostics repository-wide.
 Recorded here and in `docs/security/risk-register.md`, because a gate's limits belong next to its
 results.
 
-* **Taint-tracking is intraprocedural.** `CA3001`–`CA3012` run with
+- **Taint-tracking is intraprocedural.** `CA3001`–`CA3012` run with
   `interprocedural_analysis_kind = None`, which was set in a repository-root `.globalconfig` that has since
   been removed — so the family no longer runs at all rather than running intraprocedurally; at the time, a flow crossing
   a method boundary is not followed. This is a measured decision: without it the solution build did not
   complete within 1,800 s and then within 2,400 s, against 370–415 s with it. The positive control
   confirms detection is unaffected for the intraprocedural case.
-* **No scheduled re-audit.** An advisory published between pushes is not detected until the next push,
+- **No scheduled re-audit.** An advisory published between pushes is not detected until the next push,
   pull request or manual dispatch.
-* **Gate 3 sweeps the tracked tree, not git history.** A credential removed in a later commit still
+- **Gate 3 sweeps the tracked tree, not git history.** A credential removed in a later commit still
   exists in the object database and must be **rotated**, not deleted. A short, low-entropy credential
   carrying no recognisable key name also remains outside every tier's reach.
+
 ## SMTP transport security and the SMTP service credential
 
 This pass closes the mail plugin's two remaining High-severity findings. They are recorded together
@@ -6576,11 +6848,13 @@ inside the getter matters and is deliberate: the setting is parsed first, so an 
 never enabled the opt-out is never told anything; the posture check comes second; the refusal notice
 fires only in the one case that is actually a misconfiguration.
 
-### Follow-up: certificate revocation needed a switch of its own
+### Follow-up, then reversal: certificate revocation was given a switch, and the switch was removed
 
 Runtime testing of the change above surfaced a consequence the certificate work had not accounted
-for, and it is recorded here as part of the same vulnerability class because it is a property of the
-same five sites.
+for. It is recorded here because it is a property of the same five sites — and because the first
+answer to it was wrong and has been reversed. **The tree contains no revocation setting.** Anyone
+reading this section for the mechanism should stop at the reversal sub-section below; the operational
+consequence is now documented rather than configurable.
 
 **What was found.** MailKit initialises `CheckCertificateRevocation` to `true`, and none of the five
 sites assigned it, so removing the always-true callback silently made **revocation reachability** a
@@ -6588,48 +6862,62 @@ delivery prerequisite. A relay whose certificate is entirely valid — correct h
 issued by a CA the host trusts — but whose chain names no reachable CRL distribution point, or whose
 CRL fetch is blocked by egress filtering, stopped being reachable at all. The handshake fails with
 `SslHandshakeException` whose chain detail contains nothing but `unable to get certificate CRL`, which
-reads like an untrusted certificate and is not one. Two files changed.
+reads like an untrusted certificate and is not one. That finding is real, and it is still real; only
+the response to it changed.
+
+**What was done first, and why it was the wrong answer.** This remediation introduced a second policy
+member, `CheckRemoteCertificateRevocation`, reading `Settings:EmailSMTPCheckCertificateRevocation`,
+assigned at all five sites and honoured in **every** posture including Production, with its own
+one-shot notice latch. Review finding `INT-08` established that this was out of scope on two
+independent grounds, and both are worth stating rather than paraphrasing:
+
+- **It was never required to close `H-11`.** The finding is the five unconditional accept-any
+  callbacks. Removing them needs one opt-in that defaults to secure — which had already landed. A
+  production-honoured relaxation of a *different* TLS check is additional behaviour, not part of the
+  fix, and the plan of record forbids enhancement beyond remediation.
+- **It weakened the Production transport posture, and the plan says to document this class of risk
+  rather than configure around it.** An unreachable revocation source is a property of an external
+  relay, and external-service risks are to be recorded, not accommodated by new product behaviour.
+  However narrow "one check of several" is, the setting made a production deployment able to accept a
+  **revoked** relay certificate — with no posture gate to stop it — in exchange for an operator
+  convenience.
+
+**What the tree contains now.** Two files changed to remove it; nothing was added in its place.
 
 | File | Change | Threat addressed |
 | --- | --- | --- |
-| `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` | New `CheckRemoteCertificateRevocation` policy member reading `Settings:EmailSMTPCheckCertificateRevocation`, plus `client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;` at the four direct sites and a second one-shot notice latch | CWE-299 improper check for certificate revocation, in **both** directions: an unchecked revocation list accepts a revoked relay certificate, and an uncheckable one denies service to a valid relay |
-| `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` | The same assignment at the fifth, queued site, bound to the same member | CWE-299 on the path where the symptom is a filling retry queue rather than a thrown exception |
+| `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` | The `CheckRemoteCertificateRevocation` policy member, its documentation, its `certificateRevocationCheckDisabledReported` latch, its `ReportCertificateRevocationCheckDisabled()` notice and all four `client.CheckCertificateRevocation = ...` assignments were deleted. A comment at each former assignment site records that revocation must stay unassigned so the library default governs. | CWE-299 in the direction that matters in production: a deployment must not be able to accept a revoked relay certificate |
+| `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` | The same assignment and its comment block were deleted from the queued path, with the same guard comment left in place. | CWE-299 on the queued path |
 
-**Why a second setting rather than widening the first.** The accept-any-certificate opt-out is refused
-outside Development *by design*, so it is not — and must not become — the remedy for a production
-outage. Widening it would have handed back exactly the accept-any behaviour H-11 exists to remove. The
-two relaxations are not comparable in width: accepting any certificate removes transport
-authentication entirely, whereas declining to consult a revocation list removes one check of several
-and leaves the trust chain, the validity dates, the key usage and the host name all still enforced.
-That difference is what makes the second setting supportable in production while the first is not, and
-it is why this one carries **no posture gate**.
+**Why deleting the assignment is sufficient, with nothing added back.** MailKit's own default for
+`CheckCertificateRevocation` is `true`, confirmed from the shipped `MailKit.xml` documentation of the
+installed 4.17.0 package rather than assumed. With no assignment anywhere, every send path — the four
+direct overloads and the queued one — checks revocation, and no configuration value can turn that off.
+The secure state is therefore the *only* state, which is a stronger guarantee than a setting that
+defaults to secure.
 
-**Why the default is inverted relative to its neighbour, and how.** The secure state here is `true`,
-not `false`, so the fail-safe parsing had to be arranged the other way round: only a value that
-genuinely parses as boolean `false` disables the check, while absent, blank, `true` and anything
-unparseable — `no`, `0`, `off` — all resolve to `true`. The non-throwing overload is kept for the same
-reason as its neighbour: a configuration typo must not raise `FormatException` on every outbound
-message and turn a mistake into a mail outage. A settings layer that has not been initialised yields
-`true` as well, so the policy fails secure before configuration exists.
+**Where the operational consequence now lives.** It is an operator risk, carried as `RISK-060` and
+documented in the [secure configuration guide](secure-configuration.md). The supported remedy is to
+make the revocation source reachable — publish a CRL distribution point or an OCSP responder on the
+relay's chain and permit the fetch through egress filtering — or to use a relay that already does.
+There is no product-side remedy, deliberately.
 
-**Why it is reported when disabled.** A deployment running without revocation checking is in a
-weakened, if deliberate and supported, posture. One notice per process on standard error — latched by
-`Interlocked.CompareExchange`, the same idiom as the refusal notice, and for the same reason, since
-the policy is read at least once per message — puts that on the record instead of leaving it inferable
-only from configuration nobody re-reads. Only the setting **name** is named, never a credential, a
-server or a port.
-
-**What was deliberately not done.** The revocation mode is not made granular — there is no
-"soft-fail", no offline-only mode and no per-service override — because MailKit exposes one boolean
-and the platform's constraint is the least invasive control that closes the finding. Nor was
-`client.Timeout` touched while in the same statement block; it is a separate pre-existing observation
-recorded in the risk register.
+**What was deliberately not done.** No granular revocation mode, no soft-fail, no offline-only mode
+and no per-service override, for the same reason as before: MailKit exposes one boolean and the
+platform's constraint is the least invasive control. `client.Timeout` remains untouched in the same
+statement block; it is a separate pre-existing observation recorded in the risk register.
 
 ### Follow-up verification
 
+The first six rows are the measured evidence gathered while the setting existed. They are retained
+because they quantify the operator risk that `RISK-060` now carries — in particular that a revocation
+failure is distinguishable from an untrusted certificate, which is what makes the documented diagnosis
+actionable — and because a claim about an external relay's behaviour should rest on a measurement
+rather than on reasoning. The final four rows verify the removal itself.
+
 | Check | Method | Result |
 | --- | --- | --- |
-| The mechanism, isolated from the application | `X509Chain` probe over a purpose-built PKI, run at `RevocationMode=Online` and `NoCheck` | trusted leaf with **no** CRL distribution point: `Online` fails with `RevocationStatusUnknown|OfflineRevocation`, `NoCheck` passes. Trusted leaf with a reachable **DER** CRL: passes in both modes. Self-signed leaf: fails `UntrustedRoot` in **both** modes — so the relaxation cannot be mistaken for accept-any |
+| The mechanism, isolated from the application | `X509Chain` probe over a purpose-built PKI, run at `RevocationMode=Online` and `NoCheck` | trusted leaf with **no** CRL distribution point: `Online` fails with `RevocationStatusUnknown\|OfflineRevocation`, `NoCheck` passes. Trusted leaf with a reachable **DER** CRL: passes in both modes. Self-signed leaf: fails `UntrustedRoot` in **both** modes — so the relaxation cannot be mistaken for accept-any |
 | The finding's own reproduction, end to end | real send through `EmailServiceManager.GetSmtpService` → `SendEmail` against a STARTTLS relay whose trusted-CA leaf publishes no CRL distribution point | with the setting **absent** the send is refused and the chain detail is exactly `unable to get certificate CRL` — the secure default is preserved. With `Settings__EmailSMTPCheckCertificateRevocation=false` in **Production** posture the same relay **delivers** — the remedy the finding reported as missing now exists |
 | The relaxation is narrow | the same send, revocation disabled, against a self-signed relay and against a relay whose certificate names `not-localhost.invalid` | both still **refused**, with `UntrustedRoot` and a host-name mismatch respectively. Disabling revocation does not disable validation |
 | The wider opt-out is still refused in production | `Settings__EmailSMTPAllowInvalidCertificates=true` with no `Settings__DevelopmentMode` | still refused, still exactly one `SmtpService[1]` notice. The new setting did not weaken the old gate |
@@ -6933,7 +7221,7 @@ same-site validation of the return URL.
 `WebVella.Erp.Web/Pages/Shared/NavItem.cshtml:L9` does not merely render the menu item — it rewrites
 the **finished** markup string before rendering it:
 
-```
+```csharp
 navItem.Content = navItem.Content.Replace("dropdown-item","dropdown-toggle")
                                  .Replace("<a","<a data-toggle='dropdown' ");
 ```
@@ -6948,9 +7236,9 @@ auto-encodes is unreachable in practice.
 The only correct place to encode is therefore the code that *composes* the markup, where the
 data and the tags are still separable. Two consequences follow, and both are deliberate:
 
-* Only the interpolated **values** are encoded. Every surrounding tag, attribute name, quote and
+- Only the interpolated **values** are encoded. Every surrounding tag, attribute name, quote and
   space is left byte-identical, which is what keeps line 9's `"<a"` rewrite matching.
-* The nine views keep their `Html.Raw` calls. Their security-triage comments were rewritten from
+- The nine views keep their `Html.Raw` calls. Their security-triage comments were rewritten from
   *"accepted, documented risk"* to *"closed at the builder"*, and each now states explicitly that the
   raw call must not be removed and that encoding must not be added there. One of those comments
   previously claimed the builder was outside the remediation scope; that claim was wrong and was
@@ -6975,18 +7263,18 @@ for a saving of a few characters per call site.
 Three further decisions are recorded because each is a place where a plausible alternative would have
 been wrong:
 
-* **`node.Url` is HTML-encoded, not URL-encoded.** A URL encoder would escape the path separators and
+- **`node.Url` is HTML-encoded, not URL-encoded.** A URL encoder would escape the path separators and
   the colon, and every navigation link in the product would break. The finding is markup breakout, and
   HTML encoding is exactly the control for markup breakout inside an attribute value.
-* **Scheme validation on `node.Url` was declined**, with reasons, as `RISK-037`.
-* **The no-owner branch of the task-distribution widget interpolates only compile-time constants**, so
+- **Scheme validation on `node.Url` was declined**, with reasons, as `RISK-037`.
+- **The no-owner branch of the task-distribution widget interpolates only compile-time constants**, so
   it cannot carry a payload. It is routed through the encoder anyway, for symmetry, with a comment
   saying exactly that — so a future edit that introduces a database value there is already safe.
 
 ### Verification
 
 **Static gate.** Full-solution `dotnet build --no-restore --no-incremental` exit 0,
-`3060 Warning(s), 0 Error(s)` *(the figure when this section was written; **3,044** today)*. Normalised
+`3060 Warning(s), 0 Error(s)` *(the figure when this section was written; **3,096** today)*. Normalised
 per-rule counts are **byte-identical** to the previous
 class's gate; against the pre-engagement baseline of 3065 the only differences remain the same four
 reductions (`CA1310` 612→610, `CA1822` 418→416, `CA1865` 8→4, `CA1866` 180→178) with **zero
@@ -6997,7 +7285,7 @@ reason the view-level comments cannot be relied on as the control and the builde
 
 **Harness — 215 checks, 0 failures, run twice with byte-identical output.** Four sections:
 
-* *Encoder invariance (48).* Eleven FontAwesome icon-class strings, seven hex colours, three avatar
+- *Encoder invariance (48).* Eleven FontAwesome icon-class strings, seven hex colours, three avatar
   paths, eight plain URLs and twelve ASCII label values survive encoding **byte-identically**. Three
   legitimate shapes are rewritten and each is asserted **both ways** — that the rewrite happens and
   that it decodes back to the original: `&`→`&amp;`, `'`→`&#x27;`, and `+`→`&#x2B;` (which is what
@@ -7005,26 +7293,26 @@ reason the view-level comments cannot be relied on as the control and the builde
   references. All are render-equivalent because a browser HTML-decodes an attribute value before
   using it. `HtmlEncoder.Default.Encode(null)` throws, which is asserted — and is why every call site
   coalesces to `string.Empty`.
-* *Neutralisation (60).* Twelve payload classes, including the exact payload this finding quotes, plus
+- *Neutralisation (60).* Twelve payload classes, including the exact payload this finding quotes, plus
   attribute breakout by double quote and by single quote, tag-name variants and a lossless
   round-trip check. No `<`, `>`, `"` or `'` survives encoding.
-* *Template composition (50).* Each of the nine templates is rendered twice — once with an encoded
+- *Template composition (50).* Each of the nine templates is rendered twice — once with an encoded
   payload and once with an encoded benign value — and the **delimiter census** is asserted identical.
   This replaced two earlier naive checks that searched for the literal words `onerror` and
   `document.cookie`; those words legitimately *do* remain in the output, because the payload is
   displayed verbatim as inert text, so searching for them was measuring the wrong thing.
-* *Source invariant (57).* The harness reads the four real builder files, walks every `{…}`
+- *Source invariant (57).* The harness reads the four real builder files, walks every `{…}`
   interpolation hole in the twelve marker template lines, and asserts each references an `encoded*`
   local or a cast `Guid`. This is the check that fails if a future edit adds an unencoded hole.
 
 **Runtime, against live PostgreSQL.** Two hosts were published and driven in Production posture with
 payloads seeded **directly into the database**, which is the only way to prove a *stored* sink:
 
-* Ten menu sinks on the SDK host — area label (multi-node and single-node forms), node label, node
+- Ten menu sinks on the SDK host — area label (multi-node and single-node forms), node label, node
   icon class, node url, the no-url node branch, and a site page's name and label. All ten reached the
   page; the raw-markup census was **0** for every breakout shape and the encoded form was present for
   all ten.
-* Five widget sinks on the Project host — task subject, a second task subject, task key, owner
+- Five widget sinks on the Project host — task subject, a second task subject, task key, owner
   username and owner avatar path. All five reached the dashboard; raw count **0**, encoded count 8.
 
 An `html.parser` walk of three captured pages (41, 17 and 32 assertions, zero failures) confirmed at
@@ -7034,12 +7322,12 @@ attribute. The only handler attribute value found anywhere is the platform's own
 
 **Browser, twice.** Both runs returned PASS.
 
-* *Navigation.* All ten markers present: five in text nodes, nine in attribute values, **zero as
+- *Navigation.* All ten markers present: five in text nodes, nine in attribute values, **zero as
   parsed element structure**. `img[src="x"]` 0, `svg` 0, `[onerror]` 0, `[onload]` 0,
   `[onmouseover]` 0; total element count unchanged at 205. All **five** dropdown togglers still open,
   still close on re-click and on background click, and mutual exclusion still holds. 226 console
   messages, none containing the payload marker; 116 network requests, all 200/204/302.
-* *Dashboard widgets.* All **seven** panels rendered — two Chart.js doughnuts with 4,661 painted
+- *Dashboard widgets.* All **seven** panels rendered — two Chart.js doughnuts with 4,661 painted
   pixels each, two timesheet tables showing the seeded 90 minutes as `1.5h`, two task-queue tables
   with their rows, and one legitimate "no upcoming tasks" empty state. The task-cell anchor's
   `textContent` matched the expected 157-character payload string **exactly**, with
@@ -7062,13 +7350,13 @@ network log.
 
 ### Deviations and out-of-scope observations
 
-* **The four by-design raw channels were not touched**, and `git diff --quiet` confirms it for each:
+- **The four by-design raw channels were not touched**, and `git diff --quiet` confirms it for each:
   the HTML-block component's display and design views, the navigation inline-script emitter, and the
   SDK sitemap form. Encoding them would disable the features they exist to implement. They remain
   `RISK-023`, and they remain the concrete reason the Content-Security-Policy still ships report-only.
   What changed is their standing: they are now the *only* remaining raw channels rather than four
   among many, and the compensating control behind them is now defence in depth behind an actual fix.
-* **Two dropdown rows render without their FontAwesome glyph** in the payload test data. This is a
+- **Two dropdown rows render without their FontAwesome glyph** in the payload test data. This is a
   cosmetic consequence of the fix working, not a regression: a payload that tries to break out of
   `class="fa fa-database"` leaves the trailing quote absorbed into the class token, and
   `fa-database"` is not a valid FontAwesome class. Legitimate icon values are unaffected — the
@@ -7077,16 +7365,16 @@ network log.
   inline colours were read back intact. Had the breakout succeeded, the class would have been clean
   **and** a live handler would exist; the missing glyph is the visible signature of the payload being
   trapped inside the attribute value.
-* **`PcProjectWidgetTasksQueue.cs` interpolates a task identifier without an explicit culture.** The
+- **`PcProjectWidgetTasksQueue.cs` interpolates a task identifier without an explicit culture.** The
   line pre-existed unchanged and raised no new diagnostic. It is left alone deliberately: "fixing" it
   would introduce a `CA1305` warning the gate does not currently carry.
-* **`userRow["id"]` in the timesheet widget is not a sink.** It reaches only a Razor `class="@(…)"`
+- **`userRow["id"]` in the timesheet widget is not a sink.** It reaches only a Razor `class="@(…)"`
   expression, which Razor auto-encodes. It is recorded so a future reader does not mistake its
   absence from the encode list for an oversight.
-* **`iconClass` and `color` originate in entity metadata rather than record data.** They are still
+- **`iconClass` and `color` originate in entity metadata rather than record data.** They are still
   database-sourced and are still encoded; the distinction is recorded only so the threat model is
   accurate about where the value comes from.
-* **Six stale line citations were corrected.** The security comments in the nine views cited
+- **Six stale line citations were corrected.** The security comments in the nine views cited
   `BaseErpPageModel.cs` line numbers that the fix itself invalidated when the file grew from 601 to
   644 lines. Leaving them would have created exactly the documentation drift this engagement records
   as a finding elsewhere.
@@ -7122,18 +7410,35 @@ Instead one new type carries it: `WebVella.Erp.Web/Utils/SecurityAuditLog.cs`, 6
 `WebVella.Erp.Web/Services/SecurityAuditLog.cs` and 385 lines. Two units introduced a sink
 independently; they were converged onto the single surviving type at
 `WebVella.Erp.Web/Utils/SecurityAuditLog.cs`, and the `Services/` path no longer exists. The
-surviving type declares six `internal static` members — `Normalize` (`:131`), `Field` (`:181`), two
-`Write` overloads (`:262`, `:311`), `RecordApiFault` (`:561`) and `RecordAudit` (`:594`) — reached
-from **53** call sites across the assembly (`RecordApiFault` 27, `Field` 13, `Write` 10,
-`Normalize` 3). `RecordAudit` is the one member with **no** call site: the login page's
-`WriteAuthenticationAuditRecord` composes its details through `Field` and persists through `Write`
-instead. It is retained rather than deleted, because removing a member is refactoring beyond
-remediation and no analyzer reports it.
+surviving type declares **seven** `internal static` members — `Normalize` (`:131`), `Field` (`:181`), two
+`Write` overloads (`:262`, `:311`), `RecordApiFault` (`:561`), `RecordRateLimitedAudit` (`:615`) and
+`RecordAudit` (`:649`) — reached from **77** executable call sites across the assembly
+(`RecordApiFault` 47, `Field` 14, `Write` 13, `Normalize` 1, `RecordAudit` 1,
+`RecordRateLimitedAudit` 1), in a file of 745 lines.
+
+*Re-measured on the tree this commit publishes, and three of the figures above changed.* This
+paragraph previously recorded six members at **53** call sites and stated that `RecordAudit` was the
+one member with no call site. Both statements were true when written and are now stale, which is
+review finding `OBS-08`; the counts are restated rather than quietly adjusted so that a reader can
+see what moved and why:
+
+- `RecordRateLimitedAudit` (`:615`) is **new**. It was added for review finding `OBS-06`, which
+  required forensic evidence for a refusal that repeats — a replayed revoked token — where an
+  unbounded record would have handed an attacker a log-growth primitive (CWE-779). It admits one
+  record per source per reporting interval and reports the volume it withheld, so the evidence
+  exists without the amplification.
+- `RecordAudit` now **has** a call site, at `WebVella.Erp.Web/Services/AuthService.cs:537`. The
+  session-revocation audit added for `OBS-06` is exactly the unbounded-by-design case this member
+  exists for: a sign-out is a discrete user action, so withholding one is losing evidence rather
+  than saving space. The member is no longer retained on the "no analyzer reports it" argument.
+- The line offset moved from `:594` to `:649` purely because `RecordRateLimitedAudit` was inserted
+  above it.
 
 | Entry point | Purpose | Rate bound |
 | --- | --- | --- |
 | `RecordApiFault(string source, Exception ex)` | An unexpected fault on a request-reachable path | One record per source per minute |
-| `RecordAudit(string source, LogType type, string message, string details)` | An authentication outcome; returns whether it persisted | **None, deliberately** |
+| `RecordRateLimitedAudit(string source, LogType type, string message, string details)` | A security-relevant refusal that an attacker can repeat at will | One record per source per minute, with the withheld count carried into the next record |
+| `RecordAudit(string source, LogType type, string message, string details)` | A discrete authentication or session outcome; returns whether it persisted | **None, deliberately** |
 
 `AuthService`'s helpers stayed private and unchanged. The new type does not call into it, and it
 does not replace it.
@@ -7192,8 +7497,14 @@ comment was added — thirty-six copies of the same paragraph is drift waiting t
 
 Two `LogService` calls survive in the controller, at the authorization-refusal paths, and both
 already passed `DoNotNotify` before this engagement. The controller therefore now has **no**
-notification-eligible fault path at all, which is a second, larger mitigation of `M-17` than the
-one that record originally anticipated.
+notification-eligible fault path at all. That removes the platform's largest anonymous-reachable
+source of notified faults, and it is the **strongest** mitigation `M-17` has — stronger than the one
+that record originally anticipated, which was `H-11` restoring certificate validation on the mail
+transport. That anticipated mitigation has since been withdrawn as factually wrong under review
+finding `INT-01`: `H-11` hardened the mail plugin's MailKit paths, whereas `LogService` notifies
+through a separate `System.Net.Mail.SmtpClient` that negotiates no TLS at all. Reducing the number of
+paths that notify is therefore not one mitigation among several — together with
+`Settings:EmailEnabled` shipping `false`, it is the whole of what bounds `M-17`. See `RISK-131`.
 
 Operability was checked rather than assumed. Both data-source actions and the EQL action declare a
 `catch (EqlException)` clause **ahead** of the generic one, and it copies the parser's structured
@@ -7249,9 +7560,17 @@ already correct. What was wrong was its failure handling: `catch (Exception) { }
 failure the audit record disappeared with no trace, which is the worst possible outcome for a
 control whose entire purpose is leaving a trace.
 
-The catch is gone. The write now goes through `SecurityAuditLog.RecordAudit`, which reports success
+The catch is gone. The write now goes through `SecurityAuditLog.Write`, which reports success
 through its **return value**, narrows its own failure handling to the six expected storage
-families, counts what it could not persist, and emits an out-of-band trace signal. An audit failure
+families, counts what it could not persist, and emits an out-of-band trace signal.
+
+*Corrected.* This sentence named `RecordAudit`, and the login page has never called it — review
+finding `OBS-08`. `WriteAuthenticationAuditRecord` composes its details through
+`SecurityAuditLog.Field` and persists through `SecurityAuditLog.Write`
+(`WebVella.Erp.Web/Pages/login.cshtml.cs:409`). The distinction is not pedantic: the two members
+differ in what they return and in whether they are rate bounded, so naming the wrong one misstates
+the failure semantics of the authentication trail — which is the one property this whole entry is
+about. `RecordAudit`'s own call site is the session-revocation audit in `AuthService`, not this one. An audit failure
 therefore cannot fail a login, and it cannot be invisible either. The 100-character username bound
 was preserved verbatim, and control characters are neutralised to spaces before storage.
 
@@ -7264,7 +7583,7 @@ than left to contradict the code.
 
 | Gate | Result |
 | --- | --- |
-| Solution build, non-incremental | exit 0, **3,060 warnings / 0 errors** *(as measured for this class; the current baseline is **3,044** — see the warning-baseline note at the head of this log)* |
+| Solution build, non-incremental | exit 0, **3,060 warnings / 0 errors** *(as measured for this class; the current baseline is **3,096** — see the warning-baseline note at the head of this log)* |
 | Normalised per-rule diagnostic counts | **byte-identical** to the previous class's gate |
 | Both WebAssembly projects, built explicitly | 53 / 0 and 0 / 0 |
 | Per-file diagnostic fingerprints, all six touched files | unchanged; the new 385-line file raises **0** diagnostics |
@@ -7278,18 +7597,18 @@ and no bare catch, and that no live exception-message response sink survives in 
 
 Live behaviour was then proven against a published host on a real PostgreSQL database:
 
-* Six anonymous bad-credential token requests produced **exactly one** `system_log` row for that
+- Six anonymous bad-credential token requests produced **exactly one** `system_log` row for that
   route, with notification status `DoNotNotify`, message `Unhandled fault: Exception`, and the
   full message and stack trace present in the JSON details column. The rate bound is live and the
   diagnostic survived.
-* A **different** source wrote immediately rather than waiting for the first source's window,
+- A **different** source wrote immediately rather than waiting for the first source's window,
   proving the bound is per source — which is what `F9` asked for, since one noisy route must
   not blind another.
-* Notification-eligible rows created during the whole probe run: **zero**.
-* A login submitted with a real newline embedded in the username stored it with the newline
+- Notification-eligible rows created during the whole probe run: **zero**.
+- A login submitted with a real newline embedded in the username stored it with the newline
   neutralised to a space, and the log contained **two** audit rows rather than three: the forged
   entry the payload was shaped to create never existed.
-* Every touched error response returned the generic message with no exception text and no stack
+- Every touched error response returned the generic message with no exception text and no stack
   frame, while the server-side record retained both.
 
 The three sites in the Project plugin's controller were proven the same way, and they carry the
@@ -7314,16 +7633,16 @@ made the platform harder to develop against for no additional security.
 
 ### What was deliberately not done
 
-* **No new package, no new public surface.** The sink is `internal` to `WebVella.Erp.Web`.
-* **`RecordAudit` is not rate bounded.** Every authentication attempt is itself the evidence;
+- **No new package, no new public surface.** The sink is `internal` to `WebVella.Erp.Web`.
+- **`RecordAudit` is not rate bounded.** Every authentication attempt is itself the evidence;
   volume on that path is bounded upstream by the login throttle.
-* **The two surviving `LogService` calls were left alone.** They already passed `DoNotNotify` and
+- **The two surviving `LogService` calls were left alone.** They already passed `DoNotNotify` and
   changing them would be churn.
-* **The commented-out sink in the controller was left commented out.** Uncommenting to "fix" it, or
+- **The commented-out sink in the controller was left commented out.** Uncommenting to "fix" it, or
   deleting it, are both edits with no security effect.
-* **A fourth textual match in the project plugin's controller, at line 356, is commented out and is
+- **A fourth textual match in the project plugin's controller, at line 356, is commented out and is
   not a sink.** It is named so a future reader counting four does not conclude one was missed.
-* **One notification-eligible background path was observed and left alone.** During the probe
+- **One notification-eligible background path was observed and left alone.** During the probe
   run the schedule manager wrote eight error records with the notifying status, reporting that a
   mail-queue schedule plan failed to create a job. It is a pre-existing `LogService` call on a
   **background timer**, not on a request-reachable path, so it is not the amplification vector
@@ -7331,7 +7650,7 @@ made the platform harder to develop against for no additional security.
   `RISK-044` because it is the same shape of defect in a different place, and because a reader
   who greps for notifying log writes will find it and should not have to wonder whether it was
   missed.
-* **Thirteen SDK developer-tool page models were left alone**, and this is the one omission in
+- **Thirteen SDK developer-tool page models were left alone**, and this is the one omission in
   this class worth arguing about. They surface `ex.Message` through the platform's
   `ValidationError` mechanism into a rendered page rather than through a JSON envelope, the
   immediately preceding typed `ValidationException` clause in each file uses the identical call
@@ -7363,7 +7682,7 @@ different reasons that are worth separating: `F25` is the compensating control t
 credential-resolution restructure — the oracle did not exist until verification moved out of the
 SQL predicate and into application code.
 
-### Class: Credential policy — one validator, four boundaries
+### Work recorded under Class 3 — Credential policy — one validator, four boundaries
 
 The 12–128 bounds raised for `M-13` were **metadata only**. Every `MinLength` and `MaxLength`
 consumer in `WebVella.Erp/Api/EntityManager.cs` is commented out, so nothing in the platform rejected
@@ -7419,7 +7738,7 @@ new pre-pass would have aborted provisioning on that very line. It now uses the 
 the administrator seed uses, which carries at least as much entropy as a version-4 GUID's 122 random
 bits.
 
-### Class: Credential-probe timing — one derivation, always
+### Work recorded under Class 3 — Credential-probe timing — one derivation, always
 
 `M-05` closed the timing oracle *inside* the comparison. `F28` is a different oracle one layer up:
 `SecurityManager.GetUser(email, password)` returned early for an over-long password before any key
@@ -7438,29 +7757,28 @@ and is strictly cheaper than an unconditional dummy.
 
 ### Verification
 
-* Full-solution `--no-incremental` build: `3060 Warning(s) / 0 Error(s)` *(current baseline **3,044**)*, normalized per-rule counts
+- Full-solution `--no-incremental` build: `3060 Warning(s) / 0 Error(s)` *(current baseline **3,096**)*, normalized per-rule counts
   **byte-identical** to the previous gate; both WebAssembly projects `53/0` and `0/0`; per-file
   diagnostic fingerprints unchanged for `PasswordUtil.cs` (4), `SecurityManager.cs` (32),
   `ERPService.cs` (98) and `RecordManager.cs` (222).
-* A dedicated verification harness — **162 checks, run twice with identical outcomes** — covering
+- A dedicated verification harness — **162 checks, run twice with identical outcomes** — covering
   source invariants, validator behaviour, primitive contracts, measured timing against a live
   database, the real `SaveUser` write path, the generic record-write boundary, first-time provisioning
   and provisioning's refusal of a non-compliant operator password.
-* Measured medians on a live database: modern **123.0 ms**, legacy **121.4 ms**, corrupt
+- Measured medians on a live database: modern **123.0 ms**, legacy **121.4 ms**, corrupt
   **122.0 ms**, absent **120.9 ms** — within a factor of two of one another, which is the
   harness's pass criterion; every over-long submission returns in **0.0 ms** without a query.
-* Against a published Production-posture host: a compliant password is accepted and authenticates, a
+- Against a published Production-posture host: a compliant password is accepted and authenticates, a
   129-character password is refused with the generic login message and no stack trace, the real
   credential still authenticates afterwards, and lockout engages after five failures and refuses even
   the correct password — with deliberately identical wording, because announcing *account locked*
   would be a username-enumeration oracle. The audit trail distinguishes the three cases even though
   the response does not: six `Authentication failed`, three
   `Authentication refused - account temporarily locked`, two `Authentication succeeded`.
-* Provisioning proven in both directions against a throwaway database: a compliant operator password
+- Provisioning proven in both directions against a throwaway database: a compliant operator password
   yields two seeded accounts with 84-character modern hashes and authenticates, while a
   non-compliant one refuses, names the setting, states the rule, does not echo the value and leaves no
   administrator credential behind.
-
 
 ## Residual authorization, the anonymous resource surface and console configuration
 
@@ -7627,29 +7945,29 @@ configuration instead of failing loudly.
 Static: the full-solution restore-first `--no-incremental` build reported **3060 warnings, 0 errors** when
 this section was written, with normalized per-rule counts byte-identical to the then-current baseline and
 the per-file diagnostic fingerprints for every edited file unchanged. Both WebAssembly projects build
-explicitly. **The current figure is 3,044** — see the warning-baseline note near the top of this log for the
+explicitly. **The current figure is 3,096** — see the warning-baseline note near the top of this log for the
 full chain and for the `-t:Rebuild` requirement, since an incremental build undercounts severely.
 
 Runtime, through the real product path rather than a test double:
 
-* The console host starts and completes its full sample — including record create, update and delete —
+- The console host starts and completes its full sample — including record create, update and delete —
   **twice**: once with the working directory set to the application directory, and once from `/tmp`,
   which is what proves the resolution is anchored to the application rather than to the working
   directory. Both exit `0`. Before the fix the same binary aborted with
   `The configuration file 'config.json' was not found and is not optional`.
-* A web host was published, the lower-case duplicate that the publish tooling adds was **deleted**, and
+- A web host was published, the lower-case duplicate that the publish tooling adds was **deleted**, and
   the host started with only `Config.json` present — the discriminating test, since with both names
   present the defect is invisible.
-* ~~The version 5 migration ran through the console host against an installation recorded at version 4
+- ~~The version 5 migration ran through the console host against an installation recorded at version 4
   that still carried Guest create and read on both entities. Afterwards the recorded version is `5`,
   `can_create` on both entities is administrator-only, `can_read` is `Regular` plus `Administrator`,
   **no** entity in the database grants the Guest role anything, and no log record was written.~~
-* ~~The same migration was replayed against the now-clean database with the version forced back to 4:
+- ~~The same migration was replayed against the now-clean database with the version forced back to 4:
   identical end state, no error, proving idempotence.~~
   **Both observations are withdrawn with the migration they verified.** The version-5 block no longer
   exists, so no such run is reproducible. They are struck through rather than deleted because they are the
   record of what was measured while the migration shipped.
-* **Re-verified live against the version-4 head, in three scenarios.** A **fresh** provision records version
+- **Re-verified live against the version-4 head, in three scenarios.** A **fresh** provision records version
   `4` and grants the Guest role nothing on either the `user` or the `role` entity, with two seeded accounts
   carrying 84-character modern hashes and zero log rows — which proves the seed edit independently of any
   migration. An installation forced back to version **3** and restarted has the version-4 revocations
@@ -7657,20 +7975,21 @@ Runtime, through the real product path rather than a test double:
   `F17` boundary. And replaying SDK plugin patch `20201221` removes that read grant as a side effect of the
   patch's own permission-set restatement, not of any migration. A second start applies nothing further,
   confirming the withdrawn per-startup reconciliation is genuinely absent.
-* The anonymous script endpoint was driven over HTTPS against a published host in Production posture.
+- The anonymous script endpoint was driven over HTTPS against a published host in Production posture.
   Both legitimate names serve their real content, and so do their case variants, byte-identically.
   Fourteen hostile or unknown names — traversal, a fully-qualified resource name, a script tag, a CRLF
   log-injection payload, a null-byte suffix, a nested path, a 4,000-character name — all return `200`
   with a **zero-byte** body and the same content type. Sixty consecutive refusals added **zero**
   `system_log` rows, and no row anywhere names any probe string. The seven mandated response headers
   are present on the endpoint.
-* An evidence harness of **104 checks** covers the source invariants for all three findings, the
+- An evidence harness of **104 checks** covers the source invariants for all three findings, the
   allow-list behaviour by direct invocation, and the one path an HTTP probe cannot reach: a
   reflection-injected packaging fault on an admitted name, driven 43 times across three casings,
   produces exactly **one** `system_log` row whose source is the fixed literal plus the canonical name,
   whose `notification_status` is `DoNotNotify`, and whose type is `Error`. Twenty-five further refusals
   alongside a populated latch still write nothing. The harness runs twice with byte-identical outcomes
   and removes its own residue.
+
 ## Build graph, gate enforcement, supply-chain pinning and documentation integrity
 
 Review findings `F1`, `F2`, `F3`, `F4`, `F5` and `F29`. Six findings that share one property: none of
@@ -7864,7 +8183,8 @@ including the explicit statement that the fourteen projects which did not finish
 ### F3 — A credential literal outside the configuration files, and a sweep that could not see it
 
 **What it was.** `WebVella.Erp.WebAssembly/Client/Pages/Index.razor.cs` assigned its `Password`
-property the literal value `"erp"` in source. It was reachable by the secrets gate in principle and missed by it in
+property the published seeded administrator password — `[REDACTED — 3 characters, SHA-256 prefix d24f1f612642b77b]`
+— as a literal in source. It was reachable by the secrets gate in principle and missed by it in
 practice, because the sweep was scoped to configuration paths. A WebAssembly assembly *and its
 configuration* are both downloaded to every browser that loads the client, so a credential there is
 published, not merely stored.
@@ -7980,19 +8300,28 @@ with figures that had drifted: step counts, promoted diagnostic codes, how many 
 eight-field record, how many sections the remediation log contained, and a build command that had never
 carried the flags attributed to it.
 
-**Every figure was measured from the tree before it was written.** The audit report carries **64**
-eight-field records; **44 of the 53** AAP findings now have their own record, with nine still summarised
-by band; this log contains **19** `## ` sections, the nineteenth being this one - the figure was 18 when it was
-first measured and appending this section changed it, which is exactly the drift these corrections exist
-to catch; the workflow declares **12 named steps, 3 `uses:` and
-9 `run:` blocks**; the promoted diagnostic set is **six** codes, `NU1900`-`NU1905`, not four.
+**Every figure was measured from the tree before it was written.** As first written, this paragraph
+recorded: the audit report carries **64** eight-field records; **44 of the 53** AAP findings have their own
+record, with nine still summarised by band; this log contains **19** `## ` sections; the workflow declares
+**12 named steps, 3 `uses:` and 9 `run:` blocks**; the promoted diagnostic set is **six** codes,
+`NU1900`-`NU1905`, not four. Only the last of those five figures is still current.
 
-> **Three of those self-measurements have drifted again, which is the point they were making.** Measured
-> against the tree as it now stands: this log contains **24** `## ` sections, not 19 — it measured 23 before
-> the boundary-reconciliation section at the foot of this file was appended, and appending it moved the
-> figure while this very sentence was being written, for the third time; the workflow declares
-> **16 named steps, 3 `uses:` and 13 `run:` blocks**, not 12/3/9. Only the last figure is unchanged — the
-> promoted diagnostic set is still exactly `NU1900`-`NU1905`. The drift is not a defect in the earlier
+> **Those self-measurements have drifted again, which is the point they were making.** Measured
+> against the tree this commit publishes: this log contains **40** `## ` sections, not 19 or 24 — it
+> measured 39 before the `OBS-01`–`OBS-11` disposition section at the foot of this file was appended, and
+> appending it moved the figure while this very sentence was being written, for the fourth time; the audit
+> report carries **96** complete eight-field records rather than 64, and **all 53** of the AAP findings now
+> have their own record rather than 44 of them, so the "nine still summarised by band" qualification no
+> longer applies and has been withdrawn; the workflow declares
+> **18 named steps, 3 `uses:` and 15 `run:` blocks**, not 12/3/9 and not 16/3/13. Only one figure is
+> unchanged — the promoted diagnostic set is still exactly `NU1900`-`NU1905`.
+>
+> The step count moved for a substantive reason rather than by accretion, and it is worth naming: the
+> eighteenth step is the `Release gate`, added for review finding `OBS-07`. Fourteen of the fifteen `run:`
+> blocks are the evidence-gathering gates and all fourteen exit 0 on this tree; the fifteenth is that
+> release gate, which exits non-zero until manual attestations are committed and is **red by design**. Any
+> future restatement of this count should preserve that distinction rather than reporting fifteen green
+> steps, because collapsing the two is precisely the ambiguity `OBS-07` identified. The drift is not a defect in the earlier
 > measurement, which was correct when taken; it is the predictable consequence of a document that grows by
 > appending, and it is the reason every count in this log now names the command that produces it. Reproduce
 > with `grep -c '^## ' docs/security/remediation-log.md` and, for the workflow, by loading it with
@@ -8005,10 +8334,11 @@ returns the stated figure.
 states what the measurement returned, rather than quietly replacing a number — including one case where
 an unscoped recursive `grep` in a documented reproduce command reported matches from throwaway projects
 in the working tree, which is now scoped to `git ls-files` so it is reproducible on a clean checkout.
-One `Action="None"` qualification was added for the same reason: it is a suppression by another name that
-a `grep` for `NoWarn` will never find, so it is named in the document rather than left for a reader to
-discover.
-
+An `Action="None"` qualification was added for the same reason, and **that statement is now withdrawn
+too**: no `Action="None"` exists anywhere in the tree — `grep -rn 'Action="None"' --include='*.props'
+--include='*.targets' --include='*.csproj' --include='*.editorconfig' --include='*.globalconfig' .`
+returns nothing. It belonged to the same phantom-suppression family as the "seam", and naming a
+suppression that is not there is the same defect as failing to name one that is.
 
 ## Checkpoint boundary reconciliation — every changed path mapped to a finding and a class
 
@@ -8173,6 +8503,7 @@ came from a looser regex than the 635 the corrected recipe returns.
 scope. That remains true, and it is the residual risk this disposition carries: the documentation is now
 internally consistent and consistent with the code, verified by grep and by re-measurement, but it has not
 had an independent reader. It is recorded as such rather than presented as reviewed.
+
 ## Project-host cross-origin supply path (`FRONTEND-01`)
 
 Review finding `FRONTEND-01`. One finding, one file, and not a vulnerability in the product — the
@@ -8261,6 +8592,7 @@ narrower list would have thought to name.
   governing note at the head of this log, and the previously undocumented
   `Settings:Cors:AllowedOrigins` key is now in the operator settings reference — its absence from that
   reference was part of what made the finding possible.
+
 ## Fail-closed session validation and bearer-token revocation
 
 This pass closes two High review findings — `CR2-F-01` (session and revocation validators failed open on a
@@ -8295,10 +8627,10 @@ nothing identified its session. Stamping the identifier the cookie half already 
 the store it consults already exists. Three decision points had to move together, and missing any one
 would have left the control decorative:
 
-* the **mint** site (`BuildTokenAsync`) — otherwise there is nothing to revoke;
-* the **refresh** site (`GetNewTokenAsync`) — otherwise an ended session mints itself a fresh successor,
+- the **mint** site (`BuildTokenAsync`) — otherwise there is nothing to revoke;
+- the **refresh** site (`GetNewTokenAsync`) — otherwise an ended session mints itself a fresh successor,
   which is the failure mode that made the original finding permanent rather than time-bounded;
-* the **authorising** validator (the hosts' `AddJwtBearer` handler) — the platform's own
+- the **authorising** validator (the hosts' `AddJwtBearer` handler) — the platform's own
   `GetValidSecurityTokenAsync` authorises nothing by itself, so a check present only there would have
   produced a revoked principal that framework authorization still accepted.
 
@@ -8451,10 +8783,7 @@ was refused instead of raising the unhandled `KeyNotFoundException` it used to r
 rebuild: 0 errors and 3,095 unique analyzer warnings, identical to the pre-change baseline, with zero
 diagnostics attributable to the new file. Both non-solution-member projects also build clean.
 
-**Section count, kept current rather than left to rot.** This section is the twenty-fifth `## ` section
-of this log; the preceding section recorded twenty-four, and the count is deliberately restated here
-because the section that changes it is the only one that can. Reproduce with
-`grep -c '^## ' docs/security/remediation-log.md`.
+**Section count — the brittle self-ordinal that used to sit here is withdrawn.** Every section that asserted its own ordinal position drifted the moment a later section was appended above it, and eight of the eleven such assertions in this log were measurably wrong by the time they were reviewed. They are replaced by one command, which cannot drift: `grep -c '^## ' docs/security/remediation-log.md`. The current total is stated once, authoritatively, in [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
 
 ## Debug surface and fault text closed on the SDK host and the login path
 
@@ -8559,35 +8888,35 @@ non-solution-member projects build clean at 0 errors and 0 warnings.
 `curl` and once in a real browser, because a browser exercises the asset graph and the console that
 `curl` cannot see.
 
-* Anonymous `/dev` → **302** to `/login?returnUrl=%2Fdev`, `content-length: 0` — no body was emitted for
+- Anonymous `/dev` → **302** to `/login?returnUrl=%2Fdev`, `content-length: 0` — no body was emitted for
   `/dev` at all. The three markers the page renders (`before`, `after`, `This is a test for child
   content`) count **0** in the served body, **0** in the live DOM excluding third-party `<style>`
   content, and **0** in visible text. The `returnUrl` value is not echoed into the page.
-* Anonymous `POST /_blazor/negotiate` → **400** with a **0-byte** body; `connectionId` and
+- Anonymous `POST /_blazor/negotiate` → **400** with a **0-byte** body; `connectionId` and
   `connectionToken` both absent. The refusal carries a `Location` header pointing at the login
   challenge, which is the cookie handler's challenge surfaced as a 400 because a redirect is not a valid
   negotiate response — the header is the proof that authorization fired and the request never reached
   the hub.
-* **Authenticated**, the same two requests → `/dev` **200** with all three markers present and no
+- **Authenticated**, the same two requests → `/dev` **200** with all three markers present and no
   redirect, and `POST /_blazor/negotiate` **200** returning a well-formed 316-byte payload with
   `connectionId`, `connectionToken` and `availableTransports` advertising WebSockets, ServerSentEvents
   and LongPolling. This is the measurement that matters most: authentication is now *required* and still
   *honoured*, so the control did not break the path it protects.
-* **Development** control host: anonymous `/dev` → **200** and anonymous negotiate → **200**. The SDK
+- **Development** control host: anonymous `/dev` → **200** and anonymous negotiate → **200**. The SDK
   workflow the Agent Action Plan protects is intact where it is actually used.
-* An invalid credential renders exactly `Invalid username or password` —
+- An invalid credential renders exactly `Invalid username or password` —
   `banner.textContent === 'Invalid username or password'` is true, length 28 of 28 expected — and the
   page source contains **0** occurrences of `"   at "`, `Exception`, `Npgsql`, `.cs:line`, `StackTrace`
   and `Server=`, in the served body and the live DOM alike, plus 23 further defensive probes at 0 and
   neither the submitted address nor the submitted password echoed anywhere.
-* `ServeUnknownFileTypes = false` broke no asset: **28 of 28** stylesheet, image and font requests
+- `ServeUnknownFileTypes = false` broke no asset: **28 of 28** stylesheet, image and font requests
   returned 200 across three page loads, nine stylesheets parsed with ~4,611 CSS rules, Font Awesome
   glyphs rendered as icons rather than tofu, and the pages render fully styled. All seven mandated
   security headers were present on every response class inspected — a dynamic page, a redirect, a
   refusal, a JSON body and a static asset.
 
 - **Observed, not fixed** (outside this vulnerability class, recorded so the observation is not lost):
-  * `/_framework/blazor.server.js` answers **405** on this host, so the `/dev` component's prerendered
+  - `/_framework/blazor.server.js` answers **405** on this host, so the `/dev` component's prerendered
     placeholder never becomes interactive and the page's inline bootstrap logs `Blazor is not defined`.
     This is **pre-existing and not a regression from `ServeUnknownFileTypes`** — `.js` is a mapped
     extension, so that flag cannot affect it — and it was proved by publishing the host *before* any
@@ -8595,18 +8924,14 @@ non-solution-member projects build clean at 0 errors and 0 warnings.
     `wwwroot/_framework`. It reproduces identically in Development. It is a .NET 10 static-web-asset
     migration gap in the product, not a security defect, and fixing it is outside both this class and
     the change scope.
-  * On any `POST` re-render of the login page the card-header logo renders as `<img>` with no `src`,
+  - On any `POST` re-render of the login page the card-header logo renders as `<img>` with no `src`,
     leaving an empty header strip. `BrandLogo` is assigned only in `OnGet`, never in `OnPost`, and
     `git show origin/master` confirms both the `OnGet`-only assignment and the byte-identical markup
     **upstream** — so this predates the remediation and affects all four `OnPost` re-render paths
     equally, including the two that existed before this change. It is cosmetic, discloses nothing, logs
     no error and leaves the form fully usable, so the minimal-change rule keeps it out.
 
-**Section count, kept current rather than left to rot.** This section is the twenty-sixth `## ` section
-of this log; the preceding section recorded twenty-five, and the count is deliberately restated here
-because the section that changes it is the only one that can. Reproduce with
-`grep -c '^## ' docs/security/remediation-log.md`.
-
+**Section count — the brittle self-ordinal that used to sit here is withdrawn.** Every section that asserted its own ordinal position drifted the moment a later section was appended above it, and eight of the eleven such assertions in this log were measurably wrong by the time they were reviewed. They are replaced by one command, which cannot drift: `grep -c '^## ' docs/security/remediation-log.md`. The current total is stated once, authoritatively, in [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
 
 ## Encryption key acceptance aligned with the bytes the derivation actually consumes
 
@@ -8701,12 +9026,7 @@ left flattering, but it does not reduce the fix: the primitive is public, plugin
 start-up validation that carried the false assurance **is** live on every host boot, and deleting a
 dormant primitive would be refactoring the minimal-change rule forbids.
 
-**Section count, kept current rather than left to rot.** This section is the twenty-seventh `## ` section
-of this log; the preceding section recorded twenty-six, and the count is deliberately restated here
-because the section that changes it is the only one that can. Reproduce with
-`grep -c '^## ' docs/security/remediation-log.md`.
-
-
+**Section count — the brittle self-ordinal that used to sit here is withdrawn.** Every section that asserted its own ordinal position drifted the moment a later section was appended above it, and eight of the eleven such assertions in this log were measurably wrong by the time they were reviewed. They are replaced by one command, which cannot drift: `grep -c '^## ' docs/security/remediation-log.md`. The current total is stated once, authoritatively, in [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
 
 ## Host cookie identity, committed storage locations and an exact toolchain pin
 
@@ -8808,10 +9128,7 @@ line-position difference is one pre-existing `CA2263` moving from line 369 to li
 grew. The dependency gate reports all nineteen projects free of vulnerable packages, and the secrets
 sweep is unchanged apart from the internal address, which now returns zero hits.
 
-This section is the twenty-eighth `## ` heading of this log; the preceding section recorded
-twenty-seven, and the count is deliberately restated here because the section that changes it is the
-only one that can. Reproduce with `grep -c '^## ' docs/security/remediation-log.md`.
-
+**Section count — the brittle self-ordinal that used to sit here is withdrawn.** Every section that asserted its own ordinal position drifted the moment a later section was appended above it, and eight of the eleven such assertions in this log were measurably wrong by the time they were reviewed. They are replaced by one command, which cannot drift: `grep -c '^## ' docs/security/remediation-log.md`. The current total is stated once, authoritatively, in [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
 
 ## The security gate made to run, and the solution model returned to the plan's scope
 
@@ -9014,19 +9331,29 @@ Security-category rule that executes (10 raw occurrences over 5 sites in 2 files
 solution members and for both non-members: zero advisory rows across all nineteen projects. Gate 1 passes
 with 650 pairs and 21 accepted residuals, identically whether or not the non-members' output has been
 appended — confirming they emit no Security-category diagnostic. Gate 3 reports `0 unreviewed and 1
-reviewed` credential-shaped location across 1,574 tracked files. The workflow parses as YAML with 17
-steps, 14 of them shell.
+reviewed` credential-shaped location across 1,574 tracked files. The workflow parses as YAML with 20
+steps, 17 of them shell.
 
-> **Re-measured on the tree this commit publishes.** Gate 1 passes with **631** pairs and **2** accepted
-> residuals - both `CA5351`, in `WebVella.Erp/Utilities/CryptoUtility.cs` and
-> `WebVella.Erp/Utilities/PasswordUtil.cs` - identically whether or not the two non-members' output is
-> appended. Gate 3 now reports `0 credential-shaped location(s), 0 tolerated` over 1,518 tracked text files
-> of 1,574 tracked files, because the commented-out connection-string template that was its one reviewed
-> allowance has since been removed from `WebVella.Erp.Site/Config.json`; `RISK-116` is closed accordingly.
+> **Re-measured on the tree this commit publishes.** This note previously read "**631** pairs and **2**
+> accepted residuals - both `CA5351`" and was written before the Security category was armed, so it had
+> come to contradict the paragraph immediately above it rather than qualify it. The current figures, taken
+> from the gate executed end to end on this tree: Gate 1 passes with **650** `(rule, file)` `CA` pairs
+> across all categories, of which **21** are Security-category pairs, and all 21 are enumerated in the
+> reviewed allow-list; the underlying **55** Security-category diagnostics sit exactly on the 12-rule
+> ratchet baseline, and `CA5351` is now one family among five rather than the only one that executes. The
+> figures are identical whether or not the two non-members' output is appended, confirming they emit no
+> Security-category diagnostic. Gate 3 reports `0 credential-shaped location(s), 0 tolerated` over **1,519**
+> tracked text files of **1,575** tracked files - the reviewed allowance it once carried, a commented-out
+> connection-string template in `WebVella.Erp.Site/Config.json`, has been removed, so `RISK-116` is closed;
+> the two totals each moved by one as tracked files were added since.
 
-This section is the twenty-ninth `## ` heading of this log; the preceding section recorded
-twenty-eight, and the count is deliberately restated here because the section that changes it is the
-only one that can. Reproduce with `grep -c '^## ' docs/security/remediation-log.md`.
+This section is the **thirty-first** `## ` heading of this log, of **42** in total. It read
+"twenty-ninth" until this revision, and the arithmetic behind that wording is why it drifted: the ordinal
+was correct when the section was the last one in the file, but later passes appended further sections and
+inserted two ahead of it, so both the ordinal and the accompanying instruction - "reproduce with
+`grep -c '^## '`" - stopped agreeing with each other, because that command counts the total and never
+counted an ordinal. Reproduce the total with `grep -c '^## ' docs/security/remediation-log.md`, and this
+section's position with `grep -n '^## ' docs/security/remediation-log.md | nl`.
 
 ## A licence posture no engineer may settle, made unshippable
 
@@ -9147,10 +9474,7 @@ residuals and Gate 3 unchanged at zero unreviewed locations across 1,574 tracked
 gate must not break the gate that validates it, and it does not. No `ERPLIC` diagnostic appears in any
 gate step log, which is the same statement from the other direction.
 
-This section is the thirtieth `## ` heading of this log; the preceding section recorded twenty-nine, and
-the count is deliberately restated here because the section that changes it is the only one that can.
-Reproduce with `grep -c '^## ' docs/security/remediation-log.md`.
-
+**Section count — the brittle self-ordinal that used to sit here is withdrawn.** Every section that asserted its own ordinal position drifted the moment a later section was appended above it, and eight of the eleven such assertions in this log were measurably wrong by the time they were reviewed. They are replaced by one command, which cannot drift: `grep -c '^## ' docs/security/remediation-log.md`. The current total is stated once, authoritatively, in [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
 
 ## Consolidated verification of the combined remediation
 
@@ -9160,9 +9484,7 @@ two of them measured the analyzer gate under configurations that no longer ship.
 a class's own reasoning; it supersedes only its absolute figures where they were measured under a
 configuration this tree does not carry.
 
-This section is the thirty-third `## ` heading of this log; the preceding count was thirty-two, and it is
-restated here because the section that changes the count is the only one that can. Reproduce with
-`grep -c '^## ' docs/security/remediation-log.md`.
+**Section count — the brittle self-ordinal that used to sit here is withdrawn.** Every section that asserted its own ordinal position drifted the moment a later section was appended above it, and eight of the eleven such assertions in this log were measurably wrong by the time they were reviewed. They are replaced by one command, which cannot drift: `grep -c '^## ' docs/security/remediation-log.md`. The current total is stated once, authoritatively, in [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
 
 **Toolchain.** .NET SDK `10.0.302`, resolved from `global.json` with `rollForward: disable`, so the
 figures below are reproducible rather than environment-dependent.
@@ -9170,7 +9492,7 @@ figures below are reproducible rather than environment-dependent.
 | Check | Recorded result |
 | --- | --- |
 | `dotnet restore WebVella.ERP3.sln` | exit 0, zero `NU19xx` diagnostics |
-| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore -t:Rebuild` | exit 0, **0 errors**, **3,044 warnings** |
+| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore -t:Rebuild` | exit 0, **0 errors**, **3,044 warnings** as measured for this class *(3,096 on the tree this commit publishes — `AnalysisLevelSecurity=latest-all` now arms the whole Security category through an SDK-shipped configuration; see the warning-baseline note near the top of this log)* |
 | Analyzer diagnostics, normalised as Gate 1 normalises them | **631** distinct `(rule, file)` CA pairs, from 6,034 raw CA diagnostic lines; identical whether or not the two non-members' build output is appended |
 | Security-category diagnostics | **2** pairs, both accepted documented residuals: `CA5351` in `WebVella.Erp/Utilities/CryptoUtility.cs` and in `WebVella.Erp/Utilities/PasswordUtil.cs` - 10 raw occurrences over **5** distinct sites. `CA2100`, `CA2326`, `CA2328`, `CA5362`, `CA5390` and the `CA3001`-`CA3012` family report **zero**, because they do not execute at `latest-recommended` with no global analyzer config present |
 | Diagnostic yardstick | `CA2200` 52 raw / 26 sites, `ASPDEPR008` 42 / 14, `CS0618` 6 / 3, `CS0168` 4 / 2, and `ASP0019` **zero** - no `Headers.Add(` call remains anywhere in the solution source |
@@ -9185,7 +9507,7 @@ figures below are reproducible rather than environment-dependent.
 **Two figures corrected by this pass, and why.** The analyzer total read **3,096** and the pair count
 **622** in the sections that measured them, because a repository-root `.globalconfig` was in force at the
 time and armed `CA2100`, `CA2326`, `CA2328` and `CA5362`. That file is not part of the frozen analyzer
-gate and has been removed, so those rules no longer execute and the shipped figures are **3,044** and
+gate and was removed at that point, so those rules stopped executing and the figures for this class are **3,044** and
 **631**. Every parity conclusion drawn from the earlier figures is unaffected, because both sides of each
 comparison were measured under the same configuration.
 
@@ -9194,7 +9516,6 @@ commented-out connection-string template in `WebVella.Erp.Site/Config.json`. Tha
 removed, so Gate 3's reviewed allowance has nothing to allow and the sweep reports zero tolerated
 locations. The entry is marked closed and its reasoning retained, because the decision it records - never
 narrow a credential pattern to excuse a reviewed line - still governs.
-
 
 ## The shipped client logout made to end the server session (`B3-SEAM-01`)
 
@@ -9218,7 +9539,7 @@ fix aimed at the symptom's location rather than its cause.
 | `WebVella.Erp.Web/Controllers/WebApiController.cs` | New action `RevokeJwtToken` on `POST api/v3/en_US/auth/jwt/token/logout`, appended inside the existing JWT region beside the two token routes it completes. It adds no revocation logic of its own: it awaits `AuthService.LogoutAsync()` and returns the controller's standard `ResponseModel` envelope through `DoResponse`. Faults go to `SecurityAuditLog.RecordApiFault` and the caller receives `SafeErrorMessage`. | CWE-613 insufficient session expiration; OWASP A07; the Authentication Hardening standard's "proper logout with session invalidation" clause |
 | `WebVella.Erp.WebAssembly/Client/Services/AuthenticationService.cs` | `LogoutAsync` now POSTs that route with a request-scoped `Authorization: Bearer <token>` header before clearing local state, returns whether the server confirmed the revocation, and clears the token and notifies the auth-state provider in a `finally`. The interface member gains the return-value contract as a doc comment. | As above, from the consumer side - this is the half that was missing |
 | `WebVella.Erp.Web/Services/AuthService.cs` | **Comment only, no executable change.** The `LogoutAsync` scheme-enumeration exclusion claimed a bearer token "cannot be withdrawn by the server at all (recorded as an accepted residual)". That contradicted both the `RevokeCurrentSession` call six lines above it and that method's own reasoning about bearer coverage. Narrowed to the true statement - `SignOutAsync` cannot withdraw a bearer token - with an explicit warning not to delete the revocation call as dead code on the strength of the exclusion. | A stale comment asserting the control is impossible is how a working control gets removed as dead code by a later maintainer |
-| `.github/workflows/security-scan.yml` | Gate 5 gains manual row `M19` and its procedure, and `expected_rows` moves from 32 to 33. | A remediation with no verification scenario is an assertion; `M19` is what makes this class checkable |
+| `.github/workflows/security-scan.yml` | Gate 5 gains manual row `M19` and its procedure, and `expected_rows` moves from 32 to 33. *(A later pass took it to **41**: two evidence-derived rows for the new analyzer controls, and six manual rows — `M20` through `M25` — for controls that had no scenario at all.)* | A remediation with no verification scenario is an assertion; `M19` is what makes this class checkable |
 
 **Why the route is authenticated, and why that is the access control.** It carries no `[AllowAnonymous]`
 exemption, unlike the two token routes beside it. That is deliberate and load-bearing rather than an
@@ -9290,7 +9611,7 @@ request builds its own URL and sets its own correctly-cased header, so it does n
 | Check | Recorded result |
 | --- | --- |
 | `dotnet restore WebVella.ERP3.sln` | exit 0, zero `NU19xx` diagnostics |
-| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore -t:Rebuild` | exit 0, **0 errors, 3,044 warnings** - identical to the figure the consolidated pass recorded for the shipped tree |
+| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore -t:Rebuild` | exit 0, **0 errors, 3,044 warnings** - identical to the figure the consolidated pass recorded at that point *(3,096 on the tree this commit publishes — `AnalysisLevelSecurity=latest-all` now arms the whole Security category through an SDK-shipped configuration; see the warning-baseline note near the top of this log)* |
 | Analyzer parity, normalised as Gate 1 normalises it | **631** distinct `(rule, file)` CA pairs, matching the recorded baseline exactly; zero error-severity CA diagnostics |
 | Analyzer diagnostics attributable to this class | **zero.** `WebApiController.cs` reports no CA diagnostic above line 5700 and the new action occupies 5932-5999; `Client/Services/AuthenticationService.cs` reports none at all. The nine pairs naming the controller are pre-existing and unmoved |
 | Security-category diagnostics | **2** pairs, both accepted documented residuals - `CA5351` in `WebVella.Erp/Utilities/CryptoUtility.cs` and in `WebVella.Erp/Utilities/PasswordUtil.cs`. No new security-category diagnostic |
@@ -9310,10 +9631,7 @@ request builds its own URL and sets its own correctly-cased header, so it does n
 only against a dated attestation and the browser scenario is executed outside that job. The runtime
 exercise itself is recorded separately; the matrix records only what evidence the gate holds.
 
-This section is the thirty-fourth `## ` heading of this log; the preceding count was thirty-three, and it
-is restated here because the section that changes the count is the only one that can. Reproduce with
-`grep -c '^## ' docs/security/remediation-log.md`.
-
+**Section count — the brittle self-ordinal that used to sit here is withdrawn.** Every section that asserted its own ordinal position drifted the moment a later section was appended above it, and eight of the eleven such assertions in this log were measurably wrong by the time they were reviewed. They are replaced by one command, which cannot drift: `grep -c '^## ' docs/security/remediation-log.md`. The current total is stated once, authoritatively, in [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
 
 ## The shared page header and the list-description builder made to encode (`MAJOR-1`, `F-AA`)
 
@@ -9350,7 +9668,7 @@ runtime, which composes `<i class='{iconClass}' style='color:{color}'></i>` with
 
 | File | Change | Threat addressed |
 | --- | --- | --- |
-| `WebVella.Erp.Web/TagHelpers/WvPageHeader/WvPageHeader.cs` | Seven value-bearing sinks moved from `AppendHtml` to `Append`. One of them previously concatenated a literal `<i class='icon fas fa-ellipsis-v'></i>` with `Title` in a single raw append and is now **split**, so the icon stays raw and the title is encoded. The `Description` sink is left raw and carries a comment forbidding its conversion | CWE-79 stored cross-site scripting, OWASP A03:2021 |
+| `WebVella.Erp.Web/TagHelpers/WvPageHeader/WvPageHeader.cs` | Seven value-bearing sinks moved from `AppendHtml` to `Append`. One of them previously concatenated a literal `<i class='icon fas fa-ellipsis-v'></i>` with `Title` in a single raw append and is now **split**, so the icon stays raw and the title is encoded. **Superseded by review finding `F-02`:** the earlier decision to leave `Description` raw was wrong because `PcPageHeader` is a second, data-bound supplier. The ordinary `description` attribute is now encoded, an explicit `description-html` attribute is the trusted-markup channel, and the five SDK list views that intentionally pass builder-composed markup use that channel | CWE-79 stored cross-site scripting, OWASP A03:2021 |
 | `WebVella.Erp.Web/Utils/PageUtils.cs` | `GenerateListPageDescription` encodes the interpolated `sortBy` value and each filter name through `HtmlEncoder.Default`. Every literal — both `strong` wrappers, the `ul`, the `li` elements and the comma separator — is untouched | CWE-79 reflected cross-site scripting, OWASP A03:2021 |
 | `WebVella.Erp.Plugins.Project/Services/SafeStyleValue.cs` | **New.** The two allow-lists promoted out of one widget into a shared class, with the rationale recording that keeping them private is *how* three of four paths came to be missed. **Superseded:** a later QA pass found a fifth path outside any plugin's reach, so this file was moved again, to `WebVella.Erp.Web/Utils/SafeStyleValue.cs` — see *The fifth render path* below | CWE-79, OWASP A03:2021 |
 | `WebVella.Erp.Plugins.Project/Services/TaskService.cs` | `GetTaskIconAndColor` guards both `out` values. This is the root-cause fix for the stored code variable | CWE-79, OWASP A03:2021 |
@@ -9411,9 +9729,8 @@ description computes to `font-weight: 400`, because `WebVella.Erp.Web/Theme/styl
 inside `.description`. That is a 2019 declaration in a file no security commit has touched, and it
 reproduces identically on a payload-free page.
 
-This section is the thirty-fifth `## ` heading of this log; the preceding count was thirty-four, and it
-is restated here because the section that changes the count is the only one that can. Reproduce with
-`grep -c '^## ' docs/security/remediation-log.md`.
+**Section count — the brittle self-ordinal that used to sit here is withdrawn.** Every section that asserted its own ordinal position drifted the moment a later section was appended above it, and eight of the eleven such assertions in this log were measurably wrong by the time they were reviewed. They are replaced by one command, which cannot drift: `grep -c '^## ' docs/security/remediation-log.md`. The current total is stated once, authoritatively, in [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
+
 ## The fifth render path — the platform-wide select conversion boundary (`F-R3-XSS`, `H-06`)
 
 A later, cross-cutting QA pass re-tested the four paths above — all four passed — and found a **fifth** that
@@ -9451,7 +9768,7 @@ conversion boundary, whatever its quality. The register had in fact already pred
 | --- | --- | --- |
 | `WebVella.Erp.Web/Utils/SafeStyleValue.cs` | **New — moved, not copied.** The identical allow-lists, now in `WebVella.Erp.Web.Utils` so the framework and every plugin share one audited implementation. Its remarks carry the **correction of record**: the original claim of *"four independent render paths"* was short by one | CWE-79, OWASP A03:2021 |
 | `WebVella.Erp.Plugins.Project/Services/SafeStyleValue.cs` | **Deleted.** Duplicating security logic across two assemblies is the exact pattern that caused the original miss | CWE-79, OWASP A03:2021 |
-| `WebVella.Erp.Web/Utils/ModelExtensions.cs` | `ToWvSelectOption` routes `Color` through `SafeStyleValue.CssColor` and `IconClass` through `SafeStyleValue.IconClass`. `Label` is deliberately left alone — see below | CWE-79, OWASP A03:2021 |
+| `WebVella.Erp.Web/Utils/ModelExtensions.cs` | `ToWvSelectOption` routes `Color` through `SafeStyleValue.CssColor`, `IconClass` through `SafeStyleValue.IconClass`, and — since review finding `F-01` — `Label` through `SafeStyleValue.DisplayText`. The earlier accepted-label disposition is superseded below | CWE-79, OWASP A03:2021 |
 | `WebVella.Erp.Plugins.Project/Services/TaskService.cs` | `using WebVella.Erp.Web.Utils;`, so the root-cause fix for the stored code variable now consumes the promoted helper | — |
 | `.../PcProjectWidgetTasksPriorityChart/PcProjectWidgetTasksPriorityChart.cs` | Same `using`. Behaviour unchanged | — |
 | `.../PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs` | Already had the `using`, so no code change. Its comment's stale *"three sibling render paths"* count corrected to **four**, so no wrong path count survives anywhere in the source | — |
@@ -9470,23 +9787,28 @@ still injected a real `<i class="fa fa-fw fas fa-fw fa-arrow-circle-down" style=
 the legitimate option while emitting bare text for the two poisoned ones. The vulnerable path ran; it simply
 had nothing hostile left to insert.
 
-### What was left alone, and why
+### The label disposition superseded by review finding `F-01`
 
-`SelectOption.Label` is raw at the same vendor sink. Measured, not assumed: a seeded
-`label = high<img src=x onerror=alert(…)>` produced a live `<img>` element in the display `<div>`, while the
-same value in the form-mode `<option>` text was correctly encoded. Encoding `Label` at the conversion
-boundary would therefore **double-encode** it in edit mode — and unlike a class token list or a colour, an
-option label legitimately contains `&`, `'`, `<` or `>` (`R&D`, `Client's request`, `> 30 days`), so every
-such label would visibly render its entities in every dropdown in the product. The plan's preservation
-requirement forbids that, and a label has no constrainable shape for an allow-list to police. It is recorded
-as `RISK-127` with two recommended fixes, the preferred one being an opt-in `encode-text` mode from the
-tag-helper library — the same request `RISK-121` already makes for the grid column.
+The earlier record correctly established that **encoding** `SelectOption.Label` at the conversion boundary
+could not work: the same instance reaches an encoding sink and a raw sink in one vendor render, and all four
+select2 initialisations re-inject DOM-decoded option text through `escapeMarkup: function(markup){return
+markup;}`. Pre-encoding would therefore double-encode one path while entities are decoded back into markup
+on another. The wrong conclusion was that the value had to remain executable.
+
+`SafeStyleValue.DisplayText` now applies a narrowly measured restriction instead. It removes only `<`, the
+character that can begin a tag, and `"`, which can break the client-built `title="…"` attribute. It leaves
+`&`, `'` and `>` untouched, so `R&D`, `Client's request` and `> 30 days` retain their exact characters and
+the same string instance is returned when no removal is needed. With the hostile label still seeded, the
+display, inline editor and open dropdown contained no injected element, no `on*` attribute, no mutation and
+no dialog across exhaustive pointer sequences. `RISK-127` is therefore closed for the label channel; its
+remaining caller-side scope and the narrower option-icon token issue are documented separately, the latter
+as `RISK-131`.
 
 ### Verification
 
 | Check | Result |
 | --- | --- |
-| `dotnet build WebVella.ERP3.sln --no-restore --no-incremental` | exit 0, **0 errors**, 3044 warnings — the established baseline count; zero `NU1900`–`NU1905` |
+| `dotnet build WebVella.ERP3.sln --no-restore --no-incremental` | exit 0, **0 errors**, 3044 warnings — the established baseline count for this class *(3,096 on the tree this commit publishes — `AnalysisLevelSecurity=latest-all` now arms the whole Security category through an SDK-shipped configuration; see the warning-baseline note near the top of this log)*; zero `NU1900`–`NU1905` |
 | Analyzer diagnostics attributable to this class | **zero new warning codes.** Per-file multisets are identical before and after (`ModelExtensions.cs` `CA1305` only; `TaskService.cs` `CA1305`×4, `CA1822`×30, `CA1860`×12, `CA2201`×36), and the new `SafeStyleValue.cs` produces **0** diagnostics |
 | Before, with the payload seeded | task details **1** live `<i … onmouseover=…>`; SDK entity data-list **4**, on both hosts. Token counts `R3ICON3`/`R3COLOR3`/`R3ICON9`/`R3COLOR9` all non-zero |
 | After, **with the payload still seeded** | Every one of those counts **0** on both hosts. A rejected pair now renders `<div class="form-control erp-select">high</div>` — byte-identical to how an option with no icon and no colour has always rendered |
@@ -9558,17 +9880,23 @@ reads keys the framework and this platform already consume.
   continuous gate's Linux startup smoke test asserts that exact message on eight artifacts launched
   HTTP-only in Production. Verified after the change: with blank secrets the abort is still
   `required security configuration is missing`, and the transport message does not appear at all.
-- **Four pieces of evidence, any one sufficient.** A declared `https` endpoint; a `Kestrel:Endpoints`
-  entry whose `Url` is `https`; `HTTPS_PORT` (which is what `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT` and
-  `https_port` all resolve to, and what an ANCM-hosted site sets from `ASPNETCORE_ANCM_HTTPS_PORT`); or a
-  trusted proxy declaration. The proxy test **reuses `BuildForwardedHeadersOptions`** rather than
-  re-reading its keys, so "a proxy is trusted" means exactly what `UseErpForwardedHeaders` acts on and
-  the two cannot drift apart.
-- **Refuse on a known-bad posture, report on an unknown one.** The residual is real and is recorded as
-  `RISK-126` rather than glossed: with no endpoint declared in Production, this application binds
-  `http://localhost:5000` alone and `/login` still answers 500, but the check reports instead of
-  refusing, because aborting a deployment that would have worked is a worse outcome than the one being
-  prevented.
+- **Only evidence counts, and each piece is sufficient on its own except where it is not.** A declared
+  `https` endpoint; a `Kestrel:Endpoints` entry whose `Url` is `https`; `ANCM_HTTPS_PORT`, which the
+  ASP.NET Core Module writes only when the IIS site in front of this process has an HTTPS binding and
+  which comes with scheme preservation; or a trusted proxy declaration **together with** the public HTTPS
+  port `HTTPS_PORT` (what `ASPNETCORE_HTTPS_PORT` and `HTTPS_PORT` both resolve to). The proxy test
+  **reuses `BuildForwardedHeadersOptions`** rather than re-reading its keys, so "a proxy is trusted"
+  means exactly what `UseErpForwardedHeaders` acts on and the two cannot drift apart.
+- **Corrected at the code-review checkpoint: two of the original signals were not evidence, and the
+  undeclared case was not unknown.** A non-blank `HTTPS_PORT` used to satisfy the check on its own,
+  although that key only selects the target of a redirect and was never parsed; a bare trusted-proxy
+  declaration used to satisfy it, although trusting a proxy says who may be believed rather than that
+  anything terminates TLS; and when no endpoint was declared the identical diagnosis was written as a
+  `warn:` line while startup continued. Every port is now parsed and range-checked to 1–65535, with a
+  malformed value aborting startup naming the key, the port and the proxy declaration count only
+  together, and **outside Development every unproven posture is refused** — including the undeclared one,
+  which is not an unknown posture but the known-plaintext server default. `RISK-126`, which recorded that
+  residual as accepted, is marked **resolved**.
 - **The message names keys and quotes the observed endpoints, never a value.** Endpoint addresses are
   operator-supplied topology — the same reasoning that already lets the `KnownProxies` diagnostic name a
   malformed address — and a four-pattern sweep of the abort output for the database password, the
@@ -9582,14 +9910,17 @@ Published Release artifacts, dedicated database, .NET SDK `10.0.302` from `globa
 | --- | --- |
 | The original reproduction, re-executed | Startup **aborts** with the actionable message; `Now listening on` appears **0** times, so the host never serves and the `/login` 500 is unreachable |
 | Secret leakage in the abort output | **0** hits for the database password, encryption key, token key and initial administrator password |
-| `ASPNETCORE_HTTPS_PORT=<port>` on a plaintext-only host | starts; `/login` → **307** to `https://…/login` |
-| `HTTPS_PORT=<port>` on a plaintext-only host | starts; `/login` → **307** |
-| `Settings__ForwardedHeaders__KnownProxies` + `X-Forwarded-Proto: https` | starts; `/login` → **200** |
+| `ASPNETCORE_HTTPS_PORT=<port>` alone on a plaintext-only host | **refused at startup** since the code-review checkpoint — a redirect target is not TLS. It formerly started and answered `/login` → **307** |
+| `HTTPS_PORT=<port>` alone on a plaintext-only host | **refused at startup**, as above |
+| `Settings__ForwardedHeaders__KnownProxies` alone | **refused at startup** since the code-review checkpoint — declare the public HTTPS port as well |
+| `Settings__ForwardedHeaders__KnownProxies` + `HTTPS_PORT=<port>` + `X-Forwarded-Proto: https` | starts; `/login` → **200** |
+| `HTTPS_PORT=443abc`, and `HTTPS_PORT=70000` | **refused at startup**, each naming the key and the offending value |
+| `ANCM_HTTPS_PORT=<port>` on a plaintext-only host | starts — the module writes this key only for an IIS site that has an HTTPS binding, and in-process hosting preserves the scheme |
 | `ASPNETCORE_HTTPS_PORTS` (plural) only — the variable this guide used to prescribe | **refused at startup** with the message that names the singular form. Before the change this configuration answered `/login` with **500** |
 | `Kestrel__Endpoints__Https__Url=https://…` with a certificate, no `ASPNETCORE_URLS` | binds https, `/login` → **200**, check silent |
 | Supported topology (`https` + `http` declared, Production) | `/login` **200** over https, **307** over http, `/` **302**; all seven headers byte-exact; `Content-Security-Policy` still **report-only**; check silent |
 | Development, plaintext only | **starts** with exactly **one** `warn:` line; `/login` **200**, token-protected sign-in **302**, authenticated home **200**; the antiforgery cookie omits `Secure` only on plaintext and the authentication cookie remains `Secure` |
-| No `ASPNETCORE_URLS` at all, Production | **starts** with the `warn:` line and the "none declared" wording — no false refusal (`RISK-126`) |
+| No `ASPNETCORE_URLS` at all, Production | **refused at startup** since the code-review checkpoint, with the "none declared" wording explaining that the server defaults are plaintext. It formerly started with a `warn:` line while `/login` answered 500 (`RISK-126`, now resolved) |
 | Continuous-gate contract: blank secrets, HTTP-only, Production | still aborts with `required security configuration is missing` ×3; transport message absent ×0 |
 | Second host shape: `WebVella.Erp.Site` (own `ConfigurationBuilder`, `UserSecretsId`, `ErpSettings` already initialised) | plaintext-only → aborts, never serves; https topology → `/login` 200, http 307, check silent |
 | `dotnet build WebVella.Erp.Web` | 0 errors; the only analyzer diagnostic citing `ErpMvcExtensions.cs` is the pre-existing `CA2263` at L445 — **zero new warnings** |
@@ -9597,12 +9928,66 @@ Published Release artifacts, dedicated database, .NET SDK `10.0.302` from `globa
 
 ### The documentation corrections
 
-- **The prescribed environment variable did not exist.** This guide and the operator checklist both told
-  operators to set `ASPNETCORE_HTTPS_PORTS`. Measured: with `ASPNETCORE_HTTPS_PORTS=17231`, a valid
-  certificate and no `ASPNETCORE_URLS`, the host bound `http://localhost:5000` alone — the plural key is a
-  Kestrel default-binding key this application's `WebHost` pipeline never reads, so it neither binds an
-  endpoint nor arms the redirect. Both documents now name `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT` and the
-  configuration key `https_port`, all three of which were measured to work.
+- **The prescribed environment variable did nothing here, and the first correction of that claim went too
+  far.** This guide and the operator checklist both told operators to set `ASPNETCORE_HTTPS_PORTS`.
+  Measured: with `ASPNETCORE_HTTPS_PORTS=17231`, a valid certificate and no `ASPNETCORE_URLS`, the host
+  bound `http://localhost:5000` alone, so it neither binds an endpoint nor arms the redirect. Both
+  documents now name `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT` and the configuration key `https_port`, all
+  three of which were measured to work.
+
+  **Correction recorded under review finding F4.** The wording that replaced the bad advice called the
+  plural spelling "a Kestrel default-binding key that this application never reads", and both halves of
+  that were imprecise enough to read as false. It is not a Kestrel key: `ASPNETCORE_HTTPS_PORTS` supplies
+  the **hosting-layer** key `https_ports`, which is `WebHostDefaults.HttpsPortsKey` and is resolved by
+  `GenericWebHostService` while it computes server addresses. And it is not universally unread: under the
+  generic host it binds a real listener. What is true — and is the only thing that matters for this
+  platform — is that all seven hosts are built by `WebHost.CreateDefaultBuilder(args).UseStartup<Startup>()`,
+  whose legacy `IWebHost` resolves addresses from `urls` alone, so the plural keys arrive in configuration
+  and are consumed by nothing.
+
+  The listener test was **re-run with every competing endpoint variable cleared** — `ASPNETCORE_URLS`,
+  `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT`, `ASPNETCORE_HTTP_PORTS`, `Kestrel__Endpoints__*` and the
+  forwarded-headers keys all unset — against both host builders:
+
+  | Host builder | Variables set | Bound addresses |
+  | --- | --- | --- |
+  | `WebHost.CreateDefaultBuilder` (this platform) | `ASPNETCORE_HTTPS_PORTS=17311` + certificate | `http://localhost:5000`; configuration reported `https_ports=17311`, proving the value arrived and nothing read it |
+  | `WebHost.CreateDefaultBuilder` | `ASPNETCORE_HTTP_PORTS=17313` | `http://localhost:5000` — byte-identical to the nothing-set control |
+  | `WebHost.CreateDefaultBuilder` | nothing | `http://localhost:5000` |
+  | `WebHost.CreateDefaultBuilder` | `ASPNETCORE_URLS=https://localhost:17312` | `https://localhost:17312` |
+  | `Host.CreateDefaultBuilder().ConfigureWebHostDefaults(…)` | `ASPNETCORE_HTTPS_PORTS=17321` + certificate | `https://[::]:17321` — the key binds here |
+  | `Host.CreateDefaultBuilder().ConfigureWebHostDefaults(…)` | `ASPNETCORE_URLS=http://localhost:17331` + `ASPNETCORE_HTTPS_PORTS=17332` | the `urls` value, with the framework logging `Overriding HTTP_PORTS '' and HTTPS_PORTS '17332'. Binding to values defined by URLS instead` |
+
+  **The remediation deviates from the review's suggested fix, deliberately, and the reason is the
+  measurement above.** The suggestion was to accept `https_ports` as an HTTPS-listener evidence channel
+  in `ValidateTransportSecurityPosture`. Doing that would make the check `return` silently on a
+  deployment measured to bind plaintext only — a security control that fails open, which is strictly
+  worse than the imprecise comment it would have fixed. Making the application *read* the plural keys was
+  rejected too: that is a hosting-behaviour change, and the change scope forbids feature additions.
+  What was implemented instead closes the finding's real concern — an avoidable outage caused by a
+  setting that appears ignored — without weakening the check:
+
+  - the constants and the diagnostic now attribute `http_ports`/`https_ports` correctly, name
+    `WebHostDefaults.HttpsPortsKey`, and distinguish them from the singular redirect key;
+  - the check reads both plural keys **for the diagnostic only** and, when either is set, prepends a
+    clause naming the variable, explaining that `GenericWebHostService` resolves it and this host does
+    not, and giving the exact `ASPNETCORE_URLS=https://*:<that port>` translation;
+  - the branch semantics are untouched by *this* change: the plural keys are read for the diagnostic only
+    and are never counted as evidence, so no deployment aborts because of this edit.
+
+  Verified by running the real `WebVella.Erp.Site` host four ways: declared-plaintext + plural key →
+  aborts **with** the new clause; nothing declared + plural key → aborts **with** the clause;
+  declared-plaintext **without** the plural key → aborts **without** the clause, proving it is
+  conditional; declared HTTPS → the check is completely silent and the host serves.
+
+  **One row of that matrix was re-measured after the evidence rules were tightened, and the earlier
+  figure is superseded rather than overwritten.** When this clause was first written, "nothing declared"
+  produced a `warn:` line and the host started, binding `http://localhost:5000` with `/login` answering
+  `500`. The transport check now refuses an undetermined posture outside Development — see the evidence
+  rules in the transport class above — so that case aborts. Nothing about the plural-key clause changed;
+  only the branch it is attached to became a refusal. Development remains exempt and still receives the
+  identical text as a `warn:` line. `dotnet build WebVella.Erp.Web` stays at 0 errors and the only
+  analyzer diagnostic citing `ErpMvcExtensions.cs` is still the single pre-existing `CA2263`.
 - **The documented Production failure mode was wrong, in two places.** The transport section described
   the consequence as "HSTS and no redirect", and the cookie note described it as being bounced back to
   the login page because the browser refuses the cookie. Outside Development neither is what happens:
@@ -9628,6 +10013,22 @@ the gate that depends on it is described. The earlier CORS asymmetry no longer e
 `WebVella.Erp.Site.Project`; an absent key denies every origin outside Development, while Development
 falls back to three localhost origins for Site and four for Project.
 
+### Subsequent control-review fixes: `F-04`, `F-05` and `F-07`
+
+The review that reopened the output-encoding records also found two High defects in the protected-file
+pipeline and one Medium defect in the transport guard. Each was fixed and verified before this
+documentation was synchronised.
+
+| Finding | Delivered change | Measured verification |
+| --- | --- | --- |
+| `F-04` — authenticated `/fs` bytes were public-cacheable | `WebApiController` marks every file response `private`; published files retain `max-age=2592000`, staged files use `private,no-store`, and the staged conditional-304 path is disabled | Published file: private 30-day cache plus 304. Staged file: `private,no-store` plus 200 for an exact conditional request. The resized-image and attachment branches inherit the same policy; unauthenticated access still redirects |
+| `F-05` — destination authorization could be raced across overwrite | `DbFileRepository.Move`'s `enforceExpectedTarget` / `expectedTargetId` pair carries either "the destination was authorized absent" or the authorized row identifier; source and destination are row-locked in ordinal path order inside one transaction; every mismatch returns the existing generic refusal | PostgreSQL harness: **34 assertions across 8 cases**, including row substitution, expected absence, disappeared target, withheld staged destination, positive overwrite and an unpinned negative control. The HTTP path also completed both authorized destination states |
+| `F-07` — any nonblank public HTTPS port bypassed the transport diagnosis | The singular public-port value is parsed invariantly and must be in **1-65535**. A rejection is reported when a trusted proxy supplies the path, otherwise it refuses startup in every environment | Eleven-case runtime matrix: `443` and whitespace-padded `007` start; `0`, `-1`, `70000` and `not-a-port` abort; malformed plus trusted proxy starts with one warning; absent-value Production/Development behaviour remains unchanged |
+
+All three changes were followed by a full no-incremental solution build: **0 errors, 3,044 warnings**,
+with the per-rule aggregate identical to the established pre-fix baseline. The full eight-field finding
+records are in the [audit report](security-audit-report.md).
+
 ### Comment accuracy
 
 Two comments inside `.github/workflows/security-scan.yml` still claimed *"all 19 tracked projects are
@@ -9637,9 +10038,188 @@ WebAssembly projects are covered by explicit per-project steps). The executable 
 and its assertions pass; only the prose was stale, and it is now aligned with the 17 + 2 model the file
 actually implements.
 
-This section is the thirty-sixth `## ` heading of this log; the preceding count was thirty-five, and it
-is restated here because the section that changes the count is the only one that can. Reproduce with
-`grep -c '^## ' docs/security/remediation-log.md`.
+**That last sentence was not true when it was written, and review finding `INT-15` established it.** The
+two comments named above were corrected; **three others in the same file were not**, and each still
+asserted the nineteen-member model afterwards — the gate-coverage claim in the file's own header block,
+the note above the per-project WebAssembly steps describing them as redundant over solution-scoped steps
+that already cover those projects, and a third note stating outright that both projects *are* solution
+members. All three now state the 17 + 2 model, name the two non-members explicitly, and carry an
+instruction not to rewrite them back. The lesson is recorded rather than just the fix: a claim of the form
+*"only the prose was stale, and it is now aligned"* is a claim about **every** occurrence in the file, so
+it has to be made from a whole-file sweep, not from the occurrences that happened to be under review.
+
+**On self-counting claims.** An earlier revision of this paragraph stated an ordinal for this section and
+a preceding total. Both had drifted: this is the **thirty-seventh** `## ` heading, not the thirty-sixth,
+and a reader reproducing the count today gets a larger total still, because sections have been appended
+since. The ordinal is left stated but is no longer offered as an invariant — a hand-maintained count in a
+document that is appended to is a claim that falsifies itself, which is exactly the failure mode
+`INT-15` describes. Reproduce the live figure with
+`grep -c '^## ' docs/security/remediation-log.md`; treat that command, not this sentence, as the source
+of truth.
+
+## Integration-review remediation — fifteen findings across the mail plugin, the file store, the CI gate and this document set
+
+This section is the authoritative record of a review pass over the work above, focused on the mail
+plugin's integration surface and on the accuracy of the evidence documents. Where it disagrees with an
+earlier section, **this section wins**: the earlier sections were accurate when written, and every claim
+this pass falsified has been corrected in place at its original location as well as recorded here.
+
+The pass raised **fifteen findings — eight Major and seven Minor**. Eleven were closed in code; four are
+closed by correcting a document, because in each of those four cases the defect *was* the document. One
+finding, `INT-08`, had both halves. Nothing was deferred and nothing was reclassified downward to avoid
+work.
+
+### Why a review of a security remediation found real product defects
+
+Three of the Major findings are not defects in the remediation at all — they are pre-existing product
+defects that only became visible because someone read the mail plugin's integration surface closely while
+checking the remediation's claims. `INT-03` (queue starvation), `INT-13` (a cleanup that deleted nothing)
+and `INT-14` (a stored cross-site scripting sink reachable from an SMTP server's response text) were each
+present before this engagement began. They are fixed here under the discovered-blocker rule rather than
+filed for later, because each is a confirmed vulnerability of the severity band the engagement's own
+matrix places in remediation scope, and two of them — `INT-13` and `INT-14` — sit directly on top of
+controls this remediation added.
+
+Two of the Major findings are the opposite case: the remediation had over-reached (`INT-08`) or had
+described a control as protecting something it does not protect (`INT-01`). Both are corrected by
+subtraction, which is the honest direction of travel.
+
+### What changed, by finding
+
+| Finding | Severity | Disposition | Files | Threat addressed |
+| --- | --- | --- | --- | --- |
+| `INT-01` | Major | **Documented** — four documents corrected | `docs/security/security-audit-report.md`, `remediation-log.md`, `risk-register.md`, `secure-configuration.md` | A control credited with a protection it does not provide retires a live risk. `H-11` hardened the mail plugin's five MailKit paths; `M-17` notifies through `WebVella.Erp.Web/Services/MailService.cs`, a `System.Net.Mail.SmtpClient` that never assigns `EnableSsl`. The claim is withdrawn everywhere it appeared; the real posture is `RISK-131` |
+| `INT-02` | Major | **Documented** — `RISK-131` | as above | The diagnostic notification client negotiates no TLS and swallows every exception. It is `REFERENCE`-only in the frozen plan, and adding a mail configuration switch is the exact widening `INT-08` required removed, so the fix is recorded with a concrete ordered remedy rather than applied |
+| `INT-03` | Major | **Fixed** | `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` | Queue starvation (CWE-703). `GetSmtpService` **throws** for a deleted or renamed service, and the throw escaped the per-row loop, so one orphaned row stopped every later row in the batch from ever being sent. The lookup is now guarded per row and routes into the abort branch that existed but was unreachable |
+| `INT-04` | Major | **Documented** — `RISK-132` | `secure-configuration.md` | The cloud-storage enablement text described an object-key contract the code does not implement. Corrected to state the real contract and its lifecycle limitations |
+| `INT-05` | Major | **Documented** — `RISK-133` | `secure-configuration.md`, `risk-register.md` | External storage writes precede the database commit with no compensation, so a failed transaction leaves an orphaned object. The frozen plan excludes modifying external service integrations and requires the risk be documented |
+| `INT-06` | Minor | **Fixed** | `SmtpInternalService.cs` | Dead validation (CWE-704). A numeric cast to an enum never throws, so the `try`/`catch` guarding `connection_security` validated nothing and an out-of-range value was persisted. Replaced with `Enum.IsDefined`, which admits every defined `SecureSocketOptions` member — narrowing it would have broken rows legitimately using `None` |
+| `INT-07` | Minor | **Fixed** | `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` | Null dereference before validation (CWE-476). Two custom-sender overloads dereferenced the sender before validating it, and four queue overloads parsed a `cc:`/`bcc:` prefix off an address read before the null test. Both are now validated first. The queue overloads still accept a **null sender** — that is legal there and resolves to the service default — so the guard is a hoisted null test, not a new requirement |
+| `INT-08` | Major | **Fixed in code and corrected in four documents** | `SmtpService.cs`, `SmtpInternalService.cs`, and the four security documents | An out-of-plan production-honoured revocation opt-out. Removed entirely; MailKit's own `true` default now governs and nothing can turn it off. Recorded in full in the reversal sub-section above |
+| `INT-09` | Minor | **Fixed** | `SmtpService.cs`, `SmtpInternalService.cs` | Undisposed `MimeMessage` (CWE-404). Five construction sites own attachment and linked-resource streams; all five are now `using` declarations, so a send that throws does not leak the streams it opened |
+| `INT-10` | Minor | **Fixed** | `SmtpInternalService.cs` | Lost plain-text fallback (CWE-252). `HtmlDocument.SelectNodes` returns **null**, not an empty collection, when no `img` matches, so the `foreach` threw and the `catch` swallowed it — taking the plain-text alternative body down with it for every HTML message containing no image. The collection is null-coalesced and inline-image embedding is now isolated from the fallback, which sits outside the handler deliberately |
+| `INT-11` | Minor | **Fixed** | `SmtpInternalService.cs` | Ineffective validation (CWE-20). Both hooks validated `default_from_email`; the entity's field is `default_sender_email`, so no sender address was ever validated on create or update. Corrected in both hooks |
+| `INT-12` | Minor | **Fixed** | `SmtpService.cs`, `SmtpInternalService.cs` | Unhandled exception on an unmapped extension (CWE-248). `MimeMapping.TryGetValue` leaves the type **null**, and `MimePart(string)` throws `ArgumentNullException` for null — confirmed from the installed MimeKit 4.17.0 documentation rather than assumed. Six sites now fall back to `application/octet-stream` through one shared constant |
+| `INT-13` | Major | **Fixed** | `WebVella.Erp/Database/DbFileRepository.cs` | Unbounded storage growth (CWE-770). The `ILIKE` pattern was `%/tmp`, which matches paths *ending* in `/tmp` — no staged path ever does — so the platform's only abandoned-upload cleanup deleted nothing, and `FindAll(includeTempFiles: false)` excluded nothing. The `expiration` argument was accepted and ignored. Pattern anchored, age honoured from `created_on` in UTC, failures accounted per row |
+| `INT-14` | Major | **Fixed** | `MailPlugin.20190215.cs`, new `MailPlugin.20260806.cs`, `MailPlugin._.cs`, `SmtpInternalService.cs` | Stored cross-site scripting (CWE-79). An SMTP server's error text is persisted verbatim into `server_error` and rendered through a raw-HTML page-body-node option. Encoded at the sink, with a dated patch that rewrites the stored option for installations that already exist |
+| `INT-15` | Minor | **Fixed** | `.github/workflows/security-scan.yml` | Inaccurate gate evidence. Three comments stated the solution enumerates all nineteen projects. It enumerates **17**; the two WebAssembly projects are reached by named per-project steps. Comment-only change, proven to be comment-only |
+
+### `INT-14` — why the fix is three parts and not one
+
+The value is untrusted by construction: it is whatever text a remote SMTP server returns, persisted by
+`SmtpInternalService` into the `rec_email` record's `server_error` field. The sink is a page-body-node
+option in the mail plugin's provisioning code, which composes an HTML attribute out of it and marks the
+result raw. That shape means the smallest complete fix has three parts, and omitting any one leaves the
+finding open:
+
+1. **The seed.** `MailPlugin.20190215.cs` composes the option string; the interpolation of `serverError`
+   is now wrapped in `System.Net.WebUtility.HtmlEncode`, which neutralises `"`, `'`, `<`, `>` and `&` —
+   the full set an attribute context needs. The deliberate `&#xA;` line separator either side of the
+   value is preserved, because it is markup the platform authored and not data the server supplied.
+   `System.Net.WebUtility` resolves from `System.Private.CoreLib`, so it is available to the CS-Script
+   evaluator under `ReferenceDomainAssemblies` without any new reference.
+2. **Existing installations.** Provisioning code only runs at first install, so the corrected seed
+   protects **new** installations only. `MailPlugin.20260806.cs` rewrites the stored option on
+   installations that already exist, through `PageService.UpdatePageBodyNodeOptions` — the only usable
+   API, because `PageBodyNodeRepository` is internal to `WebVella.Erp.Web`. It locates the node through
+   `GetPageNodes(...).FirstOrDefault(...)` rather than `GetPageNodeById`, which **throws** for an absent
+   node and would turn a missing node into a failed upgrade.
+3. **The source.** The persistence site in `SmtpInternalService.cs` carries an annotation naming the
+   value as untrusted external data, so the next person to add a renderer for it is warned at the point
+   the value enters the database rather than at the point it leaves.
+
+The migration was verified by replaying it against the **real** pre-fix payload recovered with
+`git show`: the legacy fragment is found, the migrated string is byte-identical to the corrected seed, a
+second run is a no-op, every other option property survives untouched, and attribute-breaking characters
+are neutralised. A census of every renderer of `server_error` confirmed there is no second raw sink.
+
+### `INT-13` — what was fixed, and what was deliberately left to the operator
+
+The pattern, the age filter and the per-row resilience are code defects and are fixed in code. Three
+things were deliberately **not** done, and each omission is a scope decision rather than an oversight:
+
+- **No scheduler, no background job and no configuration key.** Nothing in the platform calls this
+  method. Adding a job to drive it is feature work the frozen plan forbids, so the scheduling
+  responsibility is documented in the [secure configuration guide](secure-configuration.md) and carried
+  as `RISK-134` instead.
+- **The signature stays `void`.** Returning a deleted-row count was drafted and then reverted: this is a
+  public member of a published library, and the defect is fully fixable without a binary-breaking
+  change.
+- **The method must run under a system scope.** `Delete` resolves through `Find`, which refuses a staged
+  file belonging to another non-administrative principal — finding `F24`, whose control is deliberately
+  left intact — so under an ordinary user's scope the cleanup would silently skip every upload but that
+  user's own. This is stated in the member's own documentation and in the operator guide.
+
+### The documentation corrections, and why four findings are closed by editing prose
+
+`INT-01`, `INT-02`, `INT-04` and `INT-05` are Major findings whose remedy is a document change. That is
+not a downgrade: in each case the artefact under review is an evidence document, and an evidence document
+that overstates a control is a security defect in its own right, because a reader stops looking. The
+corrections are:
+
+| Document | Correction |
+| --- | --- |
+| `secure-configuration.md` | The blanket mail-transport claim is qualified to the five MailKit send paths and names `MailService.cs` as out of that scope; the revocation setting's row is **deleted** and the revocation section rewritten to describe CRL/OCSP reachability as an operator risk with publishing the source as the only supported remedy; a new section states the notification mailer's real posture in a six-row table; the cloud-storage text is corrected to the actual object-key contract; a new section makes abandoned-upload scheduling an explicit operator responsibility |
+| `risk-register.md` | `RISK-060` is rewritten as a deployment constraint with no setting, including a paragraph naming the reversal rather than quietly editing it; the `M-17` disposition and the declined-list entry are corrected to name the real transport; four residuals are added — `RISK-131` notification mailer, `RISK-132` object-key identity, `RISK-133` no transaction compensation, `RISK-134` cleanup unscheduled — each with an index row |
+| `security-audit-report.md` | `H-11`'s remediation field is restored to the plan-defined scope, records the over-reach and its reversal, and describes relay revocation outages separately; `M-17`'s location, description, impact, evidence and remediation fields are rewritten to name `System.Net.Mail.SmtpClient`, withdraw the `H-11` claim and state the two mitigations that are real |
+| `remediation-log.md` | This section; the reversal sub-section replacing the revocation-switch record; the `DoNotNotify` invariant's `H-11` claim withdrawn in place; the `F26` passage's "second mitigation" wording corrected to name what it is second to and that the first has been withdrawn |
+
+### Every path this pass changed, mapped
+
+Stated as a closed list rather than left to be assembled, because review findings `BOUNDARY-01` and
+`BOUNDARY-02` established that an unreconciled path difference is itself a defect. **Eleven paths: seven
+in code, four in documentation.** Reproduce the code half with
+`git diff --name-status 45971069..HEAD` and the documentation half from the commit that carries this
+section.
+
+| Path | State | Findings | Why it changed |
+| --- | --- | --- | --- |
+| `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs` | modified | `INT-07`, `INT-08`, `INT-09`, `INT-12` | The four direct send overloads: revocation feature removed, sender validated before dereference, messages disposed, unmapped MIME types defaulted |
+| `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` | modified | `INT-03`, `INT-06`, `INT-07`, `INT-08`, `INT-09`, `INT-10`, `INT-11`, `INT-12`, `INT-14` | The queued path and the two entity hooks — the densest file in the pass, and the reason these findings share one review |
+| `WebVella.Erp.Plugins.Mail/MailPlugin.20190215.cs` | modified | `INT-14` | The provisioned raw-HTML sink, now encoded |
+| `WebVella.Erp.Plugins.Mail/MailPlugin.20260806.cs` | **new** | `INT-14` | The dated patch that carries the encoding fix to installations that already exist |
+| `WebVella.Erp.Plugins.Mail/MailPlugin._.cs` | modified | `INT-14` | Registers the dated patch, following the plugin's own convention |
+| `WebVella.Erp/Database/DbFileRepository.cs` | modified | `INT-13` | The staged-path pattern, the age filter and per-row failure accounting |
+| `.github/workflows/security-scan.yml` | modified | `INT-15` | Three coverage comments; comment-only, proven so |
+| `docs/security/security-audit-report.md` | modified | `INT-01`, `INT-08` | `H-11`'s remediation field restored to plan scope; `M-17`'s five affected fields rewritten |
+| `docs/security/remediation-log.md` | modified | `INT-01`, `INT-08`, `INT-15`, and this record | The reversal sub-section, three in-place claim withdrawals and this section |
+| `docs/security/risk-register.md` | modified | `INT-01`, `INT-02`, `INT-04`, `INT-05`, `INT-08`, `INT-13` | `RISK-060` rewritten; `M-17` disposition corrected; `RISK-131`–`RISK-134` added |
+| `docs/security/secure-configuration.md` | modified | `INT-01`, `INT-04`, `INT-08`, `INT-13` | Setting row deleted, revocation section rewritten, notification-mailer posture stated, storage contract corrected, cleanup scheduling made an operator responsibility |
+
+No other path was touched. In particular no `.csproj` changed, no configuration file changed, no host
+pipeline changed and no view changed, so nothing in this pass can have moved the dependency, secret or
+header gates.
+
+### Verification
+
+| Check | Method | Result |
+| --- | --- | --- |
+| Build gate | `dotnet restore` then `dotnet build WebVella.ERP3.sln --no-restore` after every phase | exit 0, **0 errors** at every checkpoint. Warning total **3044**, identical to the pass baseline captured before the first edit |
+| No analyzer regression, per file | unique-diagnostic count per modified file compared against the baseline log | `SmtpService.cs` 55, `SmtpInternalService.cs` 20, `DbFileRepository.cs` 25, `MailPlugin.20190215.cs` 49, `MailPlugin._.cs` 8 — every one identical to baseline, and the rule mix identical too, so no diagnostic was traded for another |
+| The revocation feature is gone | `grep -rn` over `*.cs`, `*.json`, `*.txt`, `*.yml`, `*.config` for four identifiers | zero matches; the five `ServerCertificateValidationCallback` sites and their Development-only gate are intact |
+| `INT-14` migration correctness | replay against the real pre-fix payload recovered with `git show HEAD:…` | legacy fragment located, migrated output byte-identical to the corrected seed, second run a no-op, sibling option properties preserved, attribute-breaking characters neutralised |
+| `INT-15` is comment-only | `git diff -U0` inspected line by line, plus `bash -n` over every embedded shell block and a YAML parse | every added and removed line is a comment; **14** shell blocks parse; the YAML parses. Zero executable change |
+| Line endings and BOM preserved | byte-level assertion per file before and after each edit | the three CRLF-with-BOM mail files remain CRLF with BOM; the LF-with-BOM plugin files remain LF with BOM; the LF documents remain LF. `git -c core.whitespace=cr-at-eol diff --check` is clean — plain `git diff --check` false-positives on every CRLF line, which is why the CRLF-aware form is the one used |
+| Atomic commits, one vulnerability class each | `git log` | five code commits — transport-scope restoration, mail contract and resilience, output encoding, resource exhaustion, gate evidence — plus one documentation commit |
+
+### Deviations and out-of-scope observations
+
+- **`INT-02` was not fixed in code, and the reason is structural rather than convenient.** The frozen
+  plan marks `LogService.cs` and `Log.cs` `REFERENCE`-only and excludes modifying external service
+  integrations. More pointedly, the obvious fix — a configuration switch to require TLS on that client —
+  is the same shape of change that `INT-08` in this very pass required to be **removed** from the SMTP
+  transport for being out of plan scope. Applying it here while removing it there would be incoherent.
+  The ordered remedy is recorded in `RISK-131` instead: persist before notifying, require TLS with
+  validation, dispose the client, bound its timeout, report rather than swallow failures, and reduce the
+  notified payload to an identifier and a severity.
+- **`INT-04` and `INT-05` name a fix the plan does not authorise.** Both concern the object-key and
+  transactional contract between the record layer and an external object store. The review sized the
+  implementation as large; the plan excludes it; the risks are documented as `RISK-132` and `RISK-133`.
+- **The `AllSmtpSevices` query still names `default_from_email`.** It is stale generated SQL that is
+  never executed, and the `INT-11` fix comments say so at the corrected case labels. Rewriting dead
+  generated SQL is hygiene, not remediation.
+- **`client.Timeout` remains unset on all five send paths.** Pre-existing, out of this pass's scope, and
+  already recorded in the risk register.
 
 
 ## The manual verification checklist, with the outcome of every line
@@ -9654,12 +10234,49 @@ Each line is mapped to its row identifier in the gate 5 matrix declared in
 `.github/workflows/security-scan.yml`, so this table and that matrix can be reconciled rather than taken
 on trust. **The two artefacts answer different questions.** This table records what was executed during the
 remediation, on a host with a database, an SMTP relay and a browser. The matrix records what CI can prove
-on every push, which is narrower by construction: its fourteen automated rows (`A01`–`A14`) pass from
-retained evidence, and its nineteen manual rows (`M01`–`M19`) are honestly `DEFERRED` there, because a
-GitHub-hosted runner has no PostgreSQL instance — the only supported provider, with no in-memory or SQLite
-substitution possible — no mail relay and no interactive session. Gate 5 permits a `DEFERRED` row and
-refuses a `PASS` without an attestation, which is what keeps the deferral visible instead of quietly
-resolved.
+on every push, which is narrower by construction: its sixteen automated rows (`A01`–`A16`) pass from
+retained evidence, and its twenty-five manual rows (`M01`–`M25`) are honestly `DEFERRED` there — 41 rows in
+total — because a GitHub-hosted runner has no PostgreSQL instance, the only supported provider, with no
+in-memory or SQLite substitution possible; no mail relay; and no interactive session. Gate 5 permits a
+`DEFERRED` row and refuses a `PASS` without an attestation, which is what keeps the deferral visible
+instead of quietly resolved.
+
+**These counts were stale until this revision and are restated from the workflow rather than from the
+earlier draft.** They read fourteen automated and nineteen manual, which were the figures before the
+matrix was extended: two automated rows were added when the analyzer-coverage and history-audit
+evidence became assertable, and six manual scenarios (`M20`–`M25`) were added for the cookie-expiry,
+editor-callback, SQL-identifier, serialization-binder, credential-regex and file-mutation-race
+properties that no earlier row covered. Of the 25 manual rows, 24 are classified `REQUIRED` — each
+verifies a Critical or High finding and is release-blocking while unproven — and one (`M18`, a latency
+measurement) is `ADVISORY`. Executed at this commit the matrix reports **16 proven, 25 deferred, 0
+failed, `RELEASE-READY=no`**, which is the same arithmetic this table is reconciled against.
+
+**That is now only half the mechanism, and the missing half was review finding `OBS-07`.** Keeping a
+deferral visible is necessary but not sufficient: because Gate 5 counted `DEFERRED` rows without ever
+setting a failure status, all nineteen manual scenarios could sit unproved while the job exited green.
+A reader seeing a green tick would reasonably conclude the manual security verification had been
+performed, and nothing in the workflow contradicted them. Committing an attestation file would have
+been a change in a document, not in the gate, so the gap could not be closed by evidence alone.
+
+The mechanism is now a deliberate **split**, and the two halves must not be conflated:
+
+- **Gate 5 remains the honest recorder.** It derives each row's status from retained evidence, prints
+  the reproducible procedure for every deferral, and fails only on a *proven* problem — a row attested
+  as `FAILED`, a missing evidence artefact, or a malformed attestation. It does not fail on a deferral,
+  because "not yet executed" and "executed and broken" are different facts and a gate that returned the
+  same status for both would destroy the distinction this table exists to preserve.
+- **A separate `Release gate` step blocks.** It refuses to pass while any mandatory row is anything
+  other than `PASS` or `PASS-MANUAL`, treats an absent matrix as a failure rather than a pass, and is
+  ordered *after* the evidence-publication step so that a blocking verdict can never suppress the
+  artefacts a reader needs in order to act on it.
+
+Attestations are now required to be dated and attributable: a line whose timestamp is not ISO-8601 UTC
+is rejected as undated, one with no actor is rejected as unattributable, and one naming a row outside
+the matrix is rejected outright. The actor and note fields are bounded and stripped of control
+characters before they are printed, because the matrix is a text file parsed line by line — an
+unsanitised newline in an attestation could forge a `PASS` row, and a carriage return could overwrite
+a line already written (CWE-117). On this tree the release gate is therefore **red by design**: no
+attestation has been committed, and fabricating one would defeat the only purpose the gate has.
 
 | # | Checklist line | Gate 5 row | Outcome | Evidence, or what would satisfy it |
 | --- | --- | --- | --- | --- |
@@ -9674,10 +10291,10 @@ resolved.
 | 9 | An uploaded markup or vector file downloads as an **attachment** rather than rendering inline on the application origin | `M12` | **Executed at this commit — passed, both halves, plus the control** | Executed against a real Production HTTPS host over a 17-case matrix: `.svg` and `.html` are refused outright at every upload action, so neither can newly reach storage — which is the front half of the chain. Re-observed at this commit, with both refusals returning HTTP **400** and the message *Files of this type cannot be uploaded.* The download half is no longer deferred: an allow-listed but non-inline object (a `.txt`) was uploaded and then fetched, and the response carried `content-disposition: attachment; filename=probe.txt; filename*=UTF-8''probe.txt` alongside `x-content-type-options: nosniff`. **The control matters as much as the assertion**: the same round trip with a `.png` returned **no** content-disposition at all, proving this is an inline allow-list rather than a blanket attachment, so the platform's own image and file field components still render |
 | 10 | The file **move** and **delete** actions are refused for a non-owner | `M13` | **Executed — passed** | Both actions driven as a non-owner, and separately against a target that does not resolve; both refused, with one generic refusal message so the response cannot be used to probe for the existence of another user's staged file |
 | 11 | The two previously unconditional error paths return **no stack trace**, while server-side logging still records the detail | `M14` | **Executed — passed, and re-observed anonymously at this commit** | A generic message in the response body, with the full message and stack trace still present in the log record's details column — so the disclosure was closed without trading away any diagnostic capability. Re-driven at this commit **without credentials**, since these are the anonymous token routes: bad credentials and a malformed body both returned `Invalid email or password`, the refresh route declined to mint a successor and returned a null object, and a marker sweep over both bodies for `at WebVella`, `.cs:line`, `System.` and `Exception:` found **zero** hits |
-| 12 | Mail delivery succeeds against a valid certificate and **fails** against an invalid one | `M15` | **Executed — passed, and narrowed** | An `X509Chain` probe over a purpose-built PKI plus real sends: a self-signed relay is refused with `UntrustedRoot` and a relay whose certificate names a different host is refused on host-name mismatch, in **both** revocation modes — so the narrow revocation relaxation cannot be mistaken for accept-any. A valid certificate still delivers |
+| 12 | Mail delivery succeeds against a valid certificate and **fails** against an invalid one | `M15` | **Executed — passed, and narrowed** | An `X509Chain` probe over a purpose-built PKI plus real sends: a self-signed relay is refused with `UntrustedRoot` and a relay whose certificate names a different host is refused on host-name mismatch, in **both** revocation modes. A valid certificate still delivers. The clause that used to close this row — that the narrow revocation relaxation could not be mistaken for accept-any — is withdrawn along with the relaxation itself under review finding `INT-08`: there is no revocation setting, revocation is always checked, and the retained two-mode measurement now serves only to show that a revocation failure and an untrusted certificate are separable in an operator's diagnostics. A relay whose revocation source is unreachable is refused, by design, and that operational consequence is `RISK-060` |
 | 13 | **The markup-block component and the components emitting generated inline script still render** — proving the four by-design raw channels were not broken | `M16` | **Not executed — deferred, and stated as such** | The argument available today is static rather than visual: the four by-design raw channels were deliberately left untouched, and the encoding pass is provably absent from those four files. Because the content policy ships **report-only**, an inline-script suppression cannot be the failure mode either. What would satisfy it: rendering a page carrying the HTML-block component and a page emitting generated inline script on a running host and confirming both display as they did before the encoding pass |
 | 14 | **A full-record round-trip update does not overwrite the stored hash with the redaction marker** | `M17` | **Executed — passed** | The write path recognises the sentinel at four sites and leaves the stored hash untouched; the browser receives a masked input and never the sentinel. This is the highest-risk ripple in the engagement — getting it wrong would have replaced every affected user's credential with a literal marker string, a data-destroying outcome from a fix intended to prevent disclosure |
-| 15 | All nineteen projects build; no route, verb or response envelope changed except the deliberate removal of stack-trace text from two error bodies; **no schema definition statements were emitted at any point** | `A13`, `A09` | **Executed — passed, and re-proven on every push** | Solution rebuild exit 0, **0 errors**, 3,044 analyzer warnings across the 17 solution projects, with the two non-member WebAssembly projects built by their own dedicated steps at 0 errors. No unreviewed Security-category analyzer diagnostic. Column, index and constraint dumps taken before and after the version-4 migration are **md5-identical** |
+| 15 | All nineteen projects build; the API contract changed **only** in the four intentional ways enumerated in the cell to the right; **no schema definition statements were emitted at any point** | `A13`, `A09` | **Executed — passed, and the contract claim restated because the absolute form was false** | Solution rebuild exit 0, **0 errors**, 3,043 analyzer warnings across the 17 solution projects, with the two non-member WebAssembly projects built by their own dedicated steps at 0 errors. No unreviewed Security-category analyzer diagnostic. Column, index and constraint dumps taken before and after the version-4 migration are **md5-identical**. **The contract claim, stated exactly.** An earlier revision of this row read *no route, verb or response envelope changed except the deliberate removal of stack-trace text from two error bodies*, which contradicted this very document: the session-revocation class adds a route, and it is documented as added. The four intentional changes, and there are no others, are: (1) **stack-trace text removed from two error bodies** — the `H-13` remediation, and the only one the engagement's boundaries pre-authorised; (2) **one route ADDED**, `POST api/v3/en_US/auth/jwt/token/logout` (`RevokeJwtToken`), authenticated, carrying no `[AllowAnonymous]`, returning the controller's standard `ResponseModel` envelope — recorded in the session-revocation class of this log, which is where the contradiction was visible; (3) **the download response gains a `Content-Disposition: attachment` header** for every extension outside the four-entry inline set — the back half of the `H-08` chain, a header addition rather than a body or status change; (4) **`POST /fs/move/` returns the endpoint's own `FSResponse` refusal envelope** where a withheld or raced staged target previously escaped as an unhandled fault with a **zero-length body** — strictly a repair of a broken response rather than a new shape, since the envelope is the one this action already used for every other denial. Separately, and this is the narrower claim that IS absolute: **no route template, verb or authorization attribute changed after the checkpoint baseline `80042d8c`** — verified by `git diff 80042d8c..HEAD -- '*.cs'` filtered to `[Route]`, `[AcceptVerbs]`, `[HttpGet]`, `[HttpPost]`, `[Authorize]` and `[AllowAnonymous]` lines, which returns **nothing**. |
 | 16 | The **login-latency increase** from the deliberate high-iteration key derivation is **measured and recorded as an accepted, pre-declared trade-off** | `M18` | **Executed — measured rather than asserted** | 20-run single-threaded medians, recorded in [Class 3](#class-3-credential-integrity). The cost is confined to the authentication path, and credential resolution is bounded to a constant **two** derivations per attempt so a single anonymous request cannot amplify it. It is an accepted trade-off, pre-declared before the work rather than discovered afterwards as a regression |
 
 **The count, so it cannot be inferred favourably.** Of the sixteen lines: **fifteen** were executed and
@@ -9689,7 +10306,7 @@ against a running host and a live database, so their partial status is retired r
 **Provenance of the re-observations.** The rows marked *re-observed at this commit* were driven against the
 published **Release** artifact of `WebVella.Erp.Site` running with `ASPNETCORE_ENVIRONMENT=Production` over
 HTTPS, against the PostgreSQL instance this tree is validated on, with the analyzer build re-measured in the
-same session at **0 errors and 3,044 warnings** — the figure this log records elsewhere, unchanged. Only
+same session at **0 errors and 3,044 warnings** — the figure this log recorded at that point, unchanged by that class *(3,096 on the tree this commit publishes — `AnalysisLevelSecurity=latest-all` now arms the whole Security category through an SDK-shipped configuration; see the warning-baseline note near the top of this log)*. Only
 observable behaviour was recorded; no evidence here rests on reading the source and inferring what it would
 do.
 
@@ -9700,6 +10317,49 @@ bearer token is rejected, proving lifetime validation and clock skew are in forc
 token copied before the shipped WebAssembly logout is refused for protected use **and** for refresh). All
 four were added by later review passes rather than dropped from this checklist.
 
+## Markdown static closure, and the five rules that are deliberately off
+
+A review finding required that `markdownlint` reach a clean exit on the nine Markdown files this
+engagement authored or edited, with every relaxation reviewed rather than switched off to make a number
+go away. The configuration is `.markdownlint.jsonc` at the repository root, and each entry there carries
+its own in-file justification; this section records the shape of the decision so the file is not an
+orphan.
+
+```bash
+npx markdownlint-cli@0.45.0 SECURITY.md README.md LIBRARIES.md docs/index.md docs/security/*.md
+#   exit 0
+```
+
+**Five rules are disabled, each with a substitute control rather than a shrug.**
+
+| Rule | Why it is off | What covers the same ground |
+| --- | --- | --- |
+| `MD013` line-length | The evidence lives in wide tables, and a Markdown table cell **cannot** be wrapped — a newline inside a cell ends the row. Enforcing a column limit would mean deleting evidence or converting every table to prose | `mkdocs build --strict` exits 0, which is what actually establishes that these tables render |
+| `MD051` link-fragments | A real renderer divergence, not a defect. Headings here use a spaced em dash; python-markdown collapses the whole `[-\s]+` run to **one** hyphen while markdownlint applies GitHub's rule and expects two. No spelling satisfies both, and the tool exposes only `ignore_case` for this rule | Three executable checks: `mkdocs build --strict` (0 missing-anchor messages), a heading-render check comparing source heading count to rendered `id` count per page, and an internal link checker using python-markdown's own slug rule |
+| `MD036` emphasis-as-heading | Enabling it would **regress** the finding that reserved `Class N` for the canonical fourteen-class sequence. The bold lead-ins it flags are bold precisely so they do not mint colliding `Class N` anchors | The identifier-uniqueness assertions in this log and the risk register — currently 14 canonical headings, one per class |
+| `MD038` space-in-code | Every instance quotes a literal whose leading or trailing space is the thing being measured — the `## ` heading prefix these counts are counting, the `   at ` stack-frame prefix the abort-log filter matches, the `    17>` MSBuild node prefix. The tool's auto-fix would silently **delete** those spaces | Each count is re-derived by a published reproduce command, so a wrong prefix surfaces as a count mismatch |
+| `MD041` first-line-h1 | Fires on one file, `README.md`, whose first line is a pre-existing upstream announcement banner. Rewriting it is outside a scope forbidden from refactoring beyond remediation | None needed — no correctness property depends on line 1 |
+
+**Three rules are tuned rather than disabled, and still fire on the defect they exist to catch.**
+`MD024` is restricted to siblings, because these documents repeat `#### Verification` once per
+vulnerability class deliberately — and `siblings_only` yields zero, so nothing is hidden by it.
+`MD033` allows exactly `<br>` and `<code>`, the former being the only way to break a line inside a
+table cell; every other element stays refused. `MD010` exempts code blocks, because the tabs it found
+are inside samples quoting real files whose `.editorconfig` mandates tabs.
+
+**Everything else was fixed, not waived**, and two of the fixes were substantive rather than cosmetic:
+two table rows carried an **unescaped `|` inside a code span**, which silently created an extra cell and
+dropped the remainder of the row from the rendered table — a YAML block-scalar `|` in one, and
+`RevocationStatusUnknown|OfflineRevocation` in the other. Both are now escaped and both rows render
+their full content. Twelve heading-increment violations in the risk register were closed by promoting
+thirty-four `####` entries to `###` and one `#####` to `####`; heading **text** was not touched, so
+every anchor slug is byte-identical and every cross-reference still resolves.
+
+One caution for whoever next runs the formatter with `--fix`: `MD010`'s fix defaults to
+`spaces_per_tab: 1`. Applied blindly it converted a tab-indented list continuation in `LIBRARIES.md` to
+a single space, which detached the continuation **and** its fenced sample from the list item. That was
+caught by diffing normalised text against a pre-fix snapshot, reverted, and redone by hand. Auto-fix is
+useful here, but only against a snapshot you can diff.
 
 ## Deletions, dependencies and residual coverage, stated explicitly
 
@@ -9714,7 +10374,7 @@ part of L-01.
 | Left in place | Size | Why it is not exploitable |
 | --- | --- | --- |
 | `WebVella.Erp.Web/Security/AuthorizeAttribute.cs` | 146 lines | An authorization attribute applied to nothing |
-| `WebVella.Erp.Web/Security/AuthCache.cs` | 61 lines | An authentication cache with no live caller — and **not** the cache the login throttle uses, which is the 54-line `WebVella.Erp.Web/Utils/Cache.cs` |
+| `WebVella.Erp.Web/Security/AuthCache.cs` | 61 lines | An authentication cache with no live caller — and **not** the store the login throttle uses, which is the service's own size-bounded `MemoryCache` at `WebVella.Erp.Web/Services/LoginThrottleService.cs:L109-L113`. Nor is it the 54-line shared helper `WebVella.Erp.Web/Utils/Cache.cs`, which an earlier revision of this row named and which the throttle does not write through |
 | `WebVella.Erp.Web/Security/AuthToken.cs` | 146 lines | A token type whose only references outside its own file are commented out |
 | `WebVella.Erp.Web/Security/WebSecurityUtil.cs:L31-L95` | 65 lines | The legacy login-audit region, entirely `//`-commented, which is why the audit record of Class 14 was added at the live login path instead |
 
@@ -9746,7 +10406,7 @@ deliberately has no manifest line of its own.
 
 | Change | Site | Closes |
 | --- | --- | --- |
-| `AutoMapper` `[14.0.0]` → `[15.1.3]` | `WebVella.Erp/WebVella.Erp.csproj:L88` | `GHSA-rvv3-g6hj-g44x` / `CVE-2026-32933`, CWE-674, the graph's only High-severity advisory. Its licensing consequence against the `Apache-2.0` expression at `:L32` is an **open** owner decision, `RISK-001`, and `dotnet pack` fails with `ERPLIC001` until it is recorded |
+| `AutoMapper` `[14.0.0]` → `[15.1.3]` | `WebVella.Erp/WebVella.Erp.csproj:L88` | `GHSA-rvv3-g6hj-g44x` / `CVE-2026-32933`, CWE-674, which was the graph's only High-severity advisory. Its licensing consequence against the `Apache-2.0` expression at `:L32` is an **open** owner decision, `RISK-001`, and `dotnet pack` fails with `ERPLIC001` until it is recorded |
 | `MailKit` 4.14.1 → 4.17.0 | `WebVella.Erp.Plugins.Mail/WebVella.Erp.Plugins.Mail.csproj:L36` | `GHSA-9j88-vvj5-vhgr` / `CVE-2026-41319`, CWE-74, first patched 4.16.0 |
 | `MimeKit` 4.14.0 → 4.17.0, **transitively** | none — MailKit 4.17.0 declares MimeKit 4.17.0 | `GHSA-g7hc-96xr-gvvx` / `CVE-2026-30227`, CWE-93, first patched 4.15.1. **No separate `PackageReference` was added**, and none should be: it would duplicate a constraint the mail library already expresses and would then have to be maintained in lockstep with it |
 | `Microsoft.AspNetCore.Components.WebAssembly.Server` 7.0.13 → 10.0.1 | `WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj:L12` | H-18, an unsupported-component remediation rather than a CVE one, alongside the two `net7.0` → `net10.0` retargets |
@@ -9771,3 +10431,59 @@ never existed, so MSBuild skipped the Client project silently with `MSB9008` and
 restore, audit and analyzer graph — the same falsely-clean-scan failure mode as H-19, from a different
 cause. The reference now names the real manifest, `..\Client\WebVella.Erp.WebAssembly.csproj`, and both
 projects target `net10.0`.
+## Observability review remediation — the disposition of `OBS-01` through `OBS-11`
+
+A code review of the final observability milestone returned **NOT APPROVED** with eleven findings: one
+Critical, seven Major, two Minor and one Informational. This section records what was done about each,
+which files carry it, and how it was verified. It is the last entry in this log because every count it
+cites had to be re-measured *after* the code changes landed, and a figure measured before them would
+have been stale on arrival — the failure mode `OBS-08` exists to catch.
+
+Ten of the eleven are remediated in code. One is declined, on an explicit exclusion in the frozen plan
+rather than on judgement, and its documentation half is discharged in full.
+
+| Finding | Severity | Subject | Disposition |
+| --- | --- | --- | --- |
+| `OBS-01` | **Critical** | A generated administrator credential reached standard error, and the flush sat inside the provisioning transaction's `try` after the commit | **Fixed.** The operator-supplied setting is now the only supply route on both the provisioning path and the version-4 rotation migration; both fail fast naming only the setting key. The notice buffer carries no credential and is flushed **outside** the `try`, so an output-stream fault can no longer reach `RollbackTransaction()` after a durable commit |
+| `OBS-02` | Major | Exception detail is e-mailed off-box before it is persisted (`M-17`) | **Declined in code, discharged in documentation.** AAP §0.3.2 explicitly declines suppressing the e-mailed detail and fixing the empty handlers; §0.7.1 Group 11 marks the files REFERENCE — none is modified. All four are byte-identical to the pre-audit baseline. The risk entry now states all five properties, three of which were previously unrecorded, with a five-step recommended fix — `RISK-135` |
+| `OBS-03` | Major | The refresh route audited a malformed body *before* the address-refusal gate, and a required first-login rotation was misclassified as a server fault | **Fixed.** The address gate moved ahead of the malformed-body branch, so a flood burns the budget instead of writing a row per request. The rotation outcome is reclassified as an expected bounded rejection: one non-stack record, the generic credential message rather than a credential-confirmation oracle, and the failure budget consumed. Residual `RISK-136` |
+| `OBS-04` | Major | Fifteen catch blocks wrote diagnostics through an unguarded sink that could throw and replace the response; two denial writes likewise; four catches produced no diagnostic at all | **Fixed.** All fifteen route through the failure-isolated boundary, both denials through the same boundary with `DoNotNotify` and the 403 preserved, and the four silent catches gained a diagnostic. Two of the fifteen were additionally found to be logging under a source naming a *different* action, and were corrected. One core-assembly site cannot reach the boundary across an assembly dependency — `RISK-139` |
+| `OBS-05` | Major | Five authentication branches produced no outcome record, and refusals were sampled | **Fixed.** Nine sites now cover every outcome: model validation, both hook short-circuits, a hook fault, a credential-check fault, failure, bootstrap success, success, and refusal — the last now **one record per refusal**, safe because the transport-level limiter bounds volume per address. Runtime-verified: eight consecutive failures produced five failure records and three refusal records. Residual `RISK-138` |
+| `OBS-06` | Major | Sign-out, revocation and replay of a revoked token left no forensic record | **Fixed** at the true root cause: the single implementation of "end this session", so both Razor handlers and the bearer revoke route emit one identical event. Written only on the live→revoked *transition*, so an idempotent repeat adds no row. Replay refusal is rate-bounded and carries neither the token nor the session identifier. Runtime-verified: a second logout wrote no second row, and four replays produced exactly one record |
+| `OBS-07` | Major | Gate 5 tallied `DEFERRED` rows without failing; the raw analyzer log was published contrary to its own comment; counts were stale | **Fixed.** A recorder/blocker split: Gate 5 still records honestly, a new blocking release gate refuses any unproved mandatory row and treats an absent matrix as failure, ordered after evidence publication. Attestations must be dated and attributable; actor and note are bounded and control-character stripped (CWE-117). The raw log is withheld and a path-free derived summary published in its place. `RISK-140` |
+| `OBS-08` | Major | Current-state documentation contradicted executable behaviour and parsed workflow facts | **Fixed.** Every cited figure re-measured from this tree and corrected across seven documents, with each superseded figure recorded rather than quietly overwritten. Two drifts the review did not list were also found and corrected: a claim that no field could carry a first-login rotation marker, and a claim that the credential generator had been removed entirely |
+| `OBS-09` | Minor | A single process-global one-minute slot meant a second, different token-validation failure was silently discarded | **Fixed.** Partitioned per exception type — CLR metadata, so not caller-controlled and bounded in cardinality — each partition carrying its own suppressed count, carried into the next record and **restored if the write fails**. Runtime-verified: two different failure types recorded separately inside one window, and the withheld count reported afterwards |
+| `OBS-10` | Minor | Health, metrics, tracing and correlation counts were not documented, and `L-05` was stale | **Fixed in documentation**, which is the correct disposition for a Low. All four probes measured and recorded as **0**, including the absence of any correlation identifier across the SMTP boundary; the false claim that no smoke test or rollback procedure exists is corrected — both exist. `RISK-141` |
+| `OBS-11` | Info | The console sample printed usernames and e-mail addresses to standard output | **Fixed.** The sample prints a record count and record identifiers instead, which still demonstrates the pre-search hook filter it exists to demonstrate, without emitting personal data to a stream every hosting substrate retains |
+
+### What the verification actually consisted of
+
+Static verification was uniform: the full solution builds with **0 errors** and the warning count and
+per-file warning-identifier sets are **identical to the pre-change baseline**, so no fix introduced a
+new diagnostic. Every changed `run:` block in the workflow passes `bash -n`, the YAML parses, and the
+Gate-5 evaluator and the new release gate were exercised locally against five scenarios — no
+attestation, all attested, a `FAILED` verdict, malformed and unknown-row attestations, and a
+log-injection payload combining a carriage return, a forged matrix row, a control byte and 900
+characters of padding. The injection case is the one worth naming: the forged row did not appear, no
+control character survived, the longest line was bounded, and the row count was unchanged.
+
+The authentication group was additionally verified **at runtime**, against a host from this working
+tree over HTTPS with a live PostgreSQL instance, by reading the resulting rows back out of the log
+table rather than by inspecting the code that writes them. That is what caught the one correction no
+amount of reading would have found: the `!ModelState.IsValid` branch is **not** the antiforgery gate.
+Razor Pages' own authorization filter refuses a token-less `POST` with a 400 *before* the handler is
+entered, which was observed in the host log. The record's wording was corrected accordingly, and the
+un-auditable framework-level rejection is recorded as `RISK-137` rather than left as an implied
+capability.
+
+### Two things this pass deliberately did not do
+
+- **It did not fabricate a manual attestation.** The release gate `OBS-07` asked for is red on this
+  tree, and committing a `manual-verification-results.txt` to turn it green would have defeated the
+  only purpose the gate has. Red-by-design is recorded as `RISK-140` so it is not later mistaken for a
+  broken pipeline and repaired by relaxing the check.
+- **It did not delete the credential generator.** `OBS-01` was closed by removing every path on which a
+  *generated administrator credential* could be created and then disclosed — not by deleting the
+  generator, which still serves the local system account whose value is never displayed. Deleting it
+  would have reintroduced a provisioning failure rather than closed an exposure, and the earlier
+  documentation claim that it was removed "generator and all" is corrected rather than preserved.

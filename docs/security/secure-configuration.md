@@ -41,7 +41,7 @@ follow, and they are the whole point of this guide:
 | Control | State |
 | --- | --- |
 | Configuration provider chain | **The tracked JSON file is always first**, so a blanked value can never override a supplied secret — that precedence is the control, and it holds at all four builder sites. `WebVella.Erp.Web/ErpMvcExtensions.cs` (in `AddErp`) supplies the chain the Crm, Mail, MicrosoftCDM, Next and Sdk hosts rely on; `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` each build their own in `Startup.ConfigureServices`; `WebVella.Erp.ConsoleApp/Program.cs` builds a fourth. Every one reads `Config.json`, then environment variables, then — in Development only — user secrets |
-| Missing-secret behaviour | Fail fast. `WebVella.Erp/ErpSettings.cs` aborts startup with an actionable message naming **every** missing or weak setting at once; `WebVella.Erp/Utilities/CryptoUtility.cs` throws rather than falling back, and the compiled-in default key is gone |
+| Missing-secret behaviour | Fail fast for the **two** secrets every host needs — `Settings:ConnectionString` and `Settings:EncryptionKey`. `WebVella.Erp/ErpSettings.cs` aborts startup with an actionable message naming **every** missing or weak one of those at once; `WebVella.Erp/Utilities/CryptoUtility.cs` throws rather than falling back, and the compiled-in default key is gone. The token signing key is **not** in this class — it degrades a capability instead of stopping startup, which is set out under [*Required settings*](#required-settings) |
 | Known published defaults | Rejected by SHA-256 digest comparison, so this repository's own example encryption key and token signing key cannot be used even if supplied deliberately. The digests are stored rather than the literals, so neither the source nor this page reintroduces the secret it eliminates |
 | Response security headers | All seven emitted by `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`, registered once through `AddErp` and ordered in **all seven** hosts ahead of `UseResponseCompression` and both `UseStaticFiles` calls |
 | Content-Security-Policy | Emitted in **report-only** mode carrying the mandated value **verbatim** and nothing else. There is **no `report-uri` directive and no collection endpoint**; both were removed, because appending `report-uri` altered the mandated value and the collector's early return could answer a request without attaching the other six headers. Reports are read from the browser console during the rollout instead (`RISK-022`) |
@@ -53,7 +53,7 @@ follow, and they are the whole point of this guide:
 | Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors. .NET analyzers run with `AnalysisLevel=latest-recommended` and nothing further; no `AnalysisLevelSecurity` upgrade and **no** global analyzer configuration file is supplied, and the workflow fails if either appears. All analyzer diagnostics stay warnings at the project level and are enforced instead by the workflow's Gate 1 allow-list. Inherited by **19 of 19** projects, because the file is directory-scoped rather than solution-scoped |
 | Toolchain pin | `global.json` pins `10.0.302` with `rollForward: disable`, so only that exact SDK builds the repository and the gate's recorded results are reproducible by construction (review findings `GATE-02` and `CR2-F-13`) |
 | Shipped secrets | **Scrubbed.** All eight `Config.json` files carry empty secret values and `DevelopmentMode: false`, `web.config` sets `Production`, and the seeded administrator password is no longer a literal (`RISK-021`, closed) |
-| Mail transport | SMTP server certificates are **validated by default, including revocation** (`RISK-060`) |
+| Mail transport | **The five MailKit send paths only.** Their SMTP server certificates are validated by default, including revocation, and no setting can turn revocation off (`RISK-060`). This does **not** describe the separate diagnostic notification client in `WebVella.Erp.Web/Services/MailService.cs`, which negotiates no TLS at all — see *Mail transport* |
 | Origins | No host applies `AllowAnyOrigin()` any longer (`RISK-013`, closed). Both formerly permissive hosts read `Settings:Cors:AllowedOrigins` and deny every origin when it is absent outside Development |
 | Anonymous error paths | Both bearer-token routes return a generic message outside Development and retain their server-side log record (`RISK-014`, closed) |
 
@@ -64,13 +64,41 @@ follow, and they are the whole point of this guide:
 message — never values, prefixes, lengths or digests — so a startup failure cannot leak key material
 into a console, a log file or a crash report (CWE-532).
 
-### The settings the platform refuses to start without
+**Two categories, and the difference is not cosmetic.** A missing value in the first table stops the
+process; a missing value in the second one lets the process start and takes a capability away. Earlier
+revisions of this guide put the token signing key in the *first* table and described its absence as
+"verified startup-fatal". **That was wrong, and it is withdrawn.** Reading the wrong category is
+operationally expensive in both directions: an operator who believes a keyless host will refuse to
+start will read a *successfully started* host as proof the key was supplied, when in fact bearer
+authentication is silently off; and an operator who believes the connection string is merely degrading
+will hunt for a runtime symptom that never arrives, because the process never came up. Reproduce the
+distinction directly — `ValidateRequiredSecurityConfiguration` in `WebVella.Erp/ErpSettings.cs`
+accumulates into `missingSecrets` only for `Settings:ConnectionString` and `Settings:EncryptionKey`
+(and the weak, published and non-ASCII variants of the latter), and `Settings:Jwt:Key` is never added
+to it:
+
+```bash
+# Every setting name that can appear in the startup-abort message:
+grep -n 'missingSecrets +=' WebVella.Erp/ErpSettings.cs
+# What happens instead when the signing key is unusable - a warning, not a throw:
+grep -n 'ErpSettings\[2\]' WebVella.Erp/ErpSettings.cs
+```
+
+### Category 1 — the settings the platform refuses to start without
+
+Absence, or an unacceptable value, throws `InvalidOperationException` out of
+`ErpSettings.Initialize` before `IsInitialized` is set. The host does not start.
 
 | Setting key | Environment-variable form | Required | Purpose |
 | --- | --- | --- | --- |
 | `Settings:ConnectionString` | `Settings__ConnectionString` | **Always** | PostgreSQL connection. Consumed by `DbContext`, `ERPService` and every repository immediately after initialisation, so no host functions without it (finding H-05) |
-| `Settings:EncryptionKey` | `Settings__EncryptionKey` | **Always** | Symmetric key used by `CryptoUtility` for encrypted field values. There is no longer a compiled-in default (finding C-04) |
-| `Settings:Jwt:Key` | `Settings__Jwt__Key` | **Only when a `Settings:Jwt` section exists** | HMAC signing key for bearer tokens (finding H-04) |
+| `Settings:EncryptionKey` | `Settings__EncryptionKey` | **Always** | Symmetric key used by `CryptoUtility` for encrypted field values. There is no longer a compiled-in default (finding C-04). Also refused as *unacceptable*: shorter than the length floor, too few distinct characters, equal to this repository's published example, or containing any character outside US-ASCII |
+
+### Category 2 — the setting whose absence disables a capability instead
+
+| Setting key | Environment-variable form | Consequence when absent or unacceptable | Purpose |
+| --- | --- | --- | --- |
+| `Settings:Jwt:Key` | `Settings__Jwt__Key` | **Startup proceeds.** The bearer-token issue and refresh routes disable themselves and refuse every request, and every presented bearer token fails validation. Cookie login is unaffected. A `warn:` line is written to standard error **only if** a `Settings:Jwt` section exists — a host that declares no section is not warned about routes it never intended to serve | HMAC signing key for bearer tokens (finding H-04) |
 
 The double underscore is configuration nesting, not a typo: `Settings__Jwt__Key` maps to the
 `Settings:Jwt:Key` path, which in the JSON file is `{ "Settings": { "Jwt": { "Key": … } } }`. It is the
@@ -86,7 +114,6 @@ the file.
 | `Settings:InitialAdministratorPassword` | `Settings__InitialAdministratorPassword` | **First provisioning only**, and when upgrading an installation still carrying the published default administrator password | The first administrator's password on a new database. Absent, provisioning generates a value with a CSPRNG and prints it once. Present, it must satisfy the password policy or **provisioning aborts** — see [the password policy below](#the-initial-administrator-password-must-satisfy-the-password-policy) |
 | `Settings:EmailSMTPPassword` | `Settings__EmailSMTPPassword` | Only when e-mail is enabled | Relay credential. Ships empty |
 | `Settings:EmailSMTPAllowInvalidCertificates` | `Settings__EmailSMTPAllowInvalidCertificates` | No | Accepts **any** SMTP server certificate. Honoured only alongside `Settings:DevelopmentMode`; refused, and reported once per process, anywhere else. Never set it in production |
-| `Settings:EmailSMTPCheckCertificateRevocation` | `Settings__EmailSMTPCheckCertificateRevocation` | No | Defaults to `true`. Set `false` **only** when the relay's chain cannot publish a reachable CRL or OCSP endpoint. Chain, expiry and host name stay verified; honoured in every posture (`RISK-060`) |
 | `Settings:DevelopmentMode` | `Settings__DevelopmentMode` | No — defaults to `false` | Must be `false` outside development. Gates a richer-error branch in `WebVella.Erp.Web/Controllers/ApiControllerBase.cs` (finding H-12) |
 | `Settings:Cors:AllowedOrigins` | `Settings__Cors__AllowedOrigins` | `WebVella.Erp.Site` and `WebVella.Erp.Site.Project`, when a browser client calls either host cross-origin | Origin allow-list for those two hosts (finding H-14). Full resolution table under [*Cross-origin policy*](#cross-origin-policy) |
 | `Settings:ForwardedHeaders:KnownProxies` and `:KnownNetworks` | `Settings__ForwardedHeaders__KnownProxies`, `Settings__ForwardedHeaders__KnownNetworks` | Only behind a TLS-terminating reverse proxy | Which proxies' `X-Forwarded-*` headers are trusted. Deny-by-default: unset means the middleware is not registered at all |
@@ -107,24 +134,122 @@ keys for backwards compatibility — `Settings:EncriptionKey` as a fallback for 
 seven of the eight shipped files actually used. Use the correctly spelled names; the aliases exist only
 so that existing deployments keep working and are not recommended for new configuration.
 
-### Why the token signing key is conditional
+### The complete inventory of every configuration key the platform reads
+
+The two tables above cover the settings an operator normally has a decision to make about. **This table
+is the exhaustive one**, and it exists because earlier revisions of this guide claimed to be an
+authoritative inventory while naming 23 of the 40 keys the source actually reads — omitting, among
+others, every SMTP server, port, username, sender and recipient setting, which is precisely the group an
+operator configuring mail delivery needs. Every row below was generated from the source tree, not from
+memory, and the sweep is reproducible:
+
+```bash
+# Every configuration key read anywhere in the tree, deduplicated:
+grep -rhoE '"(Settings|ApiUrlTemplates|SecurityHeaders|Development):[A-Za-z0-9_:]+"' \
+  --include='*.cs' --include='*.cshtml' . | sort -u
+#   40 keys
+
+# Bidirectional check - every key read from source appears in this guide, and
+# every key this guide names is read from source:
+grep -rhoE '"(Settings|ApiUrlTemplates|SecurityHeaders|Development):[A-Za-z0-9_:]+"' \
+  --include='*.cs' --include='*.cshtml' . | tr -d '"' | sort -u > /tmp/from-source.txt
+grep -ohE '`(Settings|ApiUrlTemplates|SecurityHeaders|Development):[A-Za-z0-9_:]+`' \
+  docs/security/secure-configuration.md | tr -d '`' | sort -u > /tmp/from-docs.txt
+comm -23 /tmp/from-source.txt /tmp/from-docs.txt   # read but undocumented - must be empty
+```
+
+The reverse direction, `comm -13`, is **not** expected to be empty, and the reason is worth stating so
+nobody reads it as two invented keys. It reports exactly
+`Settings:ForwardedHeaders:KnownProxies` and `Settings:ForwardedHeaders:KnownNetworks`, which are read
+by *relative* name — `BuildForwardedHeadersOptions` binds the section once and then indexes it as
+`section["KnownProxies"]` — so their absolute paths never appear as literals in the source and an
+absolute-path sweep cannot see them. They are genuinely read; the sweep is what is partial. Confirm
+directly:
+
+```bash
+grep -n 'section\["Known' WebVella.Erp.Web/ErpMvcExtensions.cs
+```
+
+Two conventions apply to the whole table. The environment-variable form of any key is the key with each
+`:` replaced by `__`, so it is not repeated per row. And *"none"* in the **Default** column means the
+value is genuinely `null` when unset — the platform does not substitute anything — whereas a stated
+default is a literal the code supplies.
+
+| Setting key | Default when unset | Applicability | Read at |
+| --- | --- | --- | --- |
+| `Settings:ConnectionString` | none — **startup aborts** | Every host and the console application | `ErpSettings.cs` |
+| `Settings:EncryptionKey` | none — **startup aborts** | Every host and the console application | `ErpSettings.cs` |
+| `Settings:EncriptionKey` | none | **Legacy misspelling**, consulted only when `Settings:EncryptionKey` is blank | `ErpSettings.cs` |
+| `Settings:Jwt` | n/a — existence probe | Presence decides only whether an unusable key is reported on standard error | `ErpSettings.cs` |
+| `Settings:Jwt:Key` | none — **capability degrades, startup proceeds** | The two token-issuing hosts; the routes exist on all seven | `ErpSettings.cs`, `WebVella.Erp.Site/Startup.cs`, `WebVella.Erp.Site.Project/Startup.cs` |
+| `Settings:Jwt:Issuer` | `webvella-erp` | As above | same three files |
+| `Settings:Jwt:Audience` | `webvella-erp` | As above | same three files |
+| `Settings:InitialAdministratorPassword` | none — a value is generated with a CSPRNG and printed once | First provisioning, and when upgrading an installation still carrying the published default password | `ERPService.cs` |
+| `Settings:DevelopmentMode` | `false` | Every host. Must stay `false` outside development (finding H-12) | `ErpSettings.cs` |
+| `Settings:Cors:AllowedOrigins` | none — every origin denied outside Development | `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` only | both `Startup.cs` files |
+| `Settings:ForwardedHeaders` | n/a — bound as a **section**, not read as a leaf | Only behind a TLS-terminating reverse proxy. `BuildForwardedHeadersOptions` takes `GetSection("Settings:ForwardedHeaders")` and then reads the two child keys below by relative name, which is why the section itself appears in a source sweep while the children do not | `ErpMvcExtensions.cs` |
+| `Settings:ForwardedHeaders:KnownProxies` and `Settings:ForwardedHeaders:KnownNetworks` | none — with both empty the middleware is **not registered at all**, which is the deny-by-default position | Only behind a TLS-terminating reverse proxy. Entries are separated by `,` or `;` | `ErpMvcExtensions.cs` (`section["KnownProxies"]`, `section["KnownNetworks"]`) |
+| `Settings:DataProtectionKeyDirectory` | none — keys are transient, so a restart invalidates issued cookies | Every host that must survive a restart or run more than one instance | `ErpMvcExtensions.cs` |
+| `SecurityHeaders:ContentSecurityPolicyReportOnly` | `true` — report-only | Every host. `false` emits the enforcing header; an uninterpretable value **aborts startup** rather than being guessed | `ErpMvcExtensions.cs` |
+| `Settings:TimeZoneName` | `FLE Standard Time` | Every host. **A Windows-only identifier, so a non-Windows host must override it** — see [*Time zone identifier on non-Windows hosts*](#time-zone-identifier-on-non-windows-hosts) | `ErpSettings.cs` |
+| `Settings:Lang` | `en` | Every host. Two-letter interface language | `ErpSettings.cs` |
+| `Settings:Locale` | `en-US` | Every host. Also read directly by `WebVella.Erp.Site/Startup.cs` for request localisation and supported cultures | `ErpSettings.cs`, `WebVella.Erp.Site/Startup.cs` |
+| `Settings:JsonDateTimeFormat` | `yyyy-MM-ddTHH:mm:ss.fff` | Every host. Serialisation format for date-time values | `ErpSettings.cs` |
+| `Settings:CacheKey` | today's date as `yyyyMMdd` | Every host. Cache-busting suffix for static assets; the date default rotates it daily | `ErpSettings.cs` |
+| `Settings:AppName` | none | Every host. Application name shown in the interface | `ErpSettings.cs` |
+| `Settings:NavLogoUrl` | none | Every host. Navigation logo image | `ErpSettings.cs` |
+| `Settings:SystemMasterBackgroundImageUrl` | none | Every host. Background image for the system master layout | `ErpSettings.cs` |
+| `Settings:ShowAccounting` | `false` | Every host. Reveals accounting interface elements | `ErpSettings.cs` |
+| `Settings:EnableBackgroundJobs` | **`true`** | Every host. Note the default is *on*: set it `false` explicitly on any instance that must not run jobs | `ErpSettings.cs` |
+| `Settings:EnableBackgroungJobs` | `true` | **Legacy misspelling**, consulted only when `Settings:EnableBackgroundJobs` is blank. Seven of the eight shipped files used this spelling | `ErpSettings.cs` |
+| `Settings:EnableFileSystemStorage` | `false` | Every host | `ErpSettings.cs` |
+| `Settings:FileSystemStorageFolder` | `c:\erp-files` — **a Windows path, so a non-Windows host must override it** | Only when `Settings:EnableFileSystemStorage` is `true`. Blanked in all eight tracked files (finding `CR2-F-12`) | `ErpSettings.cs` |
+| `Settings:EnableCloudBlobStorage` | `false` | Every host | `ErpSettings.cs` |
+| `Settings:CloudBlobStorageConnectionString` | `disk://path=c:\erp-files` | Only when `Settings:EnableCloudBlobStorage` is `true`. **Credential-bearing** — never commit it. Blanked in all eight tracked files (finding `CR2-F-12`) | `ErpSettings.cs` |
+| `Settings:EmailEnabled` | `false` | The mail plugin. Nothing is sent while this is false | `ErpSettings.cs` |
+| `Settings:EmailSMTPServerName` | none | Only when e-mail is enabled | `ErpSettings.cs` |
+| `Settings:EmailSMTPPort` | `25` | Only when e-mail is enabled. **A non-parsing value throws** rather than falling back | `ErpSettings.cs` |
+| `Settings:EmailSMTPUsername` | none | Only when the relay requires authentication | `ErpSettings.cs` |
+| `Settings:EmailSMTPPassword` | none | Only when the relay requires authentication. **Credential-bearing.** Ships empty | `ErpSettings.cs` |
+| `Settings:EmailFrom` | none | Only when e-mail is enabled. Default sender address | `ErpSettings.cs` |
+| `Settings:EmailTo` | none | Diagnostic and exception notification recipient (`RISK-030`) | `ErpSettings.cs` |
+| `Settings:EmailSMTPAllowInvalidCertificates` | `false` | Accepts **any** relay certificate. Honoured **only** alongside `Settings:DevelopmentMode`; refused elsewhere and reported once per process. Never set it in production | `SmtpService.cs` |
+| `Settings:EmailSMTPCheckCertificateRevocation` | **`true`** | Set `false` only when the relay's chain publishes no reachable CRL or OCSP endpoint. Chain, expiry and host name stay verified; honoured in every posture (`RISK-060`) | `SmtpService.cs` |
+| `ApiUrlTemplates:FieldInlineEdit` | `/api/v3/en_US/record/{entityName}/{recordId}` | Every host. Endpoint template the inline field editor posts to | `ErpSettings.cs` |
+| `Development:TestEntityName` | `test` | Development scaffolding only. Not a `Settings:` key and not part of the security posture | `ErpSettings.cs` |
+| `Development:TestRecordId` | a fixed GUID | Development scaffolding only; a non-parsing value is ignored rather than fatal | `ErpSettings.cs` |
+
+Two keys named in this table are read by the Blazor WebAssembly client rather than by a host, and are
+listed for completeness rather than as operator settings: the client reads `ServerUrl` from its own
+configuration in `WebVella.Erp.WebAssembly/Client/Services/ConfigurationService.cs`. It is not a
+`Settings:` key and carries no secret.
+
+Hosting settings that are **not** platform configuration keys — `ASPNETCORE_ENVIRONMENT`,
+`ASPNETCORE_URLS`, `HTTPS_PORT` and the `Kestrel:Endpoints` and
+`Kestrel:Certificates:Default:*` family — are the runtime's own and are covered under
+[*Transport security*](#transport-security).
+
+### Why the token signing key degrades instead of aborting
 
 Demanding a signing key from every host would stop the ones that issue no tokens from starting at all,
-which the preservation requirement forbids. The check is therefore scoped: the key is mandatory **if
-and only if** the configuration actually declares a `Settings:Jwt` section. Of the eight shipped
-configuration files, exactly two declare one.
+which the preservation requirement forbids. So the key is never demanded as a condition of startup on
+any host. What the `Settings:Jwt` section controls is only whether the operator is **told**: a host
+that declares a section plainly intends to serve tokens, so a silently disabled capability there is
+itself a defect worth reporting, while a host that declares none is left alone. Of the eight shipped
+configuration files, exactly two declare a section.
 
-| Host | Declares `Settings:Jwt` | `Settings:Jwt:Key` required |
-| --- | --- | --- |
-| `WebVella.Erp.Site` | Yes | Yes |
-| `WebVella.Erp.Site.Project` | Yes | Yes |
-| `WebVella.Erp.Site.Crm`, `.Mail`, `.MicrosoftCDM`, `.Next`, `.Sdk` | No | No |
-| `WebVella.Erp.ConsoleApp` | No | No |
+| Host | Declares `Settings:Jwt` | Needs a key to serve tokens | Startup blocked without one | Warned on standard error |
+| --- | --- | --- | --- | --- |
+| `WebVella.Erp.Site` | Yes | Yes | **No** | Yes |
+| `WebVella.Erp.Site.Project` | Yes | Yes | **No** | Yes |
+| `WebVella.Erp.Site.Crm`, `.Mail`, `.MicrosoftCDM`, `.Next`, `.Sdk` | No | Only if tokens are wanted | **No** | No |
+| `WebVella.Erp.ConsoleApp` | No | No — it hosts no token routes | **No** | No |
 
-Where the section *is* present the key is mandatory, because the hard-coded fallback that used to cover
-it was removed (finding H-04). If it is absent or unacceptable, the token issue and refresh routes
-**refuse cleanly** and the bearer registration is screened so it can neither use nor throw on the bad
-key. The authentication *scheme* still exists, because the platform's policy selector forwards
+The token routes are defined in `WebVella.Erp.Web`, so they exist on all seven hosts whether or not the
+host declares a section; that is precisely why the key must be *screened* rather than *assumed*. Where
+a key is absent or unacceptable, the token issue and refresh routes **refuse cleanly** and the bearer
+registration is screened so it can neither use nor throw on the bad key — the hard-coded fallback that
+used to cover this was removed (finding H-04). The authentication *scheme* still exists, because the platform's policy selector forwards
 `Authorization: Bearer` headers to it, but it is configured without a signing key while still
 validating signatures, so every presented token fails validation safely.
 
@@ -321,11 +446,50 @@ Three further properties matter operationally:
   a shell with the wrong `WorkingDirectory` would let the launcher decide which `Config.json` supplies
   the connection string, the data-at-rest encryption key and the token signing key — or find none at
   all.
-- **User secrets contribute nothing to the console application today.** Its provider is registered
-  against the entry assembly with `optional: true`, which is load-bearing rather than decorative: the
-  project declares no `UserSecretsId`, and every `AddUserSecrets` overload given `optional: false`
-  throws when that attribute is absent. Until the project declares one, the console application's
-  effective chain is the JSON file then environment variables.
+- **User secrets now work for every executable, and this was corrected rather than left as a caveat.**
+  An earlier revision of this section recorded that the provider "contributes nothing to the console
+  application today" because "the project declares no `UserSecretsId`". That was accurate at the time and
+  was true of **seven** of the eight executables, not one — only `WebVella.Erp.Site` declared an
+  identifier, so for the console application and six of the seven hosts the documented developer channel
+  resolved no store and silently loaded nothing. `AddUserSecrets` is called with `optional: true`, so it
+  could not even fail loudly. **All eight now declare a stable `UserSecretsId`**, so the effective
+  Development chain is the JSON file, then environment variables, then that executable's own store.
+  `optional: true` is retained deliberately: it keeps a developer who has never created a store from
+  hitting a hard failure, and outside Development the provider is not registered at all.
+
+  A store is keyed by the identifier, so **a value set for one executable is invisible to the others** and
+  `--project` is required:
+
+  | Executable | `UserSecretsId` |
+  | --- | --- |
+  | `WebVella.Erp.Site` | `3d84b9b1-534b-473b-b0d8-f6b47f33297b` |
+  | `WebVella.Erp.Site.Crm` | `7cdbf11d-ae56-5ee3-907d-2a50d47825c9` |
+  | `WebVella.Erp.Site.Mail` | `433b5aa4-8f48-5924-b1c5-a2b91b06b85c` |
+  | `WebVella.Erp.Site.MicrosoftCDM` | `1f2442e7-e410-5bd1-8ec1-b82f4388f95c` |
+  | `WebVella.Erp.Site.Next` | `383b4579-6bb3-55f1-a998-47adfcf25dc6` |
+  | `WebVella.Erp.Site.Project` | `921179fc-4177-5603-bbf9-9c8a43db8cc3` |
+  | `WebVella.Erp.Site.Sdk` | `e902f2c3-b59e-5aef-b217-6501e03e6a44` |
+  | `WebVella.Erp.ConsoleApp` | `9b3e4423-9b40-55c3-9abc-bcd7bcf79685` |
+
+  ```bash
+  # once per executable you intend to start, in Development only
+  dotnet user-secrets set "Settings:ConnectionString" '<value>' --project WebVella.Erp.Site
+  dotnet user-secrets set "Settings:EncryptionKey"    '<value>' --project WebVella.Erp.Site
+  dotnet user-secrets list --project WebVella.Erp.Site
+  ```
+
+  **Do not run `dotnet user-secrets init`.** It generates a *new* identifier and writes it into the tracked
+  project file, which orphans every store already created against the value above. The identifiers are
+  derived deterministically from each project's name, are stable on purpose, and are **not secrets**: the
+  store lives outside the repository, in the user profile, so naming one here adds nothing secret to the
+  tree and has no effect in any non-Development posture.
+
+  Verified end to end rather than assumed: with every `Settings__` environment variable unset and the
+  environment set to Development, a connection string supplied **only** through the store reached
+  configuration for both the console executable and the shared platform chain, each failing at the database
+  with `3D000` for the deliberately non-existent database named in the store — and with the store cleared,
+  startup aborted with `required security configuration is missing: - 'Settings:ConnectionString'`, so the
+  fail-fast validation is unaffected.
 - **Outside Development no user-secrets provider is added anywhere**, so every host is exactly the
   JSON file followed by environment variables.
 
@@ -368,10 +532,38 @@ working directory, and is also correct for a single-file publish.
 
 This is not asserted from the source alone. The continuous gate proves it on every run: the
 *Smoke-test Linux startup of the published artifacts* step in `.github/workflows/security-scan.yml`
-publishes four hosts, deletes any lower-case `config.json` from the output, launches each **from an
-unrelated working directory**, and asserts that each one resolved its own `Config.json` and reached
-the fail-fast secret validation rather than a `FileNotFoundException`. The evidence is published as
-`startup-smoke.txt`.
+publishes and launches **eight artifacts — all seven site hosts and the console application**, not a
+representative subset:
+
+| # | Project | Published assembly |
+| --- | --- | --- |
+| 1 | `WebVella.Erp.Site` | `WebVella.Erp.Site.dll` |
+| 2 | `WebVella.Erp.Site.Crm` | `WebVella.Erp.Site.Crm.dll` |
+| 3 | `WebVella.Erp.Site.Mail` | `WebVella.Erp.Site.Mail.dll` |
+| 4 | `WebVella.Erp.Site.MicrosoftCDM` | `WebVella.Erp.Site.MicrosoftCDM.dll` |
+| 5 | `WebVella.Erp.Site.Next` | `WebVella.Erp.Site.Next.dll` |
+| 6 | `WebVella.Erp.Site.Project` | `WebVella.Erp.Site.Project.dll` |
+| 7 | `WebVella.Erp.Site.Sdk` | `WebVella.Erp.Site.Sdk.dll` |
+| 8 | `WebVella.Erp.ConsoleApp` | `WebVella.Erp.ConsoleApp.dll` |
+
+For each one the step asserts that the publish output contains `Config.json`, that it does **not** also
+contain a lower-case `config.json` twin, and then launches the assembly **from an unrelated, empty
+working directory** with every `Settings__` value blanked. Three outcomes are distinguished rather than
+collapsed: a `FileNotFoundException` fails the step (the casing contract regressed), reaching
+`Now listening on` also fails it (a tracked file must be carrying usable secrets), and only
+`required security configuration is missing` passes — proving the artifact resolved its own audited
+`Config.json` from its deployment directory and then stopped at the fail-fast secret validation.
+Anything else fails closed. The step additionally asserts `smoke_count -eq 8`, so a matrix that quietly
+collapsed to fewer artifacts cannot report clean.
+
+**Why eight and not a sample.** An earlier revision of this step launched four — `Site`, `Sdk`,
+`Project` and the console — on the argument that `Sdk` stood for the five hosts that build no
+configuration chain of their own. That argument covers the chain, which is only half of what this
+checks: the exact-casing contract, the presence of `Config.json` in the publish output and the absence
+of a lower-case twin are properties of **each project's own publish**, which no sibling can stand for,
+so `Crm`, `Mail`, `MicrosoftCDM` and `Next` were unverified on both counts. Eight artifacts also give the
+eight audited `Config.json` files a **one-to-one** runtime counterpart, which is what makes this half of
+Gate 4's substitute complete rather than sampled. The evidence is published as `startup-smoke.txt`.
 
 ```bash
   # Nothing to do beyond publishing and running:
@@ -428,28 +620,53 @@ setting rather than an omission:
 Scrubbing a value out of a working tree does not undo its disclosure. Both platform secrets have been
 public, and both remain recoverable from repository history permanently.
 
-- The **encryption key** — `BC93B776A428…`, 64 hexadecimal characters — was present **byte-identically
-  in all eight `Config.json` files**, and additionally as a compiled-in constant in
-  `WebVella.Erp/Utilities/CryptoUtility.cs`. That constant shipped inside a library published to
-  nuget.org, so the key was public twice over and could be neither rotated nor revoked per deployment.
-- The **token signing key** — `ThisIsMySecretKey…`, a short phrase repeated three times for 51
-  characters — was present at `WebVella.Erp.Site/Config.json:L25` and
-  `WebVella.Erp.Site.Project/Config.json:L20`, with a third occurrence in
-  `WebVella.Erp.Site/JWT_README.txt` and a fourth as a compiled-in 17-character default in
-  `WebVella.Erp/ErpSettings.cs`, which also carried the same pattern for the issuer and the audience.
+- The **encryption key** — `[REDACTED — 64 characters, SHA-256 prefix 7810b2fe1ad52ed5]`, 64
+  hexadecimal characters — was present **byte-identically in all eight `Config.json` files**, and
+  additionally as a compiled-in constant in `WebVella.Erp/Utilities/CryptoUtility.cs`. That constant
+  shipped inside a library published to nuget.org, so the key was public twice over and could be
+  neither rotated nor revoked per deployment.
+- The **token signing key** — `[REDACTED — 51 characters, SHA-256 prefix 87184b56659256b8]`, a short
+  phrase padded to length rather than a random value — was present at
+  `WebVella.Erp.Site/Config.json:L25` and `WebVella.Erp.Site.Project/Config.json:L20`, with a third
+  occurrence published as documentation in `WebVella.Erp.Site/JWT_README.txt` and a fourth as a
+  compiled-in 17-character default — `[REDACTED — 17 characters, SHA-256 prefix 82794e7c1030b896]` —
+  in `WebVella.Erp/ErpSettings.cs`, which also carried a matching pattern for the issuer and the
+  audience.
 - The **database credentials** were live too. Seven of the eight files pointed at an internal RFC 1918
-  host — `192.168.x.x:5436`, internal network topology disclosure in its own right — while
-  `WebVella.Erp.Site` pointed at `localhost:5432`. The `User Id`/`Password` pairs were `test`/`test` in
-  six files and `dev`/`dev` in two. `WebVella.Erp.Site/Config.json:L13` additionally exposed a UNC
-  path naming the same internal host — raised independently as review finding `CR2-F-12`, which found
-  that address still committed as a storage path in **all eight** files after the credentials
-  themselves had been scrubbed.
+  host and port — `[REDACTED — host:port, SHA-256 prefix 72858cca8cb5df2d]`, internal network topology
+  disclosure in its own right — while `WebVella.Erp.Site` pointed at `localhost:5432`. In every file
+  the `User Id` and the `Password` were the same word as each other, and there were two such words
+  across the eight: `[REDACTED — 4 characters, SHA-256 prefix 9f86d081884c7d65]` in six files and
+  `[REDACTED — 3 characters, SHA-256 prefix ef260e9aa3c673af]` in two.
+  `WebVella.Erp.Site/Config.json:L13` additionally exposed a UNC path naming the same internal host —
+  raised independently as review finding `CR2-F-12`, which found that address still committed as a
+  storage path in **all eight** files after the credentials themselves had been scrubbed.
+- The **seeded administrator password** was the fourth published credential:
+  `[REDACTED — 3 characters, SHA-256 prefix d24f1f612642b77b]`, assigned as a literal by provisioning.
+  Its withdrawal is a data migration rather than a rotation an operator performs, and it is covered in
+  the [credential migration guide](credential-migration.md).
 
-The host address and both keys are **abbreviated here deliberately.** Enough to identify what was
-exposed, not a copy of it. Abbreviating does not undo the original disclosure — the full values remain
-in repository history, which is exactly why these instructions are not optional — but a tracked file
-that reprints a secret or an internal address keeps it in every future clone and in every sweep of the
-working tree, which would relocate the finding into the documentation rather than resolve it.
+**The values above are redacted, not abbreviated, and the shape is fixed:**
+`[REDACTED — <n> characters, SHA-256 prefix <16 hexadecimal characters>]`. An earlier revision of this
+section abbreviated them instead — printing the first bytes of the encryption key, and naming the
+signing key's phrase and its repetition count, from which the whole 51-character key could be
+reconstructed. That was a second publication of a compromised secret inside a tracked file, and it is
+withdrawn.
+
+The redaction keeps what an operator needs and discards what they do not. **To decide whether your own
+deployment still carries a published value, fingerprint it rather than compare it:**
+
+```bash
+printf '%s' "$VALUE" | sha256sum | cut -c1-16
+```
+
+A match against a prefix above means that value is public and must be rotated now. The same digests are
+compiled into `WebVella.Erp/ErpSettings.cs:L119-L120`, which refuses both published keys outright at
+start-up, so the check is enforced as well as documented. Redacting does not undo the original
+disclosure — the full values remain in repository history, which is exactly why these instructions are
+not optional — but a tracked file that reprints a secret or an internal address keeps it in every future
+clone and in every sweep of the working tree, which would relocate the finding into the documentation
+rather than resolve it.
 
 **Rotate all three.** Generate replacements with a cryptographically secure random generator:
 
@@ -693,7 +910,7 @@ criteria cannot drift between documents. In summary:
 
 **And state this plainly to anyone reading a status summary: report-only is not the remediation for
 `H-06`.** The stored cross-site-scripting finding is remediated in the view and builder layer — text
-sinks encoded, and every retained by-design markup channel enumerated in `RISK-023` and `RISK-032`. A
+sinks encoded, and every retained by-design markup channel enumerated in `RISK-023` and `RISK-037`. A
 report-only policy is **detective, not preventive**: the browser reports the violation and then runs
 the script anyway. It closes nothing on its own and must never be cited as evidence that `H-06` is
 covered.
@@ -706,7 +923,7 @@ covered.
 | HSTS | Enabled, guarded to non-Development, ordered **before** redirection. Do not enable it on a hostname you also serve over plain HTTP for other purposes — the subdomain directive applies to every subdomain |
 | HTTPS redirection | Enabled, guarded to non-Development, ordered **after** `UseCors` |
 | Cookies | `Secure`, `HttpOnly` and an explicit `SameSite` policy — see *Cookies and session lifetime* |
-| SMTP relay certificates | Validated by default, **including revocation** — see *Mail transport* |
+| SMTP relay certificates | Validated by default, **including revocation**, on the five MailKit send paths — see *Mail transport*. The diagnostic notification client is a different client and enables no TLS (`RISK-131`) |
 
 ### HSTS and HTTPS redirection
 
@@ -744,41 +961,91 @@ closed.
 
 **A startup guard now refuses that configuration** instead of letting it fail one request at a time.
 `ValidateTransportSecurityPosture` in `WebVella.Erp.Web/ErpMvcExtensions.cs` runs inside `UseErp()`, so
-all seven hosts inherit it, and it looks for any **one** of four ways a request can arrive over HTTPS:
+all seven hosts inherit it, and it accepts **only evidence that a request can actually arrive over
+HTTPS**:
 
 1. a declared endpoint of this process whose scheme is `https` — `ASPNETCORE_URLS`, `UseUrls` or a host
    binding;
 2. a `Kestrel:Endpoints:<name>:Url` whose scheme is `https`;
-3. a public HTTPS port in configuration — `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT` or the configuration
-   key `https_port` — which arms the redirect so a plaintext request never reaches a form;
+3. `ANCM_HTTPS_PORT` — supplied by the ASP.NET Core Module itself, and only when the IIS site in front
+   of this process has an HTTPS binding. Nothing needs to be configured for this: in-process hosting
+   also preserves the original request scheme, so `Request.IsHttps` is true and the `Secure` cookie
+   policy is satisfied without any forwarded-header configuration;
 4. a trusted reverse proxy — `Settings__ForwardedHeaders__KnownProxies` or
-   `Settings__ForwardedHeaders__KnownNetworks` — which lets `X-Forwarded-Proto: https` establish the
-   scheme.
+   `Settings__ForwardedHeaders__KnownNetworks` — **together with** the public HTTPS port
+   (`ASPNETCORE_HTTPS_PORT` or `HTTPS_PORT`). The proxy trust is what lets `X-Forwarded-Proto: https`
+   establish the scheme; the port is the operator asserting that the public endpoint is HTTPS.
 
 Finding one ends the check silently. Finding none, the host **aborts at startup** with a message naming
-every key above, before serving a single request. Two deliberate exceptions keep the guard from ever
-refusing a deployment that would have worked: **Development is exempt** and gets the identical text as
-a `warn:` line, because its antiforgery cookie uses `SameAsRequest` so local plaintext sign-in remains
-supported; and **when no endpoint is declared at all** the endpoints come from Kestrel's defaults or
-from host code the platform cannot inspect, so the same text is written as a warning rather than
-enforced. Measured in Production for the record: with nothing declared this application binds
-`http://localhost:5000` only, so that configuration does still fail on `/login` — the warning is the
-notice, not a clean bill (`RISK-126`).
+every key above, before serving a single request.
 
-**`ASPNETCORE_HTTPS_PORTS` — plural — does not work, and an earlier revision of this guide wrongly
-prescribed it.** It is a Kestrel default-binding key that this application's `WebHost` pipeline never
-reads: measured with it set and a valid certificate but no `ASPNETCORE_URLS`, the host still bound
-`http://localhost:5000` alone and `/login` still answered `500`. Use the singular
-`ASPNETCORE_HTTPS_PORT`, or `HTTPS_PORT`, or the configuration key `https_port`.
+**Two things that used to satisfy this guard no longer do, and one that used to be waved through is now
+refused.** Both changes close ways in which the guard could pass — or merely warn — on exactly the
+posture it exists to prevent:
+
+- **The public HTTPS port on its own is no longer evidence.** `HTTPS_PORT` selects the *target* of a
+  redirect; it neither binds an endpoint nor makes one exist. It now counts only alongside a trusted
+  proxy (option 4). It is also **parsed and range-checked**: a value that is not a whole number between
+  1 and 65535 aborts startup with a message naming the key and the value, because a mistyped port
+  silently disarms the redirect and would otherwise be reported nowhere. `ANCM_HTTPS_PORT` is range-
+  checked identically, and is accepted alone only because the module — not an operator — writes it.
+- **A trusted proxy on its own is no longer evidence.** Trusting a proxy declares who may be believed,
+  not that anything in front of this process terminates TLS.
+- **"No endpoint declared" is now refused outside Development, not warned about.** It is not an unknown
+  posture in practice: it means the server binds its own defaults, and those are plaintext. Measured in
+  Production, with nothing declared this application binds `http://localhost:5000` only and `/login`
+  answers `500` — so continuing produced an application that could not be signed in to. Refusing at
+  startup surfaces the identical diagnosis at the identical moment, to the operator rather than to a
+  user.
+
+One deliberate exception remains: **Development is exempt** and gets the identical text as a `warn:`
+line, because its antiforgery cookie uses `SameAsRequest`, so local plaintext sign-in keeps working.
+
+### Three port-shaped settings that are not interchangeable
+
+`ASPNETCORE_HTTPS_PORT`, `ASPNETCORE_HTTPS_PORTS` and a `Kestrel:Endpoints` entry look like variations
+on one idea and are three different mechanisms. An earlier revision of this guide prescribed the plural
+one for a job it cannot do here, and a later revision over-corrected by calling it a key that is simply
+"not read" — which is wrong in the other direction, because it *is* read, by a hosting model this
+platform does not use. Both are corrected here (review finding **F4**).
+
+| Setting | Configuration key | What it actually does | Binds a listener? |
+| --- | --- | --- | --- |
+| `ASPNETCORE_HTTPS_PORT`, `HTTPS_PORT` — **singular** | `HTTPS_PORT` | The **redirect target** `UseHttpsRedirection` sends a plaintext request to. Use it when TLS is terminated in front of this process. An ANCM-hosted site's `ASPNETCORE_ANCM_HTTPS_PORT` lands on the same setting | **No** |
+| `ASPNETCORE_HTTPS_PORTS`, `ASPNETCORE_HTTP_PORTS` — **plural** | `https_ports`, `http_ports` (`WebHostDefaults.HttpsPortsKey`, `HttpPortsKey`) | A genuine **Kestrel listener binding** — but resolved by `GenericWebHostService`, which expands each listed port into an `https://*:<port>` or `http://*:<port>` address. That resolution belongs to the **generic host** | **Only under the generic host** — see below |
+| `Kestrel__Endpoints__<name>__Url` | `Kestrel:Endpoints` | A declarative endpoint, read by Kestrel's own configuration loader independently of the host's address resolution | **Yes** |
+| `ASPNETCORE_URLS` | `urls` | The address list the host resolves directly. **Highest precedence** of the three binding mechanisms | **Yes** |
+
+**Why the plural keys do nothing on these seven hosts.** Every host here is built by
+`WebHost.CreateDefaultBuilder(args).UseStartup<Startup>()`, and that legacy `IWebHost` resolves its
+addresses from `urls` alone. The plural keys are consumed only by `GenericWebHostService`, which this
+hosting model never instantiates. Measured with every competing endpoint variable cleared:
+
+| Host builder | Variables set | Bound addresses |
+| --- | --- | --- |
+| `WebHost.CreateDefaultBuilder` — **what this platform uses** | `ASPNETCORE_HTTPS_PORTS=<port>` + a valid default certificate, no `ASPNETCORE_URLS` | `http://localhost:5000` — Kestrel's own default. Configuration reported `https_ports=<port>`, so the value arrived and nothing consumed it |
+| `WebHost.CreateDefaultBuilder` | `ASPNETCORE_HTTP_PORTS=<port>` only | `http://localhost:5000` — **identical to setting nothing at all** |
+| `WebHost.CreateDefaultBuilder` | `ASPNETCORE_URLS=https://localhost:<port>` | `https://localhost:<port>` |
+| `Host.CreateDefaultBuilder().ConfigureWebHostDefaults(…)` | `ASPNETCORE_HTTPS_PORTS=<port>` + certificate | `https://[::]:<port>` — **the plural key works here** |
+| `Host.CreateDefaultBuilder().ConfigureWebHostDefaults(…)` | `ASPNETCORE_URLS=http://…` **and** `ASPNETCORE_HTTPS_PORTS=<port>` | the `urls` value, and the framework logs `Overriding HTTP_PORTS '' and HTTPS_PORTS '<port>'. Binding to values defined by URLS instead` — the precedence rule, stated by the framework itself |
+
+So on this platform: **use `ASPNETCORE_URLS` with an `https://` address, or a `Kestrel:Endpoints` entry,
+to bind HTTPS; use the singular `ASPNETCORE_HTTPS_PORT` only to arm the redirect.** Setting the plural
+key is not harmful, but it is inert, and the startup check now says so by name rather than leaving it to
+look arbitrarily ignored — because the natural next move when a setting appears ignored is to weaken the
+cookie policy, which reinstates the very findings these controls closed.
 
 The measured behaviour of each option, on a host whose only declared endpoint is plaintext:
 
 | Configuration | `/login` over plaintext | Startup |
 | --- | --- | --- |
-| nothing further supplied | **HTTP 500** before the guard existed | **refused at startup** now, with the actionable message |
-| `ASPNETCORE_HTTPS_PORT=<public https port>`, or `HTTPS_PORT` | `307` to `https://…/login` | starts |
-| `Settings__ForwardedHeaders__KnownProxies=<proxy address>` **and** the proxy sends `X-Forwarded-Proto: https` | `200` | starts |
-| `ASPNETCORE_HTTPS_PORTS` (plural) | still **500** — the key is not read | refused at startup |
+| nothing further supplied | **HTTP 500** | **refused at startup**, with the actionable message |
+| `ASPNETCORE_HTTPS_PORT=<public https port>`, or `HTTPS_PORT`, **alone** | `307` to `https://…/login`, but nothing establishes that the target exists | **refused at startup** — a redirect target is not TLS |
+| `Settings__ForwardedHeaders__KnownProxies=<proxy address>` **alone** | `200` only if the proxy really sends `X-Forwarded-Proto: https` | **refused at startup** — declare the public HTTPS port too |
+| `Settings__ForwardedHeaders__KnownProxies=<proxy address>` **and** `HTTPS_PORT=<public https port>` | `200` when the proxy sends `X-Forwarded-Proto: https` | starts |
+| `HTTPS_PORT=443abc`, or any value outside 1–65535 | n/a | **refused at startup**, naming the key and the value |
+| `ANCM_HTTPS_PORT` (written by the ASP.NET Core Module) | n/a — IIS terminates TLS and the scheme is preserved | starts |
+| `ASPNETCORE_HTTPS_PORTS` (plural) | still **500** — no listener follows from it on this hosting model | **refused at startup**, and the message now names the variable, explains that it supplies the hosting-layer key `https_ports` (`WebHostDefaults.HttpsPortsKey`), which `GenericWebHostService` resolves and these seven `WebHost.CreateDefaultBuilder` hosts do not, and gives the `ASPNETCORE_URLS=https://*:<that port>` translation |
 
 Trusting a proxy that does not actually send `X-Forwarded-Proto` leaves the failure in place: the guard
 can see that a proxy is trusted but cannot see what it sends, which is why option 4 has two halves.
@@ -1098,45 +1365,50 @@ untrusted"*. Reaching for the accept-any-certificate opt-out in response would b
 reachability problem as a trust problem, and would remove transport authentication entirely to fix a
 missing CRL.
 
-**Fixing it, in order of preference.**
+**Fixing it: there is one supported remedy, and it is not a setting.** Publish the revocation source.
+Re-issue the relay leaf with a `crlDistributionPoints` extension pointing at a CRL your hosts can
+actually fetch, sign that CRL with a CA carrying `cRLSign` and a subject key identifier, serve it in
+**DER** form, and allow the application host outbound access to that URL. An OCSP responder named in
+the leaf works equally well. Every check then stays in force and a revoked relay certificate stays
+refused.
 
-1. **Publish the revocation source.** Re-issue the relay leaf with a distribution-point extension
-   pointing at a CRL your hosts can actually fetch, sign the CRL with a CA that carries `cRLSign` and a
-   subject key identifier, serve it in **DER** form, and allow the application host outbound access to
-   that URL. This keeps every check in force and is the only option that leaves a revoked relay
-   certificate refused.
-2. **Narrow the check, and only the check.** Set `Settings__EmailSMTPCheckCertificateRevocation` to
-   `false`. Mail delivery resumes, and the trust chain, validity dates, key usage and host name are
-   **still verified**, so a self-signed, expired, wrong-name or wrong-CA certificate is refused exactly
-   as before. What you give up is precisely one thing: a relay certificate whose key has leaked and
-   whose issuer has since revoked it will no longer be refused. Record it as an accepted risk
-   (`RISK-060`) and remove the setting once option 1 is available.
+**There is deliberately no configuration key that disables the revocation check.** One existed briefly
+in an earlier revision of this remediation and was **removed**: it was honoured in every posture,
+including Production, which weakened the production transport posture beyond the agreed remediation for
+`H-11` and added an external-service accommodation the plan of record does not authorise. Do not
+reintroduce it, and do not read a CRL-reachability failure as a reason to reach for the
+accept-any-certificate opt-out instead — that removes transport authentication entirely to fix a
+missing CRL, and it is refused outside Development anyway.
+
+**If you cannot publish a revocation source**, the relay is not usable from a Production deployment of
+this platform, and that is a deployment constraint rather than a bug to configure around. Your options
+are to point the platform at a relay whose chain is complete, to place a relay you do control in front
+of the one you do not, or to accept that this subsystem is unavailable until the chain is fixed. The
+residual is recorded as `RISK-060` in the [risk register](risk-register.md) so it is an owner decision
+on the record rather than a silent outage.
 
 | Property | Value |
 | --- | --- |
-| Default when absent | `true` — revocation **is** checked |
-| Values that disable the check | only a value parsing as boolean `false`, in any casing, with surrounding whitespace tolerated |
-| Values that leave it enabled | absent, blank, `true`, and anything unparseable such as `no`, `0`, `off` |
-| Posture gate | **none, deliberately.** Unlike the accept-any-certificate opt-out this one is honoured in every posture including Production — a control that is inert in production is no remedy for a production outage, and the relaxation is narrow enough to be supportable there |
-| Parsing | non-throwing, so a typo cannot turn a mail configuration mistake into an exception on every outbound message. The insecure state is `false`, so only an explicit `false` disables the check |
-| Visibility when disabled | one notice per process on standard error, naming the setting key and nothing else |
-| Sites governed | all five, from a single policy member so no site can drift |
+| Revocation checking | **Always on.** Left to the mail library's own default rather than assigned, so there is nothing to misconfigure and no code path that turns it off |
+| Configuration | **None.** No setting governs it |
+| Sites governed | All five send paths, because none of them touches the property |
+| What a failure looks like | An SSL handshake exception whose chain-status detail is only `unable to get certificate CRL` |
 
 **Two consequences worth knowing before you deploy.** Revocation checking genuinely works rather than
-failing blindly, which is why option 1 is preferred and option 2 is a real if bounded loss: a leaf
-revoked in its issuer's CRL is refused with a distinct `certificate revoked` bullet, while a
-non-revoked leaf validated against that same freshly published CRL still delivers. And **the queued
-send path fails differently from the interactive one**: a direct send throws where the caller can see
-it, while the background queue records the handshake text in the message's `server_error`, increments
-the retry count, reschedules, and eventually marks the message aborted. If mail silently stops flowing
-and the queue is filling with aborted rows, **read `server_error` before anything else** — the CRL
-bullet will be sitting in it. The measured cost of secure delivery is small: warm TLS delivery is within
-a few milliseconds of the accept-all baseline, plus a one-off chain fetch the first time a CRL is
-retrieved and cached.
+failing blindly: a leaf revoked in its issuer's CRL is refused with a distinct `certificate revoked`
+bullet, while a non-revoked leaf validated against that same freshly published CRL delivers normally.
+And **the queued send path fails differently from the interactive one**: a direct send throws where the
+caller can see it, while the background queue records the handshake text in the message's
+`server_error`, increments the retry count, reschedules, and eventually marks the message aborted. If
+mail silently stops flowing and the queue is filling with aborted rows, **read `server_error` before
+anything else** — the CRL bullet will be sitting in it. That column now carries the peer's own response
+text through an HTML-encoding sink on the e-mail list screen (`INT-14`), so read it as data, not markup.
+The measured cost of secure delivery is small: warm TLS delivery is within a few milliseconds of the
+accept-all baseline, plus a one-off chain fetch the first time a CRL is retrieved and cached.
 
 ### Two SMTP misconfigurations easy to mistake for certificate failures
 
-Both settings above govern what happens **when TLS is negotiated.** Two common relay
+The certificate policy above governs what happens **when TLS is negotiated.** Two common relay
 misconfigurations never get that far, and both are frequently misread as certificate problems — which
 sends the investigation to the wrong setting. Neither is changed by the certificate hardening; both are
 pre-existing properties of the transport configuration, carried as `RISK-062` and `RISK-063`.
@@ -1163,6 +1435,65 @@ responsibility: on any row that carries a username use `STARTTLS` or implicit TL
 prefer strict `STARTTLS` over the "when available" variant so a relay that stops advertising it fails
 loudly instead of quietly downgrading. Verify it on the wire rather than from the configuration.
 
+### The diagnostic notification mailer is a different client, and it is not protected by any of the above
+
+Everything in this section describes the **five MailKit send paths** in
+`WebVella.Erp.Plugins.Mail`: the four in `Api/SmtpService.cs` and the queued one in
+`Services/SmtpInternalService.cs`. Those are the paths `H-11` closed and the paths whose certificates are
+validated.
+
+The platform has a **second, entirely separate** outbound mail client, and review finding `INT-01`
+existed because earlier revisions of this guide and of the audit report generalised across the two as
+though `H-11` covered both. It does not. `WebVella.Erp.Web/Services/MailService.cs` builds a
+`System.Net.Mail.SmtpClient` and is called by `WebVella.Erp.Web/Services/LogService.cs` to e-mail an
+exception notification *before* the log record is persisted — finding `M-17`. Read its posture literally:
+
+| Property | Actual behaviour |
+| --- | --- |
+| Transport | **No TLS.** `EnableSsl` is never set, and its default is `false`, so the session is plaintext unless the relay refuses to accept it |
+| Certificate validation | **Not reached.** With no TLS there is no certificate to validate, so neither `H-11`'s policy nor revocation checking applies here at all |
+| Credential | `NetworkCredential` with the same `Settings:EmailSMTPUsername` / `Settings:EmailSMTPPassword` values, sent over that plaintext session |
+| Payload | The exception message, the source, the serialised detail and the request URL including its query string |
+| Failure handling | Swallowed by an empty `catch`, so a delivery failure is invisible and the record is simply marked un-notified |
+| Timeout | The framework default of 100 seconds, synchronous |
+
+**What bounds it.** The whole path is gated on `Settings:EmailEnabled`, which is `false` in all eight
+shipped configuration files and defaults to `false` when the value is absent — so on a default
+deployment this client never runs. Separately, the twenty-eight notifying `LogService` writes on the web
+API surface were replaced by a non-notifying audit sink while closing review finding `F26`, so the
+platform's largest anonymous-reachable fault surface can no longer reach this path at all.
+
+**What to do about it.** Treat `Settings:EmailEnabled=true` as a deliberate decision to send exception
+detail and an SMTP credential over an unauthenticated channel, and take it only where the relay is on a
+network segment you trust end to end. The remediation — requiring TLS on this client, disposing its
+resources, bounding its timeout and reporting its failures — is **outside the agreed scope of this
+engagement**, which documents external-service risks rather than modifying external-service
+integrations, and adding another mail configuration switch is precisely the out-of-plan widening that
+review finding `INT-08` removed elsewhere in this file. It is recorded with concrete fix
+guidance as `RISK-131`, alongside `M-17` itself.
+
+## Abandoned upload cleanup is an operator responsibility
+
+`DbFileRepository.CleanupExpiredTempFiles(TimeSpan)` deletes staged uploads at `/tmp/<section>/<name>`
+that are older than the age you pass. Until review finding `INT-13` it matched nothing at all, so
+uploads that were never promoted to a permanent path accumulated for the lifetime of the installation —
+up to the per-request upload ceiling each. The query and the age filter are now correct, and one
+unreadable row no longer aborts the pass.
+
+Two things are deliberately **not** shipped, and both are yours to arrange:
+
+- **Nothing calls it.** No background job, schedule or configuration key was added, because scheduling
+  is a deployment decision and a job would be feature work outside this remediation. Drive it from your
+  own maintenance task — daily, with an age comfortably longer than your longest legitimate
+  upload-then-save interaction; an hour is ample, a minute is not.
+- **Call it in a system scope.** Wrap the call in `SecurityContext.OpenSystemScope()`, or run it as an
+  administrator. Deletion resolves the path through the ownership-guarded lookup added for finding
+  `F24`, so under an ordinary user's scope the pass silently skips every upload except that user's own
+  and reports nothing. Failures are written to the platform log with the path and the backend error, so
+  alert on those records rather than on the absence of an exception.
+
+The residual is recorded as `RISK-134`.
+
 ## Environment and development mode
 
 Two independent switches control development behaviour, and **both** must be set for a production
@@ -1186,18 +1517,49 @@ neither was guarded by any development-mode check. Those required a code change;
 message, deliberately identical whether the account exists or not so it cannot be used as an
 account-existence oracle (`RISK-014`, closed).
 
-Scope, stated precisely: **ten other controller actions still concatenate exception detail into a
-response.** Those are pre-existing, sit behind class-level authorization rather than on an anonymous
-route, and are outside the agreed change scope — which covers only the two unconditional, anonymously
-reachable token sites. They are recorded in the [risk register](risk-register.md). **Setting
-`Production` does not suppress them**, so continue to treat authenticated API error bodies as
-potentially verbose.
+Scope, stated precisely and **re-measured under review finding `OBS-08`: there are now zero
+unguarded exception-detail sinks in that controller.** An earlier version of this paragraph said ten
+other controller actions still concatenated exception detail into a response and that setting
+`Production` would not suppress them. That was true when written and is no longer true, and the
+correction matters because it inverts the operational advice: those bodies are no longer verbose in
+Production posture.
+
+What changed is that every one of those sites now takes its message from a single helper,
+`SafeErrorMessage(Exception)` in `WebVella.Erp.Web/Controllers/WebApiController.cs:344`, which returns
+`ex.ToString()` **only** when `Settings:DevelopmentMode` is true and the fixed
+`INTERNAL_ERROR_MESSAGE` otherwise. Measured on the tree this commit publishes: **38** call sites route
+through that helper, and the only two remaining assignments of raw exception text to a response body —
+in the token issue and refresh routes — are each inside an explicit `if (ErpSettings.DevelopmentMode)`
+branch. So in Production posture no exception message, type name or stack frame reaches any response
+body from this controller.
+
+Two qualifications that keep this honest rather than reassuring:
+
+- **The guard is `Settings:DevelopmentMode`, not `ASPNETCORE_ENVIRONMENT`.** They are different
+  switches, and this one is read from the configuration file. Setting the environment to `Production`
+  while leaving `DevelopmentMode` true still returns full detail. Both must be correct; see the
+  `Settings:DevelopmentMode` guidance immediately below.
+- **Server-side detail is unchanged.** Every one of those paths still records the full exception
+  through the non-notifying audit boundary, so this is a change of audience rather than a loss of
+  diagnostic capability. The place to read a fault is the log table, not the client response.
 
 `Settings:DevelopmentMode` gates a distinct richer-error branch in
 `WebVella.Erp.Web/Controllers/ApiControllerBase.cs`, so it is an information-disclosure switch and not
 merely a convenience. It is also what gates the SMTP accept-any-certificate opt-out, and Development
 mode is what suppresses HSTS and HTTPS redirection — so leaving it on disables transport controls
 described above.
+
+**And it is the switch behind the one error-handling residual this remediation did not close, so it is
+worth knowing exactly how much it governs.** Twenty-five statements in four core-library manager
+classes — `WebVella.Erp/Api/EntityManager.cs` (13), `EntityRelationManager.cs` (5), `RecordManager.cs`
+(5) and `ImportExportManager.cs` (2) — assign `e.Message + e.StackTrace` to a response body behind
+`if (ErpSettings.DevelopmentMode)`. In the shipped Production posture none of them emits anything. With
+this switch on, twenty-five authenticated manager paths return full stack traces. The web API
+controller itself is clear — every sink there routes through one `SafeErrorMessage` helper and the file
+contains no `StackTrace` reference at all — so this is the whole of the remaining surface, and it is
+recorded as `RISK-129` in the [risk register](risk-register.md) with its guard status, its recommended
+fix and the reason it was left. Treat it as a reason to audit for a stray
+`Settings__DevelopmentMode=true`, not as a reason to relax about it.
 
 > **`DevelopmentMode` is fail-safe in both directions, but audit your environment as well as your
 > files.** All eight files set it to `"false"` explicitly, and a *missing* value also yields `false`, so
@@ -1223,6 +1585,30 @@ when the feature is used.
 Enabling either feature without supplying its location is a configuration error the operator will see
 immediately, in the storage subsystem, rather than a silent write to whatever path happened to be
 committed.
+
+**Supplying the location is necessary but NOT sufficient, and this guide previously implied otherwise.**
+Review finding `INT-04` established that the alternative storage backends carry pre-existing lifecycle
+defects, so read this as an enablement warning rather than an enablement instruction:
+
+- **The object key is derived from the file's identifier, not from its path.** Create, read and delete
+  address a blob at `<first two hex chars>/<next two>/<file id><extension>`, computed from the `files`
+  row's identifier. **Move does not.** It reads and writes logical paths and deletes a third form again,
+  so a move under cloud storage does not relocate the object the other three operations address. The
+  practical consequence is narrow but real: because the identifier does not change on a move, a rename
+  that keeps the extension still resolves afterwards, while one that **changes the extension** leaves the
+  metadata pointing at a key that was never written.
+- **External storage is not transactional with the database.** The blob or file-system write, move and
+  delete happen before the database transaction commits and are not compensated if it rolls back, so a
+  failure can leave an orphaned object, metadata that disagrees with the store, or — on a move — a
+  deleted source with no committed destination (`INT-05`).
+- **Neither defect is remediated here**, deliberately: this engagement documents external-service
+  integration risks rather than modifying them, and correcting the lifecycle is a redesign well beyond
+  the change constraints. Both are recorded as `RISK-132` and `RISK-133` with concrete fix guidance.
+- **Both features ship disabled** — `Settings:EnableCloudBlobStorage` and
+  `Settings:EnableFileSystemStorage` are `false` in all eight tracked configuration files — so a default
+  deployment stores file content in PostgreSQL large objects and is unaffected. If you enable a backend,
+  avoid extension-changing renames until `RISK-132` is closed, and reconcile the store against the `files`
+  table after any failed save.
 
 One consequence worth stating plainly: **abbreviating an address in this document, or blanking it in a
 configuration file, does not undo the original disclosure.** Any internal host name or address that was
@@ -1309,7 +1695,9 @@ Two further choices need their reasons recorded:
 `global.json` pins the SDK:
 
 ```json
-"sdk": { "version": "10.0.302", "rollForward": "disable" }
+{
+  "sdk": { "version": "10.0.302", "rollForward": "disable" }
+}
 ```
 
 This is a security control, not housekeeping (finding L-07). Both halves of the gate are SDK-version
@@ -1450,7 +1838,8 @@ inspected nothing.
 Three things it genuinely cannot see, recorded rather than glossed: a secret under a key name none of
 the layers recognises, bounded by this platform supplying every secret from the environment so there is
 no second tracked configuration surface for one to hide in; a secret inside a file `grep -I` treats as
-binary, measured at 48 of 1,574 tracked files, none of which is a configuration surface; and **a secret
+binary, measured at 48 of 1,574 tracked files at the time of that measurement — the tracked total has
+since moved to 1,576 while the 48 has not — none of which is a configuration surface; and **a secret
 in repository history rather than the checked-out tree** — history rewriting is out of scope, which is
 why [*Key rotation is mandatory*](#key-rotation-is-mandatory) is not optional.
 
@@ -1520,21 +1909,26 @@ dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo -getItem:EditorConfigFil
 Then the runtime posture, because a host that answers `/` cannot be assumed usable:
 
 ```bash
+  # Set the host once; every check below uses it. A VARIABLE, not an angle-bracketed word:
+  # the shell reads < and > as redirection, so https://<host>/login would truncate a file
+  # named "host" and then try to write to /login instead of contacting anything.
+HOST=localhost:5001
+
   # 6. All seven headers, on a dynamic response AND on a static asset. Six in Development.
-curl -sI https://<host>/login | grep -iE 'content-security-policy|strict-transport|x-content-type|x-frame|x-xss|referrer-policy|permissions-policy'
-curl -sI https://<host>/_content/WebVella.Erp.Web/js/wv-lazyload/wv-lazyload.js | grep -ic 'content-security-policy'
+curl -sI "https://$HOST/login" | grep -iE 'content-security-policy|strict-transport|x-content-type|x-frame|x-xss|referrer-policy|permissions-policy'
+curl -sI "https://$HOST/_content/WebVella.Erp.Web/js/wv-lazyload/wv-lazyload.js" | grep -ic 'content-security-policy'
 
   # 7. The content policy must be report-only at this stage, and the enforcing header ABSENT.
-curl -sI https://<host>/login | grep -ic 'content-security-policy-report-only'
-curl -sI https://<host>/login | grep -icE '^content-security-policy:'
+curl -sI "https://$HOST/login" | grep -ic 'content-security-policy-report-only'
+curl -sI "https://$HOST/login" | grep -icE '^content-security-policy:'
 
   # 8. /login must NOT be 500. Over HTTPS expect 200; over plaintext expect 307 to https,
   #    or 200 when a trusted proxy forwards the HTTPS scheme.
-curl -s -o /dev/null -w '%{http_code}\n' https://<host>/login
+curl -s -o /dev/null -w '%{http_code}\n' "https://$HOST/login"
 
   # 9. A listed origin completes preflight; an unlisted one receives no CORS header at all.
 curl -sI -X OPTIONS -H 'Origin: https://listed.example.com' \
-     -H 'Access-Control-Request-Method: GET' https://<host>/api/v3/en_US/meta/entity/list
+     -H 'Access-Control-Request-Method: GET' "https://$HOST/api/v3/en_US/meta/entity/list"
 ```
 
 Two verification traps are worth stating, because both look like defects and neither is:
@@ -1549,23 +1943,41 @@ Two verification traps are worth stating, because both look like defects and nei
   `Development` to make the styling come back — silently undoes two remediations at once**, re-enabling
   the developer exception page (H-12) and disabling HSTS and HTTPS redirection (H-15). Recorded as
   `RISK-031`.
-- **A `warn:` line about transport security means the condition was detected but only reported.** In
-  Development that is expected. Outside Development it means no endpoint was declared, so verify the
-  server defaults immediately: `/login` answers 500 if they resolve to plaintext only (`RISK-126`).
+- **A `warn:` line about transport security now only ever appears in Development.** It means the
+  condition was detected and reported rather than enforced, which is expected there because the
+  Development antiforgery cookie follows the request scheme. Outside Development the identical diagnosis
+  is a startup refusal, including when no endpoint is declared at all — that case used to be a warning
+  and is not any more, because the server defaults it leaves in force are plaintext.
 
 ### State-changing checks — never against production
 
 Use a throwaway account on a non-production instance, and take a database backup first.
 
 ```bash
+  # Set this to the published entry assembly you are testing, then run the two checks unchanged.
+  # A variable again, for the same reason as above.
+HOST_DLL=WebVella.Erp.Site.dll
+
   # 10. Fail-fast negative test: start a host with a required secret removed. It must ABORT
   #     naming the missing setting and nothing else. If it starts, a fallback still exists.
-env -u Settings__EncryptionKey ASPNETCORE_ENVIRONMENT=Production dotnet <Host>.dll
+env -u Settings__EncryptionKey ASPNETCORE_ENVIRONMENT=Production dotnet "$HOST_DLL"
 
   # 11. Transport negative test: with only a plaintext endpoint and none of ASPNETCORE_HTTPS_PORT /
   #     HTTPS_PORT / Settings__ForwardedHeaders__KnownProxies set, a non-Development host must ABORT
   #     and must never log "Now listening on".
-ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' dotnet <Host>.dll
+ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' dotnet "$HOST_DLL"
+
+  # 11b. Three further transport negative tests, all of which must ABORT outside Development:
+  #      no endpoint declared at all; the public HTTPS port supplied with no trusted proxy; and a
+  #      trusted proxy supplied with no public HTTPS port. A malformed port must abort naming the key.
+ASPNETCORE_ENVIRONMENT=Production dotnet <Host>.dll
+ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' HTTPS_PORT=443 dotnet <Host>.dll
+ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' \
+  Settings__ForwardedHeaders__KnownProxies='10.0.0.7' dotnet <Host>.dll
+  #      A malformed port aborts in EVERY environment, Development included, because
+  #      ReadPublicHttpsPort throws before the Development exemption is consulted:
+ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS='http://127.0.0.1:5199' \
+  HTTPS_PORT='not-a-port' dotnet <Host>.dll
 
   # 12. Login throttling: a sixth consecutive failure must be refused.
   #     STATE CHANGE - this LOCKS OUT the account it is run against. Throwaway accounts only.
@@ -1578,11 +1990,17 @@ response returns a password hash for any role; that the file move and delete act
 non-owner; and that an uploaded markup or vector file downloads as an attachment rather than rendering
 inline.
 
-For the mail transport, exercise the revocation path against your own relay rather than trusting the
-setting: send a test message with the revocation setting absent. If it fails with a chain status of
-**only** the CRL bullet, your relay's chain has no reachable revocation source — fix the chain, or set
-the narrowing switch and record `RISK-060`. Re-send afterwards; it must deliver, and the host log must
-carry exactly one notice.
+For the mail transport, exercise the revocation path against your own relay rather than reasoning about
+it: send a test message. If it fails with a chain status of **only** the CRL bullet, your relay's chain
+has no reachable revocation source, and because no setting disables that check the chain must be fixed —
+or a different relay used — before this platform can send through it in Production. Record `RISK-060`
+while it stands. Re-send after publishing the CRL or OCSP endpoint; it must then deliver.
+
+Also confirm what the certificate controls do **not** cover: the diagnostic notification client in
+`WebVella.Erp.Web/Services/MailService.cs` is a different SMTP client and enables no TLS, so if
+`Settings:EmailEnabled` is `true` on your deployment, capture that traffic and satisfy yourself that the
+relay it reaches is one you are willing to send exception detail and a credential to in the clear
+(`RISK-131`).
 
 **Cleanup after the state-changing group:** restart the instance to clear the in-process throttle
 counters, or wait out the fifteen-minute window; delete the throwaway account and any guest-role

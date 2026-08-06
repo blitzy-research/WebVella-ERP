@@ -74,6 +74,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 		#endregion
 
 		/// <summary>
+		/// Content type used for an attachment whose file extension the static-file provider does not map.
+		/// </summary>
+		/// <remarks>
+		/// Review finding INT-12. <c>MimePart(string)</c> throws <c>ArgumentNullException</c> for a null
+		/// content type, and <c>FileExtensionContentTypeProvider</c> leaves the value null for any extension it
+		/// does not know - which includes extensionless files and the platform's own internal ones - so a single
+		/// unmapped attachment aborted delivery of the whole message. This is the exact value MimeKit's own
+		/// parameterless <c>MimePart</c> constructor uses, so the fallback is the library's own default rather
+		/// than an invention, and it is <c>internal</c> so the queued send path in
+		/// <c>Services/SmtpInternalService</c> resolves the same value from the same place.
+		/// </remarks>
+		internal const string BinaryContentType = "application/octet-stream";
+
+		/// <summary>
 		/// Whether this installation accepts an SMTP server certificate that fails validation.
 		/// Defaults to <c>false</c>, so certificates ARE validated unless an operator opts out.
 		/// </summary>
@@ -197,106 +211,6 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				"installation; see docs/security/secure-configuration.md.");
 		}
 
-		/// <summary>
-		/// Whether the SMTP server certificate's revocation status is checked during the TLS handshake.
-		/// Defaults to <c>true</c>, so revocation IS checked unless an operator explicitly disables it.
-		/// </summary>
-		/// <remarks>
-		/// SECURITY - H-11 follow-up, CWE-299 Improper Check for Certificate Revocation, CWE-295 Improper
-		/// Certificate Validation, OWASP A02:2021, remediation class 8 (Transport Security).
-		/// THREAT ADDRESSED, and it runs in both directions - which is why this member exists at all:
-		/// <list type="bullet">
-		/// <item>Leaving revocation UNCHECKED means a relay certificate whose private key has leaked, and
-		/// which its issuer has since revoked, is still accepted - the attacker keeps the ability to
-		/// impersonate the relay and harvest the SMTP credentials the send paths authenticate with two
-		/// lines after connecting. So the default must be, and is, to check.</item>
-		/// <item>Leaving revocation UNCONDITIONALLY checked and unconfigurable makes a relay whose chain
-		/// cannot produce a definitive revocation answer permanently unreachable - an availability defect
-		/// introduced by a security control. An internal-CA relay publishing no CRL distribution point, or
-		/// a host whose egress filtering blocks the CRL or OCSP fetch, fails the handshake on "unable to
-		/// get certificate CRL" alone while the certificate is otherwise valid, and the failure reads as
-		/// though the certificate were untrusted.</item>
-		/// </list>
-		/// WHY THIS SETTING IS HONOURED REGARDLESS OF <c>DevelopmentMode</c>, unlike
-		/// <see cref="AllowInvalidRemoteCertificates"/> above: the two relaxations are not comparable in
-		/// width. Accepting any certificate removes transport authentication entirely, whereas declining to
-		/// consult a revocation list removes ONE check and leaves the trust chain, validity dates, key usage
-		/// and host name all still enforced - a self-signed, expired, wrong-name or wrong-CA certificate is
-		/// still refused. Gating this one behind DevelopmentMode would leave an affected installation
-		/// choosing between no mail and the far wider opt-out, which is the trade this member exists to
-		/// remove.
-		/// <para>
-		/// FAIL-SAFE PARSING, WITH THE DEFAULT INVERTED relative to its neighbour. The non-throwing overload
-		/// is used for the same reason: a configuration typo must not raise <c>FormatException</c> on every
-		/// outbound e-mail and convert a mistyped value into a mail outage. Because the secure state here is
-		/// <c>true</c> rather than <c>false</c>, the test is arranged so that ONLY a value that genuinely
-		/// parses as <c>false</c> disables the check. Absent, blank, unparseable ("no", "0", "off"), and a
-		/// settings layer not yet initialised - <c>Configuration</c> is null until <c>ErpSettings.Initialize</c>
-		/// runs - all resolve to <c>true</c>. It is application configuration read from the existing
-		/// <c>ErpSettings.Configuration</c> and <c>static</c> rather than a typed setting or an
-		/// <c>smtp_service</c> field, so neither the settings contract nor the database schema changes.
-		/// Operators supply it as the environment variable
-		/// <c>Settings__EmailSMTPCheckCertificateRevocation</c>; see docs/security/secure-configuration.md.
-		/// </para>
-		/// <para>
-		/// The one-shot notice below exists because a deployment running with revocation checking disabled
-		/// is in a weakened - though deliberate and supported - posture, and that must be visible in the
-		/// host log rather than inferable only from configuration nobody re-reads.
-		/// </para>
-		/// </remarks>
-		internal static bool CheckRemoteCertificateRevocation
-		{
-			get
-			{
-				//Only an explicitly parseable false disables the check. Every other outcome - absent,
-				//blank, malformed, or a settings layer that has not been initialised - falls through to
-				//true, which is the secure state. Note the shape: unlike the sibling policy this cannot be
-				//written as "TryParse fails => return false", because here false is the INSECURE answer.
-				if (!bool.TryParse(ErpSettings.Configuration?["Settings:EmailSMTPCheckCertificateRevocation"], out var checkRevocation))
-					return true;
-
-				if (checkRevocation)
-					return true;
-
-				//Disabled on purpose. Honoured in every posture, and reported once so the weakened posture
-				//is on the record.
-				ReportCertificateRevocationCheckDisabled();
-				return false;
-			}
-		}
-
-		/// <summary>
-		/// Latch for the disabled-revocation notice. Zero until the notice has been emitted.
-		/// </summary>
-		private static int certificateRevocationCheckDisabledReported;
-
-		/// <summary>
-		/// Reports, exactly once per process, that SMTP server certificate revocation checking has been
-		/// disabled by configuration.
-		/// </summary>
-		/// <remarks>
-		/// SECURITY - H-11 follow-up, CWE-299. ONCE PER PROCESS for the same reason as the refusal notice
-		/// above: this policy is evaluated at least once per outbound message, so an unlatched notice would
-		/// grow with mail volume and bury the single signal it exists to raise. Written to standard error
-		/// rather than through <c>Diagnostics.Log</c> for the same two reasons as well - it needs no
-		/// database context or logging stack and therefore reports correctly even when the surrounding
-		/// transaction is about to roll back, and decisively, the platform log can raise an e-mail
-		/// notification while the subsystem being reported on HERE IS THE MAILER. Only the setting NAME is
-		/// named - never a credential, a server or a port.
-		/// </remarks>
-		private static void ReportCertificateRevocationCheckDisabled()
-		{
-			if (System.Threading.Interlocked.CompareExchange(ref certificateRevocationCheckDisabledReported, 1, 0) != 0)
-				return;
-
-			Console.Error.WriteLine("warn: WebVella.Erp.Plugins.Mail.Api.SmtpService[2] SECURITY - " +
-				"'Settings:EmailSMTPCheckCertificateRevocation' is false, so SMTP server certificates are " +
-				"accepted WITHOUT a revocation check. The trust chain, validity dates and host name are " +
-				"still verified, but a revoked relay certificate will no longer be refused. Remove the " +
-				"setting once the relay's chain publishes a reachable CRL or OCSP responder; see " +
-				"docs/security/secure-configuration.md.");
-		}
-
 		internal SmtpService() { }
 
 		public void SendEmail(EmailAddress recipient, string subject, string textBody, string htmlBody, List<string> attachments)
@@ -318,7 +232,13 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			ex.CheckAndThrow();
 
-			var message = new MimeMessage();
+			//RESOURCE CLEANUP - review finding INT-09. This message owns every attachment and linked-resource
+			//stream added below, and disposing it disposes them; leaving it undisposed held the full byte content
+			//of every attachment until a garbage collection, which on a large send is the difference between a
+			//bounded and an unbounded working set. The `using` DECLARATION rather than a `using` block is
+			//deliberate: it disposes at the end of this method - after Send, which is the last use - without
+			//re-indenting the whole body, so the diff stays reviewable and no behaviour moves.
+			using var message = new MimeMessage();
 			if (!string.IsNullOrWhiteSpace(DefaultSenderName))
 				message.From.Add(new MailboxAddress(DefaultSenderName, DefaultSenderEmail));
 			else
@@ -374,7 +294,11 @@ namespace WebVella.Erp.Plugins.Mail.Api
 					var bytes = file.GetBytes();
 
 					var extension = Path.GetExtension(filepath).ToLowerInvariant();
-					new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType);
+					//MIME MAPPING - review finding INT-12. TryGetValue leaves mimeType NULL for an unmapped extension
+					//and MimePart(string) throws ArgumentNullException for null, so one unmapped attachment aborted
+					//the entire message. See BinaryContentType for why that value is the right fallback.
+					if (!new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType) || string.IsNullOrWhiteSpace(mimeType))
+						mimeType = BinaryContentType;
 
 					var attachment = new MimePart(mimeType)
 					{
@@ -393,21 +317,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, letting an
-				// active man-in-the-middle present any certificate and harvest the credentials authenticated
-				// below. Both policy members below are the single source of truth for that decision and carry the
-				// full rationale - including the exact gate and its application-wide consequence. Do not inline a
-				// literal here: the callback must keep yielding the member so the accept-any-certificate pattern
-				// stays visible to analyzer rule CA5359.
+				// SECURITY H-11 (CWE-295 improper certificate validation, OWASP A02): validation was
+				// unconditionally bypassed here, letting an active man-in-the-middle present any certificate and
+				// harvest the credentials authenticated below. AllowInvalidRemoteCertificates is the single source
+				// of truth for that decision and carries the full rationale - including the exact gate and its
+				// application-wide consequence. Do not inline a literal here: the callback must keep yielding the
+				// member so the accept-any-certificate pattern stays visible to analyzer rule CA5359.
+				// REVOCATION IS LEFT ENTIRELY TO MAILKIT, deliberately and unconfigurably: SmtpClient checks
+				// certificate revocation unless told otherwise, so saying nothing here IS the secure state. Do not
+				// reintroduce a setting that turns the check off - one existed briefly and was removed, because it
+				// weakened the production transport posture beyond the agreed remediation for this finding. A relay
+				// whose chain names no reachable CRL or OCSP responder is therefore refused, and the supported
+				// remedy is to publish the revocation source; see docs/security/secure-configuration.md.
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
-
-				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02): left
-				// implicit, MailKit's default of true made revocation REACHABILITY an unconfigurable delivery
-				// prerequisite. Stated explicitly and bound to the policy member, which still defaults to
-				// checking; see that member for the asymmetry between this narrow relaxation and the far wider
-				// accept-any-certificate opt-out above.
-				client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;
 
 				client.Connect(Server, Port, ConnectionSecurity);
 
@@ -488,7 +411,13 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			ex.CheckAndThrow();
 
-			var message = new MimeMessage();
+			//RESOURCE CLEANUP - review finding INT-09. This message owns every attachment and linked-resource
+			//stream added below, and disposing it disposes them; leaving it undisposed held the full byte content
+			//of every attachment until a garbage collection, which on a large send is the difference between a
+			//bounded and an unbounded working set. The `using` DECLARATION rather than a `using` block is
+			//deliberate: it disposes at the end of this method - after Send, which is the last use - without
+			//re-indenting the whole body, so the diff stays reviewable and no behaviour moves.
+			using var message = new MimeMessage();
 			if (!string.IsNullOrWhiteSpace(DefaultSenderName))
 				message.From.Add(new MailboxAddress(DefaultSenderName, DefaultSenderEmail));
 			else
@@ -535,7 +464,11 @@ namespace WebVella.Erp.Plugins.Mail.Api
 					var bytes = file.GetBytes();
 
 					var extension = Path.GetExtension(filepath).ToLowerInvariant();
-					new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType);
+					//MIME MAPPING - review finding INT-12. TryGetValue leaves mimeType NULL for an unmapped extension
+					//and MimePart(string) throws ArgumentNullException for null, so one unmapped attachment aborted
+					//the entire message. See BinaryContentType for why that value is the right fallback.
+					if (!new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType) || string.IsNullOrWhiteSpace(mimeType))
+						mimeType = BinaryContentType;
 
 					var attachment = new MimePart(mimeType)
 					{
@@ -554,21 +487,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, letting an
-				// active man-in-the-middle present any certificate and harvest the credentials authenticated
-				// below. Both policy members below are the single source of truth for that decision and carry the
-				// full rationale - including the exact gate and its application-wide consequence. Do not inline a
-				// literal here: the callback must keep yielding the member so the accept-any-certificate pattern
-				// stays visible to analyzer rule CA5359.
+				// SECURITY H-11 (CWE-295 improper certificate validation, OWASP A02): validation was
+				// unconditionally bypassed here, letting an active man-in-the-middle present any certificate and
+				// harvest the credentials authenticated below. AllowInvalidRemoteCertificates is the single source
+				// of truth for that decision and carries the full rationale - including the exact gate and its
+				// application-wide consequence. Do not inline a literal here: the callback must keep yielding the
+				// member so the accept-any-certificate pattern stays visible to analyzer rule CA5359.
+				// REVOCATION IS LEFT ENTIRELY TO MAILKIT, deliberately and unconfigurably: SmtpClient checks
+				// certificate revocation unless told otherwise, so saying nothing here IS the secure state. Do not
+				// reintroduce a setting that turns the check off - one existed briefly and was removed, because it
+				// weakened the production transport posture beyond the agreed remediation for this finding. A relay
+				// whose chain names no reachable CRL or OCSP responder is therefore refused, and the supported
+				// remedy is to publish the revocation source; see docs/security/secure-configuration.md.
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
-
-				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02): left
-				// implicit, MailKit's default of true made revocation REACHABILITY an unconfigurable delivery
-				// prerequisite. Stated explicitly and bound to the policy member, which still defaults to
-				// checking; see that member for the asymmetry between this narrow relaxation and the far wider
-				// accept-any-certificate opt-out above.
-				client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;
 
 				client.Connect(Server, Port, ConnectionSecurity);
 
@@ -634,12 +566,31 @@ namespace WebVella.Erp.Plugins.Mail.Api
 					ex.AddError("recipientEmail", "Recipient email is not valid email address.");
 			}
 
+			//API CONTRACT - review finding INT-07. This overload exists precisely to take a caller-supplied
+			//sender, and it dereferenced that sender below without ever validating it: a null sender raised
+			//NullReferenceException and a malformed address raised MimeKit's ParseException, both from deep inside
+			//message construction rather than from the validation block that reports every other bad input on this
+			//method. Note the deliberate contrast with the QueueEmail overloads: there a null sender is LEGITIMATE
+			//and documented by `sender ?? default`, so no equivalent check belongs in them.
+			if (sender == null)
+				ex.AddError("senderEmail", "Sender is not specified.");
+			else if (string.IsNullOrEmpty(sender.Address))
+				ex.AddError("senderEmail", "Sender email is not specified.");
+			else if (!sender.Address.IsEmail())
+				ex.AddError("senderEmail", "Sender email is not valid email address.");
+
 			if (string.IsNullOrEmpty(subject))
 				ex.AddError("subject", "Subject is required.");
 
 			ex.CheckAndThrow();
 
-			var message = new MimeMessage();
+			//RESOURCE CLEANUP - review finding INT-09. This message owns every attachment and linked-resource
+			//stream added below, and disposing it disposes them; leaving it undisposed held the full byte content
+			//of every attachment until a garbage collection, which on a large send is the difference between a
+			//bounded and an unbounded working set. The `using` DECLARATION rather than a `using` block is
+			//deliberate: it disposes at the end of this method - after Send, which is the last use - without
+			//re-indenting the whole body, so the diff stays reviewable and no behaviour moves.
+			using var message = new MimeMessage();
 			if (!string.IsNullOrWhiteSpace(sender.Name))
 				message.From.Add(new MailboxAddress(sender.Name, sender.Address));
 			else
@@ -683,7 +634,11 @@ namespace WebVella.Erp.Plugins.Mail.Api
 					var bytes = file.GetBytes();
 
 					var extension = Path.GetExtension(filepath).ToLowerInvariant();
-					new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType);
+					//MIME MAPPING - review finding INT-12. TryGetValue leaves mimeType NULL for an unmapped extension
+					//and MimePart(string) throws ArgumentNullException for null, so one unmapped attachment aborted
+					//the entire message. See BinaryContentType for why that value is the right fallback.
+					if (!new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType) || string.IsNullOrWhiteSpace(mimeType))
+						mimeType = BinaryContentType;
 
 					var attachment = new MimePart(mimeType)
 					{
@@ -701,21 +656,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, letting an
-				// active man-in-the-middle present any certificate and harvest the credentials authenticated
-				// below. Both policy members below are the single source of truth for that decision and carry the
-				// full rationale - including the exact gate and its application-wide consequence. Do not inline a
-				// literal here: the callback must keep yielding the member so the accept-any-certificate pattern
-				// stays visible to analyzer rule CA5359.
+				// SECURITY H-11 (CWE-295 improper certificate validation, OWASP A02): validation was
+				// unconditionally bypassed here, letting an active man-in-the-middle present any certificate and
+				// harvest the credentials authenticated below. AllowInvalidRemoteCertificates is the single source
+				// of truth for that decision and carries the full rationale - including the exact gate and its
+				// application-wide consequence. Do not inline a literal here: the callback must keep yielding the
+				// member so the accept-any-certificate pattern stays visible to analyzer rule CA5359.
+				// REVOCATION IS LEFT ENTIRELY TO MAILKIT, deliberately and unconfigurably: SmtpClient checks
+				// certificate revocation unless told otherwise, so saying nothing here IS the secure state. Do not
+				// reintroduce a setting that turns the check off - one existed briefly and was removed, because it
+				// weakened the production transport posture beyond the agreed remediation for this finding. A relay
+				// whose chain names no reachable CRL or OCSP responder is therefore refused, and the supported
+				// remedy is to publish the revocation source; see docs/security/secure-configuration.md.
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
-
-				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02): left
-				// implicit, MailKit's default of true made revocation REACHABILITY an unconfigurable delivery
-				// prerequisite. Stated explicitly and bound to the policy member, which still defaults to
-				// checking; see that member for the asymmetry between this narrow relaxation and the far wider
-				// accept-any-certificate opt-out above.
-				client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;
 
 				client.Connect(Server, Port, ConnectionSecurity);
 
@@ -791,12 +745,31 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				}
 			}
 
+			//API CONTRACT - review finding INT-07. This overload exists precisely to take a caller-supplied
+			//sender, and it dereferenced that sender below without ever validating it: a null sender raised
+			//NullReferenceException and a malformed address raised MimeKit's ParseException, both from deep inside
+			//message construction rather than from the validation block that reports every other bad input on this
+			//method. Note the deliberate contrast with the QueueEmail overloads: there a null sender is LEGITIMATE
+			//and documented by `sender ?? default`, so no equivalent check belongs in them.
+			if (sender == null)
+				ex.AddError("senderEmail", "Sender is not specified.");
+			else if (string.IsNullOrEmpty(sender.Address))
+				ex.AddError("senderEmail", "Sender email is not specified.");
+			else if (!sender.Address.IsEmail())
+				ex.AddError("senderEmail", "Sender email is not valid email address.");
+
 			if (string.IsNullOrEmpty(subject))
 				ex.AddError("subject", "Subject is required.");
 
 			ex.CheckAndThrow();
 
-			var message = new MimeMessage();
+			//RESOURCE CLEANUP - review finding INT-09. This message owns every attachment and linked-resource
+			//stream added below, and disposing it disposes them; leaving it undisposed held the full byte content
+			//of every attachment until a garbage collection, which on a large send is the difference between a
+			//bounded and an unbounded working set. The `using` DECLARATION rather than a `using` block is
+			//deliberate: it disposes at the end of this method - after Send, which is the last use - without
+			//re-indenting the whole body, so the diff stays reviewable and no behaviour moves.
+			using var message = new MimeMessage();
 			if (!string.IsNullOrWhiteSpace(sender.Name))
 				message.From.Add(new MailboxAddress(sender.Name, sender.Address));
 			else
@@ -843,7 +816,11 @@ namespace WebVella.Erp.Plugins.Mail.Api
 					var bytes = file.GetBytes();
 
 					var extension = Path.GetExtension(filepath).ToLowerInvariant();
-					new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType);
+					//MIME MAPPING - review finding INT-12. TryGetValue leaves mimeType NULL for an unmapped extension
+					//and MimePart(string) throws ArgumentNullException for null, so one unmapped attachment aborted
+					//the entire message. See BinaryContentType for why that value is the right fallback.
+					if (!new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType) || string.IsNullOrWhiteSpace(mimeType))
+						mimeType = BinaryContentType;
 
 					var attachment = new MimePart(mimeType)
 					{
@@ -861,21 +838,20 @@ namespace WebVella.Erp.Plugins.Mail.Api
 
 			using (var client = new SmtpClient())
 			{
-				// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, letting an
-				// active man-in-the-middle present any certificate and harvest the credentials authenticated
-				// below. Both policy members below are the single source of truth for that decision and carry the
-				// full rationale - including the exact gate and its application-wide consequence. Do not inline a
-				// literal here: the callback must keep yielding the member so the accept-any-certificate pattern
-				// stays visible to analyzer rule CA5359.
+				// SECURITY H-11 (CWE-295 improper certificate validation, OWASP A02): validation was
+				// unconditionally bypassed here, letting an active man-in-the-middle present any certificate and
+				// harvest the credentials authenticated below. AllowInvalidRemoteCertificates is the single source
+				// of truth for that decision and carries the full rationale - including the exact gate and its
+				// application-wide consequence. Do not inline a literal here: the callback must keep yielding the
+				// member so the accept-any-certificate pattern stays visible to analyzer rule CA5359.
+				// REVOCATION IS LEFT ENTIRELY TO MAILKIT, deliberately and unconfigurably: SmtpClient checks
+				// certificate revocation unless told otherwise, so saying nothing here IS the secure state. Do not
+				// reintroduce a setting that turns the check off - one existed briefly and was removed, because it
+				// weakened the production transport posture beyond the agreed remediation for this finding. A relay
+				// whose chain names no reachable CRL or OCSP responder is therefore refused, and the supported
+				// remedy is to publish the revocation source; see docs/security/secure-configuration.md.
 				if (AllowInvalidRemoteCertificates)
 					client.ServerCertificateValidationCallback = (s, c, h, e) => AllowInvalidRemoteCertificates;
-
-				// SECURITY H-11 follow-up (CWE-299 improper check for certificate revocation, OWASP A02): left
-				// implicit, MailKit's default of true made revocation REACHABILITY an unconfigurable delivery
-				// prerequisite. Stated explicitly and bound to the policy member, which still defaults to
-				// checking; see that member for the asymmetry between this narrow relaxation and the far wider
-				// accept-any-certificate opt-out above.
-				client.CheckCertificateRevocation = CheckRemoteCertificateRevocation;
 
 				client.Connect(Server, Port, ConnectionSecurity);
 
@@ -939,17 +915,26 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				ex.AddError("recipientEmail", "Recipient is not specified.");
 			else
 			{
+				//API CONTRACT - review finding INT-07. The cc:/bcc: prefix parse below reads the address BEFORE
+				//anything established that it exists, so a recipient whose Address was never set raised
+				//NullReferenceException from inside a validation block whose entire job is to report bad input as a
+				//ValidationException. Hoisting the null-or-empty test is the whole fix; the prefix stripping, the
+				//order of the two prefixes and the post-strip empty test are all unchanged, so a caller passing a
+				//well-formed address - prefixed or not - sees exactly the behaviour it saw before.
 				var address = recipient.Address;
-				if (address.StartsWith("cc:"))
-					address = address.Substring(3);
-
-				if (address.StartsWith("bcc:"))
-					address = address.Substring(4);
-
 				if (string.IsNullOrEmpty(address))
 					ex.AddError("recipientEmail", "Recipient email is not specified.");
-				else if (!address.IsEmail())
-					ex.AddError("recipientEmail", "Recipient email is not valid email address.");
+				else
+				{
+					if (address.StartsWith("cc:"))
+						address = address.Substring(3);
+					if (address.StartsWith("bcc:"))
+						address = address.Substring(4);
+					if (string.IsNullOrEmpty(address))
+						ex.AddError("recipientEmail", "Recipient email is not specified.");
+					else if (!address.IsEmail())
+						ex.AddError("recipientEmail", "Recipient email is not valid email address.");
+				}
 			}
 
 			if (string.IsNullOrEmpty(subject))
@@ -1017,17 +1002,26 @@ namespace WebVella.Erp.Plugins.Mail.Api
 						ex.AddError("recipientEmail", "Recipient is not specified.");
 					else
 					{
+						//API CONTRACT - review finding INT-07. The cc:/bcc: prefix parse below reads the address BEFORE
+						//anything established that it exists, so a recipient whose Address was never set raised
+						//NullReferenceException from inside a validation block whose entire job is to report bad input as a
+						//ValidationException. Hoisting the null-or-empty test is the whole fix; the prefix stripping, the
+						//order of the two prefixes and the post-strip empty test are all unchanged, so a caller passing a
+						//well-formed address - prefixed or not - sees exactly the behaviour it saw before.
 						var address = recipient.Address;
-						if (address.StartsWith("cc:"))
-							address = address.Substring(3);
-
-						if (address.StartsWith("bcc:"))
-							address = address.Substring(4);
-
 						if (string.IsNullOrEmpty(address))
 							ex.AddError("recipientEmail", "Recipient email is not specified.");
-						else if (!address.IsEmail())
-							ex.AddError("recipientEmail", "Recipient email is not valid email address.");
+						else
+						{
+							if (address.StartsWith("cc:"))
+								address = address.Substring(3);
+							if (address.StartsWith("bcc:"))
+								address = address.Substring(4);
+							if (string.IsNullOrEmpty(address))
+								ex.AddError("recipientEmail", "Recipient email is not specified.");
+							else if (!address.IsEmail())
+								ex.AddError("recipientEmail", "Recipient email is not valid email address.");
+						}
 					}
 				}
 			}
@@ -1099,15 +1093,26 @@ namespace WebVella.Erp.Plugins.Mail.Api
 				ex.AddError("recipientEmail", "Recipient is not specified.");
 			else
 			{
+				//API CONTRACT - review finding INT-07. The cc:/bcc: prefix parse below reads the address BEFORE
+				//anything established that it exists, so a recipient whose Address was never set raised
+				//NullReferenceException from inside a validation block whose entire job is to report bad input as a
+				//ValidationException. Hoisting the null-or-empty test is the whole fix; the prefix stripping, the
+				//order of the two prefixes and the post-strip empty test are all unchanged, so a caller passing a
+				//well-formed address - prefixed or not - sees exactly the behaviour it saw before.
 				var address = recipient.Address;
-				if (address.StartsWith("cc:"))
-					address = address.Substring(3);
-				if (address.StartsWith("bcc:"))
-					address = address.Substring(4);
 				if (string.IsNullOrEmpty(address))
 					ex.AddError("recipientEmail", "Recipient email is not specified.");
-				else if (!address.IsEmail())
-					ex.AddError("recipientEmail", "Recipient email is not valid email address.");
+				else
+				{
+					if (address.StartsWith("cc:"))
+						address = address.Substring(3);
+					if (address.StartsWith("bcc:"))
+						address = address.Substring(4);
+					if (string.IsNullOrEmpty(address))
+						ex.AddError("recipientEmail", "Recipient email is not specified.");
+					else if (!address.IsEmail())
+						ex.AddError("recipientEmail", "Recipient email is not valid email address.");
+				}
 			}
 
 			if (!string.IsNullOrWhiteSpace(replyTo))
@@ -1188,15 +1193,26 @@ namespace WebVella.Erp.Plugins.Mail.Api
 						ex.AddError("recipientEmail", "Recipient is not specified.");
 					else
 					{
+						//API CONTRACT - review finding INT-07. The cc:/bcc: prefix parse below reads the address BEFORE
+						//anything established that it exists, so a recipient whose Address was never set raised
+						//NullReferenceException from inside a validation block whose entire job is to report bad input as a
+						//ValidationException. Hoisting the null-or-empty test is the whole fix; the prefix stripping, the
+						//order of the two prefixes and the post-strip empty test are all unchanged, so a caller passing a
+						//well-formed address - prefixed or not - sees exactly the behaviour it saw before.
 						var address = recipient.Address;
-						if (address.StartsWith("cc:"))
-							address = address.Substring(3);
-						if (address.StartsWith("bcc:"))
-							address = address.Substring(4);
 						if (string.IsNullOrEmpty(address))
 							ex.AddError("recipientEmail", "Recipient email is not specified.");
-						else if (!address.IsEmail())
-							ex.AddError("recipientEmail", "Recipient email is not valid email address.");
+						else
+						{
+							if (address.StartsWith("cc:"))
+								address = address.Substring(3);
+							if (address.StartsWith("bcc:"))
+								address = address.Substring(4);
+							if (string.IsNullOrEmpty(address))
+								ex.AddError("recipientEmail", "Recipient email is not specified.");
+							else if (!address.IsEmail())
+								ex.AddError("recipientEmail", "Recipient email is not valid email address.");
+						}
 					}
 				}
 			}

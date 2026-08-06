@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Http;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Security.Claims;
 using System.Threading;
@@ -115,7 +114,41 @@ namespace WebVella.Erp.Web.Services
 		// lock idiom this project already uses (Services/CodeEvalService.cs), so a request flood cannot flood the log.
 		private const double TOKEN_VALIDATION_LOG_INTERVAL_MINUTES = 1;
 		private static readonly object tokenValidationLogLock = new object();
-		private static DateTime tokenValidationLogLastWrittenUtc = DateTime.MinValue;
+
+		// THREAT ADDRESSED - review finding OBS-09, CWE-778 (insufficient logging), OWASP A09:2021. The window
+		// above used to be a single PROCESS-GLOBAL slot, and that made it a monitoring blind spot rather than a
+		// rate limit: one high-volume failure category - an expired token replayed in a loop, say - claimed the
+		// slot and then hid EVERY OTHER token-validation failure for the rest of the minute, including the ones
+		// an operator most needs to see, such as a token signed with an unknown key. The slot is therefore
+		// PARTITIONED, so a flood of one category cannot mask a single occurrence of another.
+		//
+		// THE PARTITION KEY IS THE EXCEPTION TYPE NAME, and the choice is deliberate on both counts.
+		//   * It is CLR metadata from a loaded assembly, so it carries no payload from the rejected token and
+		//     cannot itself become a log-injection or disclosure vector (CWE-117, CWE-532).
+		//   * Its cardinality is bounded by the types that can actually reach the two narrowed catch clauses -
+		//     SecurityTokenException and ArgumentException subclasses - so this dictionary cannot be grown by a
+		//     caller (CWE-770). Partitioning by remote address WOULD have been caller-controlled and unbounded,
+		//     which is why it is not used: the reporting gap this closes is about failure CATEGORY, not source.
+		// Each partition carries its own suppressed-occurrence count, reported in the next record written for
+		// that partition exactly as Middleware/JwtMiddleware.cs does, so the bound stays honest about how much
+		// it withheld instead of silently discarding it.
+		private static readonly Dictionary<string, TokenValidationReportSlot> tokenValidationLogSlots =
+			new Dictionary<string, TokenValidationReportSlot>(StringComparer.Ordinal);
+
+		/// <summary>
+		/// Per-category reporting window and suppressed-occurrence count for the token-validation audit log.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding OBS-09. A mutable holder rather than two parallel dictionaries, so a
+		/// category's window and its suppressed count cannot be updated inconsistently. Every field is read and
+		/// written under <see cref="tokenValidationLogLock"/>, which is why no member needs to be volatile or
+		/// interlocked.
+		/// </remarks>
+		private sealed class TokenValidationReportSlot
+		{
+			internal DateTime LastWrittenUtc;
+			internal int SuppressedOccurrences;
+		}
 
 		// P4-07 (CWE-117 improper output neutralisation for logs, CWE-532 information exposure through log files).
 		// The token-validation failure log used to persist the raw exception message. IdentityModel builds its messages
@@ -453,6 +486,21 @@ namespace WebVella.Erp.Web.Services
 			if (sessionIdClaim == null || !Guid.TryParse(sessionIdClaim.Value, out var sessionId))
 				return;
 
+			// THREAT ADDRESSED - review finding OBS-06, CWE-778 (insufficient logging), OWASP A09:2021, and the
+			// user-specified Authentication Hardening standard's "proper logout with session invalidation"
+			// clause. Ending a session is a security-relevant state change and NOTHING recorded it: neither
+			// Razor logout handler, nor the bearer revocation route, nor this method wrote an audit entry, so a
+			// forensic reader could establish that a session had been revoked only by inference from the
+			// absence of later activity. Read BEFORE the revocation, so the record describes a transition that
+			// was actually made rather than one that was merely requested.
+			//
+			// AUDITED ON THE TRANSITION ONLY - live to revoked - and that is the bound, not an optimisation.
+			// Revocation is idempotent and /logout is reachable by an authenticated caller as often as they
+			// like, so an unconditional write here would let that caller drive unbounded log growth one
+			// idempotent request at a time (CWE-779). A second logout with the same credential finds the
+			// identifier already revoked and writes nothing.
+			var alreadyRevoked = SessionRevocationService.IsSessionIdentifierRevoked(sessionId);
+
 			// F-02: written through the process-wide store rather than through a resolved service instance. The
 			// previous lookup returned null on any host that had not registered the service and then RETURNED, so a
 			// logout silently recorded nothing while reporting success - the worst possible shape for a revocation
@@ -466,7 +514,49 @@ namespace WebVella.Erp.Web.Services
 			// individual token lifetime is the same 24 hours (JWT_TOKEN_EXPIRY_DURATION_MINUTES), so no live token
 			// can outlast its own revocation; the seven-day horizon is longer, but no token may be MINTED against a
 			// revoked identifier, so the chain cannot be extended past the entry that ends it.
-			SessionRevocationService.RevokeSessionIdentifier(sessionId, DateTime.UtcNow.AddMinutes(AUTH_TICKET_EXPIRY_DURATION_MINUTES));
+			//
+			// THREAT ADDRESSED - review finding CR3-H-03, CWE-613 (insufficient session expiration) / session
+			// hijacking, OWASP A07. The lifetime alone was NOT a sufficient over-estimate, and the error was in the
+			// unsafe direction. A bearer credential is accepted until exp PLUS JwtClockSkew, so a token minted at T
+			// is honoured until T + 1440 min + 1 min, while a revocation written at T + e expired at T + e + 1440
+			// min. For every e shorter than the skew - that is, for a sign-out inside the first minute of a
+			// credential's life, which is exactly what an "I logged in by mistake" or "log me out everywhere now"
+			// action produces - the revocation lapsed BEFORE the credential stopped being accepted, leaving a
+			// window of up to one minute in which the copied token worked again. Adding the skew closes it by
+			// construction: no credential in existence when RevokeCurrentSession runs can have been minted later
+			// than now (minting requires a non-revoked identifier), so its acceptance horizon is at most
+			// now + AUTH_TICKET_EXPIRY_DURATION_MINUTES + JwtClockSkew, which is precisely the retention requested
+			// here. Cookie tickets need no separate accounting: cookie authentication applies no skew, and sliding
+			// expiration can only renew a ticket that is still being accepted, so their horizon is the strictly
+			// smaller now + AUTH_TICKET_EXPIRY_DURATION_MINUTES.
+			// SessionRevocationService.MaxRetention is the ceiling this value must stay under, and it was raised in
+			// the same change for the same reason - at exactly 24 hours it would have clamped the skew straight back
+			// off again, silently reinstating the defect. The two are one contract expressed in two files; keep them
+			// in step.
+			SessionRevocationService.RevokeSessionIdentifier(sessionId,
+				DateTime.UtcNow.AddMinutes(AUTH_TICKET_EXPIRY_DURATION_MINUTES + JwtClockSkew.TotalMinutes));
+
+			if (alreadyRevoked)
+				return;
+
+			// WHAT THE RECORD CARRIES, and just as importantly what it does not. The acting principal's
+			// identifier is recorded, because attribution is the entire point of a sign-out record. The SESSION
+			// IDENTIFIER IS NOT, deliberately: it is the value both bearer validators and the cookie validation
+			// hook consult, so persisting it into a table that any account with log access can read would
+			// publish a working key to the revocation store and turn a forensic record into a source of
+			// session-correlation material (CWE-532). Neither the bearer token nor the cookie ticket is
+			// recorded, for the stronger version of the same reason - they ARE the credential.
+			//
+			// Written through the shared boundary, so it is bound, neutralised, explicitly DoNotNotify - never
+			// LogService's mail-before-persist path (finding M-17) - and unable to throw: a sign-out must not
+			// fail because its audit record could not be stored, and the boundary counts and reports what it
+			// could not persist instead. Unbounded rather than rate limited on purpose: this event requires an
+			// authenticated principal and a live session, so it is not free to repeat, and a genuine sign-out
+			// must never be the record that gets withheld.
+			var subject = httpContext.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+			SecurityAuditLog.RecordAudit("AuthService:Logout", Diagnostics.LogType.Info,
+				"Session revoked on sign-out",
+				"user_id=" + SecurityAuditLog.Field(subject, MaxLogDetailLength));
 		}
 
 		public static ErpUser GetUser(ClaimsPrincipal principal)
@@ -789,17 +879,34 @@ namespace WebVella.Erp.Web.Services
 				// succeeds, deliberately: an unauthenticated caller must not be able to probe the revocation store
 				// with forged tokens, and a token that fails signature validation has no trustworthy claims to read.
 				// Refusal is the same null every other rejection on this path returns, so no caller changes.
-				// Deliberately NOT audited, for the reason recorded on ValidateSessionHorizonAsync: this runs on an
-				// anonymous, unauthenticated-reachable path, and a caller replaying one revoked token in a loop
-				// would otherwise drive unbounded log growth. The sign-out that created the revocation is itself
-				// audited, so the security-relevant event is already on the record.
+				//
+				// THREAT ADDRESSED - review finding OBS-06, CWE-778 (insufficient logging), OWASP A09:2021.
+				// This refusal used to be silent, on the reasoning that the sign-out which created the
+				// revocation is itself audited. That reasoning conflated two different events: the sign-out
+				// record says a user ended their session, while THIS record says somebody is still presenting
+				// that credential afterwards - which is the signal that a token was copied before the sign-out
+				// and is being replayed. Only the second is evidence of an attack, and it was the one not being
+				// kept. The record is REQUIRED here rather than optional, because a revoked token that still
+				// validates cryptographically is the single strongest indicator of theft this validator can see.
+				//
+				// The volume objection was real and is answered rather than ignored: the write goes through
+				// SecurityAuditLog.RecordRateLimitedAudit, which admits at most one record per minute for this
+				// source and reports everything it withheld as suppressed_by_rate_limit, so a caller looping on
+				// one revoked token produces evidence OF a loop instead of a row per request. The session
+				// identifier is deliberately not recorded - see RecordRevokedSessionReplay.
 				var jwtSecurityToken = validatedToken as JwtSecurityToken;
 				if (jwtSecurityToken == null)
 					return null;
 
 				Guid sessionId = ReadSessionIdentifierClaim(jwtSecurityToken.Claims?.ToList());
-				if (sessionId == Guid.Empty || SessionRevocationService.IsSessionIdentifierRevoked(sessionId))
+				if (sessionId == Guid.Empty)
 					return null;
+
+				if (SessionRevocationService.IsSessionIdentifierRevoked(sessionId))
+				{
+					RecordRevokedSessionReplay(jwtSecurityToken);
+					return null;
+				}
 
 				return jwtSecurityToken;
 			}
@@ -841,19 +948,49 @@ namespace WebVella.Erp.Web.Services
 			//     this validator for EVERY request carrying an Authorization header, so a notifying log here would be
 			//     an attacker-triggered mail bomb and DoS amplifier rather than a fix.
 			// (2) Rate-bounded - each write costs a BaseService construction plus a database insert, so a flood must
-			//     produce evidence of a flood instead of a flood of evidence.
+			//     produce evidence of a flood instead of a flood of evidence. Bounded PER FAILURE CATEGORY, and
+			//     with the withheld volume counted: review finding OBS-09 records why a single global window was
+			//     a blind spot rather than a limit, and tokenValidationLogSlots records why the exception type is
+			//     the right partition key.
 			// (3) Exception type and a DERIVED description only - never the raw token, which is a bearer credential,
 			//     never a stack trace, and (P4-07) never the raw exception message, because IdentityModel composes
 			//     that message out of the rejected token's own claim values.
 			try
 			{
+				// CLR metadata, never payload text - see tokenValidationLogSlots for why the key may not be
+				// derived from the request or from the rejected token.
+				var failureCategory = ex == null ? "none" : ex.GetType().FullName;
+
 				var writeLogEntry = false;
+				var suppressedOccurrences = 0;
+				TokenValidationReportSlot slot;
 				lock (tokenValidationLogLock)
 				{
-					if (DateTime.UtcNow >= tokenValidationLogLastWrittenUtc.AddMinutes(TOKEN_VALIDATION_LOG_INTERVAL_MINUTES))
+					if (!tokenValidationLogSlots.TryGetValue(failureCategory, out slot))
 					{
-						tokenValidationLogLastWrittenUtc = DateTime.UtcNow;
+						slot = new TokenValidationReportSlot { LastWrittenUtc = DateTime.MinValue };
+						tokenValidationLogSlots.Add(failureCategory, slot);
+					}
+
+					if (DateTime.UtcNow >= slot.LastWrittenUtc.AddMinutes(TOKEN_VALIDATION_LOG_INTERVAL_MINUTES))
+					{
+						slot.LastWrittenUtc = DateTime.UtcNow;
 						writeLogEntry = true;
+
+						// Read and cleared under the same lock that claims the window, so a concurrent
+						// suppression cannot be counted into a record that has already been composed and then
+						// lost when this one clears the counter. If the write below fails the count is restored,
+						// so a database outage never erases the evidence of what the rate limit hid.
+						suppressedOccurrences = slot.SuppressedOccurrences;
+						slot.SuppressedOccurrences = 0;
+					}
+					else
+					{
+						// OBS-09: the occurrence the rate limit withheld is COUNTED rather than dropped, which is
+						// what turns "one rejection was reported" into "one rejection was reported and n more
+						// occurred" - the difference between an operator seeing a probe and seeing a flood.
+						if (slot.SuppressedOccurrences < int.MaxValue)
+							slot.SuppressedOccurrences += 1;
 					}
 				}
 
@@ -869,15 +1006,36 @@ namespace WebVella.Erp.Web.Services
 					// loss recorded concurrently by another request is carried forward instead of being discarded.
 					var unreportedWriteFailures = Volatile.Read(ref tokenValidationAuditWriteFailures);
 					var details = SanitizeForLog(DescribeTokenValidationFailure(ex));
+					if (suppressedOccurrences > 0)
+					{
+						details = details + " | " + suppressedOccurrences.ToString(CultureInfo.InvariantCulture)
+							+ " further occurrence(s) of this failure category within the reporting interval are"
+							+ " represented by this entry.";
+					}
 					if (unreportedWriteFailures > 0)
 					{
 						details = details + " | " + unreportedWriteFailures.ToString(CultureInfo.InvariantCulture)
 							+ " earlier token-validation audit entr(ies) could not be persisted and are unrecorded.";
 					}
 
-					new LogService().Create(Diagnostics.LogType.Error, "AuthService:GetValidSecurityTokenAsync",
-						"JWT validation failed: " + ex.GetType().Name, details,
-						Diagnostics.LogNotificationStatus.DoNotNotify);
+					var persisted = SecurityAuditLog.Write(Diagnostics.LogType.Error,
+						"AuthService:GetValidSecurityTokenAsync",
+						"JWT validation failed: " + ex.GetType().Name, details);
+
+					if (!persisted)
+					{
+						// OBS-09: the suppressed volume this record was carrying has NOT been reported, so it is
+						// returned to the slot rather than lost with the failed write. Counted as a lost audit
+						// entry in the same breath, so the gap is visible in the next record that succeeds.
+						lock (tokenValidationLogLock)
+						{
+							if (suppressedOccurrences > 0 && slot.SuppressedOccurrences <= int.MaxValue - suppressedOccurrences)
+								slot.SuppressedOccurrences += suppressedOccurrences;
+						}
+
+						Interlocked.Increment(ref tokenValidationAuditWriteFailures);
+						return;
+					}
 
 					if (unreportedWriteFailures > 0)
 					{
@@ -885,54 +1043,74 @@ namespace WebVella.Erp.Web.Services
 					}
 				}
 			}
-			// An audit-logging failure must never escape and turn token validation into a server error, but the bare
-			// catch that previously enforced that also swallowed defects and left the loss of a required
-			// authorization-failure audit entry completely invisible. Only the storage failures this write can
-			// actually produce are caught, and each one is counted instead of discarded. Everything else - notably
-			// OutOfMemoryException, StackOverflowException, OperationCanceledException and SecurityException -
-			// propagates untouched. Writing the record reaches Services/LogService.cs:L29 -> Diagnostics/Log.cs:L53,
-			// which opens an Npgsql connection at Diagnostics/Log.cs:L55, inserts into system_log and then releases the
-			// connection; the DoNotNotify status above means the e-mail branch guarded at Services/LogService.cs:L20 is
-			// never entered, so no mail transport failure is possible here, and the plain-Exception throws in
-			// Database/DbConnection.cs:L189 and :L193 are unreachable because this path never begins a transaction on
-			// the connection it opens. Recording the loss cannot throw, so no catch clause can fail in turn.
-			catch (System.Data.Common.DbException)
-			{
-				// Npgsql surfaces every server-side and connection-level fault as NpgsqlException : DbException.
-				// Fully qualified because the platform declares an unrelated Database/DbException.cs of the same
-				// simple name, caught separately below; a future using directive must not silently repoint this.
-				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-			}
-			catch (WebVella.Erp.Database.DbException)
-			{
-				// The platform's own data-layer exception. Database/DbContext.cs:L81 raises it when a connection is
-				// released out of order, which the audit write can encounter while the request already holds one.
-				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-			}
-			catch (TimeoutException)
-			{
-				// Connection-pool exhaustion or command timeout while the database is saturated.
-				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-			}
-			catch (IOException)
-			{
-				// Transport failure writing to or reading from the database socket.
-				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-			}
+			// An audit-logging failure must never escape and turn token validation into a server error. That
+			// property is now supplied by SecurityAuditLog.Write, which reports a storage failure through its
+			// RETURN VALUE and cannot throw: it narrows its own handling to the six storage families this write
+			// can actually produce - Npgsql's DbException, the platform's own Database.DbException,
+			// TimeoutException, IOException, InvalidOperationException and the NullReferenceException that
+			// Diagnostics/Log.cs raises when the ambient DbContext is absent - counts each loss and emits an
+			// out-of-band trace signal. The six catch clauses this replaces were an exact duplicate of that
+			// list maintained here; keeping a second copy is how two failure-isolation policies drift apart,
+			// which is the defect review finding OBS-04 reports across this codebase. This clause therefore
+			// covers only what remains inside the try that is NOT the write itself - composing the description,
+			// neutralising it and updating the reporting slot - none of which touches storage. Everything
+			// outside that set, notably OutOfMemoryException, StackOverflowException, OperationCanceledException
+			// and SecurityException, still propagates untouched, because a defect here is a defect and must not
+			// be silently absorbed.
 			catch (InvalidOperationException)
 			{
-				// Connection or transaction in an unusable state; also covers ObjectDisposedException, which derives
-				// from it, when the request's database scope has already been torn down.
+				// The one non-storage fault the retained code can raise: a reporting slot mutated concurrently
+				// through a path that did not take the lock would surface here rather than as a 500 on a request
+				// that merely presented a bad token. Counted, never discarded, so the loss of a required
+				// authorization-failure audit entry is visible in the next record that succeeds.
 				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
 			}
-			catch (NullReferenceException)
-			{
-				// Narrowly justified: JwtMiddleware runs this validator for every request carrying an Authorization
-				// header, including requests handled before or after the ERP database scope exists, and
-				// Diagnostics/Log.cs:L55 dereferences the ambient DbContext.Current without a null guard. That is an
-				// expected environmental condition on this path, not a defect in the code being audited.
-				Interlocked.Increment(ref tokenValidationAuditWriteFailures);
-			}
+		}
+
+		/// <summary>
+		/// Records that a cryptographically valid bearer token was refused because the session it names had
+		/// been revoked - the observable signature of a credential copied before its owner signed out.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - review finding OBS-06, CWE-778 (insufficient logging) and CWE-613 (insufficient
+		/// session expiration), OWASP A09:2021 and A07:2021.
+		/// <para>
+		/// This is the only place in the platform that can see the replay. The token passed signature, issuer,
+		/// audience and lifetime validation, so it is genuine and unexpired; the ONLY reason it is being
+		/// refused is that its session was ended. A legitimate client does not reach this state - it discards
+		/// its token on sign-out - so every record here means some other holder of that credential is still
+		/// using it.
+		/// </para>
+		/// <para>
+		/// WHAT IS RECORDED, AND WHAT IS WITHHELD. The subject claim is recorded, because knowing WHICH account
+		/// is being replayed is the whole forensic value; it is safe to record because the token's signature
+		/// has already been verified, so the claim is not attacker-chosen. Withheld: the raw token, which IS
+		/// the bearer credential; and the session identifier, which is the key the revocation store and both
+		/// bearer validators consult - persisting it into a table readable by any account with log access would
+		/// publish working revocation-store material and hand a reader the means to correlate sessions
+		/// (CWE-532). The event is fully identified without either of them.
+		/// </para>
+		/// <para>
+		/// RATE-BOUNDED THROUGH THE SHARED LEDGER. Replaying one token in a loop costs the caller nothing, so
+		/// an unbounded write here would be an anonymous amplifier aimed at the audit trail (CWE-779).
+		/// <c>RecordRateLimitedAudit</c> admits one record per minute for this source and reports the number it
+		/// withheld, so attack volume stays visible while row count does not scale with it. It is explicitly
+		/// non-notifying and cannot throw, which matters because this runs inside token validation: an audit
+		/// failure must never turn a refusal into a server error.
+		/// </para>
+		/// </remarks>
+		private static void RecordRevokedSessionReplay(JwtSecurityToken jwtToken)
+		{
+			// The subject claim is read defensively rather than assumed present: a token minted by an older
+			// build, or one whose claim set was trimmed, must still be refused and still be recorded, and a
+			// null here would otherwise turn the audit call into the very fault this method must not raise.
+			// Field() renders an absent value as an unambiguous placeholder.
+			var subject = jwtToken?.Claims?.FirstOrDefault(claim => claim.Type == ClaimTypes.NameIdentifier)?.Value;
+
+			SecurityAuditLog.RecordRateLimitedAudit("AuthService:GetValidSecurityTokenAsync",
+				Diagnostics.LogType.Error,
+				"Bearer token refused - the session it names was revoked",
+				"user_id=" + SecurityAuditLog.Field(subject, MaxLogDetailLength));
 		}
 
 		// H-02 (CWE-613, OWASP A07): absoluteSessionExpiryUtc is null only on a fresh credential authentication, where a

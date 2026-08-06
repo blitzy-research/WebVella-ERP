@@ -1827,21 +1827,47 @@ namespace WebVella.Erp.Database
 							singleWord = analizedText.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Count() == 1;
 						}
 
+						//THREAT ADDRESSED - finding H-09 residual, CWE-89 (improper neutralization of special
+						//elements used in an SQL command), OWASP A03:2021 Injection. The text-search
+						//configuration used to be written into the statement as SQL TEXT, inside hand-written
+						//single quotes, at both of the positions below. QueryObject.FtsLanguage is
+						//caller-supplied - EntityQuery.QueryFTS accepts it as a public string parameter - so a
+						//value carrying a quote closed that literal and continued the statement. Every
+						//first-party caller passes null today, which is why nothing exercised it, but the
+						//public query surface accepts any value and this was the last unparameterised operand
+						//left in this file.
+						//The value is now BOUND ONCE and cast at each use. A text-search configuration is a
+						//first-class type in PostgreSQL, so a bound parameter cast to regconfig reaches exactly
+						//the same overloads the quoted literal reached - to_tsvector(regconfig, text) and
+						//to_tsquery/plainto_tsquery(regconfig, text) - and returns identical rows for every
+						//legitimate configuration name. A value that names no configuration is now refused by
+						//the database instead of being able to alter the statement.
+						//The parameter is created ONLY when the statement will reference it, because Npgsql
+						//rejects a command carrying a parameter its text never uses. The 'simple' branches are
+						//unchanged and still emit a compile-time literal, so the default path is untouched.
+						string ftsLanguageCast = null;
+						if (!string.IsNullOrWhiteSpace(query.FtsLanguage))
+						{
+							string ftsLanguageParamName = paramName + "_ftscfg";
+							parameters.Add(new NpgsqlParameter(ftsLanguageParamName, query.FtsLanguage));
+							ftsLanguageCast = "CAST(" + ftsLanguageParamName + " AS regconfig)";
+						}
+
 						if (singleWord)
 						{
 							parameter.Value = parameter.Value + ":*"; //search for all lexemes starting with this word 
-							if (string.IsNullOrWhiteSpace(query.FtsLanguage))
+							if (ftsLanguageCast == null)
 								sql = sql + " to_tsvector( 'simple', " + completeFieldName + ") @@ to_tsquery( 'simple', " + paramName + ") ";
 							else
-								sql = sql + " to_tsvector( '" + query.FtsLanguage + "' , " + completeFieldName + ") @@ to_tsquery( '" + query.FtsLanguage + "' ," + paramName + ") ";
+								sql = sql + " to_tsvector( " + ftsLanguageCast + " , " + completeFieldName + ") @@ to_tsquery( " + ftsLanguageCast + " ," + paramName + ") ";
 
 						}
 						else
 						{
-							if (string.IsNullOrWhiteSpace(query.FtsLanguage))
+							if (ftsLanguageCast == null)
 								sql = sql + " to_tsvector( 'simple', " + completeFieldName + ") @@ plainto_tsquery( 'simple', " + paramName + ") ";
 							else
-								sql = sql + " to_tsvector( '" + query.FtsLanguage + "' , " + completeFieldName + ") @@ plainto_tsquery( '" + query.FtsLanguage + "' ," + paramName + ") ";
+								sql = sql + " to_tsvector( " + ftsLanguageCast + " , " + completeFieldName + ") @@ plainto_tsquery( " + ftsLanguageCast + " ," + paramName + ") ";
 						}
 						return;
 					}

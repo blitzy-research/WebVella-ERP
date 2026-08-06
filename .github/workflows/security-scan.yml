@@ -1,11 +1,12 @@
-# Security Scan - the continuous-enforcement half of the OWASP Top 10 (2021)
+﻿# Security Scan - the continuous-enforcement half of the OWASP Top 10 (2021)
 # remediation gate. Closes finding L-10 (no CI/CD: this repository previously
 # carried no workflow at all, only .github/FUNDING.yml) and satisfies Objective 5
 # of the security brief, "validate remediation through automated scanning".
 #
 # The build-level half of the gate is the repository-root Directory.Build.props
 # (NuGetAudit, NuGetAuditMode=all, NuGetAuditLevel=low, NU1900-NU1905 promoted to
-# build errors, EnableNETAnalyzers, AnalysisLevel=latest-recommended). This
+# build errors, EnableNETAnalyzers, AnalysisLevel=latest-recommended,
+# AnalysisLevelSecurity=latest-all, and CA3001-CA3012 in NoWarn). This
 # workflow deliberately restates none of those properties: every project inherits
 # them, so the gate cannot drift between a local build and CI. NU1900 and NU1905
 # are in that promotion list because an audit that could not obtain a
@@ -20,10 +21,17 @@
 #   Gate 1 SAST            -> the analyzer-enabled build.
 #   Gate 2 Dependency scan -> the auditing restore, corroborated by an explicit
 #                             vulnerable-package listing.
-#   Gates 1 and 2 cover 19 of the 19 projects on every run: every tracked .csproj
-#   is a member of WebVella.ERP3.sln, so the solution-scoped steps reach all of
-#   them, and a membership assertion fails the job if that ever stops being true.
-#   See the CI-COVERAGE NOTE at the foot of this file.
+#   Gates 1 and 2 cover 19 of the 19 projects on every run, BY TWO ROUTES rather
+#   than one: WebVella.ERP3.sln enumerates 17 of them, which the solution-scoped
+#   steps reach in a single command each, and the two Blazor WebAssembly projects
+#   that are NOT solution members are covered by their own named restore, build
+#   and advisory steps. A membership assertion fails the job if a tracked project
+#   is in neither set, or in both. Review finding OBS-07 recorded that this
+#   paragraph previously claimed every tracked .csproj was a solution member,
+#   which contradicted both the assertion it described and the CI-COVERAGE NOTE at
+#   the foot of this file. 19 of 19 is the coverage; 17 of 19 is the solution, and
+#   the two numbers are not interchangeable. See that note for why the solution is
+#   deliberately not widened.
 #   Gate 3 Secrets scan    -> the plain-shell signature sweep.
 #   Gate 4 Test suite      -> VACUOUS BY CONSTRUCTION. No automated test project,
 #                             test-framework package reference or executable test
@@ -90,12 +98,28 @@ on:
   # remediation's minimal change surface.
   push:
     branches: [master]
+    # A version tag is the repository's release signal, and it is what switches
+    # Gate 5 from REPORTING unproven required scenarios to BLOCKING on them. Both
+    # behaviours are needed and they are not the same: an ordinary push must not
+    # be permanently red because nineteen scenarios need a live PostgreSQL
+    # instance, a browser and an SMTP server; a release must not be permitted
+    # while those scenarios are unproven. Separating them by event is what lets
+    # each be strict about the right thing.
+    tags: ['v*']
   pull_request:
     branches: [master]
   # Lets a maintainer re-baseline the scan evidence on demand: after a dependency
   # or configuration change, or to re-audit an unchanged tree against a changed
-  # advisory database.
+  # advisory database. `release_candidate` opts a manual run into the same
+  # blocking behaviour a tag push gets, so release readiness can be tested
+  # BEFORE the tag is cut rather than discovered by a failing tag build.
   workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: 'Treat this run as a release candidate - unproven REQUIRED manual scenarios become fatal rather than reported'
+        type: boolean
+        required: false
+        default: false
 
 # Authorization Enforcement standard, "deny-by-default": the CI token receives
 # the least privilege that still permits a checkout. No write scope is granted,
@@ -172,7 +196,8 @@ jobs:
           persist-credentials: false
 
       # L-07: the SDK version is pinned in global.json. Both the NuGetAudit mode
-      # default and the `latest-recommended` analyzer rule set vary by toolchain
+      # default and both analyzer rule sets - `latest-recommended` generally and
+      # `latest-all` for the Security category - vary by toolchain
       # version, so an unpinned toolchain is a non-reproducible gate. Reading the
       # pin from the file instead of restating it here means the workflow and the
       # pin can never drift apart. (global.json carries `//` comments;
@@ -515,8 +540,13 @@ jobs:
       # Gate 1 substitute - the .NET security analyzers stand in for the
       # non-installable external SAST engine. The enabled rule set is defined
       # entirely by Directory.Build.props at the repository root
-      # (EnableNETAnalyzers with AnalysisLevel=latest-recommended); no analyzer
-      # flag is passed here, so that one file stays the single source of truth.
+      # (EnableNETAnalyzers, AnalysisLevel=latest-recommended and
+      # AnalysisLevelSecurity=latest-all, less the CA3001-CA3012 taint family in
+      # NoWarn); no analyzer flag is passed here, so that one file stays the single
+      # source of truth. The category-scoped security level is what arms the query,
+      # deserialization, hard-coded key, initialisation-vector and token-validation
+      # families that Gate 1's criterion names and that the general level leaves
+      # off.
       # --no-restore keeps this a pure build of what was just restored, so a
       # hidden restore cannot mask a graph problem.
       #
@@ -546,37 +576,141 @@ jobs:
       #    green run means, so both stop the job for a deliberate decision rather
       #    than being absorbed silently.
       #
-      # 2. NO INCREASE over the enumerated baseline for the four security families
-      #    that actually execute at this analysis level. Their counts were measured
-      #    against this exact configuration - CA5350, CA5359 and CA5364 at zero,
-      #    CA5351 at five - so a zero baseline is a hard "must stay zero" and the
-      #    CA5351 baseline is the two documented accepted residuals of C-03. They
-      #    are neither promoted nor suppressed: a blanket NoWarn would hide FUTURE
-      #    violations too, which is the opposite of a gate. A genuine fix that
-      #    lowers a count should lower the number here in the same commit; the
-      #    ratchet only ever tightens.
+      # 2. NO INCREASE over the enumerated baseline for the TWELVE security
+      #    families that execute under this configuration. Every count was
+      #    measured against it - EnableNETAnalyzers with
+      #    AnalysisLevel=latest-recommended AND AnalysisLevelSecurity=latest-all,
+      #    CA3001-CA3012 in NoWarn - on a full non-incremental solution build
+      #    emitting 3,093 warnings: CA2100 at 20, CA2326 at 20,
+      #    CA2328 at 9, CA5351 at 5, CA5362 at 1, and CA2327, CA5350, CA5359,
+      #    CA5364, CA5390, CA5401 and CA5404 at zero. A zero baseline is a hard
+      #    "must stay zero"; the non-zero ones are the reviewed residuals Gate 1
+      #    enumerates and justifies pair by pair. Nothing is promoted and nothing
+      #    is suppressed: a blanket NoWarn would hide FUTURE violations too, which
+      #    is the opposite of a gate. A genuine fix that lowers a count should
+      #    lower the number here in the same commit; the ratchet only ever
+      #    tightens.
       #
-      #    Only these four are listed because only these four run. CA2100, CA2326,
-      #    CA2328, CA5362, CA5382-CA5383, CA5390, CA5401-CA5402, CA5404 and the
-      #    CA3001-CA3012 taint family are all disabled at latest-recommended -
-      #    verified by probe against deliberate violations - so baselining them
-      #    here would record a count of zero that no analyzer ever measured. That
-      #    is exactly the falsely-green evidence this workflow exists to prevent,
-      #    so they are omitted and their coverage gap is carried in the risk
-      #    register instead.
+      #    CORRECTION OF RECORD - THIS LIST USED TO HOLD FOUR ENTRIES, and the
+      #    reason given was that only four security rules run at
+      #    latest-recommended. That was true of the level, and it made Gate 1
+      #    unable to substantiate its own criterion, which names eleven families.
+      #    The fix was to arm the category rather than to keep narrating the gap:
+      #    AnalysisLevelSecurity=latest-all in Directory.Build.props turns the
+      #    Security category on through a configuration the SDK ships, and the
+      #    positive control proves each newly baselined rule actually fires
+      #    against a deliberate violation - so none of these zeros is a count no
+      #    analyzer measured.
+      #
+      #    STILL OMITTED, deliberately and for two different reasons. CA3001-
+      #    CA3012 are armed by the category but excluded through NoWarn because,
+      #    untuned, they do not terminate on this repository - measured: no output
+      #    for over thirty-five minutes with 3 of 17 projects done. CA5382, CA5383
+      #    and CA5402 ARE armed but no probe in this environment has made them
+      #    fire, so baselining them at zero would be an unverifiable claim; that
+      #    residual gap is carried in the risk register rather than dressed up as
+      #    coverage.
       #
       # 3. LIVENESS. Properties 1 and 2 are both satisfied by a build that
       #    compiled nothing, so the total CA diagnostic count across ALL
       #    categories is asserted to be non-zero. That oracle is deliberately not
-      #    the security baselines: three of the four are legitimately zero, and
-      #    the fourth could legitimately reach zero if the C-03 residuals were
-      #    ever refactored, at which point a security-only oracle would start
-      #    failing on a correct tree.
+      #    the security baselines: half of them are legitimately zero, and every
+      #    non-zero one could legitimately reach zero if its residuals were ever
+      #    refactored, at which point a security-only oracle would start failing
+      #    on a correct tree.
       #
       # Counting note, learned the hard way: with parallel MSBuild nodes, -v:n
       # prefixes lines with "N>" and the SAME diagnostic appears both prefixed
       # and bare, which double-counts every violation. The prefix is stripped and
       # the triples are deduplicated on file+line+rule before comparison.
+      # ---- shared failure-log redactor -------------------------------------
+      # THREAT ADDRESSED: a gate that publishes what it is policing. Every
+      # `tail` in this job prints into the run log, which is world-readable for a
+      # public repository, and into artifacts retained for thirty days. The tails
+      # that matter are the FAILURE ones, and a failure log is exactly where a
+      # connection string, a signing key, an absolute runner path, a hostname or
+      # an internal stack frame ends up: a startup log that failed for a reason
+      # other than the expected fail-fast message may quote the configuration it
+      # was handed, and a publish or restore log carries absolute paths and, for a
+      # private feed, credentials in a URL.
+      #
+      # WHAT IT DOES, and equally what it does not. It substitutes the VALUE half
+      # of the shapes the Gate 3 sweep already recognises - key/value assignments
+      # for credential-named keys, credential-bearing URLs, ADO.NET connection
+      # strings, PEM blocks, cloud access keys and bearer or JWT-shaped tokens -
+      # and it rewrites the runner workspace path to a placeholder. It keeps the
+      # KEY, the file name and the diagnostic text, because those are what make a
+      # tail useful for triage. It is a redactor, not a detector: it reduces what
+      # a failure tail can leak, and the authoritative assertion that no
+      # credential exists in the tree remains Gate 3.
+      #
+      # WHY IT IS SOURCED RATHER THAN COPIED. It is used by four steps. Written
+      # inline four times it would drift, and a redactor that is right in three
+      # places out of four is the shape of an accidental disclosure.
+      - name: Define the failure-log redactor
+        run: |
+          cat > .gate-redact.sh <<'REDACT'
+          # Usage: redact_tail <file> [lines]
+          redact_tail() {
+            _rf="$1"; _rn="${2:-30}"
+            if [ ! -f "$_rf" ]; then
+              printf '  (log %s is absent, nothing to show)\n' "$_rf"
+              return 0
+            fi
+            tail -n "$_rn" "$_rf" | sed -E \
+              -e 's#(-----BEGIN[A-Z ]*PRIVATE KEY-----).*#\1[REDACTED]#g' \
+              -e 's#(AKIA[0-9A-Z]{16})#[REDACTED-ACCESS-KEY]#g' \
+              -e 's#(xox[baprs]-)[A-Za-z0-9-]{10,}#\1[REDACTED]#g' \
+              -e 's#(gh[pousr]_)[A-Za-z0-9]{20,}#\1[REDACTED]#g' \
+              -e 's#(AIza)[0-9A-Za-z_-]{20,}#\1[REDACTED]#g' \
+              -e 's#(eyJ[A-Za-z0-9_-]{6,})\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}#[REDACTED-JWT]#g' \
+              -e 's#([Bb]earer )[A-Za-z0-9._~+/=-]{16,}#\1[REDACTED]#g' \
+              -e 's#((postgres(ql)?|mysql|mongodb(\+srv)?|amqp|redis)://[^:@[:space:]/]+:)[^@[:space:]]+@#\1[REDACTED]@#g' \
+              -e 's#([Pp]assword=)[^;"'"'"'[:space:]<]+#\1[REDACTED]#g' \
+              -e 's#([Pp]assword|[Pp]wd|ConnectionString|EncryptionKey|SigningKey|SecretKey|ApiKey|ClientSecret|PrivateKey|AccessKey)("?[[:space:]]*[:=][[:space:]]*"?)[^",;[:space:]][^",;]*#\1\2[REDACTED]#g' \
+              -e "s#${GITHUB_WORKSPACE:-$PWD}#<workspace>#g" \
+              | sed 's/^/  /'
+          }
+          REDACT
+          # A redactor that silently stops working is worse than none, because the
+          # tails keep printing and nobody notices. It is self-tested here against
+          # planted synthetic values, and the step FAILS if any survives.
+          #
+          # THE FIXTURES ARE BASE64, AND THAT IS NOT TIDINESS - IT WAS MEASURED.
+          # Written as plain text they made the Gate 3 sweep match THIS WORKFLOW
+          # FILE: running the whole gate sequence locally, the sweep reported five
+          # locations - layer L2A three times, L2B once and L2C once - every one of
+          # them a line of this self-test. The only alternatives would have been to
+          # exclude this file by path, which is the one allowance every layer of
+          # that sweep refuses, or to weaken a pattern. Encoding keeps the redactor
+          # honest AND keeps every credential-shaped literal out of the repository,
+          # which is exactly the reasoning the Gate 3 self-test already records for
+          # its own fixtures. Every value is synthetic and none is or ever was live.
+          . ./.gate-redact.sh
+          fx="$(mktemp)"
+          printf '%s' 'U2VydmVyPWRiLmludGVybmFsO0RhdGFiYXNlPWVycDtQYXNzd29yZD1Ob3RBUmVhbFZhbHVlMTsKc3RyaW5nIFNpZ25pbmdLZXkgPSAiTm90QVJlYWxWYWx1ZTROb3RBUmVhbFZhbHVlNCI7CkNvbm5lY3Qgd2l0aCBwb3N0Z3Jlc3FsOi8vZXJwdXNlcjpOb3RBUmVhbFZhbHVlMkBkYi5pbnRlcm5hbDo1NDMyL2VycApBdXRob3JpemF0aW9uOiBCZWFyZXIgQUFBQUJCQkJDQ0NDREREREVFRUVGRkZGMDAwMDExMTEKQUtJQUlPU0ZPRE5ON0VYQU1QTEUKLS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLU1JSUVvd0lCQUFLQ0FRRUEK' | base64 -d > "$fx"
+          printf '%s\n' "$PWD/some/path/File.cs(1,1): warning CS0000" >> "$fx"
+          out="$(redact_tail "$fx" 20)"
+          printf '%s\n' "$out"
+          leaked=0
+          probes="$(printf '%s' 'Tm90QVJlYWxWYWx1ZTEKTm90QVJlYWxWYWx1ZTROb3RBUmVhbFZhbHVlNApOb3RBUmVhbFZhbHVlMgpBQUFBQkJCQkNDQ0NERERERUVFRUZGRkYwMDAwMTExMQpBS0lBSU9TRk9ETk43RVhBTVBMRQpNSUlFb3dJQkFBS0NBUUVBCg==' | base64 -d)"
+          for probe in $probes; do
+            case "$out" in
+              *"$probe"*) echo "::error::The failure-log redactor let a planted value survive, so every failure tail in this job may publish a credential. Fix the pattern that should have covered it."; leaked=1 ;;
+            esac
+          done
+          case "$out" in
+            *"$PWD"*) echo "::error::The failure-log redactor did not rewrite the workspace path, so absolute runner paths would be published."; leaked=1 ;;
+          esac
+          # And the other direction: it must not redact so hard that a tail is
+          # useless for triage.
+          case "$out" in
+            *'warning CS0000'*) : ;;
+            *) echo "::error::The failure-log redactor removed the diagnostic text as well as the value, which makes every failure tail unusable for triage."; leaked=1 ;;
+          esac
+          [ "$leaked" -eq 0 ] || exit 1
+          echo 'Failure-log redactor self-test passed - every planted value was substituted, the workspace path was rewritten, and the diagnostic text survived.'
+
       - name: Build with analyzers enabled and ratchet the security diagnostic counts
         run: |
           set -o pipefail
@@ -584,7 +718,7 @@ jobs:
           # --no-incremental is LOAD-BEARING, not tidiness. Analyzers run only
           # when CoreCompile runs, and CoreCompile is skipped for any project whose
           # outputs are already up to date. Measured: with a warm obj/ this build
-          # reported 1 warning instead of the 3,046 a full build emits, every
+          # reported 1 warning instead of the 3,093 a full build emits, every
           # baselined family counted 0, and the step printed "IMPROVED ... now 0"
           # and passed - a gate that had inspected nothing while reporting
           # success. Property 3 below is what now catches that. A restored
@@ -620,12 +754,36 @@ jobs:
 
           # Property 2 - the executing security families must not grow.
           # Format: <rule>=<baseline count>. Every count below was MEASURED against
-          # this exact configuration (EnableNETAnalyzers with
-          # AnalysisLevel=latest-recommended, no global analyzer config), on a full
-          # non-incremental solution build emitting 3,046 warnings in total. Only
-          # rules that provably execute at this level are listed: a rule that never
-          # runs would record a zero no analyzer ever measured, which is precisely
-          # the falsely-green evidence this job exists to prevent.
+          # this exact configuration - EnableNETAnalyzers with
+          # AnalysisLevel=latest-recommended AND AnalysisLevelSecurity=latest-all,
+          # with CA3001-CA3012 in NoWarn, and no global analyzer config in the
+          # repository - on a full non-incremental solution build emitting 3,093
+          # warnings in total. The total is NOT asserted anywhere in this job - only
+          # the per-rule baselines below are - because it moves whenever the
+          # pre-existing backlog is touched by an unrelated edit. Only rules that provably execute
+          # under that configuration are listed: a rule that never runs would
+          # record a zero no analyzer ever measured, which is precisely the
+          # falsely-green evidence this job exists to prevent.
+          #
+          # THE NINE ADDED FAMILIES ARE THE WHOLE POINT OF THIS REVISION. An
+          # earlier revision baselined only CA5350/CA5351/CA5359/CA5364, because
+          # only those four execute at latest-recommended. Gate 1's stated
+          # criterion names eleven families - query construction, insecure
+          # deserialization, hard-coded key, non-random IV, disabled
+          # token-validation checks, cookie security and the rest - so a
+          # four-family ratchet could not substantiate it. AnalysisLevelSecurity
+          # above arms the category; these baselines are what makes the arming
+          # observable, and the positive control below is what proves each added
+          # rule genuinely runs rather than merely being listed here.
+          #
+          # A ZERO IS ONLY TRUSTWORTHY WHEN SOMETHING ELSE PROVES THE RULE RAN.
+          # CA2327/CA5390/CA5401/CA5404 sit at zero on this tree, and the positive
+          # control asserts every one of them fires against a deliberate
+          # violation. CA5382/CA5383/CA5402 are deliberately ABSENT from this list
+          # rather than baselined at zero: they are armed by the category widening
+          # but no probe in this environment has made them speak, so a zero for
+          # them would be an unverifiable claim. That gap is recorded in
+          # docs/security/risk-register.md instead of being papered over here.
           #
           # Counting has to defeat TWO independent spellings of the same
           # diagnostic, and getting it wrong fails this gate on a clean tree.
@@ -642,7 +800,7 @@ jobs:
           # (file, line, column, rule).
           total_actual=0
           total_baseline=0
-          for entry in CA5350=0 CA5351=5 CA5359=0 CA5364=0; do
+          for entry in CA2100=20 CA2326=20 CA2327=0 CA2328=9 CA5350=0 CA5351=5 CA5359=0 CA5362=1 CA5364=0 CA5390=0 CA5401=0 CA5404=0; do
             rule=${entry%%=*}
             baseline=${entry##*=}
             # The grep is guarded because it exits 1 whenever a family is
@@ -678,11 +836,10 @@ jobs:
           # grow, if the analyzers never ran.
           #
           # The oracle is the total CA diagnostic count across ALL categories, not
-          # the security baselines. Three of the four baselines above are
-          # legitimately zero and the fourth could legitimately reach zero if the
-          # C-03 residuals were ever refactored, so a security-only oracle would
-          # start failing on a correct tree - it would be measuring the code rather
-          # than the tool. The all-category count cannot be zero on a real build of
+          # the security baselines. Half the baselines above are legitimately zero
+          # and every non-zero one could legitimately reach zero if its residuals
+          # were ever refactored, so a security-only oracle would start failing on
+          # a correct tree - it would be measuring the code rather than the tool. The all-category count cannot be zero on a real build of
           # this repository: roughly 700 pre-existing source files carry a large
           # legacy code-quality backlog, so zero means CoreCompile was skipped.
           ca_total=$(sed -E 's/^[[:space:]]*[0-9]+>//' analyzer-build.txt \
@@ -768,8 +925,10 @@ jobs:
           done
           echo "Gate 2 passed - no High or Critical advisory in the dependency graph of the solution or of the 2 tracked projects outside it."
 
-      # Gates 1 and 2 applied per project to the two WebAssembly projects, as a
-      # redundant second layer over the solution-scoped steps that already cover them.
+      # Gates 1 and 2 applied per project to the two WebAssembly projects, which are
+      # NOT solution members: these steps are the ONLY coverage those two projects
+      # have, not a redundant second layer, and deleting them would drop them out of
+      # the gate entirely. 17 solution members + these 2 = the 19 tracked projects.
       # Each dotnet invocation takes exactly ONE project: passing two project arguments
       # to `dotnet build` fails with MSB1008, so the loop is a requirement of the tool.
       #
@@ -901,20 +1060,22 @@ jobs:
           exit "$status"
 
       # Gates 1 and 2 driven per project for WebVella.Erp.WebAssembly/Server and
-      # /Shared. Both ARE solution members, so the solution-scoped steps above
-      # already cover them; these steps are a deliberate redundant layer, kept
-      # because a project silently leaving the scan graph is the shape of H-19
-      # repeating itself one level up - a project outside the graph is one whose
-      # advisories are never reported, so a gate that omits it while claiming full
-      # coverage fails OPEN. H-18 (CWE-1104, A06) landed in exactly these two
-      # projects, which were retargeted off the end-of-life net7.0 line, so an
-      # independent per-project proof on every push is worth its cost here.
+      # /Shared. Neither is a solution member - `dotnet sln list` enumerates 17 of
+      # the 19 tracked projects - so the solution-scoped steps above do NOT reach
+      # them and these steps are their ONLY coverage. That is exactly the shape of
+      # H-19 one level up: a project outside the scan graph is one whose advisories
+      # are never reported, so a gate that omits it while claiming full coverage
+      # fails OPEN. H-18 (CWE-1104, A06) landed in precisely these two projects,
+      # which were retargeted off the end-of-life net7.0 line, so their advisories
+      # must be proved on every push. Do not remove these steps as "redundant":
+      # nothing else in this file gates these two projects.
       #
       # Each project is driven with its own restore, its own analyzer build and
       # its own advisory listing. Directory.Build.props is directory-scoped
       # rather than solution-scoped, so both inherit the identical gate
       # (NuGetAudit, NuGetAuditMode=all, NuGetAuditLevel=low, the NU1900-NU1905
-      # promotion, EnableNETAnalyzers, AnalysisLevel=latest-recommended) with
+      # promotion, EnableNETAnalyzers, AnalysisLevel=latest-recommended,
+      # AnalysisLevelSecurity=latest-all, CA3001-CA3012 in NoWarn) with
       # nothing restated here. No analyzer flag and no warnings-as-errors switch
       # is passed, matching the solution build exactly. Each project is passed on
       # its own invocation because `dotnet build` rejects two project arguments.
@@ -1113,27 +1274,84 @@ jobs:
       - name: Gate 1 - fail on unreviewed security analyzer diagnostics
         run: |
           # ---- the accepted residuals, one per (rule, file) pair ----
-          # CA5351 "do not use broken cryptographic algorithms". The two
-          #   documented accepted residuals of finding C-03: the legacy
-          #   password-verification path, which exists precisely so
-          #   already-stored credentials keep working across the hash migration,
-          #   and the general-purpose digest helpers, which are outside the
-          #   remediated key handling.
           #
-          # THE LIST HOLDS ONLY RULES THAT EXECUTE. An earlier revision also
-          # pre-accepted CA2100, CA2326, CA2328 and CA5362 pairs. Those four rules
-          # are disabled at AnalysisLevel=latest-recommended - verified by probe
-          # against deliberate violations - so every one of those entries recorded
-          # an acceptance for a diagnostic no analyzer in this job can emit. Worse
-          # than noise: if the analyzer scope were ever widened, twenty-one real
-          # diagnostics would have arrived PRE-ACCEPTED without anyone reviewing
-          # them. Their engineering justifications are preserved where they belong,
-          # in docs/security/risk-register.md, alongside the record that no
-          # automated gate currently covers those rules at all.
+          # EVERY PAIR BELOW WAS MEASURED, NOT ANTICIPATED. The list was rebuilt
+          # from a full non-incremental solution build under the configuration this
+          # step asserts: 55 distinct Security-category diagnostics across 5 rules,
+          # reducing to the 21 (rule, file) pairs enumerated here. An earlier
+          # revision listed only the two CA5351 pairs, because only four Security
+          # rules executed at all; the other seventeen pairs were real diagnostics
+          # that no gate could see. Arming the category made them visible, and
+          # every one of them is reviewed here rather than suppressed.
+          #
+          # THE ACCEPTANCE TEST APPLIED TO EACH PAIR was: does the diagnostic
+          # describe behaviour the remediation deliberately keeps, or a
+          # pre-existing site outside the remediated behaviour? A pair that met
+          # neither test would have been fixed, not listed. None did.
+          #
+          # CA2100 "review SQL queries for security vulnerabilities" - 20
+          #   diagnostics, 8 files. Every one is a SCHEMA IDENTIFIER interpolated
+          #   into DDL or into a dynamically shaped statement; the rule cannot see
+          #   that the identifier is validated and quoted first. The remediation's
+          #   answer to identifier injection is DbIdentifier validate-and-quote,
+          #   applied at the concatenation sites, and the VALUES at every one of
+          #   these sites are already bound parameters. Deleting the concatenation
+          #   is not available: the platform generates entity tables and columns at
+          #   run time, so the identifier is the part that must vary. Files:
+          #   CodeGenService.cs, DbConnection.cs, DbFileRepository.cs,
+          #   DbRepository.cs, EqlCommand.cs, JobDataService.cs, LogService.cs,
+          #   NotificationContext.cs.
+          # CA2326 / CA2327 / CA2328 "do not use insecure TypeNameHandling" - 29
+          #   diagnostics, 6 files. The rule fires on the mere PRESENCE of a
+          #   non-None TypeNameHandling value. The sanctioned mitigation - an
+          #   allow-listing SerializationBinder - is exactly what the remediation
+          #   attached at these sites (ErpSerializationBinder, whose framework
+          #   types are pinned to Type identity, not to names), and the rule does
+          #   not model binders. Removing type handling instead would break
+          #   deserialisation of already-persisted job arguments and entity and
+          #   relation payloads that carry type discriminators, which the
+          #   preservation requirement forbids. Files: CodeGenService.cs,
+          #   DbEntityRepository.cs, DbRelationRepository.cs, JobDataService.cs,
+          #   JobProfile.cs, NotificationContext.cs.
+          # CA5351 "do not use broken cryptographic algorithms" - 5 diagnostics,
+          #   2 files. The documented accepted residuals of finding C-03: the
+          #   legacy password-verification path, which exists precisely so
+          #   already-stored credentials keep working across the hash migration
+          #   and which is reached only to verify-then-rehash, and the
+          #   general-purpose digest helpers, which are outside the remediated key
+          #   handling.
+          # CA5362 "potential reference cycle in deserialized object graph" - 1
+          #   diagnostic, 1 file. A self-referential query model, deserialised from
+          #   platform-generated content, not from request input.
+          #
+          # ADDING A PAIR HERE IS A REVIEW ACT, NOT AN EDIT. Any new pair needs a
+          # written justification in docs/security/risk-register.md in the same
+          # commit. Suppressing the rule, narrowing AnalysisLevelSecurity or
+          # lowering a severity instead is forbidden and is separately detected by
+          # the configuration assertions below.
           allow_list() {
             cat <<'ALLOW'
+          CA2100 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs
+          CA2100 WebVella.Erp.Plugins.SDK/Services/LogService.cs
+          CA2100 WebVella.Erp/Database/DbConnection.cs
+          CA2100 WebVella.Erp/Database/DbFileRepository.cs
+          CA2100 WebVella.Erp/Database/DbRepository.cs
+          CA2100 WebVella.Erp/Eql/EqlCommand.cs
+          CA2100 WebVella.Erp/Jobs/JobDataService.cs
+          CA2100 WebVella.Erp/Notifications/NotificationContext.cs
+          CA2326 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs
+          CA2326 WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs
+          CA2326 WebVella.Erp/Database/DbEntityRepository.cs
+          CA2326 WebVella.Erp/Database/DbRelationRepository.cs
+          CA2326 WebVella.Erp/Jobs/JobDataService.cs
+          CA2326 WebVella.Erp/Notifications/NotificationContext.cs
+          CA2328 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs
+          CA2328 WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs
+          CA2328 WebVella.Erp/Database/DbEntityRepository.cs
+          CA2328 WebVella.Erp/Database/DbRelationRepository.cs
           CA5351 WebVella.Erp/Utilities/CryptoUtility.cs
           CA5351 WebVella.Erp/Utilities/PasswordUtil.cs
+          CA5362 WebVella.Erp/Api/Models/QueryObject.cs
           ALLOW
           }
 
@@ -1141,6 +1359,37 @@ jobs:
             echo "::error::Gate 1 cannot run - analyzer-build.txt is absent, so no analyzer evidence exists to enforce. An assertion that cannot run is a failure, never a pass."
             exit 1
           fi
+
+          # THE PUBLISHED BUILD EVIDENCE - review finding OBS-07, CWE-532 (insertion of
+          # sensitive information into an externally accessible resource). The raw
+          # analyzer log is roughly 3 MB of MSBuild output in which every one of ~3,100
+          # diagnostics carries an ABSOLUTE runner path, and it used to be published as an
+          # artefact even though the comment on the publication step claimed it was
+          # withheld. Two problems, one document and one substantive: the comment named a
+          # file that does not exist ('analyzer-build.log'), and publishing the real file
+          # broadened internal-path exposure while burying the security signal in the
+          # pre-existing style backlog AAP 0.3.2 declines to refactor.
+          #
+          # This derived summary is published in its place. It carries the MSBuild result
+          # lines and the aggregate warning and error counts - the figures the audit report
+          # and remediation log actually cite - and NO file path of any kind, which is the
+          # property that makes it safe to publish. The raw log is still written locally and
+          # is still what every assertion in this step parses, so nothing is weakened: the
+          # change is to what LEAVES the runner.
+          grep -aE '^[[:space:]]*(Build succeeded|Build FAILED)|^[[:space:]]*[0-9,]+ (Warning|Error)\(s\)[[:space:]]*$' \
+            analyzer-build.txt > analyzer-build-summary.txt || true
+          if [ ! -s analyzer-build-summary.txt ]; then
+            echo "::error::Gate 1 - the analyzer build produced no recognisable MSBuild result line, so analyzer-build-summary.txt would be published empty and the row that cites it would prove nothing. Failing closed rather than publishing an empty evidence file."
+            exit 1
+          fi
+          # A path in the summary means the extraction above matched something it should
+          # not, which is the exposure this file exists to avoid. Fail closed rather than
+          # publish it.
+          if grep -qE '[/\\]' analyzer-build-summary.txt; then
+            echo "::error::Gate 1 - analyzer-build-summary.txt contains a path separator, so the path-free property that makes it publishable does not hold. Fix the extraction; do not publish it."
+            exit 1
+          fi
+          printf 'Published build evidence: %s summary line(s), no paths\n' "$(wc -l < analyzer-build-summary.txt)"
 
           # Prove the analyzers are actually configured rather than assuming it.
           # Both properties come from Directory.Build.props, which is the whole
@@ -1157,28 +1406,119 @@ jobs:
           level=$(dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
                     -getProperty:AnalysisLevel | tr -d '[:space:]')
           if [ "$level" != "latest-recommended" ]; then
-            echo "::error::Gate 1 - AnalysisLevel evaluates to '${level}' rather than 'latest-recommended', which is the level the remediation plan freezes for this gate and the level every baseline in this workflow was measured against. A NARROWER level silently stops rules running; a WIDER one makes the baselines and the allow-list stale, so a clean verdict would no longer be trustworthy either way. Restore the property in Directory.Build.props, or change it deliberately together with the baselines, the allow-list, the positive control and docs/security/risk-register.md."
+            echo "::error::Gate 1 - AnalysisLevel evaluates to '${level}' rather than 'latest-recommended', which is the general level every baseline in this workflow was measured against. A NARROWER level silently stops rules running; a WIDER one makes the baselines and the allow-list stale, so a clean verdict would no longer be trustworthy either way. Restore the property in Directory.Build.props, or change it deliberately together with the baselines, the allow-list, the positive control and docs/security/risk-register.md."
             exit 1
           fi
           printf 'AnalysisLevel = %s\n' "$level"
 
-          # NO GLOBAL ANALYZER CONFIG MAY BE PRESENT. A '.globalconfig' is the one
-          # mechanism that can silently change any rule's severity for all 19
-          # projects at once, and a per-rule severity block is outside the frozen
-          # scope of this gate. Asserting its absence is what keeps that claim
-          # true: re-introducing one - to promote a rule, to demote one, or to
-          # quieten a family - would change what every baseline below means while
-          # this job still reported green. The check reads the EFFECTIVE item list
-          # rather than just the repository root, so an untracked file or an
-          # explicit EditorConfigFiles item is caught too.
-          dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
-            -getItem:EditorConfigFiles > editorconfig-items.txt 2>&1 || true
-          if grep -qi 'globalconfig' editorconfig-items.txt; then
-            echo "::error::Gate 1 - a global analyzer configuration file is being loaded, but a per-rule analyzer severity is outside the frozen scope of this gate and every baseline here was measured without one. Its presence changes what a green run means. Remove it, or - if the widening is authorised - update Directory.Build.props, the baselines, the allow-list, the positive control and docs/security/risk-register.md in the same commit."
-            grep -i 'globalconfig' editorconfig-items.txt | sed 's/^/  /'
+          # THE SECURITY CATEGORY LEVEL IS THE ONE THAT MAKES THIS GATE MEAN
+          # ANYTHING, so it is asserted in its own right. Gate 1's criterion names
+          # eleven security families; nine of them ship DISABLED at
+          # latest-recommended, and only a category-scoped level arms them without
+          # introducing a repository-supplied per-rule severity file. If this
+          # property regresses to the default, the ratchet's twelve baselines
+          # silently collapse to four executing rules and eight unverifiable zeros
+          # while every step here still reports green - the exact failure this
+          # revision exists to remove.
+          seclevel=$(dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
+                    -getProperty:AnalysisLevelSecurity | tr -d '[:space:]')
+          if [ "$seclevel" != "latest-all" ]; then
+            echo "::error::Gate 1 - AnalysisLevelSecurity evaluates to '${seclevel}' rather than 'latest-all', so most of the Security rule category is not running and this gate cannot substantiate its own criterion. Nine of the eleven families Gate 1 names are disabled without it, and eight of the twelve baselines below would become zeros no analyzer ever measured. Restore the property in Directory.Build.props. Do not substitute AnalysisModeSecurity: the SDK prefers the level suffix, so the mode property is inert while AnalysisLevelSecurity carries a 'recommended' suffix - measured on this toolchain by reading the /analyzerconfig: argument the compiler actually received."
             exit 1
           fi
-          printf 'Global analyzer configs loaded: none\n'
+          printf 'AnalysisLevelSecurity = %s\n' "$seclevel"
+
+          # THE ONE EXCLUSION MUST STILL BE EXACTLY ONE FAMILY, AND STILL BE
+          # PRESENT. CA3001-CA3012 (interprocedural taint dataflow) are excluded
+          # for a measured TERMINATION reason: armed and untuned, the solution
+          # build produced no further output for over thirty-five minutes with 3 of
+          # 17 projects finished, because WebVella.Erp.Web compiles 395 Razor views
+          # into one compilation. Excluded, the same build takes about 106 seconds.
+          # Both directions are asserted: losing the exclusion hangs CI, and
+          # widening it to any other CA identifier would silence a family this gate
+          # claims to cover.
+          nowarn=$(dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
+                    -getProperty:NoWarn | tr -d '[:space:]')
+          printf 'NoWarn = %s\n' "$nowarn"
+          for taint in CA3001 CA3002 CA3003 CA3004 CA3005 CA3006 CA3007 CA3008 CA3009 CA3010 CA3011 CA3012; do
+            # MSBuild NoWarn is SEMICOLON-delimited, not comma-delimited. Getting
+            # this wrong made the guard fail on a correctly configured tree -
+            # measured: the property evaluated to ";CA3001;...;CA3012" and a
+            # comma-delimited test matched none of them, so the step reported the
+            # exclusion missing while it was plainly present. A guard that fails
+            # closed on a correct tree gets disabled, which is how the real check
+            # dies.
+            case ";${nowarn};" in
+              *";${taint};"*) ;;
+              *) echo "::error::Gate 1 - ${taint} is no longer excluded through NoWarn. The interprocedural taint family is armed by AnalysisLevelSecurity=latest-all and, untuned, it does not terminate on this repository - measured: no output for over thirty-five minutes with 3 of 17 projects done. Restore the exclusion in Directory.Build.props, or tune the family's cost properties and re-measure before removing it."; exit 1 ;;
+            esac
+          done
+          printf 'Taint family CA3001-CA3012: excluded, as measured and documented\n'
+          extra_ca=$(printf '%s' "$nowarn" | tr ';' '\n' \
+            | { grep -E '^CA[0-9]+$' || true; } \
+            | { grep -vE '^CA30(0[1-9]|1[0-2])$' || true; } | sort -u)
+          if [ -n "$extra_ca" ]; then
+            echo "::error::Gate 1 - a CA rule outside the measured taint exclusion has been added to NoWarn, which silences a security family this gate claims to cover while every step here still reports green. Remove it, or - if the exclusion is genuinely required - record it in docs/security/risk-register.md and move its baseline and allow-list entries in the same commit."
+            printf '%s\n' "$extra_ca" | sed 's/^/  SILENCED /'
+            exit 1
+          fi
+
+          # THE ANALYZER CONFIGURATION IS ASSERTED IN BOTH DIRECTIONS, and the
+          # previous single check could not do either.
+          #
+          # WHY THE PREVIOUS CHECK PROVED NOTHING, measured rather than reasoned:
+          # it ran `-getItem:EditorConfigFiles` with NO TARGET, which prints the
+          # item list as it stands after EVALUATION. The SDK adds every
+          # globalconfig inside a target that runs BeforeTargets="CoreCompile", so
+          # at evaluation time the list contains only the four repository
+          # '.editorconfig' files and never the word "globalconfig" at all. The
+          # grep therefore could not match whatever the compiler was actually
+          # given: it would have reported "loaded: none" even while the compiler
+          # loaded one, and it equally could not observe the SDK configuration this
+          # gate now DEPENDS on. Both halves are now asserted properly.
+          #
+          # Half one - NOTHING IN THIS REPOSITORY MAY SUPPLY PER-RULE SEVERITIES.
+          # A '.globalconfig' in the tree is the one mechanism that can silently
+          # change any rule's severity for all 19 projects at once, and per-rule
+          # ESCALATION remains outside this gate's scope. The tracked tree is what
+          # a clone receives, so that is what is asserted; the working tree is
+          # checked too, so an untracked file cannot slip past on a runner.
+          tracked_gc=$(git ls-files | { grep -iE '\.globalconfig$' || true; })
+          untracked_gc=$(find . -name '*.globalconfig' -not -path './.git/*' 2>/dev/null || true)
+          if [ -n "$tracked_gc" ] || [ -n "$untracked_gc" ]; then
+            echo "::error::Gate 1 - a global analyzer configuration file exists in this repository. Per-rule severity escalation is outside this gate's scope, and every baseline here was measured without one, so its presence changes what a green run means. Remove it, or - if the escalation is authorised - update Directory.Build.props, the baselines, the allow-list, the positive control and docs/security/risk-register.md in the same commit."
+            printf '%s\n%s\n' "$tracked_gc" "$untracked_gc" | { grep -v '^$' || true; } | sed 's/^/  /'
+            exit 1
+          fi
+          printf 'Repository-supplied global analyzer configs: none (tracked and untracked both checked)\n'
+
+          # Half two - THE SDK CONFIGURATION THIS GATE DEPENDS ON MUST ACTUALLY BE
+          # LOADED. Running the same query WITH -t:CoreCompile prints the effective
+          # list, which is what the compiler receives. Measured on this toolchain it
+          # contains analysislevel_<n>_recommended.globalconfig and
+          # analysislevelsecurity_<n>_all.globalconfig from the SDK's analyzer
+          # package. The second one IS the category widening; if it is absent, nine
+          # of the eleven families Gate 1 names are silent and eight baselines are
+          # meaningless. Asserting the property alone is not enough - this asserts
+          # the property took effect.
+          dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
+            -t:CoreCompile -getItem:EditorConfigFiles > editorconfig-items.txt 2>&1 || true
+          if ! grep -qE 'analysislevelsecurity_[0-9]+_all\.globalconfig' editorconfig-items.txt; then
+            echo "::error::Gate 1 - the compiler is NOT loading the SDK's Security 'all' analyzer configuration, so the category widening did not take effect however AnalysisLevelSecurity evaluates. Every zero baseline below would be a zero no analyzer measured. Check that AnalysisLevelSecurity=latest-all survives into the compilation and that the pinned SDK still ships analysislevelsecurity_*_all.globalconfig."
+            { grep -oE '[^"]*\.globalconfig' editorconfig-items.txt | sort -u | sed 's/^/  loaded: /'; } || true
+            exit 1
+          fi
+          # Any loaded globalconfig from OUTSIDE the SDK would be a per-rule
+          # severity source this gate has not measured, wherever it came from.
+          foreign_gc=$(grep -oE '"FullPath": "[^"]*\.globalconfig"' editorconfig-items.txt \
+            | sed 's/.*: "//;s/"$//' | sort -u \
+            | { grep -vE '/(sdk|packs|Sdks)/' || true; })
+          if [ -n "$foreign_gc" ]; then
+            echo "::error::Gate 1 - a global analyzer configuration file from outside the pinned SDK is being loaded into the compilation. It can change any rule's severity without appearing in this repository, which makes every baseline here unverifiable. Remove it, or record and measure it deliberately."
+            printf '%s\n' "$foreign_gc" | sed 's/^/  /'
+            exit 1
+          fi
+          printf 'SDK analyzer configs loaded: %s\n' "$(grep -oE '[^/"]*\.globalconfig' editorconfig-items.txt | sort -u | tr '\n' ' ')"
 
           # Derive the Security CATEGORY MEMBERSHIP from the pinned SDK rather than
           # transcribing it, so the parse cannot fall behind the analyzer package.
@@ -1190,6 +1530,10 @@ jobs:
           # of the build log next. Keeping the three separate is what stops a
           # silent gate: this step's job is to ensure no security diagnostic that
           # DID fire goes unreviewed, whatever subset of the category was active.
+          # That separation still matters now that the category is armed wholesale,
+          # because one family - CA3001-CA3012 - is deliberately excluded for a
+          # measured termination reason, so "member of the category" and "able to
+          # fire here" remain different sets and this step must not conflate them.
           cfg_dir="$(dotnet --info | sed -n 's/^[[:space:]]*Base Path:[[:space:]]*//p' | head -1)Sdks/Microsoft.NET.Sdk/analyzers/build/config"
           cat "$cfg_dir"/analysislevelsecurity_*_all.globalconfig 2>/dev/null \
             | sed -n 's/^dotnet_diagnostic\.\(CA[0-9][0-9]*\)\.severity.*/\1/p' \
@@ -1268,7 +1612,7 @@ jobs:
             sed 's/^/  UNREVIEWED /' security-unreviewed.txt
             exit 1
           fi
-          echo "Gate 1 passed - every Security-category diagnostic that fired across all 19 projects is an accepted, documented residual."
+          echo "Gate 1 passed - the Security category is armed at latest-all with only the measured taint exclusion, no repository-supplied analyzer configuration exists, the SDK's Security 'all' configuration is provably loaded into the compilation, and every Security-category diagnostic that fired across all 19 projects is an accepted, documented residual."
 
       # Gate 1 substitute, part 3 of 3 - POSITIVE CONTROL. Parts 1 and 2 are both
       # green-when-clean, and a green run is indistinguishable from a gate that
@@ -1280,25 +1624,40 @@ jobs:
       # IT ASSERTS THE COVERAGE BOUNDARY IN BOTH DIRECTIONS, which is what makes
       # the ratchet above meaningful rather than decorative.
       #
-      # MUST FIRE - the three security families that execute at
-      # AnalysisLevel=latest-recommended and whose repository count is zero:
-      # CA5350 (weak hashing algorithm), CA5359 (certificate validation
-      # disabled - finding H-11's own rule) and CA5364 (deprecated transport
-      # protocol). Their baselines above are all zero, and a zero from a rule
-      # that never ran is indistinguishable from a zero from clean code. This is
-      # what tells those three apart. CA5351 is deliberately NOT probed: it has
-      # five real violations in the tree, so the ratchet already proves it runs.
+      # MUST FIRE - every ratcheted family whose repository count is ZERO, because
+      # a zero from a rule that never ran is indistinguishable from a zero from
+      # clean code, plus the two whose arming is the whole point of the category
+      # widening:
+      #   CA5350 weak hashing algorithm
+      #   CA5359 certificate validation disabled - finding H-11's own rule
+      #   CA5364 deprecated transport protocol
+      #   CA2100 command text built from a non-literal - identifier injection
+      #   CA2326 unrestricted TypeNameHandling on a deserialiser
+      #   CA2327 insecure JsonSerializerSettings
+      #   CA5390 hard-coded encryption key - finding C-04's own rule
+      #   CA5401 symmetric encryption with a non-default initialisation vector
+      #   CA5404 token validation check disabled - finding H-02's own rule
+      # CA5351, CA2328 and CA5362 are deliberately NOT probed: each has real
+      # violations in the tree, so the ratchet already proves it runs.
       #
-      # MUST NOT FIRE - CA5390 (hard-coded encryption key) and CA2100 (SQL
-      # command from a non-literal). Both are disabled at this analysis level, and
-      # that boundary is not an accident: it is the frozen scope the remediation
-      # plan sets, and it is why those weaknesses are covered by manual review and
-      # recorded in the risk register instead. If either starts firing, the
-      # analyzer scope has been widened - which invalidates every baseline above
-      # and leaves the allow-list incomplete, so a clean Gate 1 verdict would no
-      # longer be trustworthy. That is a gate-integrity failure, not a security
-      # improvement to be absorbed silently, so it stops the job and names the
-      # four artefacts that must move together.
+      # THE RECEIVER AND THE SHAPE MATTER FOR SEVERAL OF THESE, and each probe
+      # below records the shape that was measured to work. A probe that fails to
+      # provoke a working analyzer turns this control into a false alarm, which is
+      # worse than no control at all.
+      #
+      # MUST NOT FIRE - CA3001 through CA3012, the interprocedural taint dataflow
+      # family. They are excluded through NoWarn in Directory.Build.props for a
+      # measured TERMINATION reason, not a scope preference: armed and untuned the
+      # solution build produced no further output for over thirty-five minutes with
+      # 3 of 17 projects finished. If one of them fires here, the exclusion has been
+      # lost and CI is about to hang rather than gate. The probe therefore contains
+      # a deliberate taint flow - a request-shaped string reaching a command text -
+      # and asserts SILENCE.
+      #
+      # A rule moving between these two lists is a gate-integrity event, not a
+      # security improvement to be absorbed silently: it invalidates the baselines
+      # above and can leave the allow-list incomplete, so it stops the job and
+      # names the artefacts that must move together.
       #
       # Every defect uses only in-box types, so the probe adds no package
       # reference and cannot itself trip the dependency gate.
@@ -1310,23 +1669,44 @@ jobs:
       # analyzer gate or the evidence upload.
       - name: Positive control - a deliberate security defect must be reported
         run: |
+          . ./.gate-redact.sh
           probe_dir='.gate-analyzer-control'
           cleanup() { rm -rf "$probe_dir"; }
           trap cleanup EXIT
           rm -rf "$probe_dir"
           mkdir -p "$probe_dir"
+          # THE PROBE'S REFERENCES ARE THE MINIMUM THE RULES REQUIRE, and each is
+          # justified rather than convenient. CA2326/CA2327 are Newtonsoft-specific
+          # rules with no in-box equivalent, and CA5404 is an IdentityModel rule
+          # with none either, so those two packages are the only way to provoke
+          # them at all; both are pinned to the exact versions this repository
+          # already restores, both are advisory-clean, and this manifest is
+          # generated here and never committed. The shared-framework reference
+          # needs no download - it supplies the ASP.NET Core request types the
+          # taint family treats as a source, which is what makes the MUST NOT FIRE
+          # assertion below non-vacuous.
           {
             echo '<Project Sdk="Microsoft.NET.Sdk">'
             echo '  <PropertyGroup>'
             echo '    <TargetFramework>net10.0</TargetFramework>'
             echo '    <AssemblyName>BlitzyAnalyzerPositiveControl</AssemblyName>'
+            echo '    <Nullable>disable</Nullable>'
             echo '  </PropertyGroup>'
+            echo '  <ItemGroup>'
+            echo '    <FrameworkReference Include="Microsoft.AspNetCore.App" />'
+            echo '    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />'
+            echo '    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.15.0" />'
+            echo '  </ItemGroup>'
             echo '</Project>'
           } > "$probe_dir/probe.csproj"
           {
+            echo 'using System;'
             echo 'using System.Data.Common;'
             echo 'using System.Net;'
             echo 'using System.Security.Cryptography;'
+            echo 'using Microsoft.AspNetCore.Mvc;'
+            echo 'using Microsoft.IdentityModel.Tokens;'
+            echo 'using Newtonsoft.Json;'
             echo 'public static class Probe'
             echo '{'
             echo '  // MUST FIRE. CA5350 - weak hashing algorithm.'
@@ -1353,16 +1733,69 @@ jobs:
             echo '  {'
             echo '    ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls11;'
             echo '  }'
-            echo '  // MUST NOT FIRE at this analysis level. CA5390 - hard-coded key.'
-            echo '  public static void HardCodedKey(SymmetricAlgorithm algorithm)'
-            echo '  {'
-            echo '    algorithm.Key = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };'
-            echo '  }'
-            echo '  // MUST NOT FIRE at this analysis level. CA2100 - command text'
-            echo '  // built from a non-literal.'
+            echo '  // MUST FIRE. CA2100 - command text built from a non-literal, the'
+            echo '  // rule that covers identifier injection. The command must be'
+            echo '  // EXECUTED as well as assigned; an assignment alone was measured'
+            echo '  // to be enough here, but executing it matches the real shape.'
             echo '  public static void Concatenated(DbCommand command, string name)'
             echo '  {'
             echo '    command.CommandText = "SELECT * FROM probe WHERE n = " + name;'
+            echo '    command.ExecuteNonQuery();'
+            echo '  }'
+            echo '  // MUST FIRE. CA5390 - hard-coded encryption key, finding C-04 own'
+            echo '  // rule. THE SHAPE MATTERS: measured on this toolchain, assigning'
+            echo '  // a literal array to SymmetricAlgorithm.Key produced NOTHING; the'
+            echo '  // rule reports the CreateEncryptor(rgbKey, rgbIV) overload taking'
+            echo '  // a hard-coded key argument. A probe written the other way made'
+            echo '  // this control fail against a working analyzer.'
+            echo '  public static void HardCodedKey(byte[] rgbIV)'
+            echo '  {'
+            echo '    byte[] rgbKey = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };'
+            echo '    SymmetricAlgorithm algorithm = Aes.Create();'
+            echo '    algorithm.CreateEncryptor(rgbKey, rgbIV);'
+            echo '  }'
+            echo '  // MUST FIRE. CA5401 - symmetric encryption with a non-default'
+            echo '  // initialisation vector.'
+            echo '  public static void NonDefaultIv(byte[] iv)'
+            echo '  {'
+            echo '    SymmetricAlgorithm algorithm = Aes.Create();'
+            echo '    algorithm.CreateEncryptor(algorithm.Key, iv);'
+            echo '  }'
+            echo '  // MUST FIRE. CA2326 and CA2327 - unrestricted type-name handling,'
+            echo '  // the family covering finding H-10. No in-box type can provoke'
+            echo '  // these, which is why the probe carries the Newtonsoft reference.'
+            echo '  public static object UnrestrictedTypeNames(string json)'
+            echo '  {'
+            echo '    var settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };'
+            echo '    return JsonConvert.DeserializeObject(json, settings);'
+            echo '  }'
+            echo '  // MUST FIRE. CA5404 - token validation check disabled, finding'
+            echo '  // H-02 own rule.'
+            echo '  public static TokenValidationParameters DisabledTokenChecks()'
+            echo '  {'
+            echo '    return new TokenValidationParameters { ValidateLifetime = false, ValidateAudience = false, ValidateIssuer = false };'
+            echo '  }'
+            echo '}'
+            echo '// MUST NOT FIRE. These two actions carry DELIBERATE taint flows from an'
+            echo '// ASP.NET Core request parameter into a file path and into a command'
+            echo '// text. Measured both ways on this toolchain: with the repository'
+            echo '// NoWarn exclusion in force the build reports NO CA30xx, and with the'
+            echo '// exclusion removed (-p:NoWarn=) the same source reports CA3001 and'
+            echo '// CA3003. That is what makes the silence below evidence rather than an'
+            echo '// absence of evidence - the flows exist and are provably reportable.'
+            echo 'public class ProbeController : Controller'
+            echo '{'
+            echo '  [HttpGet]'
+            echo '  public IActionResult TaintedPath(string name)'
+            echo '  {'
+            echo '    return Content(System.IO.File.ReadAllText("/tmp/" + name));'
+            echo '  }'
+            echo '  [HttpGet]'
+            echo '  public IActionResult TaintedSql(string name, DbCommand command)'
+            echo '  {'
+            echo '    command.CommandText = "SELECT * FROM probe WHERE n = " + Request.Query["q"];'
+            echo '    command.ExecuteNonQuery();'
+            echo '    return Content(name);'
             echo '  }'
             echo '}'
           } > "$probe_dir/Probe.cs"
@@ -1371,33 +1804,49 @@ jobs:
           # exit code, so that a future severity change cannot turn a working control
           # into a step that aborts before asserting anything.
           dotnet build "$probe_dir/probe.csproj" --no-incremental 2>&1 | tee positive-control.txt || true
-          status=0
-          for rule in CA5350 CA5359 CA5364; do
-            # error OR warning: this control asserts the rule RAN, not what severity
-            # it was given.
-            if grep -qE "(warning|error) ${rule}" positive-control.txt; then
-              printf 'PASS %s reported against the deliberate defect\n' "$rule" | tee -a positive-control.txt
-            else
-              echo "::error::Gate 1 is NOT gating - the analyzers did not report ${rule} against a project containing a deliberate violation of it. Either EnableNETAnalyzers is off, AnalysisLevel no longer reaches this directory, or the rule was suppressed. Its baseline of zero in the ratchet above is therefore meaningless, and every clean Gate 1 result in this job is unverified."
-              status=1
-            fi
-          done
-          # The other direction. A rule firing here that is supposed to be outside
-          # the frozen scope means the analyzer configuration was widened, which
-          # makes every baseline above stale and the allow-list incomplete.
-          for rule in CA5390 CA2100; do
-            if grep -qE "(warning|error) ${rule}" positive-control.txt; then
-              echo "::error::Gate 1 boundary changed - ${rule} fired, but it is disabled at AnalysisLevel=latest-recommended and every baseline and allow-list entry in this job was measured on that basis. The analyzer scope has been widened, so a clean Gate 1 verdict is no longer trustworthy. If the widening is intended, update Directory.Build.props, the Property 2 baselines, the Gate 1 allow-list and docs/security/risk-register.md in the same commit, and move this rule to the MUST FIRE list above."
-              status=1
-            else
-              printf 'PASS %s did not fire, so the frozen analyzer scope is intact\n' "$rule" | tee -a positive-control.txt
-            fi
-          done
-          if [ "$status" -ne 0 ]; then
-            tail -n 40 positive-control.txt
+          # A compile failure makes every assertion below vacuous - a probe that did
+          # not compile emits no diagnostic, so MUST NOT FIRE would pass for the
+          # wrong reason and MUST FIRE would fail for the wrong reason. Measured
+          # while writing this probe: `File.ReadAllText` inside a Controller binds to
+          # ControllerBase.File and produced CS0119, which is exactly the class of
+          # accident this guard catches.
+          if grep -qE ': error (CS|NU|MSB)[0-9]+' positive-control.txt; then
+            echo "::error::Gate 1 positive control cannot run - the probe itself failed to compile or restore, so no analyzer verdict exists to assert. An assertion that cannot run is a failure, never a pass. Fix the probe source in this step."
+            grep -E ': error (CS|NU|MSB)[0-9]+' positive-control.txt | sort -u | sed 's/^/  /' | head -20
             exit 1
           fi
-          echo "Positive control passed - the security analyzers provably report defects rather than merely running, and the frozen analyzer scope is unchanged."
+          status=0
+          # EVERY ASSERTION IS ANCHORED TO THE PROBE'S OWN FILE. Without the
+          # Probe.cs anchor, a diagnostic from anywhere else in a shared log would
+          # satisfy a MUST FIRE check - and CA2100, CA2326 and CA2327 all have real
+          # occurrences elsewhere in this repository, so the anchor is what stops
+          # this control from passing on the tree's own diagnostics instead of on
+          # the deliberate defect.
+          for rule in CA5350 CA5359 CA5364 CA2100 CA2326 CA2327 CA5390 CA5401 CA5404; do
+            # error OR warning: this control asserts the rule RAN, not what severity
+            # it was given.
+            if grep -qE "Probe\.cs\([0-9]+,[0-9]+\): (warning|error) ${rule}" positive-control.txt; then
+              printf 'PASS %s reported against the deliberate defect in the probe\n' "$rule" | tee -a positive-control.txt
+            else
+              echo "::error::Gate 1 is NOT gating - the analyzers did not report ${rule} against a probe file containing a deliberate violation of it. Either EnableNETAnalyzers is off, AnalysisLevelSecurity no longer arms the Security category, the rule was suppressed, or the probe shape stopped provoking it. Its baseline in the ratchet above is therefore meaningless, and every clean Gate 1 result in this job is unverified."
+              status=1
+            fi
+          done
+          # The other direction. The taint family is excluded for a measured
+          # termination reason; if it fires, the exclusion has been lost and the
+          # next full solution build will not finish rather than gate.
+          for rule in CA3001 CA3002 CA3003 CA3004 CA3005 CA3006 CA3007 CA3008 CA3009 CA3010 CA3011 CA3012; do
+            if grep -qE "Probe\.cs\([0-9]+,[0-9]+\): (warning|error) ${rule}" positive-control.txt; then
+              echo "::error::Gate 1 boundary changed - ${rule} fired, but CA3001-CA3012 are excluded through NoWarn in Directory.Build.props for a MEASURED termination reason: armed and untuned, the solution build produced no further output for over thirty-five minutes with 3 of 17 projects finished. Losing the exclusion does not improve coverage, it stops CI finishing. Restore it, or tune the family's cost properties, re-measure the full solution build, and move the baselines, the allow-list and docs/security/risk-register.md in the same commit."
+              status=1
+            fi
+          done
+          printf 'PASS CA3001-CA3012 stayed silent against deliberate taint flows, so the measured exclusion is intact\n' | tee -a positive-control.txt
+          if [ "$status" -ne 0 ]; then
+            redact_tail positive-control.txt 40
+            exit 1
+          fi
+          echo "Positive control passed - all nine ratcheted security families provably report defects in the probe rather than merely being listed, and the one measured exclusion is still in force."
 
       # Gate 2, part 2 - corroborates the restore with an explicit advisory
       # listing. H-01/H-20 (A06): --include-transitive is MANDATORY, not
@@ -2094,6 +2543,156 @@ jobs:
             report "PASS  no credential literal assigned in any tracked source file"
           fi
 
+
+          # ---- 5b. known-published-value sweep, by digest --------------------
+          # CR-01 (CWE-540 inclusion of sensitive information in source code,
+          # CWE-532 insertion of sensitive information into a log). Every layer
+          # above matches a SHAPE. None of them can see a compromised value
+          # reproduced as ordinary prose, and that is not hypothetical: earlier
+          # revisions of docs/security/*.md quoted the observed literals in their
+          # eight-field EVIDENCE rows, and one description named the signing
+          # key's phrase together with its repetition count, from which the whole
+          # 51-character key could be reconstructed. The argument offered for it
+          # was that the mandated finding format requires the observed construct
+          # to be quoted. That argument is rejected here and the exemption is
+          # removed: the format requires the construct - the conditional, the
+          # file, the line - not the secret the construct carried.
+          #
+          # This layer therefore matches VALUES, and it does so without holding
+          # any of them. Only SHA-256 digests appear below, so the gate that
+          # polices published secrets does not itself publish one, and the same
+          # digests are compiled into WebVella.Erp/ErpSettings.cs, which refuses
+          # both published keys at start-up - so a reader can corroborate this
+          # table against executable code.
+          #
+          # HOW IT WORKS, and why it is affordable. Hashing every substring of
+          # every tracked file is not, so the candidate set is narrowed by
+          # properties of the known values that are not the values: their exact
+          # lengths, and their character classes. Maximal runs of [A-Za-z0-9] of
+          # length exactly 17, 51 or 64, plus dotted-quad addresses with an
+          # optional port, are extracted, de-duplicated and hashed once each -
+          # about 500 candidates over roughly 1,500 files, in under two seconds.
+          #
+          # THE BOUND, STATED RATHER THAN GLOSSED. A value concatenated into a
+          # longer alphanumeric run with no delimiter on either side is outside
+          # this layer, because it is no longer a maximal run of its own length.
+          # That is the shape a leak does not take: a reproduced key sits inside
+          # quotes, backticks or whitespace, which is exactly what makes it a
+          # maximal run. Two of the five published credentials are ALSO outside
+          # it, deliberately: the seeded administrator password and one database
+          # credential are 3- and 4-character lower-case dictionary words, so a
+          # value match on them would fire on ordinary English and on the
+          # 'erp@webvella.com' address this document set must be able to print.
+          # They are covered instead by layer 5 above, by the targeted absence
+          # assertions in section 4, and by the documentation convention that
+          # writes them as redactions - a scope boundary, recorded, not a gap
+          # nobody noticed.
+          known_digests() {
+            cat <<'DIGESTS'
+            87184b56659256b8e2d8d29aa5da9fd3b34ec5d5cd41cabe4493eb482b839549 51 token-signing-key-shipped-in-two-config-files
+            82794e7c1030b896b98309ef387a3bd61681577fdd45fb8615b29882657e65cc 17 token-signing-key-compiled-in-default
+            7810b2fe1ad52ed53d4fd313052c78a59b15133f1e6e802805fb6e9c32935286 64 encryption-key-shipped-in-all-eight-config-files
+            72858cca8cb5df2d09f34bfdfb6f7967ccc30e34f1d05f98b34cfe7cd8c2d186 18 internal-database-host-and-port
+            bfa5c0e41578d8a299c254a9871b6462bf9ba1e26ab43848b3e53f7e2a09f4f2 13 internal-database-host
+          DIGESTS
+          }
+          known_digests | sed 's/^[[:space:]]*//' | grep -v '^$' > "$scratch/known-digests.txt"
+          known_n=$(wc -l < "$scratch/known-digests.txt" | tr -d '[:space:]')
+          # The table is asserted, so it cannot be emptied to make this layer pass.
+          if [ "$known_n" -ne 5 ]; then
+            report "FAIL  the known-published-value table holds $known_n entr(ies), not the five this audit confirmed - the assertion itself was edited"
+            status=1
+          fi
+          # Candidate extraction and matching, factored so the positive control
+          # below exercises the same code the sweep does rather than a copy.
+          match_known_values() {
+            # $1 = NUL-separated file list, $2 = label for the report
+            : > "$scratch/kv-cand.txt"
+            kv_rc=0
+            xargs -0 -r grep -hoIE '[A-Za-z0-9]+|[0-9]{1,3}(\.[0-9]{1,3}){3}(:[0-9]{2,5})?' < "$1" \
+              > "$scratch/kv-raw.txt" 2> "$scratch/kv.err" || kv_rc=$?
+            if [ "$kv_rc" -ne 0 ] && [ "$kv_rc" -ne 123 ] && [ "$kv_rc" -ne 1 ]; then
+              report "FAIL  the known-value extraction over $2 exited $kv_rc, so its empty result proves nothing"
+              return 2
+            fi
+            if [ -s "$scratch/kv.err" ]; then
+              report "FAIL  the known-value extraction over $2 wrote to stderr, so its result cannot be trusted"
+              return 2
+            fi
+            awk 'BEGIN{FS=""} { n=length($0); if (n==17 || n==51 || n==64 || $0 ~ /^[0-9]{1,3}(\.[0-9]{1,3}){3}(:[0-9]+)?$/) print }' \
+              "$scratch/kv-raw.txt" | sort -u > "$scratch/kv-cand.txt"
+            : > "$scratch/kv-hits.txt"
+            while IFS= read -r candidate; do
+              [ -n "$candidate" ] || continue
+              digest=$(printf '%s' "$candidate" | sha256sum | cut -d' ' -f1)
+              # The candidate is never echoed. Only its digest is compared and
+              # only its LABEL is reported, so a real match cannot copy the
+              # secret into this job's log or into the uploaded artifact
+              # (CR2-F-10, CWE-532).
+              label=$(awk -v d="$digest" '$1 == d { print $3; exit }' "$scratch/known-digests.txt")
+              if [ -n "$label" ]; then
+                printf '%s\t%s\n' "$label" "$candidate" >> "$scratch/kv-hits.txt"
+              fi
+            done < "$scratch/kv-cand.txt"
+            kv_candidates=$(wc -l < "$scratch/kv-cand.txt" | tr -d '[:space:]')
+            return 0
+          }
+          # Positive control FIRST, so a matcher that can find nothing cannot
+          # report a clean tree. A random 51-character value is generated, its
+          # digest is appended to the table for the duration of the control only,
+          # and it is planted in a fixture outside the working tree. No real
+          # secret is involved, which is the point: the control proves the
+          # mechanism without embedding the thing it detects.
+          kv_probe=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 51)
+          kv_probe_digest=$(printf '%s' "$kv_probe" | sha256sum | cut -d' ' -f1)
+          mkdir -p "$scratch/kvfx"
+          printf 'the value below is a generated probe, not a secret: `%s`\n' "$kv_probe" > "$scratch/kvfx/evidence-field.md"
+          printf '%s' "$scratch/kvfx/evidence-field.md" | tr '\n' '\0' > "$scratch/kvfx.z"
+          printf '%s 51 generated-positive-control\n' "$kv_probe_digest" >> "$scratch/known-digests.txt"
+          if match_known_values "$scratch/kvfx.z" 'the positive-control fixture'; then
+            if grep -q '^generated-positive-control' "$scratch/kv-hits.txt"; then
+              report "SELFTEST ok    the known-value matcher finds a planted 51-character value inside a Markdown EVIDENCE-style line, so a clean verdict below is a measurement"
+            else
+              report "SELFTEST FAIL  the known-value matcher did NOT find a planted value, so it cannot prove documentation is clean"
+              status=1
+            fi
+          else
+            report "SELFTEST FAIL  the known-value matcher could not run over its own fixture"
+            status=1
+          fi
+          # Restore the audited table before the real sweep.
+          known_digests | sed 's/^[[:space:]]*//' | grep -v '^$' > "$scratch/known-digests.txt"
+          # The real sweep covers EVERY tracked text file - code, configuration,
+          # workflow and documentation alike - with exactly one exception, named
+          # here rather than expressed as a path pattern so it cannot quietly
+          # widen. WebVella.Erp/ERPService.cs passes the historic seeded
+          # administrator password to PasswordUtil.VerifyMd5Hash because the
+          # version-4 migration must RECOGNISE that credential in order to
+          # invalidate it; a migration that cannot identify the value it exists
+          # to withdraw would silently skip every affected installation. That
+          # literal is a 3-character word and is therefore outside this layer's
+          # length classes anyway - the exception is recorded for the reader, and
+          # section 4 above asserts that the same file assigns no seed password.
+          kv_exception='WebVella.Erp/ERPService.cs'
+          grep -vxF "$kv_exception" "$scratch/tracked-text.txt" | tr '\n' '\0' > "$scratch/kv-files.z"
+          kv_files=$(grep -cvxF "$kv_exception" "$scratch/tracked-text.txt" || true)
+          if match_known_values "$scratch/kv-files.z" 'the tracked tree'; then
+            if [ -s "$scratch/kv-hits.txt" ]; then
+              report "FAIL  a known published secret value is reproduced in the tracked tree. Replace it with a redaction of the form [REDACTED - <n> characters, SHA-256 prefix <16 hex>]; see docs/security/security-audit-report.md, 'How compromised historic values are written in this document set'. Locations, by label only:"
+              cut -f1 "$scratch/kv-hits.txt" | sort -u | while IFS= read -r lbl; do
+                value=$(awk -F'\t' -v l="$lbl" '$1 == l { print $2; exit }' "$scratch/kv-hits.txt")
+                # Locate without echoing: grep -l gives paths, never the line.
+                paths=$(grep -rlF -- "$value" . --exclude-dir=.git 2>/dev/null | sed 's|^\./||' | sort -u | tr '\n' ' ')
+                report "     $lbl in: ${paths:-unresolved}"
+              done
+              status=1
+            else
+              report "PASS  none of the $known_n known published secret values appears in any of the $kv_files swept file(s) - documentation included, with no evidence-field exemption ($kv_candidates length-matched candidate(s) fingerprinted)"
+            fi
+          else
+            status=1
+          fi
+
           # ---- 6. history audit ----------------------------------------------
           # Everything above proves the current tip is clean. None of it can
           # prove a secret was never committed, and a secret that was committed
@@ -2102,31 +2701,103 @@ jobs:
           # help anyone who already cloned, and the only real mitigation for an
           # exposed credential is ROTATION.
           #
-          # So the assertion is deliberately two-sided: report every historical
-          # exposure for the record, and REQUIRE that the rotation mechanism is
-          # still present in the tree. Deleting that migration would silently
-          # re-expose every installation that upgraded, and this is what stops
-          # it.
+          # WHAT THE PREVIOUS REVISION ACTUALLY DID, and why it was replaced. It
+          # probed exactly TWO assembled literals - one seeded-password assignment
+          # in each of two spellings - and then reported "CLEAN-IN-HISTORY" for
+          # them. A reader could reasonably take that as "the history carries no
+          # credential", which it never established: a connection-string password,
+          # a signing key, an encryption key, a PEM block, a cloud access key or a
+          # credential-bearing URL committed at any point in 3,590 reachable
+          # commits was never looked for. It also PRINTED the retired credential
+          # literal into secret-sweep.txt, which is an uploaded artifact - the gate
+          # publishing the very value it exists to police.
+          #
+          # WHAT THIS REVISION DOES. It runs the SAME layer patterns the tip sweep
+          # uses across the whole reachable history, one layer at a time, and
+          # reports per layer: how many commits introduced or removed a matching
+          # line, and WHICH commits, by abbreviated identifier and date. It never
+          # prints a matched line, a matched value or any file content - only
+          # commit identifiers, paths and counts, none of which is secret. The
+          # complete identifier list goes to history-exposure-commits.txt so the
+          # summary stays readable while the evidence stays complete.
+          #
+          # MEASURED COST, so nobody has to guess whether it hung: about 50
+          # seconds per line-based layer over 3,590 commits on this repository,
+          # and the CFG layer is pathspec-scoped to the shipped configuration files
+          # so it costs a fraction of that. Renames are disabled per invocation:
+          # with them on, git emits a rename-limit warning on this repository and,
+          # measured while writing this, that warning was counted as a match and
+          # turned a zero result into a two-commit "finding".
+          #
+          # THE BOUNDARY IS STATED RATHER THAN GLOSSED. `git log -G` matches
+          # ADDED OR REMOVED LINES in a diff, so it is line-based by construction:
+          # a value split across two lines in history is not covered, exactly as
+          # it is not covered by the five line-based layers at the tip. That is why
+          # the CFG layer is still run here - scoped to configuration files, where
+          # a split assignment is plausible - and why this limitation is written
+          # down instead of being left for a reader to discover.
           reachable=$(git rev-list --all --count 2>/dev/null || echo 0)
           if [ "$reachable" -le 1 ]; then
             report "FAIL  only $reachable revision(s) reachable - the checkout is shallow, so the history audit proved nothing (needs fetch-depth: 0)"
             status=1
           else
-            report "History audit over $reachable reachable commit(s):"
-            # The probe literals are ASSEMBLED from a quote variable rather than
-            # written out, so this workflow does not itself trip the
-            # source-assignment layer above. Excluding the workflow from that
-            # layer instead would put a blind spot in the one file that defines
-            # the gate.
-            q='"'
-            for lit in "Password = ${q}erp${q}" "[${q}password${q}] = ${q}erp${q}"; do
-              hits=$(git log --all --oneline -S"$lit" 2>/dev/null | wc -l | tr -d '[:space:]')
-              if [ "$hits" -gt 0 ]; then
-                report "  EXPOSED-IN-HISTORY [$lit] in $hits commit(s) - already rotated, see docs/security/credential-migration.md"
+            report "History audit over $reachable reachable commit(s), using the same layer patterns as the tip sweep:"
+            printf '' > history-exposure-commits.txt
+            # NON-VACUITY FIRST. Every count below is green-when-zero, and a zero
+            # from a scanner that cannot search is indistinguishable from a zero
+            # from clean history - the same failure that made the tip sweep a
+            # finding. So the machinery is proved able to find something first,
+            # using a benign shape certain to be present and certain not to be a
+            # secret.
+            control=$(git -c diff.renames=false log --all --extended-regexp \
+              --regexp-ignore-case --format='%h' -G'WebVella' 2>/dev/null \
+              | { grep -c . || true; })
+            if [ "${control:-0}" -lt 1 ]; then
+              report "FAIL  the history scanner found no commit even for a benign shape known to be present, so every zero below would be meaningless"
+              status=1
+            else
+              report "  SELFTEST ok    the history scanner reaches $control commit(s) for a benign control shape"
+              history_hits=0
+              for lyr in $ALL_LAYERS; do
+                pat=$(pattern_for "$lyr")
+                # CFG describes a JSON key/value pair, so it is scoped to the
+                # configuration formats it was written for; the line layers are
+                # deliberately unscoped.
+                if [ "$lyr" = 'CFG' ]; then
+                  found=$(git -c diff.renames=false log --all --extended-regexp \
+                    --regexp-ignore-case --format='%h %ad' --date=short -G"$pat" \
+                    -- '*.json' '*.config' 2>/dev/null || true)
+                else
+                  found=$(git -c diff.renames=false log --all --extended-regexp \
+                    --regexp-ignore-case --format='%h %ad' --date=short -G"$pat" 2>/dev/null || true)
+                fi
+                count=$(printf '%s' "$found" | { grep -c . || true; })
+                if [ "${count:-0}" -gt 0 ]; then
+                  history_hits=$((history_hits + count))
+                  report "  EXPOSED-IN-HISTORY layer $lyr matched in $count commit(s) - already rotated, see docs/security/credential-migration.md"
+                  printf '%s\n' "$found" | sed "s/^/${lyr} /" >> history-exposure-commits.txt
+                  # A bounded excerpt keeps the summary readable; the complete
+                  # list is in history-exposure-commits.txt. Identifiers and
+                  # dates only - never a matched line.
+                  printf '%s\n' "$found" | head -10 | sed 's/^/     commit /' | tee -a secret-sweep.txt
+                  if [ "$count" -gt 10 ]; then
+                    report "     ... and $((count - 10)) further commit(s), all listed in history-exposure-commits.txt"
+                  fi
+                else
+                  report "  CLEAN-IN-HISTORY   layer $lyr matched in no commit"
+                fi
+              done
+              # A historical exposure is REPORTED, never fatal, and the reason is
+              # the one stated at the top of this block: the tree cannot be made
+              # to un-publish it, so failing the build would only make the gate
+              # unusable while changing nothing about the exposure. What IS fatal
+              # is losing the mitigation, which is asserted immediately below.
+              if [ "$history_hits" -gt 0 ]; then
+                report "History audit: $history_hits commit-layer exposure(s) recorded for the register. Rotation, not deletion, is the mitigation - see docs/security/credential-migration.md."
               else
-                report "  CLEAN-IN-HISTORY   [$lit]"
+                report "PASS  no layer matched anywhere in the reachable history"
               fi
-            done
+            fi
             # C-01 rotation must remain implemented, not merely documented.
             if grep -q 'RevokeSeedAdministratorCredential4' "$seed_file"; then
               report "PASS  the seeded-credential rotation migration is present"
@@ -2142,6 +2813,77 @@ jobs:
             echo "Gate 3 passed - the detector proved itself against credentials planted in $formats file formats, then found no credential material in any of the $swept tracked text files."
           fi
           exit "$status"
+
+      # MILESTONE-01 (documentation identity). The audit report carries three finding
+      # inventories in three namespaces, and two identifiers had come to head a record
+      # in two of them at once - Part 1's H-10 and H-11 (polymorphic deserialisation
+      # and the SMTP certificate bypass) versus Part 2's tenth and eleventh
+      # high-severity records. A duplicate identifier is not a cosmetic defect in a
+      # security deliverable: five documents, and in some cases source comments, cite
+      # these identifiers, so a reader following a citation lands on whichever record
+      # they happen to find and can conclude that a closed finding is open or the
+      # reverse. The two Part 2 records were renamed to HR-10 and HR-11; this step is
+      # what stops the condition returning, because the arithmetic that detects it -
+      # one identifier per record - is trivial to assert and impossible to eyeball
+      # across 96 records.
+      #
+      # Derived from the file rather than from a maintained list, so a new finding is
+      # covered the moment it is added and no list can go stale. Fails closed: an
+      # assertion that enumerated nothing proved nothing, and the expected record count
+      # is asserted too, so a heading-format change that silently stops matching is a
+      # failure rather than a pass.
+      - name: Assert every audit-report finding identifier is unique
+        run: |
+          set -o pipefail
+          status=0
+          report="docs/security/security-audit-report.md"
+          # The single record count this repository's documentation set is measured at.
+          # Raise it deliberately, in the same commit that adds records.
+          expected_minimum_records=96
+
+          if [ ! -f "$report" ]; then
+            echo "::error::MILESTONE-01 assertion could not run - $report is missing, so the audit deliverable itself is absent."
+            exit 1
+          fi
+
+          # A finding record is an H4 heading whose text begins with an identifier of the
+          # form <letters>-<digits>, which is the shape every record in all three
+          # inventories uses. Anything else at H4 is prose and is not counted.
+          grep -oP '^#### \K[A-Z]+[0-9]*-[0-9]+[A-Z]*(?= )' "$report" | sort > finding-ids.txt
+          records=$(wc -l < finding-ids.txt)
+          unique=$(sort -u finding-ids.txt | wc -l)
+
+          if [ "$records" -eq 0 ]; then
+            echo "::error::MILESTONE-01 assertion could not run - no finding record headings were recognised in $report. Either the file was emptied or the record heading format changed; a silent zero here would let any duplicate through."
+            status=1
+          elif [ "$records" -lt "$expected_minimum_records" ]; then
+            echo "::error::MILESTONE-01 - $report now carries $records finding records, fewer than the $expected_minimum_records this assertion was measured against. Records are not expected to disappear from an audit inventory. If the reduction is deliberate, lower expected_minimum_records in this step in the same commit."
+            status=1
+          fi
+
+          duplicates=$(uniq -d finding-ids.txt)
+          if [ -n "$duplicates" ]; then
+            echo "::error::MILESTONE-01 regression - finding identifier(s) head more than one record in $report, so every citation of them is ambiguous:"
+            echo "$duplicates" | sed 's/^/  /'
+            echo "::error::Give the later record its own identifier - Part 2 uses the CR-/HR- review prefixes and Part 3 the P- prefix - and update every cross-reference in docs/security/ in the same commit."
+            status=1
+          fi
+
+          # The fifty-three of the audit inventory is the number every sibling document
+          # and SECURITY.md quote, so it is asserted rather than trusted. Part 1 is
+          # exactly the zero-padded two-digit form; Parts 2 and 3 use other shapes.
+          part1=$(grep -cP '^#### (C|H|M|L)-[0-9]{2} ' "$report")
+          if [ "$part1" -ne 53 ]; then
+            echo "::error::MILESTONE-01 - the Part 1 audit inventory now holds $part1 records rather than the 53 that this report, SECURITY.md, the remediation log and the risk register all state. Reconcile the documents and this assertion together."
+            status=1
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            echo "MILESTONE-01 passed - $records finding records in $report carry $unique distinct identifiers, with the Part 1 inventory at $part1."
+          fi
+          rm -f finding-ids.txt
+          exit "$status"
+
 
       # CFG-03 (CWE-178 improper handling of case sensitivity, CWE-706 use of an
       # incorrectly resolved name, OWASP A05) - the Linux startup smoke check.
@@ -2182,6 +2924,10 @@ jobs:
       - name: Smoke-test Linux startup of the published artifacts
         run: |
           set -o pipefail
+          # The redactor is sourced, not reimplemented: a failure tail here may
+          # quote the configuration the host was handed, so it must go through the
+          # same self-tested substitution every other tail in this job uses.
+          . ./.gate-redact.sh
           smoke_dir="$PWD/.gate-startup-smoke"
           cleanup() { rm -rf "$smoke_dir"; }
           trap cleanup EXIT
@@ -2204,7 +2950,7 @@ jobs:
 
             if ! dotnet publish "$proj" -c Release --no-restore -o "$out" > "$smoke_dir/publish-$3.log" 2>&1; then
               report "FAIL $proj - publish did not succeed, so its Linux startup cannot be smoke-checked."
-              tail -n 30 "$smoke_dir/publish-$3.log"
+              redact_tail "$smoke_dir/publish-$3.log" 30 | tee -a startup-smoke.txt
               status=1
               return
             fi
@@ -2240,7 +2986,7 @@ jobs:
               report "PASS $proj - launched from an unrelated working directory, it resolved the audited Config.json from its own deployment directory and then stopped at the fail-fast secret validation."
             else
               report "FAIL $proj - neither FileNotFoundException nor the fail-fast validation message appeared, so the startup outcome is unknown. Failing closed."
-              tail -n 30 "$log"
+              redact_tail "$log" 30 | tee -a startup-smoke.txt
               status=1
             fi
           }
@@ -2314,6 +3060,9 @@ jobs:
       # secret sweep, the build or the uploaded evidence.
       - name: Negative control - a known advisory must fail the build
         run: |
+          # A restore log carries absolute paths and, for any feed that needs one,
+          # a credential in a URL, so its failure tail goes through the redactor.
+          . ./.gate-redact.sh
           probe_dir='.gate-negative-control'
           cleanup() { rm -rf "$probe_dir"; }
           trap cleanup EXIT
@@ -2331,12 +3080,12 @@ jobs:
           } > "$probe_dir/probe.csproj"
           if dotnet restore "$probe_dir/probe.csproj" --force > negative-control.txt 2>&1; then
             echo "::error::The dependency gate is NOT gating. A restore of a project referencing AutoMapper 14.0.0 - carrying published High-severity advisory GHSA-rvv3-g6hj-g44x - succeeded. Either the advisory database was unavailable (NU1900/NU1905), NuGetAudit is off, or the NU19xx promotions in Directory.Build.props were weakened. Every clean result reported by this job is therefore unverified. Do not merge on the strength of it."
-            tail -n 40 negative-control.txt
+            redact_tail negative-control.txt 40
             exit 1
           fi
           if ! grep -q 'NU1903' negative-control.txt; then
             echo "::error::The negative-control restore failed, but not with NU1903. The failure is unrelated to the advisory, so Gate 2's advisory detection remains unproven."
-            tail -n 40 negative-control.txt
+            redact_tail negative-control.txt 40
             exit 1
           fi
           echo "Negative control passed - the known High advisory failed the restore with NU1903, so Gate 2 provably fails on advisories rather than merely printing them."
@@ -2348,18 +3097,31 @@ jobs:
       # gate above fails, which is precisely when it is most needed. Scan text
       # only - no build binaries, no coverage, nothing beyond the gate output.
       #
-      # ONE FILE IS DELIBERATELY NOT PUBLISHED: analyzer-build.log, the raw
-      # output of the analyzer build. It measures about 3 MB and carries roughly
-      # 3,100 warnings of every category, the overwhelming majority of them the
+      # ONE FILE IS DELIBERATELY NOT PUBLISHED: analyzer-build.txt, the raw output
+      # of the analyzer build. It measures about 3 MB, carries roughly 3,100
+      # warnings of every category - the overwhelming majority of them the
       # pre-existing style and design backlog that AAP 0.3.2 explicitly declines
-      # to refactor. Publishing it would bury the security signal in noise and
-      # invite a reader to treat the backlog as an audit result. What is
-      # published instead is the DERIVED evidence Gate 1 extracts from it:
+      # to refactor - and stamps an ABSOLUTE runner path into every one of them.
+      # Publishing it would bury the security signal in noise, invite a reader to
+      # treat the backlog as an audit result, and broaden internal-path exposure.
+      # Review finding OBS-07 recorded that this paragraph previously named
+      # 'analyzer-build.log', a file this workflow has never produced, while the
+      # publication list below actually uploaded the real raw log - so the comment
+      # asserted a control that was not in force. The name is corrected and the
+      # file is genuinely withheld. What is published instead is the DERIVED
+      # evidence Gate 1 extracts from it:
+      #   analyzer-build-summary.txt the MSBuild result lines and the aggregate
+      #                              warning and error counts, asserted to contain
+      #                              no path separator before it is published, and
+      #                              the artefact Gate 5 row A13 now cites
       #   security-rule-ids.txt      the 94 rule ids the SDK places in the
       #                              Security category at latest-all, read from
       #                              the toolchain at run time rather than
       #                              hardcoded, so the gate cannot fall behind
-      #                              the analyzer package
+      #                              the analyzer package. Since
+      #                              AnalysisLevelSecurity=latest-all, this is now
+      #                              also the set that is ARMED, less the twelve
+      #                              taint rules NoWarn excludes.
       #   all-ca-diagnostics.txt     every (rule, file) pair the build reported,
       #                              all categories - the denominator
       #   security-diagnostics.txt   the Security-category subset - the numerator,
@@ -2375,11 +3137,32 @@ jobs:
       # carries the proof that Gate 1 can actually report a defect.
       - name: Gate 5 - record the AAP verification matrix with an evidence-derived status
         if: always()
+        env:
+          # Surfaced as an environment variable rather than interpolated into the
+          # script body: an input value spliced into shell source is a command
+          # injection seam, and this job runs on pull_request.
+          RELEASE_CANDIDATE: ${{ inputs.release_candidate || false }}
         run: |
           set -u
           matrix=manual-verification-matrix.txt
           attest=manual-verification-results.txt
-          expected_rows=33
+          # A release context is a version-tag push, or a manual run that opted in.
+          # It is resolved FIRST because the matrix header states it, and `set -u`
+          # turns a use-before-assignment into an immediate abort - measured while
+          # writing this: the step died on line 104 with "release_context: unbound
+          # variable" and produced no matrix at all, which is a gate that cannot
+          # run rather than one that reports.
+          release_context='no'
+          case "${GITHUB_REF:-}" in
+            refs/tags/v*) release_context='yes' ;;
+          esac
+          if [ "${RELEASE_CANDIDATE:-false}" = 'true' ]; then release_context='yes'; fi
+          # 41 = 16 evidence-derived A-rows + 25 manual M-rows. The number is
+          # declared rather than counted so that adding or dropping a scenario
+          # without updating it is a failure: a matrix that silently shrinks is
+          # exactly how a checklist item disappears. It was 33 before this
+          # revision, which added A15, A16 and M20 through M25.
+          expected_rows=41
           # Rows: ID~KIND~ARG~SCENARIO. The ID is a stable identifier that an
           # attestation refers to, not a position, so a row added later is
           # appended rather than renumbered.
@@ -2409,9 +3192,11 @@ jobs:
             A08~pass_lines~startup-smoke.txt@^PASS .*\.csproj - launched from an unrelated working directory@8~All seven hosts and the console application resolve their own audited Config.json from the deployment directory and stop at the fail-fast secret validation
             A09~empty_file~security-unreviewed.txt~Gate 1 - no unreviewed Security-category analyzer diagnostic across all nineteen projects
             A10~no_match~vulnerable-packages.txt@(High|Critical)~Gate 2 - no High or Critical advisory in the dependency graph, including transitive packages
-            A11~pass_lines~positive-control.txt@^PASS CA(5350|5359|5364) reported against the deliberate defect@3~Positive control - the security analyzers provably report defects rather than merely running, and CA5390/CA2100 provably stay outside the frozen AnalysisLevel=latest-recommended scope
+            A11~pass_lines~positive-control.txt@^PASS CA[0-9]+ reported against the deliberate defect in the probe@9~Positive control - all nine ratcheted security families provably report defects in the probe rather than merely being listed, anchored to the probe's own file so the tree's diagnostics cannot satisfy it
+            A15~pass_lines~positive-control.txt@^PASS CA3001-CA3012 stayed silent@1~Positive control, other direction - the one measured taint exclusion is still in force, proved against deliberate taint flows that fire CA3001 and CA3003 when the exclusion is removed
+            A16~pass_lines~secret-sweep.txt@^  SELFTEST ok    the history scanner reaches@1~The history-wide credential scan proved itself able to find something before reporting any zero
             A12~pass_lines~negative-control.txt@NU1903@1~Negative control - the dependency audit provably fails on a known High advisory
-            A13~pass_lines~analyzer-build.txt@^ *0 Error\(s\)@1~All nineteen projects build with analyzers enabled and zero errors
+            A13~pass_lines~analyzer-build-summary.txt@^ *0 Error\(s\)@1~All nineteen projects build with analyzers enabled and zero errors
             A14~pass_lines~secret-sweep.txt@^PASS  .*web\.config - ASPNETCORE_ENVIRONMENT is Production@1~The IIS environment marker is Production, so the developer exception page cannot engage (H-12) - statically provable, so not deferred for want of IIS
             M01~manual~-~Login with a legacy MD5 credential succeeds and transparently rehashes the stored value (C-03)
             M02~manual~-~Login with the newly rehashed credential succeeds on the next attempt (C-03)
@@ -2432,6 +3217,12 @@ jobs:
             M17~manual~-~A full-record round-trip update does not overwrite the stored password hash with the redaction marker (C-02 ripple)
             M18~manual~-~The login-latency increase caused by the deliberate key-derivation work factor is measured and recorded as an accepted trade-off (C-03)
             M19~manual~-~A bearer token copied before the shipped WebAssembly logout is refused for protected API use AND for token refresh after that logout, proving the client logout revokes the server-side session rather than only clearing browser storage (B3-SEAM-01, H-02, H-03)
+            M20~manual~-~The authentication cookie carries Secure, HttpOnly and SameSite, its expiry is bounded rather than a century away, and a ticket presented after that expiry is refused (H-03, H-15, M-02 cookie half)
+            M21~manual~-~The editor upload callback rejects a non-integer callback index and script-encodes both interpolation points, and its failure path no longer echoes exception text to the browser (H-07)
+            M22~manual~-~A schema identifier containing a quote, a semicolon or a comment sequence is refused by the identifier validator rather than reaching the command text, at every one of the six concatenation sites (H-09)
+            M23~manual~-~Already-persisted polymorphic payloads still deserialize, a payload naming a type outside the allow-list is refused, and a same-name type from a foreign assembly is refused on Type identity rather than on name (H-10)
+            M24~manual~-~A credential lookup with a regular-expression metacharacter operand authenticates nothing, a nested-quantifier operand returns in bounded time, and a mixed-case stored address still authenticates case-insensitively (H-17, C-03 lookup restructure)
+            M25~manual~-~Concurrent file move and delete cannot destroy or misplace bytes: a mutation whose row moved away from the authorized path is refused with every row intact, and an honest mutation still succeeds (H-08 race)
           ROWS
           }
           procedures() {
@@ -2440,21 +3231,28 @@ jobs:
             M02~Immediately repeat the M01 login with the same plaintext; it must succeed against the rehashed value.
             M03~Provision a fresh database and attempt the documented historical default credential; it must be refused. Then upgrade a database whose schema version is 3 and attempt it again; the version-4 migration must have invalidated it.
             M04~Sign in as a guest-role account and POST a user record and a role record through the API; both must be refused.
-            M05~As administrator, regular and guest roles in turn, GET a user record and run a query projection over the user entity; no response may contain the password field.
+            M05~CORRECTED - the previous wording ("no response may contain the password field") would have FAILED the intended remediation: C-02 redacts the VALUE to a sentinel and may still emit the key, so a correct build fails a check written against the key. Assert the value instead. (1) As administrator, then as a regular-role user, then as a guest-role user, GET a user record and run a query projection over the user entity. (2) For every response assert that no field value matches a stored-hash shape - neither the 32-character lowercase hexadecimal legacy form nor the PBKDF2 form - using a regular expression over the whole body, not a field-name check. (3) Where the password field IS present, assert its value is exactly the redaction sentinel and nothing else. (4) Assert the sentinel is byte-identical across all three roles, so the value cannot be used to infer the caller's privilege. Record which of the three roles saw the key at all.
             M06~Publish a host, run it over HTTPS, then request a dynamic page and a static asset and compare both response header sets against the seven mandated names and values.
             M07~With an allow-list configured, issue a cross-origin request from a listed origin (must succeed, including the OPTIONS preflight with redirection on) and from a non-listed origin (must be refused) against Site and Site.Project.
             M08~Request the host over plaintext HTTP and assert a redirect to HTTPS, then assert Strict-Transport-Security is present on the HTTPS response and absent in Development.
             M09~Issue a burst of requests exceeding the configured fixed window and assert the excess is rejected rather than served.
-            M10~POST five wrong passwords for one account, assert each is refused as a normal failure, assert the sixth is locked out, then authenticate correctly and assert the counter reset.
-            M11~Issue a token, wait past its configured lifetime plus the clock-skew allowance, and assert it is rejected; repeat with a token whose signature was produced by a different key.
-            M12~Upload an .svg and an .html file through each upload action, then download both and assert Content-Disposition is attachment and X-Content-Type-Options is nosniff.
-            M13~As a user who does not own a file, invoke the move and the delete actions against it; both must be refused.
+            M10~CORRECTED - the previous wording asked for a successful authentication immediately after lockout, which a working lockout MUST refuse, so it could only pass against a broken control. (1) Bind the PREREQUISITES block. (2) POST five wrong passwords for one throwaway account and assert each is refused as an ordinary credential failure, not as a lockout. (3) POST a sixth wrong password and assert it is refused AS A LOCKOUT, distinguishable from an ordinary failure. (4) While still locked, POST the CORRECT password and assert it is ALSO refused - this is the assertion that proves lockout is not merely a counter on wrong guesses. (5) Clear the lockout by the only two supported means and assert each independently: wait out the configured window, and restart the host - the throttle is backed by an in-process cache, so a restart clears it, and that single-instance scope is a documented limitation. (6) After clearing, POST the correct password and assert success. (7) POST one wrong password, then the correct one, then five wrong ones, and assert the fifth is still an ordinary failure - which is what proves the successful login RESET the counter rather than merely paused it.
+            M11~CORRECTED - the previous wording required waiting out the real token lifetime, which is 1440 minutes, so it was not executable and would have been attested by assumption. Make the lifetime the variable. (1) Bind the PREREQUISITES block. (2) Configure the host with a deliberately short token lifetime, record the configured value in the attestation note, and restart it. (3) Issue a token and assert it is accepted immediately. (4) Wait past the configured lifetime but WITHIN the clock-skew allowance and assert it is STILL accepted - this is what proves the skew is applied rather than assumed. (5) Wait past lifetime PLUS skew and assert it is now refused, and that the refusal is a lifetime refusal rather than a signature refusal. (6) Present a token signed with a different key and assert it is refused. (7) Present a token whose payload was edited after signing and assert it is refused. (8) Assert POST api/v3/en_US/auth/jwt/token/refresh refuses the expired token and mints no successor - an anonymous refresh route that accepted it would make the bounded lifetime meaningless. (9) Restore the original lifetime configuration.
+            M12~CORRECTED - the previous wording asked for .svg and .html files to be uploaded and then DOWNLOADED, which is self-contradictory once the upload allow-list refuses those extensions: the download half could only be reached by a build whose upload constraint was broken. Split it into the two properties that actually compose into the H-08 chain. (1) Bind the PREREQUISITES block. (2) UPLOAD CONSTRAINT: through each of the four upload actions in turn, submit an .svg and an .html file and assert each is REFUSED; submit a file whose extension is allow-listed but whose declared content type contradicts the bytes and assert it is refused; submit a file exceeding the configured size cap and assert it is refused; submit a filename containing a path separator and a filename containing '..' and assert the stored name is sanitised rather than honoured. (3) DOWNLOAD DISPOSITION, which is where the inline-execution half of the chain is broken: upload a file with an ALLOW-LISTED extension whose bytes are nonetheless markup, download it, and assert the response carries Content-Disposition: attachment and X-Content-Type-Options: nosniff. (4) Assert an image type intended to render inline still renders inline, so the disposition rule is not a blanket regression. Record the four upload action routes exercised.
+            M13~EXTENDED - ownership alone was asserted, and the H-08 IDOR surface has a boundary case the previous wording could not reach. (1) Bind the PREREQUISITES block. (2) As a user who does not own a file, invoke the move action and the delete action against it and assert both are refused. (3) Assert the refusal is an authorization refusal and not a not-found, so the response does not itself disclose whether the object exists. (4) Assert the file is still present and unchanged after both refused attempts - a refusal that had already performed the storage-side operation would look identical in the response. (5) BOUNDARY: as the OWNER, invoke both actions and assert both succeed, which is what proves the check discriminates rather than refusing everything. (6) Assert an authorization failure was logged server-side for each refused attempt, as the Authorization Enforcement standard requires.
             M14~Trigger both formerly unconditional error paths and assert the response body carries no stack trace, then assert the server-side log still records the exception detail.
             M15~Send through an SMTP server presenting a valid certificate (must succeed) and one presenting a self-signed certificate without the explicit opt-in flag (must fail).
             M16~Render a page containing the HTML-block component and a page emitting generated inline script, and confirm both display exactly as before the encoding pass.
             M17~GET a full user record, POST it back unchanged, then re-read the password column and assert it still holds the original hash rather than the redaction marker.
-            M18~Measure authentication latency before and after the key-derivation change and record both figures with the accepted-trade-off note.
-            M19~Authenticate the WebAssembly client at /login, read the bearer token out of browser local storage and keep a copy, and confirm the copy is accepted by a protected API call (it must succeed, establishing the token was genuinely valid). Trigger the shipped client logout through whichever of its entry points is reachable on the build under test: the Logout button on the client home page, or the library call IApiService.LogoutAsync() where RISK-119 still stops that button from rendering. Then replay the copied token twice: once against the same protected API call and once against POST api/v3/en_US/auth/jwt/token/refresh. Both must be refused, and the refresh route must not mint a successor token. Repeat with the server unreachable to assert local state is still cleared.
+            M18~Measure authentication latency before and after the key-derivation change and record both figures with the accepted-trade-off note. State the sample size and the percentile reported, not a single observation.
+            M20~(1) Bind the PREREQUISITES block. (2) Authenticate over HTTPS and capture the Set-Cookie header for the authentication cookie. (3) Assert it carries Secure, HttpOnly and a SameSite value, and record which SameSite value - Lax is the deliberate choice because Strict breaks the return-URL round trip through the login page. (4) Assert the cookie's Expires or Max-Age is bounded and record the value; assert it is NOT a century away, which is the specific H-03 defect. (5) Configure a deliberately short ticket lifetime, restart, authenticate, wait past that lifetime, present the cookie alone with no bearer token, and assert the request is treated as unauthenticated. (6) Assert sliding expiration behaves as configured: a request inside the window extends the ticket, one outside it does not. (7) Assert that over plaintext HTTP the cookie is not sent at all, which is what Secure buys. (8) Restore the original lifetime configuration.
+            M21~(1) Bind the PREREQUISITES block. (2) Invoke the editor upload callback with a non-integer callback index - a word, a negative value, a decimal, an empty value and a very long numeric string - and assert each is refused without reaching the script-emitting path. (3) Invoke it with a valid integer index and assert the callback still works, so the validation discriminates. (4) Upload a file whose name contains a script-context metacharacter set - an apostrophe, a double quote, a backslash, a closing script tag and a newline - and assert the emitted script escapes every one so no element or statement boundary can be created; view the raw response body, not the rendered page. (5) Force the callback's failure path and assert the emitted script carries a generic message with no exception type, no message text and no stack frame, while the server-side log still records the detail.
+            M22~(1) Bind the PREREQUISITES block, including the database backup: this scenario deliberately submits malicious identifiers. (2) At each of the six identifier concatenation sites, submit an identifier containing in turn a double quote, a single quote, a semicolon, a comment sequence, a leading digit, a space, a Unicode homoglyph and an over-length value. (3) Assert each is REFUSED by the validator and that the refusal happens BEFORE any command executes - assert against the database, not only against the response. (4) Assert a legitimate identifier at every one of the six sites still succeeds, so the validator discriminates rather than blocking the feature. (5) Assert a legitimate identifier that requires quoting - one differing from another only by case - is quoted rather than folded. (6) Confirm the schema is byte-identical to the backup afterwards.
+            M23~(1) Bind the PREREQUISITES block. (2) Round-trip every persisted polymorphic payload shape the platform writes - job arguments, entity definitions and relation definitions - and assert each still deserializes to the same object graph after the binder is attached. (3) Submit a payload naming a type OUTSIDE the allow-list and assert deserialization is refused rather than falling back. (4) Submit a payload naming an allow-listed type that resides in a DIFFERENT assembly and assert it is refused - this is the assembly-pinning property, and a build that resolves it by name alone will pass step 3 and fail here. (5) Submit a payload naming an allow-listed GENERIC type whose type argument is outside the list and assert it is refused, so every constituent is checked and not just the outer type. (6) Assert the refusal is an error and not a silent null, which would turn a rejected payload into data loss.
+            M24~(1) Bind the PREREQUISITES block. (2) Seed a throwaway account whose stored address contains mixed case. (3) Authenticate with the address exactly as stored, then lower-cased, then upper-cased, and assert all three succeed. (4) Submit each of these as the address operand and assert NONE authenticates: '.', '.*', '%', '_', '.+@.+', and the stored address followed by an alternation. (5) Submit a nested-quantifier operand - a long run of one character followed by a catastrophic-backtracking construct - and assert the request returns within the ordinary authentication latency rather than consuming CPU. (6) Submit an operand longer than the configured bound and assert it is refused before any query runs. (7) Assert a non-existent address costs the SAME measurable latency as a wrong password for an existing one, which is the user-enumeration property the dummy derivation exists to preserve. (8) Seed two accounts differing only by address case and assert the lookup behaves deterministically and does not authenticate the wrong row.
+            M25~(1) Bind the PREREQUISITES block, including the file-storage backup: this scenario deliberately races destructive operations. (2) Create two throwaway files. (3) Race a move of file A with a delete of file A from two concurrent callers and assert the loser is REFUSED, the winner completes, and no byte of either file is lost or misplaced. (4) Race a move of A onto B's path with a delete of B and assert the same. (5) Simulate the interleaving directly: begin a mutation, move the row to a different path from a second session, then let the first mutation proceed, and assert it is refused with every row intact. (6) Assert an honest move and an honest delete both still succeed afterwards, so the guard discriminates. (7) Assert exactly one row is affected by each successful mutation. (8) Compare the storage backend against the backup and assert no orphaned bytes and no missing bytes.
+            PREREQ~PREREQUISITES - BINDING FOR EVERY MUTATING PROCEDURE ABOVE. An attestation from a run that did not satisfy these is not evidence, and a run that did not satisfy them can corrupt real data. (1) ISOLATION: execute against a disposable host and a disposable PostgreSQL database created for this run only. Never against a shared, staging or production instance, and never against a database any other scenario is using concurrently - several of these procedures change global configuration and restart the host. (2) BACKUP BEFORE, VERIFY AFTER: take a full database dump, and for the file scenarios a copy of the storage backend, before starting; after finishing, restore or discard the instance, and for the destructive scenarios compare against the backup and record the comparison result in the attestation note. (3) THROWAWAY SUBJECTS ONLY: create the users, roles, files and records the scenario needs with an unmistakable prefix, and never reuse a real account - M10 locks its subject out, M22 submits malicious identifiers and M25 races destructive operations. (4) CONTROLLED EXTERNAL SERVICES: M15 needs an SMTP server you control presenting first a valid and then a self-signed certificate; do not send to any real recipient or through any third-party relay. (5) SECRETS: supply every value through the environment, never by editing a tracked configuration file, and use values generated for this run only. (6) CLEANUP, UNCONDITIONALLY: delete every throwaway user, role, file and record, restore every configuration value the scenario changed - short token lifetimes and short ticket lifetimes especially - and destroy the disposable database, on the failure path as well as the success path. (7) RECORD WHAT YOU RAN ON: the environment field of the attestation must identify the disposable environment, and the note must state the configuration values the scenario changed and confirm cleanup completed.
+            M19~EXTENDED with the revocation BOUNDARY, which the previous wording did not reach: it proved a token is refused after logout, but not that the refusal survives to the last instant the token could otherwise be replayed. After the steps below, additionally: (a) note the token's exp claim and the configured clock skew, (b) replay the copied token at a point AFTER exp plus skew and assert it is still refused, and (c) assert the revocation record was retained through exp plus skew rather than expiring first - the retention window must cover the full period the token would otherwise be accepted, and the ceiling that clamps it must exceed that window. The original procedure follows. Authenticate the WebAssembly client at /login, read the bearer token out of browser local storage and keep a copy, and confirm the copy is accepted by a protected API call (it must succeed, establishing the token was genuinely valid). Trigger the shipped client logout through whichever of its entry points is reachable on the build under test: the Logout button on the client home page, or the library call IApiService.LogoutAsync() where RISK-119 still stops that button from rendering. Then replay the copied token twice: once against the same protected API call and once against POST api/v3/en_US/auth/jwt/token/refresh. Both must be refused, and the refresh route must not mint a successor token. Repeat with the server unreachable to assert local state is still cleared.
           PROCEDURES
           }
           {
@@ -2464,20 +3262,162 @@ jobs:
             echo "ref        : ${GITHUB_REF:-local}"
             echo "run        : ${GITHUB_RUN_ID:-local}/${GITHUB_RUN_ATTEMPT:-1}"
             echo ''
+            echo "release ctx: $release_context (a version-tag push or a release-candidate dispatch)"
+            echo ''
             echo 'A-rows are proven by an evidence artifact this job produced. M-rows need a'
             echo 'PostgreSQL instance, a browser or an SMTP server, so this job cannot execute'
-            echo 'them; each stays DEFERRED unless a dated attestation is supplied.'
+            echo 'them; each stays DEFERRED unless a BOUND attestation is supplied - one tied to'
+            echo 'a commit that is an ancestor of the commit under test, to the scenario revision'
+            echo 'printed against the row, and to a named environment, in a committed file.'
+            echo 'Every M-row is classified REQUIRED or ADVISORY. An unproven REQUIRED row is'
+            echo 'reported here and is FATAL in a release context, so a green ordinary run never'
+            echo 'implies release readiness - read RELEASE-READY in the summary.'
+            echo ''
+            echo 'EVERY MUTATING PROCEDURE BINDS THE PREREQUISITES BLOCK PRINTED AT THE END OF'
+            echo 'THIS FILE. A scenario executed without them can corrupt real data or leave'
+            echo 'test state behind, and an attestation from such a run is not evidence.'
             echo ''
           } > "$matrix"
-          # An attestation line is ID|PASS-or-FAIL|ISO-8601 UTC|actor|note. It is
-          # the ONLY way a manual row leaves DEFERRED, and it must be dated and
-          # attributed, so a claim always carries who made it and when.
+          # ---- attestation binding -------------------------------------------
+          # An attestation line is
+          #   ID|PASS-or-FAIL|ISO-8601 UTC|actor|commit|scenario-revision|environment|note
+          # and it is the ONLY way a manual row leaves DEFERRED.
+          #
+          # WHY THE PREVIOUS FIVE-FIELD FORM WAS NOT EVIDENCE. It carried a
+          # verdict, a date, an actor and a note, and nothing that tied any of
+          # them to WHAT WAS TESTED. The same four fields therefore remained
+          # "valid" after the code changed, after the procedure was rewritten, and
+          # whatever environment the claim came from - so an attestation written
+          # against one revision silently vouched for every later one, which is
+          # indistinguishable from no attestation at all. Three bindings close
+          # that:
+          #   commit             - the revision the scenario was executed against.
+          #                        It must be an ANCESTOR OF THE COMMIT UNDER TEST
+          #                        (or that commit itself), so an attestation from
+          #                        an unrelated branch cannot be imported.
+          #   scenario-revision  - the first 12 hex characters of the SHA-256 of
+          #                        the row's scenario text and its procedure text,
+          #                        computed below. Rewriting either invalidates
+          #                        every prior attestation for that row
+          #                        automatically, which is what makes a corrected
+          #                        procedure re-executable rather than
+          #                        retrospectively "already passed".
+          #   environment        - a free-text but MANDATORY identifier of where it
+          #                        ran, so a claim from a developer laptop is not
+          #                        silently read as a claim from a release
+          #                        candidate host.
+          #
+          # THE FILE MUST BE PART OF THE AUDITED HISTORY, NOT RUNNER-LOCAL STATE.
+          # A plain-text file cannot be cryptographically trusted on its own, but
+          # it can be made auditable: the attestation file must be TRACKED and
+          # UNMODIFIED in the working tree, so every attestation is reviewable in
+          # the same commit history as the code it vouches for. An untracked or
+          # locally-edited file is refused outright rather than believed, which
+          # removes the "drop a file on the runner and everything passes" path.
+          # Signed attestations remain the stronger control and are recorded as a
+          # recommendation in docs/security/risk-register.md.
+          # ---- which unproven scenarios may ship, and which may not ----------
+          # EVERY MANUAL ROW IS CLASSIFIED, and a row with no classification is a
+          # hard failure above rather than a silent pass, because "unclassified"
+          # is precisely how a scenario stops being anybody's responsibility.
+          #
+          # REQUIRED means: this scenario verifies a Critical or High finding, so
+          # shipping without executing it means shipping an unverified security
+          # fix. ADVISORY means: the row records a measurement or an accepted
+          # trade-off rather than proving a control, so its absence is a
+          # documentation gap and not an unverified fix.
+          #
+          # The previous revision had no such distinction. Every manual row became
+          # DEFERRED when unattested, DEFERRED never contributed to the exit
+          # status, and the job therefore reported success with all nineteen
+          # runtime verifications unexecuted - a green gate over an unverified
+          # remediation. The classification plus the release-context switch below
+          # is what removes that.
+          classification() {
+            cat <<'CLASS'
+            M01~REQUIRED
+            M02~REQUIRED
+            M03~REQUIRED
+            M04~REQUIRED
+            M05~REQUIRED
+            M06~REQUIRED
+            M07~REQUIRED
+            M08~REQUIRED
+            M09~REQUIRED
+            M10~REQUIRED
+            M11~REQUIRED
+            M12~REQUIRED
+            M13~REQUIRED
+            M14~REQUIRED
+            M15~REQUIRED
+            M16~REQUIRED
+            M17~REQUIRED
+            M18~ADVISORY
+            M19~REQUIRED
+            M20~REQUIRED
+            M21~REQUIRED
+            M22~REQUIRED
+            M23~REQUIRED
+            M24~REQUIRED
+            M25~REQUIRED
+          CLASS
+          }
+          required_for() {
+            value=$(classification | sed 's/^[[:space:]]*//' | awk -F'~' -v k="$1" '$1 == k { print $2; exit }')
+            [ -n "$value" ] || return 1
+            printf '%s' "$value"
+          }
+          # A fault raised in this section cannot use `status` - it is initialised
+          # further below and would reset it, silently discarding the finding. It is
+          # carried in its own flag, declared here before its first use, and folded
+          # in immediately after that initialisation.
+          attest_fault=0
+          scenario_revision() {
+            # $1 = row id. Hashes the row's own scenario text, its procedure text
+            # AND the shared prerequisites block, so a change to any of the three
+            # rotates the revision and invalidates every earlier attestation for
+            # that row. The prerequisites are included deliberately: they are part
+            # of what makes a run evidence, so tightening them must re-open every
+            # scenario that binds them rather than leaving old claims standing.
+            {
+              rows | sed 's/^[[:space:]]*//' | awk -F'~' -v k="$1" '$1 == k { print $4 }'
+              procedures | sed 's/^[[:space:]]*//' | awk -F'~' -v k="$1" '$1 == k { sub(/^[^~]*~/, ""); print }'
+              procedures | sed 's/^[[:space:]]*//' | awk -F'~' '$1 == "PREREQ" { sub(/^[^~]*~/, ""); print }'
+            } | sha256sum | cut -c1-12
+          }
+          # The prerequisites row must EXIST, or every procedure above that says
+          # "bind the PREREQUISITES block" is pointing at nothing.
+          if [ -z "$(procedures | sed 's/^[[:space:]]*//' | awk -F'~' '$1 == "PREREQ" { print $2 }')" ]; then
+            echo "::error::Gate 5 failed - the PREREQ prerequisites row is absent from the procedures table, so every procedure that binds it references nothing and no mutating scenario has isolation, backup or cleanup requirements."
+            attest_fault=1
+          fi
+          attest_trusted='unknown'
+          if [ -f "$attest" ]; then
+            if ! git ls-files --error-unmatch "$attest" >/dev/null 2>&1; then
+              attest_trusted='untracked'
+            elif [ -n "$(git status --porcelain -- "$attest" 2>/dev/null)" ]; then
+              attest_trusted='modified'
+            else
+              attest_trusted='tracked'
+            fi
+            # A duplicate line for one row is ambiguous, and "first wins" would let
+            # a FAIL be buried under a PASS. Both are refused.
+            dupes=$(sed 's/^[[:space:]]*//' "$attest" | { grep -vE '^(#|$)' || true; } \
+              | cut -d'|' -f1 | sort | uniq -d)
+            if [ -n "$dupes" ]; then
+              echo "::error::Gate 5 failed - manual-verification-results.txt attests the same row more than once, which is ambiguous and would let a FAIL be hidden behind a PASS. Remove the duplicates: $(printf '%s' "$dupes" | tr '\n' ' ')"
+              attest_fault=1
+            fi
+          fi
           attest_for() {
             [ -f "$attest" ] || return 1
-            awk -F'|' -v k="$1" '$1 == k { print; exit }' "$attest"
+            [ "$attest_trusted" = 'tracked' ] || return 1
+            sed 's/^[[:space:]]*//' "$attest" | awk -F'|' -v k="$1" '$1 == k { print; exit }'
           }
           status=0
+          status=$((status + attest_fault))
           total=0; passed=0; deferred=0; failed=0
+          required_deferred=0; required_deferred_ids=''
           # The tables assert their own shape first. A stray separator in a row
           # silently shifts every field to its left, which is precisely the bug
           # the `~` note above describes; catching it here names it instead.
@@ -2537,27 +3477,67 @@ jobs:
                 ;;
               manual)
                 proc=$(procedures | sed 's/^[[:space:]]*//' | awk -F'~' -v k="$id" '$1 == k { sub(/^[^~]*~/, ""); print; exit }')
+                revision=$(scenario_revision "$id")
                 if [ -z "$proc" ]; then
                   why='declared manual but carries no documented procedure - a scenario nobody can execute is abandoned, not deferred'
+                elif ! required_for "$id" >/dev/null; then
+                  why="carries no REQUIRED-or-ADVISORY classification, so nothing decides whether leaving it unproven may ship"
                 else
                   line=$(attest_for "$id" || true)
-                  if [ -z "$line" ]; then
-                    st='DEFERRED'; why="not executed by this job. Procedure: $proc"
+                  if [ -z "$line" ] && [ -f "$attest" ] && [ "$attest_trusted" != 'tracked' ]; then
+                    # An attestation file that exists but is not part of the
+                    # audited history is refused, and refused LOUDLY: reading it
+                    # would restore exactly the "drop a file on the runner" path
+                    # this binding removes, and ignoring it silently would look
+                    # identical to nobody having attested anything.
+                    why="an attestation file is present but is $attest_trusted rather than tracked and unmodified, so no attestation in it can be trusted. Commit it, or remove it. Procedure: $proc"
+                  elif [ -z "$line" ]; then
+                    st='DEFERRED'; why="not executed by this job. Scenario revision $revision. Procedure: $proc"
                   else
                     verdict=$(printf '%s' "$line" | cut -d'|' -f2)
                     when=$(printf '%s' "$line" | cut -d'|' -f3)
-                    who=$(printf '%s' "$line" | cut -d'|' -f4)
-                    note=$(printf '%s' "$line" | cut -d'|' -f5-)
+                    # Review finding OBS-07, CWE-117 (improper output neutralisation for logs) and CWE-1284
+                    # (improper validation of a specified quantity in input). Every field below is free text
+                    # supplied by whoever wrote the attestation file, and each is interpolated verbatim into
+                    # manual-verification-matrix.txt - the artefact the audit report cites as evidence. A value
+                    # containing a newline could therefore forge additional matrix rows, one containing a
+                    # carriage return could overwrite the line already printed, and an unbounded value could
+                    # inflate the published artefact without limit. Every field is bounded and reduced to
+                    # printable ASCII before it is used, so an attestation can state a claim but cannot shape
+                    # the record of it. `tr -d` runs before `tr -cd` so removed control characters cannot merge
+                    # two words into one.
+                    # The commit, revision and environment fields are neutralised on the same terms and not
+                    # merely length-checked: they reach the matrix through the same interpolation, and acommit
+                    # additionally reaches git. The bounds are chosen so no legitimate value is altered - 64
+                    # characters accommodates a SHA-256 object name, and a revision or environment label is
+                    # printable ASCII by construction.
+                    who=$(printf '%s' "$line" | cut -d'|' -f4 | tr -d '\r\n' | tr -c '[:print:]' ' ' | cut -c1-64)
+                    acommit=$(printf '%s' "$line" | cut -d'|' -f5 | tr -d '\r\n' | tr -c '[:print:]' ' ' | cut -c1-64)
+                    arevision=$(printf '%s' "$line" | cut -d'|' -f6 | tr -d '\r\n' | tr -c '[:print:]' ' ' | cut -c1-32)
+                    aenv=$(printf '%s' "$line" | cut -d'|' -f7 | tr -d '\r\n' | tr -c '[:print:]' ' ' | cut -c1-64)
+                    note=$(printf '%s' "$line" | cut -d'|' -f8- | tr -d '\r\n' | tr -c '[:print:]' ' ' | cut -c1-300)
                     if ! printf '%s' "$when" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
                       why="attested but the timestamp '$when' is not ISO-8601 UTC, so the claim is undated"
                     elif [ "$when" \> "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" ]; then
                       why="attested with a future timestamp '$when', which cannot describe an execution that happened"
                     elif [ -z "$who" ]; then
                       why='attested with no actor, so the claim is unattributable'
+                    elif [ -z "$acommit" ]; then
+                      why='attested with no commit, so the claim is not tied to any revision and would vouch for every future one'
+                    elif ! git cat-file -e "${acommit}^{commit}" 2>/dev/null; then
+                      why="attested against commit '$acommit', which does not exist in this repository"
+                    elif ! git merge-base --is-ancestor "$acommit" HEAD 2>/dev/null; then
+                      why="attested against commit '$acommit', which is NOT an ancestor of the commit under test - the scenario was executed on a revision this build does not contain"
+                    elif [ -z "$arevision" ]; then
+                      why="attested with no scenario revision, so a later rewrite of the scenario or its procedure would silently inherit this claim. Current revision is $revision"
+                    elif [ "$arevision" != "$revision" ]; then
+                      why="STALE - attested against scenario revision '$arevision' but the scenario or its procedure has since been rewritten and is now revision '$revision'. Re-execute and re-attest against the corrected procedure"
+                    elif [ -z "$aenv" ]; then
+                      why='attested with no environment, so a run on a developer machine cannot be told from a run on a release candidate host'
                     elif [ "$verdict" = 'PASS' ]; then
-                      st='PASS-MANUAL'; why="executed $when by $who - $note"
+                      st='PASS-MANUAL'; why="executed $when by $who on $aenv at commit $acommit, scenario revision $revision - $note"
                     elif [ "$verdict" = 'FAIL' ]; then
-                      why="executed $when by $who and FAILED - $note"
+                      why="executed $when by $who on $aenv at commit $acommit and FAILED - $note"
                     else
                       why="attested with an unrecognised verdict '$verdict'"
                     fi
@@ -2570,7 +3550,14 @@ jobs:
             esac
             case "$st" in
               PASS|PASS-MANUAL) passed=$((passed + 1)) ;;
-              DEFERRED)         deferred=$((deferred + 1)) ;;
+              DEFERRED)
+                deferred=$((deferred + 1))
+                if [ "$(required_for "$id" 2>/dev/null)" = 'REQUIRED' ]; then
+                  required_deferred=$((required_deferred + 1))
+                  required_deferred_ids="$required_deferred_ids $id"
+                  st='DEFERRED-REQ'
+                fi
+                ;;
               *)                failed=$((failed + 1)); status=1 ;;
             esac
             {
@@ -2595,7 +3582,15 @@ jobs:
           # Belt and braces on the one rule that matters most: whatever the logic
           # above did, no manual row may appear as an unattested PASS.
           if grep -qE '^M[0-9]+ +PASS( |$)' "$matrix"; then
-            echo "::error::Gate 5 failed - a manual row is reported PASS without a dated attestation. A scenario this job did not execute may only be DEFERRED."
+            echo "::error::Gate 5 failed - a manual row is reported PASS without a bound attestation. A scenario this job did not execute may only be DEFERRED or PASS-MANUAL."
+            status=1
+          fi
+          # Every manual row must appear in the matrix with one of the four states
+          # it can legitimately hold. A row that printed something else means the
+          # evaluator fell through a branch, which would otherwise be invisible.
+          if grep -E '^M[0-9]+ ' "$matrix" | grep -qvE '^M[0-9]+ +(PASS-MANUAL|DEFERRED|DEFERRED-REQ|FAIL)( |$)'; then
+            echo "::error::Gate 5 failed - a manual row holds a state outside {PASS-MANUAL, DEFERRED, DEFERRED-REQ, FAIL}, so the evaluator fell through a branch and the matrix cannot be read."
+            grep -E '^M[0-9]+ ' "$matrix" | grep -vE '^M[0-9]+ +(PASS-MANUAL|DEFERRED|DEFERRED-REQ|FAIL)( |$)' | sed 's/^/  /'
             status=1
           fi
           # An attestation naming a row that does not exist is a typo that would
@@ -2611,25 +3606,61 @@ jobs:
             done < "$attest"
             rm -f .gate5-known-ids
           fi
+          # ---- release readiness, computed and printed on EVERY run --------
+          # This verdict is stated unconditionally so that a green run can never be
+          # mistaken for release readiness. On an ordinary push or pull request an
+          # unproven REQUIRED row is reported and does not fail the job; on a
+          # version-tag push, or a dispatch that opted in, the same row is fatal.
+          release_ready='yes'
+          if [ "$required_deferred" -gt 0 ] || [ "$failed" -gt 0 ]; then release_ready='no'; fi
           {
             echo ''
             echo "SUMMARY  rows=$total  proven=$passed  deferred=$deferred  failed=$failed"
+            echo "         required-but-unproven=$required_deferred  release-context=$release_context  RELEASE-READY=$release_ready"
+            echo "         attestation file: $attest_trusted"
+            if [ "$required_deferred" -gt 0 ]; then
+              echo ''
+              echo 'RELEASE-BLOCKING - the following REQUIRED scenarios verify a Critical or High'
+              echo 'finding and are NOT proven. Shipping without them means shipping an unverified'
+              echo 'security fix, so a version-tag push or a release-candidate dispatch FAILS while'
+              echo 'they remain unproven:'
+              for rid in $required_deferred_ids; do echo "  $rid"; done
+            fi
             if [ "$deferred" -gt 0 ]; then
+              echo ''
+              echo '================ PREREQUISITES, BINDING FOR EVERY MUTATING PROCEDURE ========'
+              procedures | sed 's/^[[:space:]]*//' | awk -F'~' '$1 == "PREREQ" { sub(/^[^~]*~/, ""); print }'
+              echo '============================================================================'
+              echo ''
               echo "$deferred scenario(s) are NOT proven by this job. They require a PostgreSQL"
               echo 'instance, a browser or an SMTP server, and must be executed by hand following'
-              echo 'the procedure printed against each row above, then attested in'
-              echo 'manual-verification-results.txt at the repository root, one line per row:'
-              echo '  <row id>|PASS-or-FAIL|<ISO-8601 UTC>|<actor>|<note>'
-              echo 'Until such a line exists a row is recorded DEFERRED and never PASS, so this'
+              echo 'the procedure and prerequisites printed against each row above, then attested in'
+              echo 'manual-verification-results.txt, which must be COMMITTED, one line per row:'
+              echo '  <row id>|PASS-or-FAIL|<ISO-8601 UTC>|<actor>|<commit>|<scenario revision>|<environment>|<note>'
+              echo 'The commit must be an ancestor of the commit under test, and the scenario'
+              echo 'revision must equal the value printed against the row - rewriting a scenario or'
+              echo 'its procedure rotates that revision and invalidates earlier attestations by'
+              echo 'design. An untracked or locally modified attestation file is refused outright.'
+              echo 'Until a valid line exists a row is recorded DEFERRED and never PASS, so this'
               echo 'file is the complete and self-contained record of what remains unproven.'
+              echo 'A DEFERRED row does NOT pass the release gate: the "Release gate" step below'
+              echo 'fails the run while any mandatory row is unproven. This step records; that'
+              echo 'step blocks.'
             fi
           } >> "$matrix"
           cat "$matrix"
+          if [ "$release_context" = 'yes' ] && [ "$required_deferred" -gt 0 ]; then
+            echo "::error::Gate 5 failed - this is a RELEASE context and $required_deferred REQUIRED scenario(s) are unproven:$required_deferred_ids. Each one verifies a Critical or High finding, so releasing now would ship an unverified security fix. Execute the printed procedures against a disposable environment and commit the attestations, or do not tag."
+            status=1
+          fi
           if [ "$status" -ne 0 ]; then
-            echo "::error::Gate 5 failed - see manual-verification-matrix.txt. A row is unproven, an evidence artifact is missing, or an attestation is malformed."
+            echo "::error::Gate 5 failed - see manual-verification-matrix.txt. A row is unproven, an evidence artifact is missing, an attestation is malformed or stale, or a release context has unproven required scenarios."
             exit 1
           fi
-          echo "Gate 5 recorded - $passed of $total scenario(s) proven by retained evidence, $deferred honestly deferred with a documented procedure, 0 failed."
+          if [ "$required_deferred" -gt 0 ]; then
+            echo "::warning::Gate 5 - $required_deferred REQUIRED scenario(s) remain unproven:$required_deferred_ids. This run is not a release context so the job passes, but RELEASE-READY=no. A version-tag push or a release-candidate dispatch will fail until they are executed and attested."
+          fi
+          echo "Gate 5 recorded - $passed of $total scenario(s) proven by retained evidence, $deferred deferred with a documented procedure ($required_deferred of them release-blocking), $failed failed. RELEASE-READY=$release_ready."
 
       # Deliverable evidence. The brief requires scanner-derived before/after
       # results so docs/security/security-audit-report.md and
@@ -2638,18 +3669,31 @@ jobs:
       # gate above fails, which is precisely when it is most needed. Scan text
       # only - no build binaries, no coverage, nothing beyond the gate output.
       #
-      # ONE FILE IS DELIBERATELY NOT PUBLISHED: analyzer-build.log, the raw
-      # output of the analyzer build. It measures about 3 MB and carries roughly
-      # 3,100 warnings of every category, the overwhelming majority of them the
+      # ONE FILE IS DELIBERATELY NOT PUBLISHED: analyzer-build.txt, the raw output
+      # of the analyzer build. It measures about 3 MB, carries roughly 3,100
+      # warnings of every category - the overwhelming majority of them the
       # pre-existing style and design backlog that AAP 0.3.2 explicitly declines
-      # to refactor. Publishing it would bury the security signal in noise and
-      # invite a reader to treat the backlog as an audit result. What is
-      # published instead is the DERIVED evidence Gate 1 extracts from it:
+      # to refactor - and stamps an ABSOLUTE runner path into every one of them.
+      # Publishing it would bury the security signal in noise, invite a reader to
+      # treat the backlog as an audit result, and broaden internal-path exposure.
+      # Review finding OBS-07 recorded that this paragraph previously named
+      # 'analyzer-build.log', a file this workflow has never produced, while the
+      # publication list below actually uploaded the real raw log - so the comment
+      # asserted a control that was not in force. The name is corrected and the
+      # file is genuinely withheld. What is published instead is the DERIVED
+      # evidence Gate 1 extracts from it:
+      #   analyzer-build-summary.txt the MSBuild result lines and the aggregate
+      #                              warning and error counts, asserted to contain
+      #                              no path separator before it is published, and
+      #                              the artefact Gate 5 row A13 now cites
       #   security-rule-ids.txt      the 94 rule ids the SDK places in the
       #                              Security category at latest-all, read from
       #                              the toolchain at run time rather than
       #                              hardcoded, so the gate cannot fall behind
-      #                              the analyzer package
+      #                              the analyzer package. Since
+      #                              AnalysisLevelSecurity=latest-all, this is now
+      #                              also the set that is ARMED, less the twelve
+      #                              taint rules NoWarn excludes.
       #   all-ca-diagnostics.txt     every (rule, file) pair the build reported,
       #                              all categories - the denominator
       #   security-diagnostics.txt   the Security-category subset - the numerator,
@@ -2667,10 +3711,22 @@ jobs:
       # members and are gated by their own named steps. Coverage is 19 of 19 by
       # two routes; the solution is 17 of 19, and the two numbers are not
       # interchangeable - see the CI-COVERAGE NOTE at the foot of this file.
-      #   editorconfig-items.txt     the effective analyzer-config item list, which
-      #                              is what proves no global analyzer config was
-      #                              loaded and therefore that no unrecorded
-      #                              per-rule severity was in force
+      #   editorconfig-items.txt     the EFFECTIVE analyzer-config item list, taken
+      #                              after CoreCompile so it is what the compiler
+      #                              actually received. It proves two things at
+      #                              once: that the SDK's Security 'all'
+      #                              configuration was loaded, which is what arms
+      #                              nine of the eleven families Gate 1 names, and
+      #                              that no configuration from outside the pinned
+      #                              SDK was loaded, so no unrecorded per-rule
+      #                              severity was in force. An evaluation-time
+      #                              listing - which is what an earlier revision
+      #                              captured - contains neither fact.
+      #   history-exposure-commits.txt  every commit in the reachable history whose
+      #                              diff matched a credential-shape layer, by
+      #                              abbreviated identifier, date and layer. Commit
+      #                              identifiers are not secret; no matched line or
+      #                              value is ever written to it.
       #
       # THE COVERAGE EVIDENCE - what makes the 17 + 2 = 19 claim checkable after
       # the fact rather than merely asserted: sln-members.txt, tracked-projects.txt
@@ -2691,14 +3747,36 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: security-scan-evidence
+          # RETENTION IS SET EXPLICITLY RATHER THAN INHERITED. The default is a
+          # repository or organisation setting that can be up to 90 days and can be
+          # changed without touching this file, so the lifetime of gate evidence
+          # would otherwise be decided elsewhere and silently. Thirty days is long
+          # enough to investigate a failed run and to cite in the audit report, and
+          # short enough to bound how long these files sit in artifact storage:
+          # they include published failure-log tails and the startup-smoke output, which
+          # quote build and host diagnostics.
+          # Shortening it further would start destroying evidence a reviewer needs;
+          # lengthening it accumulates diagnostic text for no verification benefit.
+          retention-days: 30
+          # Review finding OBS-07: this list and the comment above it are now the
+          # same inventory. The raw analyzer log was removed in favour of the
+          # derived, path-free analyzer-build-summary.txt, and the three coverage
+          # set files the comment describes as making the 17 + 2 = 19 claim
+          # "checkable after the fact" are published, because a set that is never
+          # published cannot be checked by anybody. Twenty paths; every one of
+          # them is written by a named step above.
           path: |
-            analyzer-build.txt
+            analyzer-build-summary.txt
+            history-exposure-commits.txt
             security-rule-ids.txt
             all-ca-diagnostics.txt
             security-diagnostics.txt
             security-allowlist.txt
             security-unreviewed.txt
             positive-control.txt
+            sln-members.txt
+            tracked-projects.txt
+            declared-non-members.txt
             extra-projects.txt
             vulnerable-packages.txt
             vulnerable-packages-extra.txt
@@ -2709,6 +3787,60 @@ jobs:
             editorconfig-items.txt
             manual-verification-matrix.txt
           if-no-files-found: warn
+
+      # THE RELEASE GATE - review finding OBS-07, CWE-1390-adjacent (a control that
+      # reports rather than enforces), OWASP A08:2021 Software and Data Integrity
+      # Failures.
+      #
+      # WHAT WAS WRONG. Gate 5 counted a DEFERRED row into its own `deferred`
+      # tally and never set `status`, so a run in which every one of the nineteen
+      # mandatory manual Critical/High scenarios was unproven still exited 0. And
+      # because manual-verification-results.txt is not committed, that was not an
+      # edge case - it was EVERY run. A green tick therefore asserted that the
+      # engagement's Gate 5 had passed while proving none of it, which is worse
+      # than having no gate at all, because a green gate is trusted.
+      #
+      # THE SPLIT, AND WHY IT IS A SPLIT RATHER THAN A FLAG. Gate 5 above remains
+      # the EVIDENCE RECORDER: it evaluates every row, prints why each one landed
+      # where it did, records a deferral honestly with the procedure that would
+      # satisfy it, and publishes the matrix - which the step above does under
+      # `always()`, so the evidence survives this step failing. THIS step is the
+      # BLOCKER, and it is deliberately the last thing in the job so that a
+      # release-blocking verdict can never suppress the evidence that explains it.
+      # Two responsibilities, two steps, neither able to compromise the other.
+      #
+      # THIS GATE IS EXPECTED TO FAIL UNTIL ATTESTATIONS ARE COMMITTED, and that is
+      # the gate working rather than the gate broken - the same posture
+      # AAP 0.9.2 records for the dependency diagnostics, which fail the build
+      # while a vulnerable package remains. Nineteen scenarios need a PostgreSQL
+      # instance, a browser or an SMTP server, so a hosted runner cannot execute
+      # them; the only honest way to pass is to execute them against the
+      # deployment under test and commit a dated, attributed attestation per row to
+      # manual-verification-results.txt. Fabricating that file to make CI green
+      # would defeat the entire purpose of the gate.
+      - name: Release gate - every mandatory manual scenario must be attested
+        if: always()
+        run: |
+          set -uo pipefail
+          matrix=manual-verification-matrix.txt
+          # An absent matrix is a failure, never a pass: it means Gate 5 did not
+          # run to completion, so nothing is known about any row.
+          if [ ! -f "$matrix" ]; then
+            echo "::error::Release gate failed - $matrix is absent, so Gate 5 did not complete and no scenario is proven. An assertion that cannot run is a failure."
+            exit 1
+          fi
+          # Parsed from the matrix rather than recomputed, so this step cannot
+          # disagree with the record that was published. Row lines are
+          # '<id> <status> <scenario>' in column 1; the continuation line carrying
+          # the reason is indented and is skipped by the leading-character anchor.
+          unproven=$(grep -aE '^[AM][0-9]+ +' "$matrix" | grep -avE '^[AM][0-9]+ +(PASS|PASS-MANUAL) ' || true)
+          proven=$(grep -acE '^[AM][0-9]+ +(PASS|PASS-MANUAL) ' "$matrix" || true)
+          if [ -n "$unproven" ]; then
+            echo "::error::Release gate failed - $(printf '%s\n' "$unproven" | wc -l | tr -d '[:space:]') mandatory verification row(s) are not proven. A DEFERRED row does not pass this gate. Execute the scenario against the deployment under test and commit a dated, attributed line per row to manual-verification-results.txt."
+            printf '%s\n' "$unproven"
+            exit 1
+          fi
+          echo "Release gate passed - all $proven mandatory verification row(s) are proven by retained evidence or a dated attestation."
 # CI-COVERAGE NOTE - what a green run here does and does not prove. Stated
 # precisely, because a security artefact that overstates its own coverage is
 # worse than one that admits a gap.

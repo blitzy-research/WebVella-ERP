@@ -141,9 +141,12 @@ namespace WebVella.Erp
 		/// </summary>
 		/// <param name="configuration">The configuration root assembled by the host.</param>
 		/// <param name="jwtEndpointsExposed">
-		/// True when this process serves the bearer-token issue and refresh endpoints, which makes
-		/// 'Settings:Jwt:Key' mandatory. False for a process that does not - the console application
-		/// being the one such process the platform ships.
+		/// True when this process serves the bearer-token issue and refresh endpoints, so that
+		/// 'Settings:Jwt:Key' is needed for those endpoints to FUNCTION. It is deliberately not needed
+		/// for the process to START: an unusable key disables the two routes and is reported on standard
+		/// error, and this flag only decides whether that report is worth making - a process that hosts
+		/// no token routes is never told that routes it never had are disabled. False for such a
+		/// process, the console application being the one the platform ships.
 		/// </param>
 		public static void Initialize(IConfiguration configuration, bool jwtEndpointsExposed)
 		{
@@ -216,8 +219,19 @@ namespace WebVella.Erp
 			// THREAT: a compiled-in placeholder signing key ships in the public source tree, so any deployment that
 			// does not supply its own key issues bearer tokens an attacker can forge at will - a complete
 			// authentication bypass. INVARIANT: this assignment takes the configured value and nothing else; a
-			// missing signing key must become an error, never a silent default.
-			// ValidateRequiredSecurityConfiguration below turns that absence into an actionable startup failure.
+			// missing signing key must never acquire a silent default.
+			// WHAT ABSENCE COSTS, precisely - an earlier revision of this comment said
+			// "ValidateRequiredSecurityConfiguration below turns that absence into an actionable startup
+			// failure", and that was WRONG in a way an operator would feel. It does not: JwtKey is never
+			// added to the missingSecrets accumulator, so no host is stopped for want of a signing key.
+			// Startup PROCEEDS and the capability is withdrawn instead - IsJwtConfigured below goes false,
+			// the token issue and refresh routes disable themselves and refuse every request, every
+			// presented bearer token fails validation, and cookie login is unaffected. The only thing the
+			// presence of a 'Settings:Jwt' section changes is whether that is REPORTED on standard error
+			// (see the condition further down). The two settings whose absence really does abort startup
+			// are Settings:ConnectionString and Settings:EncryptionKey, and they are the only names that
+			// can appear in the abort message. Documented as the two categories in
+			// docs/security/secure-configuration.md.
 			JwtKey = configuration["Settings:Jwt:Key"];
 			JwtIssuer = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Issuer"]) ? "webvella-erp" : configuration["Settings:Jwt:Issuer"];
 			JwtAudience = string.IsNullOrWhiteSpace(configuration["Settings:Jwt:Audience"]) ? "webvella-erp" : configuration["Settings:Jwt:Audience"];

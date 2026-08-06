@@ -80,13 +80,13 @@ namespace WebVella.Erp
 				{
 					connection.BeginTransaction();
 
-					//THREAT ADDRESSED (CWE-532, OWASP A09:2021): the one-time credential notices are held
+					//THREAT ADDRESSED (CWE-532, OWASP A09:2021): the one-time provisioning notices are held
 					//back until this transaction actually commits, so the buffer starts empty for every
 					//attempt. Clearing on entry rather than trusting it to be empty matters because the core
 					//service is registered as a singleton: a first attempt that rolled back would otherwise
-					//leave a stale credential queued and a later successful attempt would print it, naming a
-					//password that was never persisted.
-					pendingCredentialNotices.Clear();
+					//leave a stale notice queued and a later successful attempt would emit it, asserting
+					//something about an installation state that was never persisted.
+					pendingProvisioningNotices.Clear();
 
 					CheckCreateSystemTables();
 
@@ -633,8 +633,9 @@ namespace WebVella.Erp
 							//authentication bypass to full administrative privilege, exploitable by anyone
 							//who can reach /login, and requiring no vulnerability beyond reading this file.
 							//INVARIANT: no password literal may ever be assigned here again. The value is
-							//either supplied by the operator or generated from a cryptographically secure
-							//random source; see ResolveInitialAdministratorPassword below. RecordManager
+							//supplied by the operator through 'Settings:InitialAdministratorPassword' and from
+							//no other source - see ResolveInitialAdministratorPassword below, and review
+							//finding OBS-01 for why the platform no longer generates one. RecordManager
 							//hashes it on write (PBKDF2-HMAC-SHA-256), so the plaintext resolved here is
 							//never persisted.
 							user["password"] = ResolveInitialAdministratorPassword();
@@ -642,8 +643,10 @@ namespace WebVella.Erp
 							user["username"] = "administrator";
 							user["created_on"] = new DateTime(2010, 10, 10);
 							user["enabled"] = true;
-							//THREAT ADDRESSED (CWE-1392/CWE-798, OWASP A07:2021): this credential was chosen by
-							//the platform or handed over on a console, not chosen by its owner, so it is marked
+							//THREAT ADDRESSED (CWE-1392/CWE-798, OWASP A07:2021): this credential reaches the
+							//account through a deployment setting rather than being chosen at a keyboard by the
+							//person who will use it - so it lives in an environment variable, a container
+							//manifest or a CI variable, all of which are multi-reader stores - so it is marked
 							//as owing a rotation. AuthService refuses to mint or refresh a bearer token while
 							//the marker stands, which keeps a credential nobody selected out of automation;
 							//interactive sign-in stays available because it is the only route to the screen that
@@ -1081,72 +1084,107 @@ namespace WebVella.Erp
 					new DbSystemSettingsRepository(DbContext.Current).Save(new DbSystemSettings { Id = systemSettings.Id, Version = systemSettings.Version });
 
 					connection.CommitTransaction();
-
-					//THREAT ADDRESSED - finding C-01 / CWE-532 (insertion of sensitive information into a
-					//log), OWASP A09:2021. The generated administrator credential is emitted HERE, after the
-					//commit has returned, and nowhere earlier. Announcing it while the transaction is still open
-					//cannot be undone by a rollback, so a failure afterwards would leave a live-looking password in
-					//terminal scrollback, container logs and CI output for an account that does not exist. Flushing
-					//after the commit makes the notice mean exactly one thing: this credential is real.
-					//Placed after CommitTransaction rather than in a finally block deliberately - a finally
-					//would print on the rollback path too, which is the precise defect being fixed.
-					FlushCredentialNotices();
 				}
 				catch (Exception ex)
 				{
 					var exception = ex;
 					connection.RollbackTransaction();
 					//Nothing was persisted, so nothing is announced. Discarding rather than leaving the
-					//buffer intact is what stops a rolled-back credential from being printed by a later
-					//call on this singleton.
-					pendingCredentialNotices.Clear();
+					//buffer intact is what stops a notice describing a rolled-back installation from being
+					//emitted by a later call on this singleton.
+					pendingProvisioningNotices.Clear();
 					throw;
 				}
 
+				//THREAT ADDRESSED - review finding OBS-01 / CWE-532 (insertion of sensitive information into
+				//a log) compounded by CWE-460 (improper cleanup on a thrown exception), OWASP A09:2021.
+				//
+				//TWO PROPERTIES, AND BOTH ARE LOAD-BEARING.
+				//
+				//FIRST, WHAT IS EMITTED. Nothing queued here carries a credential, a credential length or a
+				//digest of one - see pendingProvisioningNotices. The notices name the SETTING an operator
+				//supplied a value through and state what the provisioning transaction did with it, which is
+				//information the operator already holds. An earlier revision queued the plaintext
+				//administrator password itself so it could be read back off a console, and no placement of
+				//that write could have made it safe: standard error is captured and retained wholesale by
+				//systemd's journal, the Docker log driver, IIS stdout redirection, Kubernetes container logs
+				//and CI transcripts, so a notice described as one-time was in fact durable plaintext readable
+				//by everyone holding log or host access. The credential is not printed anywhere because the
+				//platform no longer holds one it has to disclose: ResolveInitialAdministratorPassword requires
+				//the operator's own value and generates nothing.
+				//
+				//SECOND, WHERE IT IS EMITTED. OUTSIDE the try/catch, not inside it. Flushing after
+				//CommitTransaction but still within the try meant that a failure in the output stream itself -
+				//a closed, full or redirected standard error - was caught by the clause above, which then
+				//called RollbackTransaction on a transaction that had ALREADY COMMITTED DURABLY. The
+				//provisioning result was therefore reported as failed while the database retained every change
+				//it had made, and the rollback attempt could raise a second exception that replaced the first.
+				//Placed here the notices still describe only a committed outcome - the catch above rethrows, so
+				//this line is unreachable on the failure path - while an output fault propagates as itself and
+				//can no longer reach any transaction-control statement. A finally block would be wrong for the
+				//same reason it was wrong before: it would also run on the rollback path, announcing an
+				//installation state that was never persisted.
+				FlushProvisioningNotices();
 			}
 		}
 
 		#region <--- Initial administrator credential (finding C-01) --->
 
 		/// <summary>
-		/// One-time credential notices withheld until the provisioning transaction has committed.
+		/// One-time, credential-free provisioning notices withheld until the provisioning transaction has
+		/// committed.
 		/// </summary>
 		/// <remarks>
-		/// THREAT ADDRESSED - finding C-01 / CWE-532 (insertion of sensitive information into a log), OWASP
-		/// A09:2021. A generated administrator password has to be shown once, because the stored form is a
-		/// one-way hash and a credential nobody ever sees is an unreachable installation. What it must NOT do
-		/// is appear before the account it belongs to exists. Queuing the notices and flushing them only
-		/// after <c>CommitTransaction</c> returns is what ties the announcement to the durable outcome.
+		/// THREAT ADDRESSED - review finding OBS-01 and finding C-01 / CWE-532 (insertion of sensitive
+		/// information into a log), OWASP A09:2021.
+		/// <para>
+		/// THE INVARIANT THIS BUFFER EXISTS TO CARRY, and it is the whole point of the type: <b>no value
+		/// added here may be, contain, measure or digest a credential.</b> Every notice names a configuration
+		/// SETTING and states what provisioning did, which is information the operator supplied in the first
+		/// place. An earlier revision queued the plaintext administrator password so it could be read back
+		/// off a console, and that could not be made safe by any amount of care about WHEN it was written:
+		/// standard error is captured and retained wholesale by systemd's journal, the Docker log driver, IIS
+		/// stdout redirection, Kubernetes container logs and CI transcripts, so the "one-time" notice was
+		/// durable plaintext readable by everyone holding log or host access. The platform no longer holds a
+		/// credential it has to disclose - <see cref="ResolveInitialAdministratorPassword"/> requires the
+		/// operator's own value and generates nothing - so there is nothing left to queue.
+		/// </para>
+		/// <para>
+		/// Queuing rather than writing immediately is still required, for a different reason: a notice
+		/// asserts something about the installation, and that assertion is only true once the transaction
+		/// commits. Flushing after <c>CommitTransaction</c> returns is what ties every statement to the
+		/// durable outcome, and the flush deliberately sits OUTSIDE the transaction's <c>catch</c> so that a
+		/// failure in the output stream itself can never reach a transaction-control statement.
+		/// </para>
 		/// <para>
 		/// A plain <see cref="List{T}"/> with no locking is correct here rather than merely convenient:
 		/// every writer runs inside the single provisioning transaction on the thread that opened it, and
 		/// the buffer is cleared on entry to that transaction and again on both exits, so no two threads can
-		/// observe it in a partially written state. The list holds plaintext credentials in memory for the
-		/// duration of provisioning only, and is cleared on the rollback path as well as after the flush, so
-		/// a failed attempt leaves nothing behind.
+		/// observe it in a partially written state.
 		/// </para>
 		/// </remarks>
-		private readonly List<string> pendingCredentialNotices = new List<string>();
+		private readonly List<string> pendingProvisioningNotices = new List<string>();
 
 		/// <summary>
-		/// Writes every queued credential notice to standard error and empties the buffer.
+		/// Writes every queued provisioning notice to standard error and empties the buffer.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY - finding C-01. Standard error, never <c>LogService</c>, and that choice is
-		/// load-bearing: the log writer persists through the very database connection this provisioning
-		/// transaction is still building, and a credential written to the log table would then be readable
-		/// by every account holding log access - converting a transient one-time notice into durable stored
-		/// plaintext (CWE-532). The buffer is emptied as it is drained so a notice can never be printed
-		/// twice by a later call on this singleton.
+		/// SECURITY - review finding OBS-01, finding C-01. Standard error, never <c>LogService</c>, and that
+		/// choice is load-bearing: the log writer persists through the very database connection this
+		/// provisioning transaction is still building, so it is not usable at this point at all. The notices
+		/// carry no credential material (see <see cref="pendingProvisioningNotices"/>), so standard error is
+		/// an appropriate destination for them - which is precisely what it was not while they carried a
+		/// password. The buffer is emptied as it is drained so a notice can never be emitted twice by a later
+		/// call on this singleton.
 		/// </remarks>
-		private void FlushCredentialNotices()
+		private void FlushProvisioningNotices()
 		{
-			foreach (string notice in pendingCredentialNotices)
+			foreach (string notice in pendingProvisioningNotices)
 			{
 				Console.Error.WriteLine(notice);
 			}
 
-			pendingCredentialNotices.Clear();
+			pendingProvisioningNotices.Clear();
 		}
 
 		/// <summary>
@@ -1199,45 +1237,47 @@ namespace WebVella.Erp
 		/// Resolves the password for the first administrator account created during system provisioning.
 		/// </summary>
 		/// <returns>
-		/// The operator-supplied value when one was configured; otherwise a freshly generated
-		/// cryptographically random password, which is reported once on the standard error stream.
+		/// The operator-supplied value from <see cref="InitialAdministratorPasswordSettingKey"/>. There is no
+		/// other outcome: an absent or non-conforming value aborts provisioning.
 		/// </returns>
 		/// <remarks>
 		/// SECURITY - finding C-01 (Critical), CWE-798 use of hard-coded credentials, CWE-1392 use of default
-		/// credentials, OWASP A07:2021 Identification and Authentication Failures.
+		/// credentials, OWASP A07:2021 Identification and Authentication Failures; and review finding OBS-01
+		/// (Critical), CWE-532 insertion of sensitive information into a log, OWASP A09:2021.
 		/// THREAT: the literal password this replaces shipped in the public source tree, so every
 		/// installation that had not changed it could be signed into as administrator by anybody. Seeding a
 		/// fixed value is what made the compromise universal; seeding a per-installation value is what ends
 		/// it.
 		/// <para>
-		/// Two supply routes, in this order, and no third:
-		/// </para>
-		/// <list type="number">
-		/// <item><description>
-		/// the operator's own value from <see cref="InitialAdministratorPasswordSettingKey"/>. Preferred,
-		/// because nothing then has to be transcribed off a console, and the value never appears in any
-		/// output stream at all.
-		/// </description></item>
-		/// <item><description>
-		/// a cryptographically random password, reported ONCE while it is still recoverable. Provisioning
-		/// runs exactly once per database, and <c>RecordManager</c> hashes the value on write, so a
-		/// generated password that was never displayed would leave the account permanently unreachable -
-		/// which is why this is reported rather than silently discarded, as the system account's random
-		/// password legitimately is.
-		/// </description></item>
-		/// </list>
-		/// <para>
-		/// The report goes to standard error rather than through <c>LogService</c>, deliberately and for two
-		/// independent reasons. Logging is not usable at this point - it persists through the very database
-		/// connection this provisioning transaction is still building - and a credential written to the log
-		/// table would then be readable by every account holding log access, turning a one-time console
-		/// notice into durable stored plaintext (CWE-532).
+		/// ONE SUPPLY ROUTE, AND IT IS REQUIRED: the operator's own value from
+		/// <see cref="InitialAdministratorPasswordSettingKey"/>. Nothing is generated here, and no credential
+		/// is written to standard error, standard output, the log table or an exception message.
 		/// </para>
 		/// <para>
-		/// It is also QUEUED rather than written here: see <see cref="pendingCredentialNotices"/>. Nothing on
-		/// this path may announce a credential while the transaction that creates the account is still open,
-		/// because a later failure would roll the account back and leave a live-looking password in the
-		/// operator's scrollback for an account that does not exist.
+		/// WHY THE GENERATOR ROUTE WAS REMOVED RATHER THAN HARDENED (review finding OBS-01). An earlier
+		/// revision produced a cryptographically random password when the setting was absent and emitted it
+		/// once on the standard error stream so the operator could read it back. The emission was itself a
+		/// vulnerability, and no placement could fix it: any credential the platform invents must be
+		/// communicated back to the operator, and every channel reachable from inside a provisioning
+		/// transaction is a durable, multi-reader one. Standard error is captured and retained wholesale by
+		/// systemd's journal, the Docker log driver, IIS stdout redirection, Kubernetes container logs and CI
+		/// transcripts, so a "one-time" notice was in fact durable plaintext readable by everyone holding log
+		/// or host access - a live administrator credential, at a published address, for as long as the log
+		/// was kept. <c>LogService</c> would have been worse still: it persists into a database table any
+		/// account with log access can read. Requiring the operator's own value is the only shape of this
+		/// method that never holds a credential it has to disclose.
+		/// </para>
+		/// <para>
+		/// THE COST IS STATED RATHER THAN HIDDEN: an installation that reaches provisioning with no value
+		/// configured fails to start, loudly, naming the setting to supply. That is the intended behaviour -
+		/// the alternatives are shipping a known default (the finding this replaces) or disclosing an invented
+		/// one (the finding this closes). Provisioning runs once per database, so the requirement is paid once.
+		/// </para>
+		/// <para>
+		/// The notice this method queues names only the SETTING, never the value, its length or a digest of
+		/// it. It is QUEUED rather than written here - see <see cref="pendingProvisioningNotices"/> - because
+		/// it asserts that the configured password is now the administrator's, which is only true once the
+		/// transaction commits; on a rollback it would be a false statement about the installation.
 		/// </para>
 		/// <para>
 		/// FIRST-LOGIN ROTATION IS ENFORCED, NOT MERELY REQUESTED: the change-required marker is set here
@@ -1258,63 +1298,74 @@ namespace WebVella.Erp
 		/// </para>
 		/// </remarks>
 		// Not static, deliberately: this queues its notice into the instance buffer that
-		// FlushCredentialNotices drains after the provisioning transaction commits (finding C-01, CWE-532).
-		// It is private and has a single caller, so narrowing it from static costs nothing.
+		// FlushProvisioningNotices drains after the provisioning transaction commits (finding C-01, review
+		// finding OBS-01, CWE-532). It is private and has a single caller, so narrowing it from static costs
+		// nothing.
 		private string ResolveInitialAdministratorPassword()
 		{
 			// ErpSettings.Initialize always runs before provisioning - the hosts call it from UseErp, and the
 			// console application from its own startup - so Configuration is populated here. The null-condition
 			// operator is nevertheless kept so a future caller that provisions without initialising settings
-			// gets a generated credential rather than a NullReferenceException in the middle of a transaction.
+			// reaches the actionable failure below rather than a NullReferenceException in the middle of a
+			// transaction.
 			string configuredPassword = ErpSettings.Configuration?[InitialAdministratorPasswordSettingKey];
-			if (!string.IsNullOrWhiteSpace(configuredPassword))
-			{
-				// THREAT ADDRESSED - finding C-01 (CWE-521 weak password requirements, CWE-1392 use of a
-				// default credential), OWASP A07:2021. This value was previously accepted on the strength of
-				// being non-blank alone, so the literal "erp" that this finding removed from the source could
-				// be reinstated verbatim through configuration, and the twelve-character mixed-class floor the
-				// mandated Authentication Hardening standard sets applied to nothing whatsoever. It is
-				// validated BEFORE it is returned to be hashed, and a failure aborts provisioning rather than
-				// silently falling back to a generated value: quietly ignoring an operator's explicit choice
-				// would leave them believing a password they never saw is in force.
-				ValidateInitialAdministratorPassword(configuredPassword, ConfiguredPasswordSourceDescription);
 
-				// Reported so the operator can tell the two routes apart in the provisioning output. Only the
-				// setting NAME appears - never the value, its length or a digest of it (CWE-532).
-				// Queued rather than printed (finding C-01, CWE-532): this notice asserts that the configured
-				// password is now the administrator's, which is only true once the transaction commits. On a
-				// rollback it would be a false statement about the state of the installation.
-				pendingCredentialNotices.Add("info: WebVella.Erp.ErpService[1] The first administrator password was taken from " +
-					"'" + InitialAdministratorPasswordSettingKey + "'. It is not echoed here.");
-				return configuredPassword;
+			// THREAT ADDRESSED - review finding OBS-01 (Critical), CWE-532, OWASP A09:2021. Absence is a
+			// hard failure, not a fallback. The branch this replaces generated a credential and emitted it on
+			// the standard error stream, which every hosting substrate captures and retains - so the
+			// convenience of a self-provisioning installation was paid for with durable plaintext disclosure
+			// of the account holding every administrative permission. There is deliberately no second route:
+			// a method that never invents a credential is a method that never has to disclose one.
+			if (string.IsNullOrWhiteSpace(configuredPassword))
+			{
+				throw new InvalidOperationException(MissingAdministratorPasswordMessage);
 			}
 
-			string generatedPassword = GenerateInitialAdministratorPassword();
+			// THREAT ADDRESSED - finding C-01 (CWE-521 weak password requirements, CWE-1392 use of a
+			// default credential), OWASP A07:2021. This value was previously accepted on the strength of
+			// being non-blank alone, so the literal "erp" that this finding removed from the source could
+			// be reinstated verbatim through configuration, and the twelve-character mixed-class floor the
+			// mandated Authentication Hardening standard sets applied to nothing whatsoever. It is
+			// validated BEFORE it is returned to be hashed, and a failure aborts provisioning rather than
+			// silently substituting some other value: quietly ignoring an operator's explicit choice would
+			// leave them believing a password they never saw is in force.
+			ValidateInitialAdministratorPassword(configuredPassword, ConfiguredPasswordSourceDescription);
 
-			// A self-check, not defensive clutter. The generator's length and class coverage are properties of
-			// three separate constants that a later edit could change independently of this policy, and the
-			// account this credential secures is the one holding every administrative permission. Validating
-			// the generator's own output means such an edit fails loudly here, once per database, instead of
-			// quietly shipping a credential weaker than the standard demands.
-			ValidateInitialAdministratorPassword(generatedPassword, GeneratedPasswordSourceDescription);
+			// Only the setting NAME appears - never the value, its length or a digest of it (CWE-532).
+			// Queued rather than printed (review finding OBS-01, finding C-01): this notice asserts that the
+			// configured password is now the administrator's, which is only true once the transaction commits.
+			// On a rollback it would be a false statement about the state of the installation.
+			pendingProvisioningNotices.Add("info: WebVella.Erp.ErpService[1] The first administrator password was taken from " +
+				"'" + InitialAdministratorPasswordSettingKey + "'. It is not echoed here.");
 
-			// The one and only place this value is ever emitted. It is unavoidable: the hash is one-way, so a
-			// credential that is never shown is a locked-out installation.
-			// QUEUED, NOT PRINTED (finding C-01, CWE-532). This is the notice the defect mattered most for:
-			// it carries the plaintext credential, and printing it here - with the provisioning transaction
-			// still open and the user record not yet committed - published a live-looking administrator
-			// password for an account that a later failure would erase. FlushCredentialNotices emits it only
-			// after the commit returns.
-			pendingCredentialNotices.Add("warn: WebVella.Erp.ErpService[2] SECURITY - no '" + InitialAdministratorPasswordSettingKey +
-				"' was supplied, so a random password was generated for the first administrator account " +
-				"(erp@webvella.com). It is shown ONCE, here, and cannot be recovered afterwards:" +
-				Environment.NewLine + "    " + generatedPassword + Environment.NewLine +
-				"Sign in with it and change it immediately, then remove it from any terminal scrollback or " +
-				"captured log. Supplying '" + InitialAdministratorPasswordSettingKey + "' instead avoids " +
-				"printing a credential at all. See docs/security/credential-migration.md.");
-
-			return generatedPassword;
+			return configuredPassword;
 		}
+
+		/// <summary>
+		/// Failure message used by both credential paths - first provisioning and the schema version 4
+		/// revocation - when no administrator password has been configured.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding OBS-01 (Critical), CWE-532, OWASP A09:2021. Held as one constant so the
+		/// two paths cannot describe the same requirement differently, and worded to be actionable without
+		/// describing any value: it names the setting, states the policy, and names the operator guide. It
+		/// necessarily appears in a startup failure, which is a captured output stream, so it is written to be
+		/// safe there - a message that quoted, measured or digested a credential would reintroduce the very
+		/// disclosure this finding closes.
+		/// </remarks>
+		// static readonly rather than const, deliberately: the bounds are read from PasswordMinLength and
+		// PasswordMaxLength, which derive from the PasswordUtil constants the write path actually enforces, so
+		// the policy this message states cannot drift from the policy the platform applies. A const would have
+		// forced the two numbers to be repeated as literals here - the exact defect finding M-13 records.
+		private static readonly string MissingAdministratorPasswordMessage =
+			"SECURITY: no administrator password is configured. Supply '" + InitialAdministratorPasswordSettingKey +
+			"' - as the environment variable 'Settings__InitialAdministratorPassword', or through user secrets in " +
+			"development - and start again. It must be " + PasswordMinLength.ToString(CultureInfo.InvariantCulture) +
+			" to " + PasswordMaxLength.ToString(CultureInfo.InvariantCulture) + " characters and contain an upper case " +
+			"letter, a lower case letter, a digit and a symbol. The platform deliberately does NOT generate one: any " +
+			"value it invented would have to be reported back through an output stream that hosting substrates capture " +
+			"and retain, which is the credential-disclosure defect this behaviour replaces. See " +
+			"docs/security/credential-migration.md.";
 
 		/// <summary>
 		/// Describes the operator-supplied credential route in a policy-failure message. Held as a constant
@@ -1426,15 +1477,15 @@ namespace WebVella.Erp
 			}
 
 			throw new InvalidOperationException(
-				"SECURITY - the first administrator password does not meet the required password policy, so " +
-				"provisioning was aborted and no administrator account was created. " + sourceDescription +
+				"SECURITY - the administrator password does not meet the required password policy, so " +
+				"provisioning was aborted and no administrator credential was written. " + sourceDescription +
 				" Supply a value of " + PasswordMinLength.ToString(CultureInfo.InvariantCulture) + " to " +
 				PasswordMaxLength.ToString(CultureInfo.InvariantCulture) + " characters containing at least " +
 				"one upper case letter, one lower case letter, one digit and one symbol in '" +
-				InitialAdministratorPasswordSettingKey + "', then start the application again. Remove that " +
-				"setting entirely to have a compliant password generated instead. The value supplied is not " +
-				"echoed here or anywhere else, and neither is its length. See " +
-				"docs/security/secure-configuration.md.");
+				InitialAdministratorPasswordSettingKey + "', then start the application again. There is " +
+				"deliberately no generated fallback: review finding OBS-01 records why a credential the " +
+				"platform invents cannot be reported back safely. The value supplied is not echoed here or " +
+				"anywhere else, and neither is its length. See docs/security/secure-configuration.md.");
 		}
 
 		/// <summary>
@@ -1492,7 +1543,18 @@ namespace WebVella.Erp
 			// using a non-cryptographic shuffle here would hand back exactly the bias this call removes.
 			RandomNumberGenerator.Shuffle(buffer.AsSpan());
 
-			return new string(buffer);
+			string generatedPassword = new string(buffer);
+
+			// A self-check, not defensive clutter, and it lives HERE rather than at the call site so that it
+			// cannot be bypassed by a future caller. The generator's length and class coverage are properties
+			// of three separate constants that a later edit could change independently of the policy, and the
+			// only account this value now secures is the local system identity - which holds the administrator
+			// role and bypasses permission checks for background work. Validating the generator's own output
+			// means such an edit fails loudly here, once per database, instead of quietly writing a credential
+			// weaker than the standard demands. The check reads no configuration and never echoes the value.
+			ValidateInitialAdministratorPassword(generatedPassword, GeneratedPasswordSourceDescription);
+
+			return generatedPassword;
 		}
 
 		#endregion
@@ -2175,16 +2237,15 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 				// then WRITES a password, so it runs against the bounds this release declares rather than the
 				// ones it is in the middle of replacing.
 				//
-				// Today that sequencing is belt-and-braces rather than load-bearing, and the reason is worth
-				// stating so a later edit does not mistake it for arbitrary. The replacement credential is
-				// GenerateInitialAdministratorPassword's fixed 20-character value, which sits inside BOTH
-				// bound sets by construction, and no write path validates against MinLength or MaxLength
-				// anyway - they are declarative field metadata. But both of those are properties of the
-				// current code, not invariants: lengthen the generator past 24, switch the replacement to an
-				// operator-supplied value, or add write-side validation of the declared bounds, and an
-				// order-dependent failure appears in a security migration. Resting that migration on the
-				// continued absence of a validation check would be a coincidence rather than an invariant, so
-				// the bounds are raised first and the invariant is made structural.
+				// That sequencing is now LOAD-BEARING rather than belt-and-braces, and review finding OBS-01
+				// is what made it so. The replacement credential used to be a generated, fixed 20-character
+				// value that sat inside BOTH bound sets by construction; since OBS-01 removed the generator,
+				// it is the OPERATOR'S OWN passphrase, which may legitimately be longer than the 24 characters
+				// an unmigrated installation still declares and is validated against
+				// PasswordMinLength/PasswordMaxLength before it is written. Raising the bounds first is
+				// therefore the difference between accepting that passphrase and rejecting it in the middle of
+				// a security migration. The earlier revision of this comment anticipated exactly this change
+				// and asked that the ordering not be treated as arbitrary; it no longer needs to ask.
 				//
 				// The dependency runs one way only - raising the bounds neither reads nor needs the stored
 				// credential - and all three steps remain individually idempotent, so this ordering does not
@@ -2238,8 +2299,19 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 		/// marker has teeth - <c>AuthService</c> refuses to mint or refresh a bearer token while it is set,
 		/// the login page records a warning audit entry on each sign-in that still uses the credential, and
 		/// <c>SecurityManager</c> clears it when the password is actually changed. Interactive login stays
-		/// open on purpose, being the only route to the screen that performs that change. The replacement
-		/// is unique per installation and the notice below tells the operator to replace it at once.
+		/// open on purpose, being the only route to the screen that performs that change. The replacement is
+		/// the operator's own value and the notice below tells them to rotate it and remove it from the
+		/// deployment configuration.
+		/// </para>
+		/// <para>
+		/// WHERE THE REPLACEMENT COMES FROM - review finding OBS-01 (Critical), CWE-532, OWASP A09:2021. It is
+		/// read from <see cref="InitialAdministratorPasswordSettingKey"/>, exactly as first provisioning reads
+		/// it, and the migration ABORTS when no value is configured. The revision this replaces generated a
+		/// random replacement and emitted it on the standard error stream so the operator could read it back,
+		/// which published a live administrator credential into every substrate that captures process output.
+		/// A migration can no more report an invented secret safely than provisioning can, so it does not
+		/// invent one. The abort is reached only by installations that still carry the published default,
+		/// because the guard below returns first.
 		/// </para>
 		/// </remarks>
 		private void RevokeSeedAdministratorCredential4(RecordManager recMan)
@@ -2293,14 +2365,35 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 				return;
 			}
 
-			// Deliberately the same generator as fresh provisioning: cryptographically random, and long
-			// enough to sit inside BOTH the 6-24 bounds an unmigrated installation still carries and the
-			// 12-128 bounds SecurePasswordFieldMetadata4 declares - so the value is valid whichever of the
-			// two is in force when it is written. The caller nevertheless runs SecurePasswordFieldMetadata4
-			// BEFORE this step, so that "valid under either bound set" is a convenience rather than a
-			// requirement; see the ordering rationale at that call site. A replacement that satisfied only
-			// the new bounds would otherwise be a latent ordering bug.
-			string replacementPassword = GenerateInitialAdministratorPassword();
+			// THREAT ADDRESSED - review finding OBS-01 (Critical), CWE-532 insertion of sensitive information
+			// into a log, OWASP A09:2021. Deliberately the SAME operator-supplied route as fresh provisioning,
+			// and for the same reason: the replacement this migration writes used to be generated here and
+			// then emitted on the standard error stream so the operator could read it back, which published a
+			// live administrator credential into every substrate that captures process output. A migration
+			// cannot report a secret it invents any more safely than provisioning can, so it does not invent
+			// one. Requiring the operator's own value is what leaves this method with nothing to disclose.
+			//
+			// Absence is a hard failure that abandons the whole version 4 migration: the version is not
+			// advanced, the transaction rolls back at the caller's catch, and the upgrade is retried on the
+			// next start once the setting is supplied. That is the correct trade - the alternative outcomes
+			// are leaving the published default in force (the vulnerability this method exists to close) or
+			// disclosing an invented replacement (the vulnerability OBS-01 records). Only installations that
+			// STILL carry the published default reach this line at all, because the guard above returns
+			// first, so an operator who has already chosen their own password is never asked for a setting.
+			string replacementPassword = ErpSettings.Configuration?[InitialAdministratorPasswordSettingKey];
+			if (string.IsNullOrWhiteSpace(replacementPassword))
+			{
+				throw new InvalidOperationException("SCHEMA VERSION 4 MIGRATION. " + MissingAdministratorPasswordMessage);
+			}
+
+			// The same policy gate provisioning applies, for the same reason: without it the literal this
+			// migration is revoking could be reinstated verbatim through configuration. It is applied BEFORE
+			// the write, so a non-conforming value aborts the migration instead of becoming the account's
+			// credential. The caller runs SecurePasswordFieldMetadata4 first, which raises the declared bounds
+			// from the 6-24 an unmigrated installation still carries to 12-128; that ordering is now
+			// LOAD-BEARING rather than belt-and-braces, because an operator passphrase may legitimately exceed
+			// 24 characters - see the ordering rationale at the call site.
+			ValidateInitialAdministratorPassword(replacementPassword, ConfiguredPasswordSourceDescription);
 
 			EntityRecord administratorRecord = new EntityRecord();
 			administratorRecord["id"] = SystemIds.FirstUserId;
@@ -2326,23 +2419,24 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			if (!result.Success)
 				throw new InvalidOperationException("SCHEMA VERSION 4 MIGRATION. Entity: user. The administrator credential shipped by earlier releases could not be revoked. Message:" + result.Message);
 
-			// Reported once, on the standard error stream, for the same reason provisioning reports its
-			// generated credential: the stored value is a one-way hash, so a replacement that is never
-			// shown is an administrator account nobody can reach. It is deliberately NOT written through
-			// LogService - that would persist a live credential into a database table readable by every
-			// account with log access (CWE-532), turning a transient notice into stored plaintext.
-			// QUEUED, NOT PRINTED (finding C-01, CWE-532). Same defect and same reasoning as the provisioning
-			// notice: this runs inside the schema version 4 migration, which is inside the same provisioning
-			// transaction, so a failure in any later migration step rolls this password change back. Printing
-			// it here announced a replacement credential that would then not be in force, while the account
-			// silently kept the published default the migration was supposed to revoke - the worst of both
-			// outcomes. It is emitted only once the commit has returned.
-			pendingCredentialNotices.Add("warn: WebVella.Erp.ErpService[3] SECURITY - this installation's administrator account " +
+			// THREAT ADDRESSED - review finding OBS-01 (Critical), CWE-532, OWASP A09:2021. This notice carries
+			// NO credential, and that is the whole of the fix: it names the SETTING the replacement came from
+			// and states what the migration did, both of which the operator already knows, so nothing here is
+			// worth capturing out of a container log or a CI transcript. The revision this replaces embedded
+			// the plaintext replacement password so it could be read off a console, which turned an upgrade
+			// into a durable disclosure of the account holding every administrative permission.
+			//
+			// Still QUEUED rather than written here (see pendingProvisioningNotices): this runs inside the
+			// schema version 4 migration, which is inside the provisioning transaction, so a failure in any
+			// later migration step rolls this password change back. Emitting the notice here would assert a
+			// revocation that had not happened, while the account silently kept the published default. It is
+			// emitted only once the commit has returned.
+			pendingProvisioningNotices.Add("warn: WebVella.Erp.ErpService[3] SECURITY - this installation's administrator account " +
 				"(" + SystemIds.FirstUserId + ") still carried the default password published in earlier releases, so it has " +
-				"been revoked. A random replacement was generated and is shown ONCE, here, and cannot be recovered " +
-				"afterwards:" + Environment.NewLine + "    " + replacementPassword + Environment.NewLine +
-				"Sign in with it and change it immediately, then remove it from any terminal scrollback or captured log. " +
-				"No other account's password was changed. See docs/security/credential-migration.md.");
+				"been revoked and replaced with the value supplied in '" + InitialAdministratorPasswordSettingKey + "'. That " +
+				"value is not echoed here or anywhere else. Sign in with it and change it immediately, and remove it from the " +
+				"deployment configuration once you have. No other account's password was changed. See " +
+				"docs/security/credential-migration.md.");
 		}
 
 		/// <summary>

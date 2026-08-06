@@ -256,37 +256,41 @@ namespace WebVella.Erp.Api.Models
 		/// never widened into a namespace wildcard. It admits no type that has ever been used as a
 		/// deserialization gadget.
 		/// </para>
+		/// <para>
+		/// THREAT ADDRESSED - review finding CR3-H-06, CWE-502 (deserialization of untrusted data) reached
+		/// by ASSEMBLY CONFUSION, OWASP A08:2021. This used to be a <c>HashSet&lt;string&gt;</c> of names
+		/// with no assembly component, and the omission was defended on the grounds that the framework
+		/// spreads these types across several assemblies so pinning would be "brittle without adding any
+		/// protection". Both halves of that were wrong. Any assembly loaded into the process - a plugin, a
+		/// code-generated assembly, anything the runtime resolves - may declare a public type called
+		/// <c>System.Uri</c> or <c>System.Collections.Generic.List`1</c>, and a discriminator naming that
+		/// assembly then satisfied the name test and was constructed. The only backstop was the
+		/// delegate/disposable shape rejection in <see cref="IsAllowedResolvedType"/>, which an impostor
+		/// simply avoids by being neither. Pinning is also not brittle: a <c>typeof</c> expression resolves
+		/// the type through the COMPILER's reference set, so the entry is correct whichever assembly the
+		/// framework happens to place the type in today and stays correct if it moves tomorrow - which is
+		/// precisely what a hand-written assembly-qualified NAME would not do.
+		/// The map is therefore keyed by full name for the pre-resolution name test and carries the exact
+		/// <see cref="Type"/> for the post-resolution reference-equality test, exactly as
+		/// <see cref="AllowedFirstPartyTypes"/> already did.
+		/// </para>
 		/// </summary>
-		private static readonly HashSet<string> AllowedFrameworkTypeNames = new HashSet<string>(StringComparer.Ordinal)
-		{
-			"System.Dynamic.ExpandoObject",
-			"System.Object",
-			"System.String",
-			"System.Boolean",
-			"System.Byte",
-			"System.SByte",
-			"System.Int16",
-			"System.UInt16",
-			"System.Int32",
-			"System.UInt32",
-			"System.Int64",
-			"System.UInt64",
-			"System.Single",
-			"System.Double",
-			"System.Decimal",
-			"System.Char",
-			"System.DateTime",
-			"System.DateTimeOffset",
-			"System.TimeSpan",
-			"System.Guid",
-			"System.Uri",
-			"System.Collections.Generic.List`1",
-			"System.Collections.Generic.Dictionary`2",
-			"System.Collections.Generic.HashSet`1",
-			"System.Collections.Generic.KeyValuePair`2",
-			"System.Object[]",
-			"System.String[]"
-		};
+		private static readonly Dictionary<string, Type> AllowedFrameworkTypes = BuildFrameworkTypeMap();
+
+		/// <summary>
+		/// The names in <see cref="AllowedFrameworkTypes"/>, plus the two array discriminators, for the
+		/// pre-resolution name test in <see cref="IsAllowedTypeName"/>.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY H-10 / CR3-H-06 (CWE-502). Derived from the pinned map rather than written out a second
+		/// time, so the two cannot disagree - a name present here but absent from the map would pass the
+		/// name test and then be refused by the reference test, which is safe but reports the wrong reason;
+		/// the reverse would be a hole. The two array forms are added because a discriminator spells an
+		/// array as <c>System.Object[]</c> whereas the resolved graph is walked through
+		/// <see cref="Type.GetElementType"/>, so the array name never reaches the reference test and has no
+		/// pinned entry to hold.
+		/// </remarks>
+		private static readonly HashSet<string> AllowedFrameworkTypeNames = BuildFrameworkTypeNameSet();
 
 		/// <summary>
 		/// The shared binder instance every deserialization site attaches. Deserialization runs once per
@@ -583,10 +587,19 @@ namespace WebVella.Erp.Api.Models
 				return true;
 			}
 
-			// Rule (b) - explicitly permitted framework type. Intentionally assembly agnostic:
-			// the framework spreads these types across several assemblies - ExpandoObject lives in
-			// System.Linq.Expressions and Uri in System.Private.Uri - so pinning them to an
-			// assembly name would be brittle without adding any protection.
+			// Rule (b) - explicitly permitted framework type. This stage is a NAME test only, and it is
+			// deliberately assembly agnostic HERE because it runs before resolution: the framework spreads
+			// these types across several assemblies - ExpandoObject lives in System.Linq.Expressions and Uri
+			// in System.Private.Uri - and the discriminator's assembly component is attacker-supplied text,
+			// so testing it would reject legitimate payloads while proving nothing about what is loaded.
+			//
+			// WHAT ACTUALLY PINS THE ASSEMBLY is IsAllowedResolvedType, which looks the RESOLVED type up in
+			// AllowedFrameworkTypes and requires reference equality with the pinned typeof. Review finding
+			// CR3-H-06 records why that had to be added: the earlier revision of this comment claimed
+			// pinning would be "brittle without adding any protection" and left the framework set as names
+			// alone, so an assembly loaded into the process could declare its own System.Uri, name it in a
+			// discriminator, and be constructed. This stage remains a cheap textual pre-filter; it is no
+			// longer the last word.
 			return AllowedFrameworkTypeNames.Contains(outerTypeName);
 		}
 
@@ -653,23 +666,35 @@ namespace WebVella.Erp.Api.Models
 				? type.GetGenericTypeDefinition().FullName
 				: type.FullName;
 
-			// SECURITY H-10 (CWE-502). A first party constituent must be the EXACT type held in the
-			// pinned map - reference equality against the Type object, not merely a name match - so
-			// a same-named type loaded from any other assembly is refused here even if it somehow
-			// satisfied the name check. Framework constituents fall through to the enumerated
-			// framework set, which is assembly agnostic by design.
-			if (declaredTypeName != null
-				&& AllowedFirstPartyTypes.TryGetValue(declaredTypeName, out var pinnedType))
-			{
-				var candidate = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+			// SECURITY H-10 (CWE-502) and review finding CR3-H-06 (assembly confusion). EVERY admitted
+			// constituent must be the EXACT Type held in one of the two pinned maps - reference equality
+			// against the Type object, never a name match - so a same-named type loaded from any other
+			// assembly is refused here whatever the discriminator claimed.
+			//
+			// THE NAME-ONLY FALLBACK THAT USED TO SIT HERE IS GONE, and removing it is the fix. It read
+			// "else if (!IsAllowedTypeName(type.Assembly.GetName().Name, declaredTypeName))", which for a
+			// framework name asked only whether the NAME was on the list - so a type called System.Uri
+			// declared by a plugin, a code-generated assembly or anything else the runtime had loaded was
+			// admitted and constructed. The delegate and disposable shape rejection above was the only
+			// thing standing in its way, and an impostor avoids that simply by being neither.
+			//
+			// There is no legitimate resolved type this refuses that the fallback used to allow: the
+			// fallback admitted exactly (first party assembly AND a name in AllowedFirstPartyTypes) or (a
+			// name in AllowedFrameworkTypeNames), and both maps are consulted below. The two array
+			// spellings in that name set never reach this point, because arrays are unwrapped to their
+			// element type at the top of this method.
+			var candidate = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+			Type pinnedType = null;
 
-				if (candidate != pinnedType)
-				{
-					rejectedTypeName = GetDiagnosticName(type);
-					return false;
-				}
+			if (declaredTypeName == null
+				|| (!AllowedFirstPartyTypes.TryGetValue(declaredTypeName, out pinnedType)
+					&& !AllowedFrameworkTypes.TryGetValue(declaredTypeName, out pinnedType)))
+			{
+				rejectedTypeName = GetDiagnosticName(type);
+				return false;
 			}
-			else if (!IsAllowedTypeName(type.Assembly.GetName().Name, declaredTypeName))
+
+			if (candidate != pinnedType)
 			{
 				rejectedTypeName = GetDiagnosticName(type);
 				return false;
@@ -737,6 +762,93 @@ namespace WebVella.Erp.Api.Models
 			}
 
 			return map;
+		}
+
+		/// <summary>
+		/// Builds the pinned framework type map. Runs once, during type initialization; see
+		/// <see cref="AllowedFrameworkTypes"/> for the rationale.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - review finding CR3-H-06, CWE-502 (deserialization of untrusted data) reached by
+		/// assembly confusion, OWASP A08:2021.
+		/// <para>
+		/// Every entry is a <c>typeof</c> expression, so the assembly is pinned by the compiler rather than
+		/// by a string a discriminator could satisfy. Open generic definitions are used - <c>List&lt;&gt;</c>
+		/// rather than <c>List&lt;object&gt;</c> - because that is the form both the discriminator name and
+		/// <see cref="IsAllowedResolvedType"/> reduce a constructed generic to.
+		/// </para>
+		/// <para>
+		/// The membership is unchanged from the name set it replaces: the same twenty-five types, no
+		/// additions. This change alters HOW a name is admitted, not WHICH names are.
+		/// </para>
+		/// </remarks>
+		private static Dictionary<string, Type> BuildFrameworkTypeMap()
+		{
+			var frameworkTypes = new Type[]
+			{
+				typeof(System.Dynamic.ExpandoObject),
+				typeof(object),
+				typeof(string),
+				typeof(bool),
+				typeof(byte),
+				typeof(sbyte),
+				typeof(short),
+				typeof(ushort),
+				typeof(int),
+				typeof(uint),
+				typeof(long),
+				typeof(ulong),
+				typeof(float),
+				typeof(double),
+				typeof(decimal),
+				typeof(char),
+				typeof(DateTime),
+				typeof(DateTimeOffset),
+				typeof(TimeSpan),
+				typeof(Guid),
+				typeof(Uri),
+				typeof(List<>),
+				typeof(Dictionary<,>),
+				typeof(HashSet<>),
+				typeof(KeyValuePair<,>)
+			};
+
+			var map = new Dictionary<string, Type>(StringComparer.Ordinal);
+
+			foreach (var type in frameworkTypes)
+			{
+				// The same standing guard the first party map carries. None of the entries above is a
+				// delegate or an IDisposable today; the check stays so that adding one cannot quietly
+				// widen the attack surface, and so the two maps are governed by one identical rule.
+				if (typeof(Delegate).IsAssignableFrom(type) || typeof(IDisposable).IsAssignableFrom(type))
+				{
+					continue;
+				}
+
+				if (type.FullName != null)
+				{
+					map[type.FullName] = type;
+				}
+			}
+
+			return map;
+		}
+
+		/// <summary>
+		/// Derives the pre-resolution framework name set from the pinned map, adding the two array
+		/// discriminator spellings. See <see cref="AllowedFrameworkTypeNames"/>.
+		/// </summary>
+		private static HashSet<string> BuildFrameworkTypeNameSet()
+		{
+			var names = new HashSet<string>(AllowedFrameworkTypes.Keys, StringComparer.Ordinal);
+
+			// A discriminator spells an array as "System.Object[]" or "System.String[]". The resolved graph
+			// is walked through Type.GetElementType, so these two never reach the reference-equality test
+			// and correctly have no pinned entry - their ELEMENT type carries the pin instead.
+			names.Add("System.Object[]");
+			names.Add("System.String[]");
+
+			return names;
 		}
 
 		/// <summary>

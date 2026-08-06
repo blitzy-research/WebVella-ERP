@@ -37,7 +37,24 @@ that the environment fills in at run time, not a default anyone has to edit in p
 GENERATE the value with a cryptographically secure random generator - never a passphrase, a
 dictionary word, or a literal reused across deployments:
 
-	Settings__Jwt__Key=$(openssl rand -base64 48)
+	export Settings__Jwt__Key="$(openssl rand -base64 48)"
+
+THE 'export' IS LOAD-BEARING, and an earlier revision of this note omitted it. A bare
+NAME=value assignment creates a SHELL variable, not an environment variable: the shell keeps it
+to itself, so a host launched afterwards from that same shell inherits nothing and the
+environment-variables provider finds no key. The symptom is confusing rather than obvious - the
+host starts normally, because this key is not startup-fatal (see NO INSECURE FALLBACK REMAINS
+below), and only the token routes stay disabled, so the operator sees a working site with
+bearer authentication silently off. Either form below is correct; use whichever suits the
+context:
+
+	export Settings__Jwt__Key="$(openssl rand -base64 48)"      # persists for this shell
+	Settings__Jwt__Key="$(openssl rand -base64 48)" dotnet run  # one command only
+
+Quote the command substitution. Base64 output contains '+' and '/' and can end in '=', and an
+unquoted expansion is subject to word splitting and pathname expansion - so an unquoted value
+can be silently truncated or mangled, which then fails the 32-byte floor for a reason that
+looks nothing like the cause.
 
 HS256 signs with HMAC-SHA-256, so RFC 7518 section 3.2 requires a key at least as long as the
 hash it feeds: 256 bits, i.e. 32 bytes. Anything shorter is refused outright. 48 random bytes is
@@ -66,9 +83,17 @@ themselves rather than sign forgeable tokens and every presented bearer token is
 cookie login keeps working. Read either outcome as "supply the secret", not as a defect.
 
 The companion secrets follow the same double-underscore convention: Settings__ConnectionString,
-Settings__EncryptionKey and Settings__EmailSMTPPassword. See README.md, section "Configuration:
-required secrets", for the short list, and docs/security/secure-configuration.md for the
-authoritative per-host list and the rotation procedure.
+Settings__EncryptionKey and Settings__EmailSMTPPassword. Those three are the SECRET-BEARING ones and
+are all this note undertakes to list - it is not an inventory, and should not be read as one. The
+platform reads 40 configuration keys in total. See README.md, section "Configuration: required
+secrets", for the short list; docs/security/secure-configuration.md section "The complete inventory
+of every configuration key the platform reads" is the exhaustive one, with each key's default and
+applicability, and it also carries the rotation procedure.
+
+Of those three, only Settings__ConnectionString and Settings__EncryptionKey abort startup when
+absent. Settings__EmailSMTPPassword is needed only when e-mail is enabled and the relay
+authenticates, and Settings__Jwt__Key - the subject of this note - is not startup-fatal either, as
+set out above.
 
 
 =========================================================================

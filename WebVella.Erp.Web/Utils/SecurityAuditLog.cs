@@ -582,14 +582,69 @@ namespace WebVella.Erp.Web.Utils
 		}
 
 		/// <summary>
+		/// Records a security audit record for an event an unauthenticated caller can repeat for free, at
+		/// most once per source per <see cref="FaultIntervalMinutes"/>, with everything it withheld counted
+		/// and reported by the per-source ledger.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding OBS-06, CWE-778 (insufficient logging) held in tension with CWE-779
+		/// (logging of excessive data), OWASP A09:2021. Some security-relevant refusals sit on paths an
+		/// anonymous caller can drive in a loop at no cost - replaying one revoked bearer token is the case
+		/// this was added for. Not recording them at all leaves no forensic evidence that a stolen credential
+		/// was being reused after its session ended; recording every one hands the caller an unbounded write
+		/// amplifier aimed at the audit trail. Neither is acceptable, so the event is recorded at a bounded
+		/// rate and the volume it hid is reported by <see cref="ReportOutstanding"/> as
+		/// <c>suppressed_by_rate_limit</c> - so a flood is visible AS a flood rather than as either silence or
+		/// a flood of rows.
+		/// <para>
+		/// This is deliberately NOT <see cref="RecordAudit(string, LogType, string, string)"/>: that method is
+		/// unbounded because an evaluated authentication outcome must never be withheld. The distinction is
+		/// which side of the credential check the event sits on. Use this one only where the caller needs no
+		/// credential to repeat the event.
+		/// </para>
+		/// <para>
+		/// It never throws, for the same reason <see cref="RecordApiFault(string, Exception)"/> never does:
+		/// its callers are refusal paths, and an audit write that could fail one of them would convert an
+		/// audit-store hiccup into an authorization change.
+		/// </para>
+		/// </remarks>
+		/// <param name="source">Stable call-site identifier; also the ledger partition.</param>
+		/// <param name="type">Record severity.</param>
+		/// <param name="message">Fixed literal describing the event. Never composed from caller data.</param>
+		/// <param name="details">Already-neutralised detail text, assembled with <see cref="Field"/>.</param>
+		internal static void RecordRateLimitedAudit(string source, LogType type, string message, string details)
+		{
+			var key = NormalizeSource(source);
+			var state = GetState(key);
+
+			if (!state.TryClaimWindow(FaultIntervalMinutes))
+			{
+				state.CountSuppressed();
+				return;
+			}
+
+			var boundedMessage = Sanitize(message);
+
+			if (!Write(type, key, boundedMessage, details))
+			{
+				state.CountUnpersisted();
+				EmitFallbackSignal(key, boundedMessage);
+				return;
+			}
+
+			ReportOutstanding(key, state);
+		}
+
+		/// <summary>
 		/// Records a security audit record for a source that participates in the per-source ledger.
 		/// </summary>
 		/// <returns>True when the record was persisted.</returns>
 		/// <remarks>
-		/// Unlike <see cref="RecordApiFault(string, Exception)"/> this is NOT rate limited: authentication
-		/// and authorization outcomes are the records the audit trail exists for, and withholding them to
-		/// save log rows would let an attacker hide a credential-stuffing run behind its own volume. The
-		/// throttle in front of the login path is what bounds the volume instead.
+		/// Unlike <see cref="RecordApiFault(string, Exception)"/> and
+		/// <see cref="RecordRateLimitedAudit(string, LogType, string, string)"/> this is NOT rate limited:
+		/// authentication and authorization outcomes are the records the audit trail exists for, and
+		/// withholding them to save log rows would let an attacker hide a credential-stuffing run behind its
+		/// own volume. The throttle in front of the login path is what bounds the volume instead.
 		/// </remarks>
 		internal static bool RecordAudit(string source, LogType type, string message, string details)
 		{

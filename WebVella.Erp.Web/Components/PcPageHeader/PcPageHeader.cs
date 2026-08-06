@@ -123,6 +123,27 @@ namespace WebVella.Erp.Web.Components
                     ViewBag.ProccessedSubTitle = context.DataModel.GetPropertyValueByDataSource(instanceOptions.SubTitle);
                     ViewBag.ProccessedAreaLabel = context.DataModel.GetPropertyValueByDataSource(instanceOptions.AreaLabel);
                     ViewBag.ProccessedAreaSubLabel = context.DataModel.GetPropertyValueByDataSource(instanceOptions.AreaSubLabel);
+                    //THREAT ADDRESSED - CWE-79 (stored cross-site scripting), OWASP A03:2021, finding H-06.
+                    //This value is a DATASOURCE expression configured on the page, so whatever record text
+                    //that datasource resolves to is arbitrary user-influenceable content, and it used to
+                    //reach a raw markup sink verbatim - a description bound to any stored text field turned
+                    //that field into a stored cross-site-scripting channel on every screen carrying this
+                    //component.
+                    //It is NOT encoded here, and that is deliberate: the channel is closed at the sink
+                    //instead. <wv-page-header> now exposes TWO attributes - "description", which is a TEXT
+                    //channel written through Append and therefore encoded for every one of its suppliers,
+                    //and "description-html", the raw channel reserved for markup the application composes
+                    //itself. Both component views below bind the TEXT attribute, so this value is encoded
+                    //exactly once, at the sink, for this supplier and for the seven others that predate
+                    //it. Encoding here as well would encode it TWICE, and a legitimate description such as
+                    //"R&D backlog" would display as "R&amp;D backlog" - a user-visible regression with no
+                    //security benefit. See the remarks on WvPageHeader.Description and
+                    //WvPageHeader.DescriptionHtml for the sink-side evidence and for why the five list
+                    //pages that genuinely compose markup use the other attribute.
+                    //A configured description that deliberately contained markup now displays that markup
+                    //as text, which is the remediation rather than a regression.
+                    //Sibling values need no such treatment: Title, SubTitle, AreaLabel and AreaSubLabel
+                    //are written to the same tag helper but land on Append/attribute sinks, which encode.
                     ViewBag.ProccessedDescription = context.DataModel.GetPropertyValueByDataSource(instanceOptions.Description);
                     ViewBag.ProccessedColor = context.DataModel.GetPropertyValueByDataSource(instanceOptions.Color);
                     ViewBag.ProccessedIconColor = context.DataModel.GetPropertyValueByDataSource(instanceOptions.IconColor);
@@ -207,7 +228,7 @@ namespace WebVella.Erp.Web.Components
                     {
                         currentUrlTemplate = $"/{currentApp.Name}/a/[[pageName]]";
                     }
-                    //App pages with sitemap node				
+                    //App pages with sitemap node
                     else if (currentApp != null && currentSitemapArea != null && currentSitemapNode != null)
                     {
                         //App pages

@@ -76,15 +76,27 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 						}
 						break;
-					case "default_from_email":
+					//SCHEMA MAPPING - review finding INT-11. This case label named a field that does not exist.
+					//smtp_service carries `default_sender_email` - provisioned in MailPlugin.20190215 as a REQUIRED
+					//InputEmailField and mapped to SmtpService.DefaultSenderEmail - and never carried
+					//`default_from_email`, so the switch could not match and this validation never ran. An invalid
+					//sender address was therefore accepted on save and failed much later inside MailboxAddress
+					//construction, which reports a data-entry mistake as a delivery failure against a relay.
+					//The one other place the old name survives is the stale GENERATED SQL text of the AllSmtpSevices
+					//data source in MailPlugin.20190215, which also names a mis-spelled `connection_secutity` column
+					//and is never executed - DataSourceManager runs the EQL text - so it is evidence of the rename
+					//rather than of a second field.
+					//IsEmail() is null-safe - it constructs a MailAddress inside a try - so a null or blank value
+					//reports the same actionable error instead of throwing, which agrees with the field being required.
+					case "default_sender_email":
 						{
-							if (!((string)rec["default_from_email"]).IsEmail())
+							if (!((string)rec["default_sender_email"]).IsEmail())
 							{
 								errors.Add(new ErrorModel
 								{
-									Key = "default_from_email",
-									Value = (string)rec["default_from_email"],
-									Message = $"Default from email address is invalid"
+									Key = "default_sender_email",
+									Value = (string)rec["default_sender_email"],
+									Message = $"Default sender email address is invalid"
 								});
 							}
 						}
@@ -168,11 +180,15 @@ namespace WebVella.Erp.Plugins.Mail.Services
 								continue;
 							}
 
-							try
-							{
-								var secOptions = (MailKit.Security.SecureSocketOptions)connectionSecurityNumber;
-							}
-							catch
+							//INPUT VALIDATION - review finding INT-06. A numeric cast to an enum NEVER throws, so the
+							//try/catch this replaces was unreachable and every integer was accepted: an undefined value
+							//passed validation here and failed much later inside SmtpClient.Connect. Enum.IsDefined is the
+							//test that actually rejects it, and the generic overload avoids boxing and analyzer rule CA2263.
+							//EVERY DEFINED MODE STAYS PERMITTED, deliberately: narrowing the permitted set would reject
+							//existing service rows, including the cleartext `None` mode real deployments use, which the
+							//preservation requirement forbids. The risk carried by a cleartext row is a deployment
+							//responsibility recorded in docs/security/risk-register.md, not a rule imposed retroactively here.
+							if (!Enum.IsDefined((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
 							{
 								errors.Add(new ErrorModel
 								{
@@ -242,15 +258,27 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 						}
 						break;
-					case "default_from_email":
+					//SCHEMA MAPPING - review finding INT-11. This case label named a field that does not exist.
+					//smtp_service carries `default_sender_email` - provisioned in MailPlugin.20190215 as a REQUIRED
+					//InputEmailField and mapped to SmtpService.DefaultSenderEmail - and never carried
+					//`default_from_email`, so the switch could not match and this validation never ran. An invalid
+					//sender address was therefore accepted on save and failed much later inside MailboxAddress
+					//construction, which reports a data-entry mistake as a delivery failure against a relay.
+					//The one other place the old name survives is the stale GENERATED SQL text of the AllSmtpSevices
+					//data source in MailPlugin.20190215, which also names a mis-spelled `connection_secutity` column
+					//and is never executed - DataSourceManager runs the EQL text - so it is evidence of the rename
+					//rather than of a second field.
+					//IsEmail() is null-safe - it constructs a MailAddress inside a try - so a null or blank value
+					//reports the same actionable error instead of throwing, which agrees with the field being required.
+					case "default_sender_email":
 						{
-							if (!((string)rec["default_from_email"]).IsEmail())
+							if (!((string)rec["default_sender_email"]).IsEmail())
 							{
 								errors.Add(new ErrorModel
 								{
-									Key = "default_from_email",
-									Value = (string)rec["default_from_email"],
-									Message = $"Default from email address is invalid"
+									Key = "default_sender_email",
+									Value = (string)rec["default_sender_email"],
+									Message = $"Default sender email address is invalid"
 								});
 							}
 						}
@@ -334,11 +362,15 @@ namespace WebVella.Erp.Plugins.Mail.Services
 								continue;
 							}
 
-							try
-							{
-								var secOptions = (MailKit.Security.SecureSocketOptions)connectionSecurityNumber;
-							}
-							catch
+							//INPUT VALIDATION - review finding INT-06. A numeric cast to an enum NEVER throws, so the
+							//try/catch this replaces was unreachable and every integer was accepted: an undefined value
+							//passed validation here and failed much later inside SmtpClient.Connect. Enum.IsDefined is the
+							//test that actually rejects it, and the generic overload avoids boxing and analyzer rule CA2263.
+							//EVERY DEFINED MODE STAYS PERMITTED, deliberately: narrowing the permitted set would reject
+							//existing service rows, including the cleartext `None` mode real deployments use, which the
+							//preservation requirement forbids. The risk carried by a cleartext row is a deployment
+							//responsibility recorded in docs/security/risk-register.md, not a rule imposed retroactively here.
+							if (!Enum.IsDefined((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
 							{
 								errors.Add(new ErrorModel
 								{
@@ -531,7 +563,12 @@ namespace WebVella.Erp.Plugins.Mail.Services
 				if (htmlDoc.DocumentNode == null)
 					return;
 
-				foreach (HtmlNode node in htmlDoc.DocumentNode.SelectNodes("//img[@src]"))
+				//CONTENT MAPPING - review finding INT-10. HtmlAgilityPack returns NULL, not an empty collection,
+				//when nothing matches, so every HTML body without an image raised NullReferenceException here. The
+				//broad catch below then swallowed it and skipped BOTH the rewritten body and the plain-text
+				//alternative, so the common case - an image-free HTML message - went out with no text/plain part at
+				//all. Coalescing to an empty sequence makes "no images" the no-op it always should have been.
+				foreach (HtmlNode node in htmlDoc.DocumentNode.SelectNodes("//img[@src]") ?? Enumerable.Empty<HtmlNode>())
 				{
 					var src = node.Attributes["src"].Value.Split('?', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
 
@@ -556,7 +593,12 @@ namespace WebVella.Erp.Plugins.Mail.Services
 						var bytes = file.GetBytes();
 
 						var extension = Path.GetExtension(src).ToLowerInvariant();
-						new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType);
+						//MIME MAPPING - review finding INT-12. TryGetValue leaves mimeType NULL for an extension the
+						//provider does not map, and MimePart(string) throws ArgumentNullException for null, so one
+						//unmapped inline image aborted the whole method. The binary fallback is what MimeKit's own
+						//parameterless constructor uses, so the part stays well formed and delivery continues.
+						if (!new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType) || string.IsNullOrWhiteSpace(mimeType))
+							mimeType = SmtpService.BinaryContentType;
 
 						var imagePart = new MimePart(mimeType)
 						{
@@ -572,13 +614,19 @@ namespace WebVella.Erp.Plugins.Mail.Services
 					}
 				}
 				builder.HtmlBody = htmlDoc.DocumentNode.OuterHtml;
-				if (string.IsNullOrWhiteSpace(builder.TextBody) && !string.IsNullOrWhiteSpace(builder.HtmlBody))
-					builder.TextBody = ConvertToPlainText(builder.HtmlBody);
 			}
 			catch
 			{
-				return;
+				//INT-10: inline-image embedding is best-effort - a failure here leaves the original HtmlBody in
+				//place, which is still deliverable - but it must not also cost the plain-text alternative below,
+				//which is computed from whatever body survived. That is why this handler no longer returns.
 			}
+
+			//INT-10: outside the handler above, deliberately. A message with only an HTML body and no
+			//text/plain alternative is treated as spam by many relays, so this fallback is the one part of the
+			//method that must run even when image embedding failed.
+			if (string.IsNullOrWhiteSpace(builder.TextBody) && !string.IsNullOrWhiteSpace(builder.HtmlBody))
+				builder.TextBody = ConvertToPlainText(builder.HtmlBody);
 		}
 
 
@@ -704,7 +752,12 @@ namespace WebVella.Erp.Plugins.Mail.Services
 					return; //save email in finally block will save changes
 				}
 
-				var message = new MimeMessage();
+				//RESOURCE CLEANUP - review finding INT-09. The queued path is the one that runs unattended and
+				//repeatedly, so an undisposed message here retained every attachment's bytes for one pass of up to
+				//ten messages at a time until a garbage collection. Disposing the message disposes the attachment
+				//and linked-resource streams it owns. The `using` declaration disposes at the end of this try block,
+				//which is after Send and before the catch and finally that record the outcome.
+				using var message = new MimeMessage();
 				if (!string.IsNullOrWhiteSpace(email.Sender?.Name))
 					message.From.Add(new MailboxAddress(email.Sender?.Name, email.Sender?.Address));
 				else
@@ -781,7 +834,13 @@ namespace WebVella.Erp.Plugins.Mail.Services
 						var bytes = file.GetBytes();
 
 						var extension = Path.GetExtension(filepath).ToLowerInvariant();
-						new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType);
+						//MIME MAPPING - review finding INT-12. TryGetValue leaves mimeType NULL for an extension the
+						//provider does not map and MimePart(string) throws ArgumentNullException for null, so on THIS path
+						//one unmapped attachment did not merely fail to attach: the throw was caught by this method's own
+						//handler, which counted a retry and eventually aborted the message. See SmtpService.BinaryContentType
+						//for why that value is the right fallback.
+						if (!new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType) || string.IsNullOrWhiteSpace(mimeType))
+							mimeType = SmtpService.BinaryContentType;
 
 						var attachment = new MimePart(mimeType)
 						{
@@ -801,17 +860,19 @@ namespace WebVella.Erp.Plugins.Mail.Services
 				{
 					// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, so this
 					// path - the one the BACKGROUND QUEUE JOB drives - encrypted the session without authenticating
-					// it. It shares the SmtpService policy members, hence one configuration key across all five send
-					// paths; see those members for the full rationale and the exact gate. Do not inline a literal:
+					// it. It shares the single SmtpService policy member, hence one configuration key across all five
+					// send paths; see that member for the full rationale and the exact gate. Do not inline a literal:
 					// the callback must keep yielding the member so the pattern stays visible to CA5359.
+					// REVOCATION IS LEFT ENTIRELY TO MAILKIT here too, deliberately and unconfigurably: SmtpClient
+					// checks certificate revocation unless told otherwise, so saying nothing IS the secure state. Do
+					// not reintroduce a setting that turns it off - one existed briefly and was removed for weakening
+					// the production transport posture beyond this finding's agreed remediation. QUEUE-SPECIFIC
+					// CONSEQUENCE, worth knowing before diagnosing a stalled queue: on this path a relay whose chain
+					// names no reachable CRL or OCSP responder surfaces not as an exception an operator sees but as
+					// retries ending in an aborted message, with the chain detail recorded in server_error. The
+					// supported remedy is to publish the revocation source; see docs/security/secure-configuration.md.
 					if (SmtpService.AllowInvalidRemoteCertificates)
 						client.ServerCertificateValidationCallback = (s, c, h, e) => SmtpService.AllowInvalidRemoteCertificates;
-
-					// SECURITY H-11 follow-up (CWE-299, OWASP A02): QUEUE-SPECIFIC CONSEQUENCE - on this path an
-					// unreachable revocation endpoint surfaces not as an exception an operator sees but as a queue
-					// retrying to abort while the relay certificate is perfectly valid. Bound to the same policy
-					// member as the four Api.SmtpService sites, which still defaults to checking.
-					client.CheckCertificateRevocation = SmtpService.CheckRemoteCertificateRevocation;
 
 					client.Connect(service.Server, service.Port, service.ConnectionSecurity);
 
@@ -829,6 +890,17 @@ namespace WebVella.Erp.Plugins.Mail.Services
 			catch (Exception ex)
 			{
 				email.SentOn = null;
+				//SECURITY - review finding INT-14 (Major), CWE-79 stored cross-site scripting, OWASP A03:2021.
+				//TREAT THIS VALUE AS UNTRUSTED EXTERNAL DATA. For a relay failure `ex.Message` is MailKit's report
+				//of the SMTP PEER'S OWN RESPONSE TEXT, so it crosses a trust boundary and a peer can be induced to
+				//echo attacker-influenced content back into it - a rejected recipient address, for instance. It is
+				//stored verbatim ON PURPOSE, because the operator guidance for a stalled queue is to read
+				//server_error first and a sanitised message would defeat that diagnosis; the value is instead
+				//encoded AT THE SINK, which is where the rendering context is known. The one sink that renders it
+				//as markup is the all_emails error-icon node provisioned by MailPlugin.20190215, whose code variable
+				//now HTML-encodes it before interpolating it into a title attribute; Patch20260806 carries that
+				//correction to already-provisioned installations. ANY NEW READER OF THIS COLUMN must encode for its
+				//own context - do not assume it is safe markup.
 				email.ServerError = ex.Message;
 				email.RetriesCount++;
 				if (email.RetriesCount >= service.MaxRetriesCount)
@@ -873,7 +945,32 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 					foreach (var email in pendingEmails)
 					{
-						var service = serviceManager.GetSmtpService(email.ServiceId);
+						//QUEUE RESILIENCE - review finding INT-03, and the reason the abort branch below could never
+						//run. Api/EmailServiceManager.GetSmtpService THROWS when no smtp_service row carries the id,
+						//rather than returning null, so a message whose service row was deleted did not abort - the
+						//exception escaped this loop, the enclosing do/while and this method, leaving the row Pending
+						//with its scheduled time in the past. Every subsequent pass then re-selected that same row
+						//first, threw again, and delivered nothing: one orphaned row STARVED THE WHOLE QUEUE
+						//indefinitely, which is a denial of service on mail delivery reachable by an ordinary
+						//administrative action.
+						//CATCHING PER ROW is what makes the failure local: the row is aborted, saved and skipped by the
+						//pre-existing branch below, and because that clears ScheduledOn the row also leaves the pending
+						//selection, so the loop always makes progress. Exception rather than a narrower type because the
+						//lookup throws the base type; the reason is not lost - it is recorded on the row itself.
+						SmtpService service;
+						try
+						{
+							service = serviceManager.GetSmtpService(email.ServiceId);
+						}
+						catch (Exception ex)
+						{
+							email.Status = EmailStatus.Aborted;
+							email.ServerError = ex.Message;
+							email.ScheduledOn = null;
+							SaveEmail(email);
+							continue;
+						}
+
 						if (service == null)
 						{
 							email.Status = EmailStatus.Aborted;

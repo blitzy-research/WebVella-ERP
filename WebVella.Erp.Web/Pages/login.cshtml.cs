@@ -1,7 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System;
-using System.Globalization;
 using System.Threading.Tasks;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Diagnostics;
@@ -78,8 +77,43 @@ namespace WebVella.Erp.Web.Pages
 		// Razor Pages still binds this method to POST and the request/response contract is untouched.
 		public async Task<IActionResult> OnPost([FromServices] AuthService authService, [FromServices] LoginThrottleService loginThrottle)
 		{
-			if (!ModelState.IsValid) throw new Exception("Antiforgery check failed.");
+			// THREAT ADDRESSED - review finding OBS-05, CWE-778 (insufficient logging), OWASP A09:2021.
+			// Resolved FIRST, before any branch can leave this handler, because every exit path below now has
+			// to be able to attribute its outcome to a source address. It used to be read only just before the
+			// throttle was consulted, which is precisely why the four branches that exit above that point
+			// recorded nothing at all: there was nothing to attribute them to.
+			var remoteAddress = HttpContext?.Connection?.RemoteIpAddress?.ToString();
 
+			// THREAT ADDRESSED - review finding OBS-05, CWE-778, OWASP A09:2021. An invalid model state means the
+			// submission could not be bound or validated, which is an authentication ATTEMPT that was refused,
+			// so the audit trail must contain an outcome for it. It previously threw without recording anything,
+			// so the "exactly one outcome per attempt" property the trail is read for was false at the very
+			// first branch of the handler.
+			//
+			// WHAT THIS BRANCH IS NOT, verified at runtime rather than inferred, because the message the throw
+			// below carries says otherwise and would mislead the next reader: it is NOT the antiforgery gate.
+			// Razor Pages applies AutoValidateAntiforgeryTokenAuthorizationFilter to every POST handler, and a
+			// missing or invalid token is refused by that FILTER with HTTP 400 before this handler is entered -
+			// observed directly: a token-less POST to /login answers 400 and never reaches this line. Auditing
+			// that refusal would require a filter of its own, which is a new component rather than a fix to this
+			// one, so the gap is recorded in docs/security/risk-register.md instead of closed here. The record
+			// below therefore names what actually happened - model validation - rather than repeating the
+			// throw's inaccurate wording.
+			//
+			// The throw is DELIBERATELY RETAINED, unchanged, including its message: it is the platform's shipped
+			// behaviour for this branch and rewriting it is not what this finding is about. The record is added
+			// ahead of it rather than in place of it.
+			if (!ModelState.IsValid)
+			{
+				WriteAuthenticationAuditRecord(LogType.Error, "Authentication attempt rejected - request model validation failed", remoteAddress);
+				throw new Exception("Antiforgery check failed.");
+			}
+
+			// OBS-05: deliberately NOT audited, and the omission is reasoned rather than overlooked. Init
+			// resolves this page's application, area and node from the request path; a non-null result means the
+			// login PAGE did not resolve, so no credential submission was processed and there is no
+			// authentication outcome to record. Auditing it would put routing failures into the authentication
+			// trail, where a reader counting attempts would then over-count them.
 			var initResult = Init();
 			if (initResult != null) return initResult;
 
@@ -87,7 +121,16 @@ namespace WebVella.Erp.Web.Pages
 			foreach (IPageHook inst in globalHookInstances)
 			{
 				var result = inst.OnPost(this);
-				if (result != null) return result;
+				if (result != null)
+				{
+					// OBS-05: a page hook that short-circuits the request ENDS an authentication attempt without
+					// the credential ever being evaluated, and that is an outcome. Recording nothing here left a
+					// plugin able to make attempts disappear from the trail entirely - silently, and without any
+					// indication in the record that a hook had intervened. The message names the hook stage so a
+					// reader can tell this apart from a credential decision.
+					WriteAuthenticationAuditRecord(LogType.Info, "Authentication attempt ended by a page hook before the credential was evaluated", remoteAddress);
+					return result;
+				}
 			}
 
 			var hookInstances = HookManager.GetHookedInstances<ILoginPageHook>(HookKey);
@@ -96,7 +139,14 @@ namespace WebVella.Erp.Web.Pages
 				foreach (ILoginPageHook inst in hookInstances)
 				{
 					var result = inst.OnPostPreLogin(this);
-					if (result != null) return result;
+					if (result != null)
+					{
+						// OBS-05: same reasoning as the page-hook branch above, and the same requirement. This is
+						// the hook contract's own documented way to short-circuit a login, so it is an expected
+						// outcome rather than a fault - hence Info - but it is still an attempt that ended.
+						WriteAuthenticationAuditRecord(LogType.Info, "Authentication attempt ended by a pre-login hook before the credential was evaluated", remoteAddress);
+						return result;
+					}
 				}
 			}
 			catch (Exception ex)
@@ -129,6 +179,16 @@ namespace WebVella.Erp.Web.Pages
 				// value is what makes this queryable in the log viewer the platform already ships.
 				SecurityAuditLog.RecordApiFault("LoginModel.OnPostPreLogin", ex);
 
+				// OBS-05: the fault record above is a DIAGNOSTIC, not an authentication outcome - it is written
+				// under a different source, is rate limited per source, and carries the exception rather than the
+				// attempt. Neither property is what an authentication trail needs, and relying on it meant a
+				// reader counting outcomes per attempt found this branch missing: a hook that faults for every
+				// post would show as one rate-limited fault rather than as N refused attempts. The outcome row
+				// is therefore written as well as the fault, not instead of it, and it carries no exception text
+				// - a hook's fault message routinely contains connection strings and internal paths, which is
+				// exactly why this branch stopped rendering it to the caller.
+				WriteAuthenticationAuditRecord(LogType.Error, "Authentication attempt failed - a pre-login hook raised a fault", remoteAddress);
+
 				// Byte-identical to the two other refusal messages on this handler, deliberately. A distinct
 				// string would let an unauthenticated caller tell "a hook faulted" apart from "those credentials
 				// are wrong", which is an oracle for probing plugin behaviour and, wherever a hook faults only
@@ -148,7 +208,6 @@ namespace WebVella.Erp.Web.Pages
 			// Announcing "account locked" would turn this fix into a username-enumeration oracle - an
 			// attacker could distinguish real accounts from fabricated ones by which of them can be locked -
 			// and would also confirm to an attacker that their spraying is being counted.
-			var remoteAddress = HttpContext?.Connection?.RemoteIpAddress?.ToString();
 			if (!loginThrottle.TryBeginAttempt(Username, remoteAddress))
 			{
 				// Audited even though no credential was checked: a refusal is the signal that a lockout
@@ -156,21 +215,27 @@ namespace WebVella.Erp.Web.Pages
 				// endpoint can emit. Recording it server-side leaks nothing to the caller - see the
 				// deliberately generic response below.
 				//
-				// THREAT ADDRESSED - CWE-779 (logging of excessive data), OWASP A09: one row per request against
-				// an already-locked account inverts the control, because a refusal costs the attacker nothing -
-				// so continued hammering makes the throttle an amplifier against the audit trail it feeds, and
-				// buries the lockout signal under its own repetitions.
+				// THREAT ADDRESSED - review finding OBS-05, CWE-778 (insufficient logging), OWASP A09:2021.
+				// EXACTLY ONE ROW PER REFUSAL, and the sampling this replaces is the reason the requirement is
+				// stated that way. Refusals used to be coalesced - the first of a window, then one per hundred -
+				// which meant the trail recorded that a lockout had begun but not how many times it was tested,
+				// by whom, or when it stopped. An audit trail whose cardinality does not match the attempt
+				// cardinality cannot be used to reconstruct an attack, and rate-based detection reading it
+				// undercounts by a factor of a hundred - so the control that was supposed to protect the trail
+				// was degrading the evidence instead.
 				//
-				// The claim below therefore emits the lockout TRANSITION once per window, carrying the count of
-				// refusals it suppressed so attack volume stays visible while row count no longer scales with it.
-				// It is keyed on the ADDRESS alone - the one dimension an attacker cannot vary for free, whereas a
-				// freely chosen username would buy a fresh row per fabricated account - and every route consulting
-				// this throttle shares that one claim per window, so alternating between this page and the
-				// anonymous token routes cannot double the volume either.
-				if (loginThrottle.TryClaimRefusalAudit(remoteAddress, out var suppressedRefusals))
-				{
-					WriteAuthenticationAuditRecord(LogType.Error, "Authentication refused - account temporarily locked", remoteAddress, suppressedRefusals);
-				}
+				// THE VOLUME OBJECTION IS ANSWERED BY A CONTROL THAT DOES NOT COST EVIDENCE. Every request
+				// reaching this handler has already passed the framework's global fixed-window rate limiter,
+				// registered in ErpMvcExtensions at 600 permits per source address per minute with no queueing,
+				// so the rows one source can provoke are bounded by the transport layer at a value three orders
+				// of magnitude below what an unbounded write would allow - and each row is bounded in size by
+				// MaxAuditedFieldLength. Bounding volume at the transport and keeping the evidence complete is
+				// strictly better than discarding evidence to bound volume in the application.
+				//
+				// The throttle's coalescing claim is retained for the anonymous bearer-token refresh route,
+				// which has no principal to attribute an attempt to and is therefore aggregate telemetry rather
+				// than an authentication outcome. See LoginThrottleService.TryClaimRefusalAudit.
+				WriteAuthenticationAuditRecord(LogType.Error, "Authentication refused - account temporarily locked", remoteAddress);
 
 				Error = "Invalid username or password";
 				BeforeRender();
@@ -190,6 +255,18 @@ namespace WebVella.Erp.Web.Pages
 			}
 			catch
 			{
+				// OBS-05: an attempt that ends in a fault is still an attempt, and it was the one branch of this
+				// handler that recorded nothing whatsoever - not even the diagnostic, because the rethrow leaves
+				// it to the global error middleware. A reader of the trail could therefore not distinguish "the
+				// datastore was down and nobody could sign in" from "nobody tried", which is the worst time for
+				// the trail to be silent. Written BEFORE the reservation is released and before the rethrow, so
+				// the record exists whatever happens to the exception afterwards.
+				//
+				// It carries no exception text: this runs on an anonymous endpoint and a credential-path fault
+				// message can quote connection strings and SQL fragments. The exception itself is not discarded -
+				// the rethrow below hands it to the error pipeline, which records it under its own source.
+				WriteAuthenticationAuditRecord(LogType.Error, "Authentication attempt failed - the credential check raised a fault", remoteAddress);
+
 				loginThrottle.AbandonAttempt(Username, remoteAddress);
 				throw;
 			}
@@ -199,7 +276,10 @@ namespace WebVella.Erp.Web.Pages
 			// fabricate a successful one.
 			// The audit record is written from this same block, and for the same reason: it is the only
 			// point on the request path that has seen the true outcome of the credential check and that
-			// no hook can bypass. Exactly one record is written per evaluated attempt.
+			// no hook can bypass. Exactly one record is written per evaluated attempt - and, since review
+			// finding OBS-05, exactly one is written per UNEVALUATED attempt too, on each of the branches
+			// above that leave this handler before the credential is checked, so the trail's cardinality
+			// matches the attempt cardinality with no gaps.
 			if (user == null)
 			{
 				loginThrottle.RegisterFailedAttempt(Username, remoteAddress);
@@ -290,7 +370,11 @@ namespace WebVella.Erp.Web.Pages
 		// per-attempt audit record through it would turn this anonymous endpoint into an attacker-triggered
 		// mail bomb and amplify finding M-17. Moving that guarantee into the shared writer is what stops it
 		// depending on this and every future call site remembering it.
-		private void WriteAuthenticationAuditRecord(LogType type, string message, string remoteAddress, int suppressedRefusals = 0)
+		// OBS-05: the suppressedRefusals parameter this signature used to carry has been removed along with the
+		// refusal sampling it existed to report. A count of records the trail deliberately did not write is only
+		// meaningful while records are being withheld; now that every attempt and every refusal writes its own
+		// outcome, carrying it would have been a field that was structurally always zero.
+		private void WriteAuthenticationAuditRecord(LogType type, string message, string remoteAddress)
 		{
 			// Only the submitted identity and its source address are recorded: never the password, the
 			// request body, headers, cookies or the antiforgery token. That keeps the trail useful for
@@ -307,14 +391,6 @@ namespace WebVella.Erp.Web.Pages
 			// characters in the same call, so neither can it forge an additional record.
 			var details = "username: " + SecurityAuditLog.Field(Username, MaxAuditedFieldLength)
 				+ "; ip: " + SecurityAuditLog.Field(remoteAddress, MaxAuditedFieldLength);
-
-			// Refusals deliberately left unaudited by the coalescing claim at the refusal branch above,
-			// carried into the one record that is written so the suppressed volume stays visible. Composed
-			// by the platform from an int, so it carries no caller data and needs no neutralisation.
-			if (suppressedRefusals > 0)
-			{
-				details = details + "; refusals_not_audited: " + suppressedRefusals.ToString(CultureInfo.InvariantCulture);
-			}
 
 			// THREAT ADDRESSED - finding M-12, CWE-778 continued: a catch (Exception) here would discard a
 			// datastore fault entirely, silently erasing authentication audit records and making the failure

@@ -21,10 +21,27 @@ namespace WebVella.Erp.ConsoleApp
 
 				var usersRecordList = SampleGetAllErpUsers();
 
+				// THREAT ADDRESSED - review finding OBS-11, CWE-359 (exposure of private personal information
+				// to an unauthorized actor) compounding CWE-532 (insertion of sensitive information into a
+				// log), OWASP A09:2021. This sample printed every returned account's username AND e-mail
+				// address to standard output. Nothing about that is remotely reachable - the console
+				// application is operator-invoked - but its output is routinely captured: a redirected
+				// transcript, a scheduled-task log, a CI job's console, a terminal scrollback shared in a
+				// support ticket. Personal data therefore came to rest in stores with no access control and no
+				// retention rule, from a program whose only purpose is to demonstrate an API.
+				//
+				// The DEMONSTRATION IS PRESERVED EXACTLY, which is the point of fixing it this way rather than
+				// deleting the sample. What the pre-search hook is being shown to do is restrict the result set
+				// to the current user, and the property that proves it is the COUNT together with the record
+				// identity - not the personal fields. The account identifier is a surrogate key, not personal
+				// data, so it identifies the row for a developer reading along without publishing anything
+				// about the person behind it. A developer who genuinely needs to see the personal fields can
+				// add them locally; nothing in the shipped sample invites them into a captured log.
 				Console.WriteLine($"=== existing users ( filtered by pre search hook by current user id ) ===");
 				Console.WriteLine($"=== should return only current user ===");
+				Console.WriteLine($"records returned: {usersRecordList.Count}");
 				foreach (var rec in usersRecordList)
-					Console.WriteLine($"username:{rec["username"]} \t\t email:{rec["email"]}");
+					Console.WriteLine($"id:{rec["id"]}\t\t(username and email deliberately not printed - review finding OBS-11)");
 
 				RecordHookSample();
 			}
@@ -92,11 +109,17 @@ namespace WebVella.Erp.ConsoleApp
 
 			if (string.Equals(environmentName, "Development", StringComparison.OrdinalIgnoreCase))
 			{
-				// optional: true is stated EXPLICITLY because this project declares no UserSecretsId, and every
-				// AddUserSecrets overload given optional: false throws InvalidOperationException when that
-				// attribute is absent - turning a secret-management fix into an outage on every run. The
-				// type-parameter overloads are unusable for the same reason. The entry assembly is null-checked
-				// because a host loading this code without one has no store to resolve.
+				// THREAT ADDRESSED - review finding CR3-M-07 (secret management, OWASP A05:2021). This used to
+				// be justified by "this project declares no UserSecretsId", which meant the provider resolved
+				// no store and silently loaded nothing: the Development supply channel the secure-configuration
+				// guide advertises did not exist for this executable, so editing the tracked, blanked
+				// Config.json was the only way to run it. The manifest now declares a stable id.
+				// optional: true is RETAINED and still stated explicitly: a developer who has not yet run
+				// 'dotnet user-secrets set' has no store file, and every AddUserSecrets overload given
+				// optional: false throws InvalidOperationException in that case - turning a secret-management
+				// fix into an outage on every run. The type-parameter overloads are unusable for the same
+				// reason. The entry assembly is null-checked because a host loading this code without one has
+				// no store to resolve.
 				var entryAssembly = System.Reflection.Assembly.GetEntryAssembly();
 				if (entryAssembly != null)
 				{
@@ -107,7 +130,7 @@ namespace WebVella.Erp.ConsoleApp
 			ErpSettings.Initialize(configurationBuilder.Build());
 			DbContext.CreateContext(ErpSettings.ConnectionString);
 			ErpService service = new ErpService();
-            
+
 			ErpAutoMapperConfiguration.Configure(ErpAutoMapperConfiguration.MappingExpressions);
             //here put additional automapper configuration if needed
             // SECURITY - finding H-01 (CWE-674 uncontrolled recursion), OWASP A06. THREAT: AutoMapper below
@@ -118,7 +141,7 @@ namespace WebVella.Erp.ConsoleApp
             ErpAutoMapper.Initialize(ErpAutoMapperConfiguration.MappingExpressions);
 
             service.InitializeSystemEntities();
-			
+
 
 			//register hooks
 			HookManager.RegisterHooks(service);
@@ -136,7 +159,7 @@ namespace WebVella.Erp.ConsoleApp
 				//create connection
 				using (var connection = dbCtx.CreateConnection())
 				{
-					//create security context - in this sample we use OpenSystemScope method, 
+					//create security context - in this sample we use OpenSystemScope method,
 					//which used system user with all privileges and rights to erp data
 					using (var scope = SecurityContext.OpenSystemScope())
 					{
@@ -168,7 +191,7 @@ namespace WebVella.Erp.ConsoleApp
 				//create connection
 				using (var connection = dbCtx.CreateConnection())
 				{
-					//create security context - in this sample we use OpenSystemScope method, 
+					//create security context - in this sample we use OpenSystemScope method,
 					//which used system user with all privileges and rights to erp data
 					using (var scope = SecurityContext.OpenSystemScope())
 					{

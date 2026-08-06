@@ -103,9 +103,17 @@ namespace WebVella.Erp.Site.Project
 			// convenience, never a production channel - outside Development this provider is never registered
 			// at all, leaving environment variables as the last word wherever it matters. The guard fails
 			// secure: an unset ASPNETCORE_ENVIRONMENT is not "Development", so the developer-only provider
-			// stays out. Same idiom as the cookie and HSTS guards further down this file. optional: true
-			// because this project declares no UserSecretsId; a developer who wants the store runs
-			// 'dotnet user-secrets init' and it starts working, while startup never throws without it.
+			// stays out. Same idiom as the cookie and HSTS guards further down this file.
+			//
+			// THREAT ADDRESSED - review finding CR3-M-07 (secret management, OWASP A05:2021). This used to
+			// read "optional: true because this project declares no UserSecretsId; a developer who wants the
+			// store runs 'dotnet user-secrets init'". That instruction did not work: 'user-secrets init'
+			// WRITES a UserSecretsId into the manifest, so following it modified a tracked file, and until
+			// someone did, this provider resolved no store and silently loaded nothing while the operator
+			// documentation advertised it as available. The manifest now declares a stable id, so the store
+			// resolves for every developer without editing anything. optional: true is retained because a
+			// developer who has not yet run 'dotnet user-secrets set' has no store FILE, and startup must
+			// report the missing secret through ErpSettings' validation rather than through a provider fault.
 			if (string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase))
 				configurationBuilder.AddUserSecrets(typeof(Startup).Assembly, optional: true);
 
@@ -324,7 +332,7 @@ namespace WebVella.Erp.Site.Project
 			 })
 			  .AddPolicyScheme("JWT_OR_COOKIE", "JWT_OR_COOKIE", options =>
 			  {
-				  options.ForwardDefaultSelector = context => 
+				  options.ForwardDefaultSelector = context =>
 				  {
 					  string authorization = context.Request.Headers[HeaderNames.Authorization];
 					  if (!string.IsNullOrEmpty(authorization) && authorization.StartsWith("Bearer "))
@@ -449,7 +457,7 @@ namespace WebVella.Erp.Site.Project
 			.UseErpMiddleware()
 			.UseJwtMiddleware();
 
-		
+
 
 			app.UseEndpoints(endpoints =>
 			{

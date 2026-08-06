@@ -19,6 +19,17 @@ namespace WebVella.Erp.Database
 		public const string FOLDER_SEPARATOR = "/";
 		public const string TMP_FOLDER_NAME = "tmp";
 
+		// SECURITY - review finding INT-13 (Major), CWE-770 allocation of resources without limits, and the
+		// latent half of the same defect, CWE-200 exposure of sensitive information. The ILIKE pattern that
+		// matches every staged file and nothing else. Staged paths are `/tmp/<section>/<name>` - see
+		// CreateTempFile - so the pattern must be ANCHORED AT THE START. The previous `%/tmp` form matched only
+		// paths ENDING in `/tmp`, which no staged path ever does, so both queries that used it silently matched
+		// nothing: CleanupExpiredTempFiles deleted no abandoned upload at all, and FindAll's `includeTempFiles:
+		// false` excluded no staged file from a listing it promised not to include them in. Expressed once here,
+		// from the same two constants IsStagedFilePath composes, so the SQL definition of "staged" cannot drift
+		// from the C# one that guards access to those same files.
+		private const string STAGED_PATH_PATTERN = FOLDER_SEPARATOR + TMP_FOLDER_NAME + FOLDER_SEPARATOR + "%";
+
 		// SECURITY - finding F24 (High), CWE-639 authorization bypass through user-controlled key, OWASP
 		// A01:2021 Broken Access Control. Bounds the caller-influenced path written into the audit record so a
 		// very long staged path cannot inflate the system_log table one refusal at a time. The value matches
@@ -170,6 +181,56 @@ namespace WebVella.Erp.Database
 				if (dataTable.Rows.Count == 1)
 					return new DbFile(dataTable.Rows[0]);
 			}
+
+			return null;
+		}
+
+		/// <summary>
+		/// Resolves a stored file by its ALREADY-NORMALISED path on the SUPPLIED connection, taking a row
+		/// lock that is held until the surrounding transaction ends.
+		/// </summary>
+		/// <param name="connection">
+		/// The connection the caller has already begun a transaction on. The lock belongs to that
+		/// transaction, so passing a connection with no transaction acquires and immediately releases it,
+		/// which would prove nothing - every caller must therefore be inside <c>BeginTransaction</c>.
+		/// </param>
+		/// <param name="normalizedFilepath">
+		/// A path already lower-cased and prefixed with the folder separator, exactly as
+		/// <see cref="FindInternal"/> normalises. No normalisation is repeated here, so the caller and this
+		/// method cannot disagree about which row is being locked.
+		/// </param>
+		/// <returns>The locked row, or null when no row exists at that path.</returns>
+		/// <remarks>
+		/// THREAT ADDRESSED - CWE-367 (time-of-check to time-of-use race condition), OWASP A01:2021 Broken
+		/// Access Control. Comparing an identifier against a row read on an EARLIER connection only narrows
+		/// the race window; it does not close it, because the row can still change between that read and the
+		/// write. <c>FOR UPDATE</c> is what closes it: once this returns, no other transaction can update or
+		/// delete that row until this one ends, so an authorization decision taken on it stays true for the
+		/// duration of the mutation.
+		/// <para>
+		/// THIS IS A LOCK, NOT AN ACCESS DECISION, and the distinction is deliberate. It deliberately does
+		/// NOT apply the staged-ownership rule, because <see cref="Find(string)"/> remains the single place
+		/// that rule lives - see the remarks on <see cref="FindInternal"/> for why that invariant matters.
+		/// Callers take the lock first and then call <see cref="Find(string)"/> on the locked row, so the
+		/// decision is still made in exactly one implementation, and it is made on a row that can no longer
+		/// change underneath it. Re-implementing the rule here would create a second copy of it to audit.
+		/// </para>
+		/// <para>
+		/// A path with NO row cannot be locked - there is nothing to lock - so absence must be defended a
+		/// different way. The <c>files.filepath</c> UNIQUE constraint supplies it: a concurrent request that
+		/// occupies the path is serialised by that index, and the losing statement fails rather than
+		/// silently overwriting. See <see cref="Move(string, string, bool, Guid?, bool, Guid?)"/>.
+		/// </para>
+		/// </remarks>
+		private static DbFile FindForUpdate(DbConnection connection, string normalizedFilepath)
+		{
+			var command = connection.CreateCommand("SELECT * FROM files WHERE filepath = @filepath FOR UPDATE");
+			command.Parameters.Add(new NpgsqlParameter("@filepath", normalizedFilepath));
+			DataTable dataTable = new DataTable();
+			new NpgsqlDataAdapter(command).Fill(dataTable);
+
+			if (dataTable.Rows.Count == 1)
+				return new DbFile(dataTable.Rows[0]);
 
 			return null;
 		}
@@ -466,7 +527,7 @@ namespace WebVella.Erp.Database
 				if (!includeTempFiles && !string.IsNullOrWhiteSpace(startsWithPath))
 				{
 					command.CommandText = "SELECT * FROM files WHERE filepath NOT ILIKE @tmp_path AND filepath ILIKE @startswith" + pagingSql;
-					command.Parameters.Add(new NpgsqlParameter("@tmp_path", "%" + FOLDER_SEPARATOR + TMP_FOLDER_NAME));
+					command.Parameters.Add(new NpgsqlParameter("@tmp_path", STAGED_PATH_PATTERN));
 					command.Parameters.Add(new NpgsqlParameter("@startswith", "%" + startsWithPath));
 					new NpgsqlDataAdapter(command).Fill(table);
 				}
@@ -479,7 +540,7 @@ namespace WebVella.Erp.Database
 				else if (!includeTempFiles)
 				{
 					command.CommandText = "SELECT * FROM files WHERE filepath NOT ILIKE @tmp_path " + pagingSql;
-					command.Parameters.Add(new NpgsqlParameter("@tmp_path", "%" + FOLDER_SEPARATOR + TMP_FOLDER_NAME));
+					command.Parameters.Add(new NpgsqlParameter("@tmp_path", STAGED_PATH_PATTERN));
 					new NpgsqlDataAdapter(command).Fill(table);
 				}
 				else
@@ -532,7 +593,7 @@ namespace WebVella.Erp.Database
 					}
 
 
-					var command = connection.CreateCommand(@"INSERT INTO files(id,object_id,filepath,created_on,modified_on,created_by,modified_by) 
+					var command = connection.CreateCommand(@"INSERT INTO files(id,object_id,filepath,created_on,modified_on,created_by,modified_by)
 															 VALUES (@id,@object_id,@filepath,@created_on,@modified_on,@created_by,@modified_by)");
 
 					command.Parameters.Add(new NpgsqlParameter("@id", Guid.NewGuid()));
@@ -618,7 +679,7 @@ namespace WebVella.Erp.Database
 		/// </summary>
 		/// <param name="sourceFilepath"></param>
 		/// <param name="destinationFilepath"></param>
-		/// <param name="overwrite"></param> 
+		/// <param name="overwrite"></param>
 		/// <returns></returns>
 		public DbFile Copy(string sourceFilepath, string destinationFilepath, bool overwrite = false)
 		{
@@ -678,33 +739,80 @@ namespace WebVella.Erp.Database
 		/// <param name="expectedSourceId">
 		/// Identifier of the row the CALLER authorized. When supplied, the move is applied only if the row
 		/// still at <paramref name="sourceFilepath"/> is that exact row, and the method returns null when it
-		/// is not.
+		/// is not. Mandatory when <paramref name="enforceExpectedTarget"/> is set.
+		/// </param>
+		/// <param name="enforceExpectedTarget">
+		/// True when the caller has authorized the DESTINATION as well as the source and requires this
+		/// method to apply the mutation only to the destination state it authorized. Defaults to false, in
+		/// which case every existing caller behaves exactly as before.
+		/// </param>
+		/// <param name="expectedTargetId">
+		/// Meaningful only when <paramref name="enforceExpectedTarget"/> is set. A value means "the caller
+		/// authorized exactly this destination row"; null means "the caller authorized an ABSENT
+		/// destination". The two are different authorizations and must not be conflated, which is why the
+		/// expectation needs its own flag rather than being inferred from a null identifier.
 		/// </param>
 		/// <returns>
-		/// The moved file, or null when <paramref name="expectedSourceId"/> was supplied and the row at the
-		/// source path is no longer the authorized one.
+		/// The moved file, or null when the authorized state no longer holds - the source row is gone or is
+		/// no longer <paramref name="expectedSourceId"/>, or the destination no longer matches the
+		/// authorized expectation.
 		/// </returns>
 		/// <remarks>
-		/// THREAT ADDRESSED - CWE-367 (time-of-check to time-of-use race condition), OWASP A01:2021 Broken
-		/// Access Control. Every object-level authorization for a file mutation is necessarily performed on a
-		/// row read by an EARLIER call on an EARLIER connection - Find opens and closes its own connection -
-		/// so between the check and this write another request can move a different user's file onto the
-		/// authorized path. The mutation would then be applied to a row nobody authorized, and because this
-		/// method also DELETES the destination when overwrite is set, the consequence is destructive rather
-		/// than merely wrong.
+		/// THREAT ADDRESSED - CWE-367 (time-of-check to time-of-use race condition) and CWE-639
+		/// (authorization bypass through a user-controlled key), OWASP A01:2021 Broken Access Control. Every
+		/// object-level authorization for a file mutation is necessarily performed on a row read by an
+		/// EARLIER call - Find opens and closes its own connection - so between the check and this write
+		/// another request can move a different user's file onto the authorized path. The mutation would then
+		/// be applied to a row nobody authorized, and because this method also DELETES the destination when
+		/// overwrite is set, the consequence is destructive rather than merely wrong.
 		/// <para>
-		/// The optional identifier closes that window without changing any existing call: it defaults to
-		/// null, and when it is null this method behaves exactly as before. When it is supplied, the row is
-		/// pinned - the UPDATE carries "AND id = @expected_id", so the database itself decides whether the
-		/// authorized row is still the one at that path, and a raced request affects zero rows and is
-		/// reported back as a refusal instead of being silently applied.
+		/// THE DESTINATION HALF WAS THE UNCLOSED HALF, and it was the dangerous one. An earlier revision
+		/// pinned only the SOURCE, and pinned it with an identifier comparison against a row this method
+		/// re-read on its own connection - which narrowed the window without closing it. The destination was
+		/// not pinned at all: the caller authorized one destination row and this method then resolved the
+		/// destination AGAIN, so <c>overwrite</c> deleted whichever row happened to be at that path when the
+		/// second read ran. A caller who legitimately owned the source could therefore have another user's
+		/// file destroyed under them by a concurrent move that landed on the authorized target path between
+		/// the two reads - the authorization was real, but it was not the authorization that got applied.
+		/// </para>
+		/// <para>
+		/// HOW IT IS CLOSED. Both operands are now resolved INSIDE the single transaction that performs the
+		/// delete and the update, and each is locked with <see cref="FindForUpdate"/> before it is resolved,
+		/// so no other transaction can change either row while this one runs. The access decision is still
+		/// taken by <see cref="Find(string)"/> on the locked row, so the staged-ownership rule keeps living
+		/// in exactly one place. When <paramref name="enforceExpectedTarget"/> is set, the locked
+		/// destination's identity must equal <paramref name="expectedTargetId"/> - including the
+		/// absent-equals-absent case - and any mismatch is refused rather than applied. The UPDATE
+		/// additionally re-asserts that the source row is still AT the source path, which the previous
+		/// identifier-only predicate did not.
+		/// </para>
+		/// <para>
+		/// AN ABSENT DESTINATION CANNOT BE LOCKED, so it is defended by the <c>files.filepath</c> UNIQUE
+		/// constraint instead: a concurrent request that occupies the path is serialised by that index and
+		/// this statement fails rather than overwriting. In enforced mode that failure is translated into the
+		/// same refusal as any other mismatch, so a race answers the endpoint's own denial envelope instead
+		/// of escaping as an unhandled fault with an empty body.
+		/// </para>
+		/// <para>
+		/// THE UPDATE IS A COMPARE-AND-SWAP ON THE PATH, not on the identifier. An earlier predicate read
+		/// "id = @id AND id = @expected_id", whose second conjunct was a tautology once the identifier had
+		/// already been compared above: it re-asserted the identifier and never the PATH, while every
+		/// storage-side operation further down addresses the object BY PATH -
+		/// <c>storage.DeleteAsync(sourceFilepath)</c> and <c>File.Move(GetFileSystemPath(...))</c>. The
+		/// predicate therefore also requires the row to still be AT the source path, and the affected-row
+		/// count must be exactly ONE before any storage-side operation runs. With the row lock held that
+		/// count cannot be zero, and the primary key makes more than one impossible; the assertion is kept
+		/// regardless, because an irreversible storage operation must never proceed on the strength of an
+		/// unchecked count. <see cref="Delete"/> applies the same rule through
+		/// <see cref="TryLockRowByPath"/>, which proves an identifier and a path still belong together for
+		/// callers that hold no prior lock on the row.
 		/// </para>
 		/// <para>
 		/// Returning null rather than throwing is deliberate: the caller is an HTTP action that must answer a
 		/// generic refusal, and an exception there would surface as a 500 carrying internal detail.
 		/// </para>
 		/// </remarks>
-		public DbFile Move(string sourceFilepath, string destinationFilepath, bool overwrite = false, Guid? expectedSourceId = null)
+		public DbFile Move(string sourceFilepath, string destinationFilepath, bool overwrite = false, Guid? expectedSourceId = null, bool enforceExpectedTarget = false, Guid? expectedTargetId = null)
 		{
 			if (string.IsNullOrWhiteSpace(sourceFilepath))
 				throw new ArgumentException("sourceFilepath cannot be null or empty");
@@ -721,19 +829,13 @@ namespace WebVella.Erp.Database
 			if (!destinationFilepath.StartsWith(FOLDER_SEPARATOR))
 				destinationFilepath = FOLDER_SEPARATOR + destinationFilepath;
 
-			var srcFile = Find(sourceFilepath);
-			var destFile = Find(destinationFilepath);
-
-			if (srcFile == null)
-				throw new Exception("Source file cannot be found.");
-
-			//see the remarks above - the authorized row must still be the row at this path, and the same
-			//identifier is then carried into the UPDATE so the decision is re-made inside the transaction
-			if (expectedSourceId.HasValue && srcFile.Id != expectedSourceId.Value)
-				return null;
-
-			if (destFile != null && overwrite == false)
-				throw new Exception("Destination file already exists and no overwrite specified.");
+			//An enforced target expectation without a source expectation would authorize the destination
+			//while leaving the source unpinned, which is half a control. This is an internal contract
+			//violation rather than a runtime condition - the only enforcing caller always supplies both - so
+			//it is raised the same way this method already raises its other argument violations, and it fails
+			//closed rather than degrading silently into the unpinned behaviour.
+			if (enforceExpectedTarget && !expectedSourceId.HasValue)
+				throw new ArgumentException("expectedSourceId is required when enforceExpectedTarget is set");
 
 			using (var connection = CurrentContext.CreateConnection())
 			{
@@ -741,25 +843,139 @@ namespace WebVella.Erp.Database
 				{
 					connection.BeginTransaction();
 
-					if (destFile != null && overwrite)
-						Delete(destFile.FilePath, destFile.Id);
-
-					//The predicate is widened from "id = @id" to also require the row to still be the
-					//authorized one. Both halves are parameterised, so no value is concatenated into SQL.
-					var command = connection.CreateCommand(expectedSourceId.HasValue
-						? @"UPDATE files SET filepath = @filepath WHERE id = @id AND id = @expected_id"
-						: @"UPDATE files SET filepath = @filepath WHERE id = @id");
-					command.Parameters.Add(new NpgsqlParameter("@id", srcFile.Id));
-					command.Parameters.Add(new NpgsqlParameter("@filepath", destinationFilepath));
-					if (expectedSourceId.HasValue)
-						command.Parameters.Add(new NpgsqlParameter("@expected_id", expectedSourceId.Value));
-
-					if (command.ExecuteNonQuery() == 0 && expectedSourceId.HasValue)
+					//THREAT ADDRESSED - CWE-367, OWASP A01:2021. Both operands are resolved INSIDE this
+					//transaction and each is LOCKED before it is resolved. The lock comes first so that the
+					//row Find then reads, and the row the statements below mutate, are provably the same
+					//row: FindForUpdate holds it for the whole transaction. Resolution used to happen before
+					//the transaction opened, on connections that were closed again before the write, which
+					//is what left a window for another request to substitute a different file behind either
+					//path. See the remarks above for why the destination half was the dangerous one.
+					//
+					//THREAT ADDRESSED - CWE-833 (deadlock). BOTH locks are taken here, up front, and in
+					//ORDINAL PATH ORDER rather than source-then-destination. Two concurrent moves naming the
+					//same pair of paths in opposite directions would otherwise each hold the row the other
+					//needs: PostgreSQL detects that and aborts one transaction with an error, which on this
+					//path escapes as an unhandled fault instead of this method's own generic refusal - the
+					//exact outcome the whole check exists to avoid. Ordering both acquisitions by the path
+					//string makes the two requests contend on the SAME row first, so one queues behind the
+					//other and both still resolve to a refusal or a completed move.
+					DbFile lockedSourceRow;
+					DbFile lockedTargetRow;
+					if (string.CompareOrdinal(sourceFilepath, destinationFilepath) <= 0)
 					{
-						//the authorized row was moved or removed by a concurrent request - abandon rather
-						//than proceed to the storage-side move, which would operate on the wrong file
+						lockedSourceRow = FindForUpdate(connection, sourceFilepath);
+						lockedTargetRow = FindForUpdate(connection, destinationFilepath);
+					}
+					else
+					{
+						lockedTargetRow = FindForUpdate(connection, destinationFilepath);
+						lockedSourceRow = FindForUpdate(connection, sourceFilepath);
+					}
+
+					DbFile srcFile = null;
+					if (lockedSourceRow != null)
+					{
+						//Find, not the locked row, is the ACCESS decision - it applies the staged-ownership
+						//rule and records a refusal. Reading through it here keeps that rule in one place
+						//while still deciding on a row that can no longer change.
+						srcFile = Find(sourceFilepath);
+					}
+
+					if (srcFile == null)
+					{
+						if (enforceExpectedTarget)
+						{
+							//An enforcing caller has its own refusal envelope to answer with. Throwing here
+							//would reach it as an unhandled fault - an empty response body - and would file a
+							//deliberate access-control outcome as a system error.
+							connection.RollbackTransaction();
+							return null;
+						}
+
+						//The rollback is left to the catch below rather than performed here: DbConnection
+						//clears its transaction on the first rollback, so rolling back and then throwing
+						//would make that catch's own rollback the failure the caller sees.
+						throw new Exception("Source file cannot be found.");
+					}
+
+					//see the remarks above - the authorized row must still be the row at this path, and the
+					//same identifier is then carried into the UPDATE below
+					if (expectedSourceId.HasValue && srcFile.Id != expectedSourceId.Value)
+					{
 						connection.RollbackTransaction();
 						return null;
+					}
+
+					//lockedTargetRow was acquired above, together with the source lock and in ordinal path
+					//order, so that the two acquisitions cannot deadlock against a concurrent move of the
+					//same pair in the opposite direction.
+
+					//THREAT ADDRESSED - CWE-367 and CWE-639, OWASP A01:2021, on the DESTRUCTIVE half of this
+					//operation. The identity of the locked destination must be exactly the destination state
+					//the caller authorized. Nullable equality covers all three outcomes in one comparison: a
+					//caller who authorized an existing row requires that same row, a caller who authorized an
+					//absent destination requires it to still be absent, and anything else - including a row
+					//withheld from this caller by the staged-ownership rule, which reads as absent through
+					//Find but is visible to the lock - is a mismatch and is refused.
+					if (enforceExpectedTarget && lockedTargetRow?.Id != expectedTargetId)
+					{
+						connection.RollbackTransaction();
+						return null;
+					}
+
+					//In enforced mode the row to overwrite is the LOCKED row: the caller has already taken
+					//the access decision on that exact identity, and the line above proved the row still
+					//carries it, so resolving it through Find a second time would only add a query and, on a
+					//raced substitution, a second refusal record for one refusal. In the default mode the
+					//destination is resolved through Find exactly as before, so a destination withheld by the
+					//staged-ownership rule keeps its existing behaviour rather than silently becoming
+					//overwritable.
+					var destFileToOverwrite = enforceExpectedTarget
+						? lockedTargetRow
+						: (lockedTargetRow == null ? null : Find(destinationFilepath));
+
+					//As above, the rollback belongs to the catch below and must not be duplicated here.
+					if (destFileToOverwrite != null && overwrite == false)
+						throw new Exception("Destination file already exists and no overwrite specified.");
+
+					if (destFileToOverwrite != null && overwrite)
+						Delete(destFileToOverwrite.FilePath, destFileToOverwrite.Id);
+
+					//The predicate is widened from "id = @id" to also require the row to still be the
+					//authorized one AND to still be at the source path - an identifier alone would have let a
+					//row that had been moved elsewhere be relocated to this destination. Every half is
+					//parameterised, so no value is concatenated into SQL.
+					var command = connection.CreateCommand(expectedSourceId.HasValue
+						? @"UPDATE files SET filepath = @filepath WHERE id = @id AND id = @expected_id AND filepath = @source_filepath"
+						: @"UPDATE files SET filepath = @filepath WHERE id = @id AND filepath = @source_filepath");
+					command.Parameters.Add(new NpgsqlParameter("@source_filepath", sourceFilepath));
+					command.Parameters.Add(new NpgsqlParameter("@id", srcFile.Id));
+					command.Parameters.Add(new NpgsqlParameter("@filepath", destinationFilepath));
+					command.Parameters.Add(new NpgsqlParameter("@source_filepath", sourceFilepath));
+
+					if (command.ExecuteNonQuery() != 1)
+					{
+						//Exactly one row, or nothing happens. Zero cannot occur while the FindForUpdate locks
+						//taken above are held, and more than one is impossible under the primary key, so either
+						//is a fault that must stop before the storage-side move. The assertion is kept even
+						//though it is unreachable, because an irreversible storage operation must never run on
+						//the strength of an unchecked affected-row count.
+						connection.RollbackTransaction();
+
+						//Any caller that supplied an expectation - of the source row, of the destination row, or
+						//of both - is answered with the refusal envelope its endpoint already renders, never an
+						//exception: a 500 carrying internal detail is exactly what the callers must not emit.
+						if (expectedSourceId.HasValue || enforceExpectedTarget)
+							return null;
+
+						//An unpinned caller is refused with the same message this method already raises for a
+						//source path that resolves to no row, because that is precisely what has become true of
+						//the path it named. The type is the specific FileNotFoundException rather than the bare
+						//Exception used by the absent-source check near the top of this method: CA2201 refuses
+						//the reserved base type in new code, and that pre-existing raise is left untouched under
+						//the minimal-change constraint. Nothing observable changes for a caller - the message is
+						//byte-identical and a derived type is still caught by any catch(Exception).
+						throw new FileNotFoundException("Source file cannot be found.");
 					}
 
 					if(ErpSettings.EnableCloudBlobStorage)
@@ -778,7 +994,7 @@ namespace WebVella.Erp.Database
 							}
 
 						}
-					} 
+					}
 					else if (ErpSettings.EnableFileSystemStorage)
 					{
 						var srcFileName = Path.GetFileName(sourceFilepath);
@@ -800,6 +1016,23 @@ namespace WebVella.Erp.Database
 					//failed" and rolls a completed promotion back. See the remarks on FindInternal.
 					return FindInternal(destinationFilepath);
 				}
+				//THREAT ADDRESSED - CWE-367, OWASP A01:2021, at the ONE case a row lock cannot cover: a
+				//destination the caller authorized as ABSENT. There is no row to lock, so a concurrent
+				//request can occupy that path after the absence was established. The files.filepath UNIQUE
+				//constraint is what stops the overwrite - the losing UPDATE is serialised by that index and
+				//then fails - but an unhandled failure is the wrong ANSWER: it reaches the caller as a system
+				//fault with an empty body and is filed as a bug rather than as the access-control outcome it
+				//is. Translating it into the same refusal every other mismatch produces keeps the response
+				//indistinguishable, so a race cannot be used to discover which target paths hold real files.
+				//Scoped to enforced callers by the filter, so no existing caller's exception behaviour
+				//changes, and scoped to the unique-violation state alone, so no other database fault is
+				//swallowed.
+				catch (PostgresException uniqueViolation) when (enforceExpectedTarget
+					&& uniqueViolation.SqlState == PostgresErrorCodes.UniqueViolation)
+				{
+					connection.RollbackTransaction();
+					return null;
+				}
 				catch
 				{
 					connection.RollbackTransaction();
@@ -820,11 +1053,18 @@ namespace WebVella.Erp.Database
 		/// <remarks>
 		/// THREAT ADDRESSED - CWE-367 (time-of-check to time-of-use race condition) on an IRREVERSIBLE
 		/// operation, OWASP A01:2021 Broken Access Control. See the remarks on
-		/// <see cref="Move(string, string, bool, Guid?)"/>: the ownership check that permits a delete is
+		/// <see cref="Move(string, string, bool, Guid?, bool, Guid?)"/>: the ownership check that permits a delete is
 		/// performed on a row read by an earlier call on an earlier connection, so without pinning a
 		/// concurrent move could place another user's file at this path and have it destroyed under an
-		/// authorization that was never granted for it. The parameter defaults to null, so every existing
-		/// caller is unaffected.
+		/// authorization that was never granted for it.
+		/// <para>
+		/// The pin is applied whether or not <paramref name="expectedFileId"/> is supplied, so the parameter
+		/// no longer decides WHETHER the row is proved - only that the caller has an identifier to state.
+		/// Review finding CR3-H-05 records why: the guard used to run AFTER the external bytes had already
+		/// been removed, and its affected-row count was discarded, so the condition could not prevent
+		/// anything. Identity is now proved by <see cref="TryLockRowByPath"/> and re-asserted by the
+		/// <c>DELETE</c>, whose affected-row count must be exactly one, BEFORE any byte is touched.
+		/// </para>
 		/// </remarks>
 		public void Delete(string filepath, Guid? expectedFileId = null)
 		{
@@ -850,6 +1090,62 @@ namespace WebVella.Erp.Database
 				try
 				{
 					connection.BeginTransaction();
+
+					//THREAT ADDRESSED - review finding CR3-H-05, CWE-367 (time-of-check to time-of-use) on
+					//an IRREVERSIBLE operation, OWASP A01:2021. The previous ordering removed the external
+					//bytes FIRST and only then ran a conditional DELETE whose affected-row count it discarded,
+					//which inverted the whole point of the condition: by the time the database was asked
+					//whether this row was still the authorized one, the object it described had already been
+					//destroyed. A concurrent move that put another user's file at this path therefore
+					//destroyed that user's bytes and then left their metadata row intact, so the refusal was
+					//recorded nowhere and the loss was silent.
+					//Identity is now proved BEFORE anything irreversible happens, in two steps that are both
+					//required. SELECT ... FOR UPDATE proves the identifier and the path still belong together
+					//and holds a row lock for the rest of the transaction, so no concurrent writer can
+					//separate them afterwards; the DELETE then re-asserts the same pair and its affected-row
+					//count is CHECKED rather than ignored, because an irreversible operation must never
+					//proceed on an unverified count.
+					//The pin is applied whether or not expectedFileId was supplied. An unpinned caller
+					//resolved this row by path a moment ago through Find, so requiring the pair to still hold
+					//is the semantics it already believed it had; the only behaviour that changes is that a
+					//raced delete is abandoned instead of applied to whatever row now holds the identifier.
+					if (!TryLockRowByPath(connection, file.Id, filepath))
+					{
+						//Nothing has been touched. Returning matches this method's existing contract for a
+						//path that resolves to no row - which is exactly what a concurrent move has made
+						//true - and it leaves the other user's file intact.
+						connection.RollbackTransaction();
+						return;
+					}
+
+					//Ordered BEFORE the byte removal, deliberately. The row is the only durable record of
+					//which object these bytes belong to, so proving we may remove it is the precondition for
+					//removing them - not a formality to be completed afterwards.
+					var command = connection.CreateCommand(
+						@"DELETE FROM files WHERE id = @id AND filepath = @filepath");
+					command.Parameters.Add(new NpgsqlParameter("@id", file.Id));
+					command.Parameters.Add(new NpgsqlParameter("@filepath", filepath));
+
+					if (command.ExecuteNonQuery() != 1)
+					{
+						//Exactly one row, or nothing happens. Zero cannot occur while the lock above is held
+						//and more than one is impossible under the primary key, so either is a fault that
+						//must stop before the bytes are gone.
+						connection.RollbackTransaction();
+						return;
+					}
+
+					//COMPENSATION, stated rather than implied. From here the two stores are removed in the
+					//order that makes a partial failure recoverable in the SAFE direction:
+					//  * the large-object path enlists in this transaction, so Unlink and the row DELETE
+					//    commit or roll back together and cannot diverge at all;
+					//  * the blob and filesystem paths cannot enlist. Both are guarded by an existence check
+					//    and are therefore idempotent, so a retry converges. If one throws, the catch below
+					//    rolls the row back and the metadata survives while the bytes may already be gone -
+					//    an orphaned row, which is reportable and repairable. That is the deliberate choice
+					//    over the alternative ordering, which on the same failure destroys bytes the database
+					//    still claims are present and, before this change, could destroy bytes belonging to a
+					//    row the caller was never authorized to touch.
 					if(ErpSettings.EnableCloudBlobStorage && file.ObjectId == 0)
 					{
 						var path = GetBlobPath(file);
@@ -872,17 +1168,6 @@ namespace WebVella.Erp.Database
 							new NpgsqlLargeObjectManager(connection.connection).Unlink(file.ObjectId);
 					}
 
-					//The predicate re-asserts, inside the transaction, that the row being removed is still
-					//the one whose path was resolved and authorized above. Both values are parameterised.
-					var command = connection.CreateCommand(expectedFileId.HasValue
-						? @"DELETE FROM files WHERE id = @id AND filepath = @filepath"
-						: @"DELETE FROM files WHERE id = @id");
-					command.Parameters.Add(new NpgsqlParameter("@id", file.Id));
-					if (expectedFileId.HasValue)
-						command.Parameters.Add(new NpgsqlParameter("@filepath", filepath));
-
-					command.ExecuteNonQuery();
-
 					connection.CommitTransaction();
 				}
 				catch
@@ -890,6 +1175,51 @@ namespace WebVella.Erp.Database
 					connection.RollbackTransaction();
 					throw;
 				}
+			}
+		}
+
+		/// <summary>
+		/// Takes a row lock on the <c>files</c> row with the given identifier, and reports whether that row
+		/// is still the row at the given path.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - review finding CR3-H-05, CWE-367 (time-of-check to time-of-use race condition),
+		/// OWASP A01:2021 Broken Access Control.
+		/// <para>
+		/// Every object-level authorization for a file mutation is necessarily performed on a row read by an
+		/// EARLIER call on an EARLIER connection, because <see cref="Find(string)"/> opens and closes its own.
+		/// Re-reading the row inside the mutating transaction narrows that window but does not close it: a
+		/// concurrent writer can still change the row between the re-read and the write. <c>FOR UPDATE</c> is
+		/// what closes it, by holding the lock until the transaction ends, so the identifier-and-path pair
+		/// this method proves is still true when the caller acts on it.
+		/// </para>
+		/// <para>
+		/// It exists as one shared helper rather than as two inline queries because both mutating paths need
+		/// the identical guarantee and the two must not be allowed to drift - one of them having a weaker
+		/// predicate than the other is exactly the defect this finding reported.
+		/// </para>
+		/// <para>
+		/// Both values are bound as parameters. <c>NOWAIT</c> is deliberately NOT used: a concurrent mutation
+		/// of the same row is rare and short, so waiting for it is correct, whereas failing immediately would
+		/// turn ordinary contention into a refusal. The surrounding transaction's own timeout bounds the wait.
+		/// </para>
+		/// </remarks>
+		/// <param name="connection">The connection carrying the mutating transaction.</param>
+		/// <param name="fileId">Identifier of the row the caller resolved and was authorized for.</param>
+		/// <param name="filepath">Normalised path that row must still hold.</param>
+		/// <returns>True when the row exists at that path and is now locked; false otherwise.</returns>
+		private static bool TryLockRowByPath(DbConnection connection, Guid fileId, string filepath)
+		{
+			var command = connection.CreateCommand(
+				@"SELECT id FROM files WHERE id = @id AND filepath = @filepath FOR UPDATE");
+			command.Parameters.Add(new NpgsqlParameter("@id", fileId));
+			command.Parameters.Add(new NpgsqlParameter("@filepath", filepath));
+
+			using (var reader = command.ExecuteReader())
+			{
+				var located = reader.Read();
+				reader.Close();
+				return located;
 			}
 		}
 
@@ -966,29 +1296,84 @@ namespace WebVella.Erp.Database
 		}
 
 		/// <summary>
-		/// cleanup expired temp files 
+		/// Deletes staged (temporary) files that were created longer ago than <paramref name="expiration"/>.
 		/// </summary>
-		/// <param name="expiration"></param>
+		/// <remarks>
+		/// SECURITY - review finding INT-13 (Major), CWE-770 allocation of resources without limits or
+		/// throttling, OWASP A04:2021 Insecure Design.
+		/// THREAT ADDRESSED: this is the only cleanup the platform has for abandoned uploads, and it deleted
+		/// NOTHING. Staged files live at <c>/tmp/&lt;section&gt;/&lt;name&gt;</c> - see
+		/// <see cref="CreateTempFile(string, byte[], string, System.Guid?)"/> - while the pattern matched paths
+		/// ENDING in <c>/tmp</c>, which no staged path ever does, so the query returned an empty set on every
+		/// call. An upload that was never promoted to a permanent path therefore persisted for the lifetime of
+		/// the installation, at up to the per-request upload ceiling each, and the store grew without bound for
+		/// any caller willing to upload and walk away. The <paramref name="expiration"/> argument was also
+		/// accepted and then ignored, so a caller asking for a conservative age filter silently got none - which
+		/// is why fixing the pattern without honouring the age would have been the more dangerous half-fix,
+		/// turning an inert method into one that could delete an upload still in flight.
+		/// <para>
+		/// AGE IS TAKEN FROM <c>created_on</c>, not <c>modified_on</c>: staging time is what "abandoned" means
+		/// here, and <see cref="UpdateModificationDate(string, System.DateTime)"/> can move the modified stamp
+		/// forward for reasons that have nothing to do with the upload being live. Both values are
+		/// parameterised, and the comparison is against UTC because <c>Create</c> stamps UTC.
+		/// </para>
+		/// <para>
+		/// FAILURES ARE ACCOUNTED PER ROW rather than allowed to abort the pass. One unreadable blob, one
+		/// missing file on a storage backend or one row another caller has already removed used to stop the
+		/// whole cleanup, leaving every later row in place - the same shape of defect as the queue starvation in
+		/// the mail plugin. Each failure is recorded with its backend error text, so an operator can alert on
+		/// those records rather than inferring success from the absence of an exception. The signature is left
+		/// exactly as it was, deliberately: this is a public member of a published library, and returning a count
+		/// would be a binary-breaking change to a method whose defect is fixable without one.
+		/// </para>
+		/// <para>
+		/// CALL IT INSIDE <c>SecurityContext.OpenSystemScope()</c>, or as an administrator. <see cref="Delete"/>
+		/// resolves the path through <see cref="Find(string)"/>, which refuses a staged file belonging to
+		/// another non-administrative principal (finding F24) and returns null - so under an ordinary user's
+		/// scope this method would silently skip every upload except that user's own and report no failures at
+		/// all. NOTHING IN THE PLATFORM CALLS THIS YET, deliberately: scheduling it is a deployment decision,
+		/// and adding a background job to drive it would be feature work outside this remediation. The operator
+		/// guidance is recorded in docs/security/secure-configuration.md and the residual in
+		/// docs/security/risk-register.md.
+		/// </para>
+		/// </remarks>
+		/// <param name="expiration">Minimum age a staged file must have reached before it is deleted.</param>
 		public void CleanupExpiredTempFiles(TimeSpan expiration)
 		{
-
 			DataTable table = new DataTable();
 			using (var connection = CurrentContext.CreateConnection())
 			{
 				var command = connection.CreateCommand(string.Empty);
-				command.CommandText = "SELECT filepath FROM files WHERE filepath ILIKE @tmp_path";
-				command.Parameters.Add(new NpgsqlParameter("@tmp_path", "%" + FOLDER_SEPARATOR + TMP_FOLDER_NAME));
+				command.CommandText = "SELECT filepath FROM files WHERE filepath ILIKE @tmp_path AND created_on < @expired_before";
+				command.Parameters.Add(new NpgsqlParameter("@tmp_path", STAGED_PATH_PATTERN));
+				command.Parameters.Add(new NpgsqlParameter("@expired_before", DateTime.UtcNow.Subtract(expiration)));
 				new NpgsqlDataAdapter(command).Fill(table);
 			}
 
 			foreach (DataRow row in table.Rows)
-				Delete((string)row["filepath"]);
+			{
+				var filepath = (string)row["filepath"];
+				try
+				{
+					Delete(filepath);
+				}
+				catch (Exception ex)
+				{
+					//INT-13: one row must not cost the rest of the pass. The path is length-bounded and
+					//neutralised by AuditField for the same reason it is everywhere else in this file - it is
+					//caller-supplied text reaching a "name=value" log record (CWE-117).
+					new Log().Create(LogType.Error, "DbFileRepository.CleanupExpiredTempFiles",
+						"A staged file could not be deleted during cleanup; the pass continued.",
+						$"filepath={AuditField(filepath, MAX_LOGGED_FILE_PATH_LENGTH)}; error={AuditField(ex.Message, MAX_LOGGED_FILE_PATH_LENGTH)}",
+						LogNotificationStatus.DoNotNotify);
+				}
+			}
 		}
 
 		internal static IBlobStorage GetBlobStorage(string overrideConnectionString = null)
 		{
 			return StorageFactory.Blobs.FromConnectionString(string.IsNullOrWhiteSpace(overrideConnectionString) ? ErpSettings.CloudBlobStorageConnectionString : overrideConnectionString);
-		} 
+		}
 
 		internal static string GetFileSystemPath(DbFile file)
 		{
@@ -1017,7 +1402,7 @@ namespace WebVella.Erp.Database
 			var depth2Folder = guidIinitialPart.Substring(2, 2);
 			string filenameExt = Path.GetExtension(fileName);
 
-			
+
 			if (!string.IsNullOrWhiteSpace(filenameExt))
 				return StoragePath.Combine(depth1Folder, depth2Folder, file.Id + filenameExt);
 			else

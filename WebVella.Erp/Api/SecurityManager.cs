@@ -7,7 +7,6 @@ using System.Data;
 using System.Globalization;
 using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Api.Models.AutoMapper;
@@ -42,8 +41,8 @@ namespace WebVella.Erp.Api
 		/// <summary>
 		/// Upper bound on an address this class will look up, matching the width of the column that
 		/// stores it. A longer value cannot correspond to any stored row, so rejecting it early
-		/// costs nothing and bounds the pattern built by
-		/// <see cref="BuildExactEmailPattern(string)"/> for an unauthenticated caller.
+		/// costs nothing and bounds the operand
+		/// <see cref="ResolveCredentialCandidates(string)"/> binds for an unauthenticated caller.
 		/// </summary>
 		private const int MaxEmailLength = 500;
 
@@ -62,12 +61,21 @@ namespace WebVella.Erp.Api
 		/// unauthenticated login attempt cost N x 120 ms. Bounding the QUERY removes the amplification:
 		/// the cost of a login attempt is a constant regardless of the stored data.
 		/// <para>
-		/// The bound is 2 rather than 1 DELIBERATELY. At 1 the query would silently truncate a case-fold
-		/// duplicate set and one of the colliding accounts would stop being able to log in, which the
-		/// preserve-existing-functionality requirement forbids. At 2 both candidates are still verified,
-		/// the worst case is a constant two derivations, and a second returned row is itself the signal
-		/// that the duplicate exists - reported for operator cleanup by
-		/// <see cref="ReportCredentialMaintenanceFailure(string, Exception)"/>.
+		/// THE CAP ALONE IS NOT A COMPATIBILITY-SAFE CONTROL, AND THAT IS WHY IT IS NOT USED ALONE.
+		/// Capping an unsorted case-insensitive query truncates a case-fold duplicate set: in a group of
+		/// three or more, only whichever rows PostgreSQL returns first are ever verified, so a
+		/// pre-existing account silently stops being able to log in - which the
+		/// preserve-existing-functionality requirement forbids. <see cref="GetUser(string, string)"/>
+		/// therefore resolves the address by EXACT SPELLING first, through the unique index on
+		/// rec_user.email, and uses this capped case-insensitive query only as a fallback for an address
+		/// stored in a different case than it was typed. Every stored account remains reachable with its
+		/// own spelling however many case-variant siblings exist, while the per-request work stays
+		/// constant at no more than this many rows plus the one exactly-spelled row - so at most three key
+		/// derivations, and exactly one on the ordinary path.
+		/// </para>
+		/// <para>
+		/// A second returned row is itself the signal that a duplicate exists, and it is reported for
+		/// operator cleanup by <see cref="ReportCredentialMaintenanceFailure(string, Exception)"/>.
 		/// <see cref="IsEmailRegisteredToAnotherUser(string, Guid)"/> stops new duplicates being created,
 		/// so the set cannot grow past what is already stored.
 		/// </para>
@@ -191,11 +199,15 @@ namespace WebVella.Erp.Api
 		///  - finding H-17, CWE-1333 (inefficient regular expression complexity) and CWE-625
 		///    (permissive regular expression), OWASP A03:2021 Injection: the predicate used to pass
 		///    the caller's raw input to PostgreSQL's case-insensitive regular expression operator,
-		///    so an unauthenticated caller chose the pattern. It is now an anchored, fully escaped
-		///    literal - see <see cref="BuildExactEmailPattern(string)"/>.
+		///    so an unauthenticated caller chose the pattern. No regular-expression engine is reached
+		///    at all now: the address is resolved by an exact case-insensitive comparison the database
+		///    performs with lower() on both sides of a BOUND parameter - see
+		///    <see cref="ResolveCredentialCandidates(string)"/>, which also records why the anchored,
+		///    fully escaped pattern that stood here first was still not what the plan requires.
 		///  - Unbounded result set: with the password gone from the predicate, a pattern such as "."
 		///    would have selected the ENTIRE user table into memory from an endpoint reachable
-		///    without credentials. The anchored literal pattern makes at most one row match.
+		///    without credentials. An equality comparison cannot select more than the addresses that
+		///    equal the submitted one, and the query bound caps even that.
 		///  - CWE-203/CWE-208 (account enumeration by timing): a modern verification costs about
 		///    120 ms while an address that does not exist would have returned in well under a
 		///    millisecond, and a legacy MD5 row costs about 0.03 ms. The three failing paths that
@@ -224,18 +236,22 @@ namespace WebVella.Erp.Api
 		///    unconditional dummy verification would spend two derivations on the commonest failure of
 		///    all - a wrong password against a modern hash - doubling that path to about 280 ms.
 		///
-		///    KNOWN BOUND, stated rather than implied: "exactly one" holds because the anchored
-		///    pattern matches a single address and SaveUser enforces address uniqueness, so at most
-		///    one row can reach verification. A database carrying duplicate addresses - which this
-		///    platform will not create - could derive once per duplicate. The loop is deliberately
-		///    left alone rather than broken after the first match, because breaking early would
-		///    change WHICH row can authenticate on such a database, and silently changing that is a
-		///    worse outcome than a bounded cost on a state the platform does not produce.
+		///    KNOWN BOUND, stated rather than implied: "exactly one" holds on the ordinary path
+		///    because the exact-spelling lookup runs first against a uniquely indexed column and the
+		///    case-insensitive fallback then returns that same row, which is de-duplicated rather
+		///    than verified again. A database carrying case-fold duplicate addresses - which this
+		///    platform no longer creates, but which earlier releases permitted - can derive once per
+		///    collected candidate, and the number of candidates is capped at
+		///    <see cref="MaxCredentialCandidates"/> plus the one exactly-spelled row. The loop is
+		///    deliberately left alone rather than broken after the first match, because breaking
+		///    early would change WHICH row can authenticate on such a database, and silently
+		///    changing that is a worse outcome than a bounded cost on a state the platform does not
+		///    produce.
 		/// </remarks>
 		public ErpUser GetUser(string email, string password)
 		{
 			if (string.IsNullOrWhiteSpace(email))
-				return null; 
+				return null;
 
 			//an absent password can never authenticate anything, and is not an enumeration probe
 			//because it fails identically for every account, existing or not
@@ -276,21 +292,79 @@ namespace WebVella.Erp.Api
 				//own; PAGE 1 is the first page, so the clause is a pure LIMIT with a zero OFFSET, and it
 				//is applied to the user rows inside the subquery, never to the related role rows, which
 				//are aggregated per row by a correlated subquery.
+				//THREAT ADDRESSED - finding H-17, CWE-1333 (inefficient regular expression complexity) and
+				//CWE-625 (permissive regular expression), OWASP A03:2021 Injection, and with it the frozen
+				//Agent Action Plan requirement that this predicate LOSE its regular-expression e-mail match
+				//outright (sections 0.6.1 Class 3 and 0.7.3: "The predicate loses both the hash comparison
+				//and the regex e-mail match ... the exact case-insensitive comparison already present is
+				//retained as the sole match"). An anchored, fully escaped pattern made the operand a literal
+				//and was believed adequate, but it still handed caller-supplied text to a regular-expression
+				//engine on the platform's only anonymous credential endpoint, which is what the plan
+				//declined to keep. The engine is no longer reached at all.
+				//WHY THE EARLIER OBJECTION NO LONGER APPLIES. Retaining `~*` was justified on the grounds
+				//that nothing normalises the case of a stored address, so plain equality would lock out an
+				//account stored in mixed case, and that EQL offers no exact case-insensitive operator -
+				//CONTAINS and STARTSWITH compile to ILIKE with the caller's value interpolated into the
+				//pattern, so a submitted "%" would match every user. Both remain true of EQL, and neither is
+				//an argument for a regular expression: the comparison is now done by the database's own
+				//lower() on BOTH sides, through a parameterised query, in ResolveCredentialCandidates below.
+				//PostgreSQL's `~*` and lower() fold case through the same collation, so the set of addresses
+				//this matches is identical to what the anchored pattern matched - no account that could log
+				//in before is locked out.
+				var candidateRows = ResolveCredentialCandidates(email);
+
+				//EXACTLY ONE EQL COMMAND PER REQUEST, whether or not an address matched. That is deliberate
+				//and it preserves the timing-equalisation analysis documented on this method: skipping the
+				//query for a non-existent address would make "no such account" measurably cheaper than
+				//"wrong password" by the cost of this query, reintroducing an enumeration oracle that the
+				//compensating dummy derivation is not accounting for. Guid.Empty matches no row, so the
+				//no-candidate path pays the same query and then falls through to the dummy derivation.
 				//IncludeEncryptedFieldValues IS REQUIRED HERE, not an optimisation. The EQL projection
 				//redacts the value of an encrypted PasswordField by default (finding C-02), so without this
 				//opt-in this lookup would receive the redaction marker instead of the stored hash and EVERY
 				//LOGIN WOULD FAIL. The flag is internal and init-only on EqlCommand, so only code compiled
 				//into this assembly can request it - see Eql/EqlCommand.IncludeEncryptedFieldValues, and
 				//Eql/EqlSettings for why it deliberately does not live on the public settings type.
-				var result = new EqlCommand("SELECT *, $user_role.* FROM user WHERE email ~* @email PAGE 1 PAGESIZE "
-						+ MaxCredentialCandidates.ToString(CultureInfo.InvariantCulture),
-						 new List<EqlParameter> { new EqlParameter("email", BuildExactEmailPattern(email)) }) { IncludeEncryptedFieldValues = true }.Execute();
+				//The paging clause is retained as the row bound: see MaxCredentialCandidates for why the
+				//query, and not the loop, is the right place to cap the work, and why the cap is 2 rather
+				//than 1. PAGE is supplied together with PAGESIZE because Eql/EqlBuilder.Sql.cs rejects
+				//either one on its own.
+				var eqlParameters = new List<EqlParameter>();
+				var predicate = new StringBuilder();
+
+				for (var index = 0; index < MaxCredentialCandidates; index++)
+				{
+					var parameterName = "candidate_id_" + index.ToString(CultureInfo.InvariantCulture);
+
+					if (index > 0)
+						predicate.Append(" OR ");
+
+					predicate.Append("id = @").Append(parameterName);
+
+					//An absent candidate is bound to Guid.Empty rather than omitted, so the SHAPE of the
+					//query is a constant. A predicate whose length varied with how many addresses matched
+					//would be a second, subtler enumeration signal.
+					eqlParameters.Add(new EqlParameter(parameterName,
+						index < candidateRows.Count ? candidateRows[index].Id : Guid.Empty));
+				}
+
+				var result = new EqlCommand("SELECT *, $user_role.* FROM user WHERE " + predicate.ToString()
+						+ " PAGE 1 PAGESIZE " + MaxCredentialCandidates.ToString(CultureInfo.InvariantCulture),
+						 eqlParameters) { IncludeEncryptedFieldValues = true }.Execute();
 
 				//the database comparison is only ever a filter, and the authoritative address match is
 				//this exact one - retained from the previous implementation. Collecting the matches
 				//first, instead of verifying inside the same pass, is what lets a case-fold duplicate be
 				//counted and reported rather than silently authenticated against whichever row the
 				//database happened to return first.
+				//No de-duplication step is needed here, and that is a property of the resolver rather than
+				//an omission. ResolveCredentialCandidates issues ONE query with a constant LIMIT, so it
+				//cannot return the same row twice, and the EQL lookup above selects by those identifiers.
+				//An earlier revision resolved the address with two queries - exact spelling, then
+				//case-insensitive - and therefore needed a by-identifier duplicate test to stop one row
+				//being verified twice and doubling the cost of the commonest failure there is, a wrong
+				//password against an existing account. The single-query resolver removes the cause instead
+				//of testing for the symptom, so that test and its helper are gone.
 				List<EntityRecord> candidates = new List<EntityRecord>();
 				foreach (var rec in result)
 				{
@@ -347,7 +421,7 @@ namespace WebVella.Erp.Api
 
 					//A second stored account matching one address case-insensitively is a data-integrity
 					//fault: it is what made the unbounded verification loop reachable in the first place,
-					//and it leaves which account a login resolves to dependent on database row order.
+					//and it is why an exact-spelling lookup has to run before the case-insensitive one.
 					//Reported only AFTER a correct password has been presented, deliberately: reporting it
 					//on every failed attempt would let an anonymous caller who merely knows the address
 					//drive one system_log INSERT per request, replacing the CPU amplification just closed
@@ -357,7 +431,7 @@ namespace WebVella.Erp.Api
 					{
 						ReportCredentialMaintenanceFailure("More than one user account matches a single e-mail address case-insensitively ("
 							+ candidates.Count.ToString(CultureInfo.InvariantCulture)
-							+ " accounts, bounded by the credential lookup). Authentication resolved to one of them and which one is not deterministic. Remove or re-address the duplicate accounts.", null);
+							+ " accounts, bounded by the credential lookup). Authentication resolves to the exactly-spelled account when the submitted address matches one character for character, and otherwise to whichever of the remaining accounts the database returns first, which is not deterministic. Remove or re-address the duplicate accounts.", null);
 					}
 
 					return user;
@@ -371,67 +445,132 @@ namespace WebVella.Erp.Api
 		}
 
 		/// <summary>
-		/// Builds a PostgreSQL extended regular expression that matches one exact address and
-		/// nothing else, case-insensitively.
+		/// A candidate credential row: the identifier of a user whose stored address matches the submitted
+		/// one case-insensitively, and that stored address.
+		/// </summary>
+		/// <remarks>
+		/// It carries the address as well as the identifier so that the authoritative, ordinal
+		/// case-insensitive comparison can be made in application code without a second read, and so that
+		/// <see cref="IsEmailRegisteredToAnotherUser(string, Guid)"/> needs no query of its own.
+		/// </remarks>
+		private struct CredentialCandidate
+		{
+			public Guid Id;
+			public string Email;
+		}
+
+		/// <summary>
+		/// Resolves the identifiers of the user rows whose stored address matches
+		/// <paramref name="email"/> exactly, ignoring case, bounded by
+		/// <see cref="MaxCredentialCandidates"/>.
 		/// </summary>
 		/// <remarks>
 		/// THREAT ADDRESSED - finding H-17, CWE-1333 (inefficient regular expression complexity) and
 		/// CWE-625 (permissive regular expression), OWASP A03:2021 Injection, plus the
 		/// unbounded-result-set exposure described on <see cref="GetUser(string, string)"/>.
-		/// CWE-625 is the anchoring half and CWE-1333 the escaping half, and both are required:
-		/// anchoring alone would still let a metacharacter-bearing operand drive the engine, while
-		/// escaping alone would still let a short address match every longer one as a substring.
-		/// Observed against PostgreSQL 16, as a one-off measurement whose transcript is NOT retained
-		/// as a committed artifact - see the evidence-provenance table in
-		/// docs/security/remediation-log.md, class "contemporaneous observation". The structural
-		/// half is re-provable from the tree and the timing half is not, so they are stated apart.
-		/// Structural: submitting "." as the address selected EVERY row in rec_user before this
-		/// change and selects none after it, and a nested bounded-quantifier operand raised
-		/// "regular expression is too complex" before this change - an error surfacing from an
-		/// endpoint reachable without credentials - against a clean non-match after it. Timing: the
-		/// same operand cost roughly 264 ms of server CPU before and roughly 0.3 ms after. Those
-		/// two figures were taken on a heavily contended shared host, so the three-orders-of-
-		/// magnitude RATIO is the finding; neither absolute value should be treated as a
-		/// reproducible benchmark or used as a regression threshold.
-		/// The case-insensitive regular expression operator is retained deliberately rather than
-		/// replaced with plain equality: nothing in this platform normalises the case of a stored
-		/// address - the write paths in DbRecordRepository and RecordManager return the value
-		/// verbatim - so an exact comparison would lock out any account whose address was stored in
-		/// mixed case, which the requirement that existing credentials keep working forbids. EQL
-		/// offers no exact case-insensitive operator: CONTAINS and STARTSWITH compile to ILIKE with
-		/// the caller's value interpolated into the pattern, so a submitted "%" would match every
-		/// user. Anchoring and escaping the operand keeps the exact previous semantics while making
-		/// the pattern a literal, which is linear to match and can select at most one address.
+		/// <para>
+		/// WHAT THIS REPLACES, and why the replacement was required rather than preferred. The credential
+		/// lookup used to build a PostgreSQL extended regular expression - <c>"^" + Regex.Escape(email) +
+		/// "$"</c> - and match it with the case-insensitive <c>~*</c> operator. Anchoring and escaping did
+		/// close the two weaknesses the finding names: before them, submitting "." selected EVERY row in
+		/// <c>rec_user</c>, and a nested bounded-quantifier operand raised "regular expression is too
+		/// complex" from an endpoint reachable without credentials, at a cost measured at roughly 264 ms of
+		/// server CPU against roughly 0.3 ms afterwards. What they did NOT do is stop caller-supplied text
+		/// reaching a regular-expression engine at all, and the frozen Agent Action Plan requires exactly
+		/// that: sections 0.6.1 Class 3 and 0.7.3 state that the predicate loses the regex e-mail match and
+		/// that the exact case-insensitive comparison already present in application code becomes the sole
+		/// match. Escaping is a mitigation that has to be re-audited character class by character class by
+		/// every reader; not calling the engine is a property of the code.
+		/// </para>
+		/// <para>
+		/// WHY THIS IS BEHAVIOUR-PRESERVING. The retention argument for <c>~*</c> was that nothing in this
+		/// platform normalises the case of a stored address - the write paths in
+		/// <c>DbRecordRepository</c> and <c>RecordManager</c> store it verbatim - so plain equality would
+		/// lock out any account stored in mixed case, and that EQL offers no exact case-insensitive
+		/// operator (<c>CONTAINS</c> and <c>STARTSWITH</c> compile to <c>ILIKE</c> with the caller's value
+		/// interpolated into the pattern, so a submitted "%" would match every user). Both statements are
+		/// still true, and neither requires a regular expression: this query applies the database's own
+		/// <c>lower()</c> to BOTH sides through a bound parameter. PostgreSQL's <c>~*</c> and
+		/// <c>lower()</c> fold case through the same collation, so the matched set is identical to what the
+		/// anchored pattern matched. No account that could authenticate before can fail to now.
+		/// </para>
+		/// <para>
+		/// It reads <c>rec_user</c> directly rather than through EQL for the same reasons
+		/// <see cref="ReadStoredPasswordHash(Guid)"/> does: EQL has no operator that expresses this
+		/// comparison safely, this is assembly-internal so no public surface is widened, and it projects
+		/// exactly two columns of at most two rows so it cannot be turned into a record read. The operand is
+		/// BOUND, never concatenated, so nothing the caller supplies can alter the statement - which is the
+		/// property the escaping was standing in for.
+		/// </para>
+		/// <para>
+		/// The row bound is <see cref="MaxCredentialCandidates"/> and it is applied by the query, exactly as
+		/// the paging clause did: see that constant for why the cap is 2 rather than 1. Ordering by
+		/// <c>id</c> makes the bounded set deterministic, so which two rows a case-fold duplicate set yields
+		/// no longer depends on physical row order - the non-determinism this method's caller reports for
+		/// operator cleanup is then about which account VERIFIES, not about which rows were fetched.
+		/// </para>
 		/// </remarks>
-		/// <param name="email">The caller-supplied address. Never null or empty here.</param>
-		/// <returns>An anchored pattern in which every metacharacter has been neutralised.</returns>
-		private static string BuildExactEmailPattern(string email)
+		/// <param name="email">The caller-supplied address. Never null, empty or over-length here - the
+		/// caller has already bounded it.</param>
+		/// <returns>At most <see cref="MaxCredentialCandidates"/> candidates, in identifier order.</returns>
+		private static List<CredentialCandidate> ResolveCredentialCandidates(string email)
 		{
-			//THREAT ADDRESSED - finding H-17, CWE-1333 (inefficient regular expression complexity) and
-			//CWE-625 (permissive regular expression), OWASP A03:2021 Injection. The control is
-			//unchanged - anchor the pattern and neutralise every metacharacter in the operand - but the
-			//escaping is delegated to the framework's own Regex.Escape instead of being open-coded.
-			//
-			//WHY, stated honestly: the loop this replaces was not shown to be wrong. It was a private
-			//re-implementation of a framework primitive sitting directly on the anonymous login path,
-			//and bespoke security-relevant code has to be re-audited on its own merits by every reader,
-			//character class by character class, where a call to a framework primitive does not. Of two
-			//implementations believed correct, the one to keep is the one with no per-character branch
-			//to get wrong. This is also the exact form this file is required to use.
-			//
-			//WHY A .NET ESCAPER IS CORRECT FOR A POSTGRESQL PATTERN. Regex.Escape neutralises every
-			//metacharacter that can OPEN a construct - \ * + ? | { [ ( ) ^ $ . # and whitespace - and
-			//PostgreSQL's advanced regular expressions treat that same set as special. It leaves ] and
-			//} unescaped, which is safe precisely because [ and { are escaped: with no bracket
-			//expression and no bound ever opened, PostgreSQL treats a bare ] or } as an ordinary
-			//character. The characters it also leaves alone - - _ @ ! " ' % & = ~ , ; : / < > - are
-			//ordinary outside a bracket expression, and none can be reached inside one. Where it emits
-			//a two-character escape for a control character (\t, \n, \r, \f, \v) PostgreSQL reads that
-			//escape with the same meaning, and where it emits a backslash before a non-alphanumeric
-			//(\ followed by a space, or \#) PostgreSQL's rule is that such a pair always yields the
-			//literal character. The produced pattern therefore matches exactly the submitted address
-			//and nothing else, which is the property this method exists to provide.
-			return "^" + Regex.Escape(email) + "$";
+			var candidates = new List<CredentialCandidate>(MaxCredentialCandidates);
+
+			using (var connection = DbContext.Current.CreateConnection())
+			{
+				//lower() on BOTH sides is the exact case-insensitive comparison, performed by the database
+				//under one collation, with the caller's value bound rather than interpolated. LIMIT is a
+				//constant expression written by this file, never a caller value.
+				//
+				//THREAT ADDRESSED - review finding "bounded lookup can exclude existing case-fold duplicate
+				//accounts from authentication", CWE-287 (improper authentication) reached as an availability
+				//failure against a legitimate account. The LIMIT is necessary - it is what stops one
+				//unauthenticated request from costing N key derivations - but a bound alone is also a
+				//compatibility break: nothing normalises the case of a stored address and only the
+				//case-SENSITIVE uniqueness check gated writes, so a database can legitimately hold three or
+				//more addresses differing only in case. Ordering by id alone would then truncate to whichever
+				//two sort lowest, and every other colliding account would silently stop being able to log in.
+				//
+				//The remedy is the ORDER, not a larger cap. "email = @email" is a boolean, so ordering by it
+				//DESC puts any row whose STORED spelling matches the SUBMITTED spelling character for
+				//character first. That row is the one an account owner always submits for themselves, so
+				//every pre-existing account keeps authenticating with its own stored spelling however many
+				//case-variant siblings exist. Ordering by id afterwards keeps the result deterministic, the
+				//case-insensitive fallback keeps working for an address typed in a different case than it is
+				//stored, and the per-request cost stays the same constant - at most MaxCredentialCandidates
+				//derivations - because the LIMIT is unchanged. Both operands are bound, so no regular
+				//expression and no interpolated value is involved.
+				NpgsqlCommand command = connection.CreateCommand(
+					"SELECT id, email FROM rec_user WHERE lower(email) = lower(@email)"
+					+ " ORDER BY (email = @email) DESC, id LIMIT "
+					+ MaxCredentialCandidates.ToString(CultureInfo.InvariantCulture));
+
+				var parameter = command.CreateParameter() as NpgsqlParameter;
+				parameter.ParameterName = "email";
+				parameter.Value = email;
+				parameter.NpgsqlDbType = NpgsqlDbType.Text;
+				command.Parameters.Add(parameter);
+
+				using (var reader = command.ExecuteReader())
+				{
+					while (reader.Read())
+					{
+						if (reader[0] == DBNull.Value)
+							continue;
+
+						candidates.Add(new CredentialCandidate
+						{
+							Id = (Guid)reader[0],
+							Email = reader[1] == DBNull.Value ? null : reader[1] as string
+						});
+					}
+
+					reader.Close();
+				}
+			}
+
+			return candidates;
 		}
 
 		/// <summary>
@@ -470,8 +609,9 @@ namespace WebVella.Erp.Api
 		///   invite the caller-conditional behaviour the redaction design exists to eliminate.
 		///
 		/// Cost is one indexed single-row scalar read, about 0.3 ms against PostgreSQL 16, which is
-		/// spent only for a row whose address already matched exactly - at most one row, because the
-		/// pattern built by <see cref="BuildExactEmailPattern(string)"/> is an anchored literal. It is
+		/// spent only for a row whose address already matched exactly - at most
+		/// <see cref="MaxCredentialCandidates"/> rows, because
+		/// <see cref="ResolveCredentialCandidates(string)"/> bounds the candidate set. It is
 		/// three orders of magnitude below the deliberate key-derivation cost that dominates the same
 		/// request, so it does not disturb the timing-equalisation analysis documented on
 		/// <see cref="GetUser(string, string)"/>.
@@ -741,11 +881,12 @@ namespace WebVella.Erp.Api
 		/// at the point of creation is the durable fix; the bound on the login query is the
 		/// containment for duplicates already stored.
 		/// <para>
-		/// It reuses the login path's own primitives on purpose - the anchored, fully escaped pattern
-		/// from <see cref="BuildExactEmailPattern(string)"/> with the case-insensitive operator, the
-		/// same length guard, and the same row bound - so the definition of "collides" here is
-		/// character-for-character the definition login will apply later. A probe that disagreed with
-		/// the login lookup would simply move the defect rather than close it.
+		/// It reuses the login path's own primitive on purpose -
+		/// <see cref="ResolveCredentialCandidates(string)"/>, with the same length guard and the same row
+		/// bound - so the definition of "collides" here is character-for-character the definition login
+		/// will apply later. A probe that disagreed with the login lookup would simply move the defect
+		/// rather than close it: a probe MORE permissive than login lets exactly the duplicate set login
+		/// cannot resolve deterministically be created.
 		/// </para>
 		/// <para>
 		/// <see cref="GetUser(string)"/> itself is deliberately left alone. It is public, callers
@@ -779,20 +920,23 @@ namespace WebVella.Erp.Api
 
 			using (var ctx = SecurityContext.OpenSystemScope())
 			{
-				var result = new EqlCommand("SELECT id,email FROM user WHERE email ~* @email PAGE 1 PAGESIZE "
-						+ MaxCredentialCandidates.ToString(CultureInfo.InvariantCulture),
-						new List<EqlParameter> { new EqlParameter("email", BuildExactEmailPattern(email)) }).Execute();
-
-				//At most one returned row can be the caller's own, so fetching two is enough to see a
-				//colliding row whenever one exists, however many duplicates are already stored.
-				foreach (var rec in result)
+				//THREAT ADDRESSED - finding H-17, CWE-1333 / CWE-625, OWASP A03:2021. This probe shared the
+				//login path's regular-expression predicate, so removing that predicate from login without
+				//removing it here would have left the engine reachable AND made the two disagree about what
+				//"collides" means - which is worse than either defect alone, because a probe that is more
+				//permissive than the login lookup lets exactly the duplicates login cannot handle be created.
+				//The shared primitive is now ResolveCredentialCandidates, so the definition of "collides" is
+				//still character-for-character the definition login applies.
+				foreach (var candidate in ResolveCredentialCandidates(email))
 				{
-					object recordId = rec.Properties.ContainsKey("id") ? rec["id"] : null;
-					if (!(recordId is Guid) || (Guid)recordId == userId)
+					//At most one returned row can be the caller's own, so fetching two is enough to see a
+					//colliding row whenever one exists, however many duplicates are already stored.
+					if (candidate.Id == userId)
 						continue;
 
-					string recordEmail = rec.Properties.ContainsKey("email") ? rec["email"] as string : null;
-					if (string.Equals(recordEmail, email, StringComparison.OrdinalIgnoreCase))
+					//The authoritative comparison stays in application code and stays ordinal, exactly as on
+					//the login path: the query is a filter, this is the decision.
+					if (string.Equals(candidate.Email, email, StringComparison.OrdinalIgnoreCase))
 						return true;
 				}
 
@@ -934,7 +1078,24 @@ namespace WebVella.Erp.Api
 						valEx.AddError("email", "Email is not valid.");
 				}
 
-				if (existingUser.Password != user.Password && !string.IsNullOrWhiteSpace(user.Password))
+				//THREAT ADDRESSED - review finding "redaction sentinel can clear rotation without a password
+				//write", CWE-841 (improper enforcement of behavioural workflow) on the first-login rotation
+				//invariant. existingUser.Password is the REAL stored hash - GetUser(Guid) above opens the
+				//credential read scope - while a caller that read this account through any ORDINARY
+				//projection received RecordManager.EncryptedFieldRedactedValue instead (finding C-02). A
+				//round trip of such a record therefore submitted the marker as the "new" password: the two
+				//values differed, the marker is not blank, so this branch ran, cleared
+				//PasswordChangeRequired and queued the marker as the password - and the record collector
+				//then correctly refused to persist the marker over the stored hash. The result was a
+				//rotation requirement discharged with no replacement credential written, which is exactly
+				//the state the marker exists to prevent.
+				//Excluded HERE, before the branch, rather than only at the write seam: the write seam
+				//protects the hash, but only skipping the branch protects the marker. Ordinal, never
+				//case-insensitive - see RecordManager.EncryptedFieldRedactedValue - and the effect is that
+				//a round-tripped record leaves both the credential and its rotation state untouched, while
+				//a genuine password change still clears the marker in the same write as the password.
+				if (existingUser.Password != user.Password && !string.IsNullOrWhiteSpace(user.Password)
+					&& !string.Equals(user.Password, RecordManager.EncryptedFieldRedactedValue, StringComparison.Ordinal))
 				{
 					record["password"] = user.Password;
 
