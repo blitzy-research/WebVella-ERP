@@ -652,7 +652,23 @@ namespace WebVella.Erp.Web.Services
 
 		public static async ValueTask<string> GetTokenAsync(string email, string password)
 		{
-			var user = new SecurityManager().GetUser(email?.Trim()?.ToLowerInvariant(), password?.Trim());
+			// THREAT ADDRESSED - review finding M-OPEN-05 (CWE-20 improper input validation with CWE-287
+			// improper authentication), OWASP A07:2021. THE SECRET IS NO LONGER TRIMMED, and the trim must
+			// not come back. A secret is an exact byte sequence: normalising it before verification means
+			// this path and the cookie path judge the same submission differently, because
+			// AuthenticateAsync above passes what the user typed straight to the same
+			// SecurityManager.GetUser. That divergence cut both ways and both ways were wrong. An account
+			// whose stored password legitimately begins or ends with whitespace - the write-time policy
+			// permits it, and a generated passphrase pasted from a console can easily carry it - could sign
+			// in interactively but could NEVER obtain a token, because the trimmed submission hashed to a
+			// different value: a permanent, undiagnosable refusal of a correct credential. In the other
+			// direction the trim ACCEPTED a submission that did not match the stored secret, so a client
+			// sending " secret " authenticated against a stored "secret" here while being refused at the
+			// login form. One shared verifier now sees one value.
+			// THE E-MAIL NORMALISATION STAYS. It is an identifier, not a secret: GetUser matches it
+			// case-insensitively anyway, so trimming and lower-casing changes no outcome, and removing it
+			// would be an unrelated behaviour change to the token route's tolerance of padded input.
+			var user = new SecurityManager().GetUser(email?.Trim()?.ToLowerInvariant(), password);
 			if (user != null && user.Enabled)
 			{
 				// THREAT ADDRESSED - finding C-01 (CWE-1392, CWE-798), OWASP A07:2021. A credential the
