@@ -3227,6 +3227,65 @@ jobs:
       # graph already restored above rather than a second, unaudited restore.
       # The scratch tree is untracked and removed unconditionally by the trap,
       # so it cannot reach the secret sweep, the build or the evidence upload.
+
+      # THE LICENCE DECISION RECORD MUST BE DURABLE AND ATTRIBUTABLE - review
+      # finding GOV-01, CWE-1390-adjacent (weak authentication of an approval),
+      # OWASP A08:2021 Software and Data Integrity Failures.
+      #
+      # WHAT THIS ADDS THAT THE MSBUILD GATE CANNOT. Directory.Build.props reads the
+      # decision record out of the working tree, which is right for a build that must
+      # work with or without git. But "in the working tree" is not "committed": a
+      # line dropped into the file locally would satisfy the pack gate while leaving
+      # no author, no review and no history - which is the same forgeable-by-a-local-
+      # file weakness Gate 5 closes for the manual attestation, and it is the exact
+      # weakness GOV-01 reported in the property form. Here, where git is guaranteed,
+      # the record is bound to the commit.
+      #
+      # THE ABSENCE OF A DECISION IS NOT A FAILURE. GOV-01 is an OPEN owner action
+      # and this remediation deliberately does not settle it, so no record exists
+      # today and packaging is blocked by ERPLIC001 - which is the intended state.
+      # This step fails only when a record exists but is not trustworthy: present in
+      # the working tree yet not committed, duplicated, or self-contradictory.
+      - name: Assert the licence decision record is durable and attributable
+        run: |
+          set -o pipefail
+          record_file='docs/security/risk-register.md'
+          # The same shape the MSBuild gate matches, minus the trailing fields: this
+          # step judges PROVENANCE, and Directory.Build.props judges FORM, so a
+          # malformed record is reported there by ERPLIC003 rather than twice.
+          decision='AUTOMAPPER-LICENCE-DECISION:[ \t]*(accepted-rpl-1\.5|declined-rpl-1\.5)[ \t]*\|'
+          if [ ! -f "$record_file" ]; then
+            echo "::error::${record_file} is absent, so the licence decision record for RISK-001 cannot be read and dotnet pack would fail closed with ERPLIC006. Restore the file, or move ErpLicenceDecisionRecordFile in Directory.Build.props and this step together."
+            exit 1
+          fi
+          if ! git ls-files --error-unmatch "$record_file" > /dev/null 2>&1; then
+            echo "::error::${record_file} is not tracked by git, so any decision recorded in it would be neither durable nor attributable - the defect GOV-01 reported about the transient property form, reproduced in a file. Track the file."
+            exit 1
+          fi
+          working_count=$(grep -cE "$decision" "$record_file" || true)
+          committed_count=$(git show "HEAD:${record_file}" | grep -cE "$decision" || true)
+          printf 'decision records: %s in the working tree, %s in the commit\n' "$working_count" "$committed_count"
+          if [ "$working_count" -ne "$committed_count" ]; then
+            echo "::error::A licence decision record differs between the working tree (${working_count}) and the commit (${committed_count}). An approval that is not committed has no author, no review and no history, which is precisely what GOV-01 refused to accept. Commit the record, or remove it."
+            exit 1
+          fi
+          if [ "$working_count" -gt 1 ]; then
+            echo "::error::${record_file} carries ${working_count} licence decision records. Exactly one is permitted: two answers cannot be resolved by order without this gate inventing the owner's intent, and dotnet pack refuses the contradictory pair with ERPLIC007."
+            exit 1
+          fi
+          if [ "$working_count" -eq 0 ]; then
+            echo "No licence decision is recorded, so GOV-01 remains OPEN as an owner action and dotnet pack is blocked by ERPLIC001. That is the intended state of this repository, not a failure of this step: build, restore, publish, run and every other gate here are unaffected, and only packaging - the one irrevocable operation - is blocked."
+            exit 0
+          fi
+          # A record exists. Report what it says and which commit carries it, so the
+          # approval is visible in the log rather than only in the file.
+          grep -E "$decision" "$record_file" | sed 's/^/  record: /'
+          origin=$(git log -1 --format='%H %an <%ae> %aI' -S'AUTOMAPPER-LICENCE-DECISION:' -- "$record_file" || true)
+          if [ -n "$origin" ]; then
+            printf '  introduced by commit: %s\n' "$origin"
+          fi
+          echo "A licence decision record is committed and unique - durable, attributable and reviewable, as GOV-01 requires. Confirm the declared PackageLicenseExpression states the intended posture before publishing."
+
       - name: Smoke-test Linux startup of the published artifacts
         run: |
           set -o pipefail

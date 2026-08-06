@@ -451,11 +451,40 @@
 	         validation this remediation depends on and would penalise developers
 	         for a legal question they cannot answer.
 
+	     THE ANSWER MUST NOW BE A COMMITTED RECORD, NOT A COMMAND-LINE FLAG -
+	     review finding GOV-01: "a transient dotnet pack -p:... property is not
+	     durable authenticated approval". It was exactly right. A global property
+	     lives for the length of one process: it leaves no trace of WHO approved,
+	     WHEN, or against WHICH pin, it cannot be reviewed, and anyone who can
+	     type a pack command can supply it - including a script, and including by
+	     accident. That is a switch, not a ratification.
+
+	     The gate therefore reads its answer from a TRACKED FILE:
+	     docs/security/risk-register.md, which is where RISK-001 already lives.
+	     Being committed is what makes the record durable (it survives the run),
+	     attributable (git records the author, the committer, the date and the
+	     commit) and reviewable (it arrives through the same review as any other
+	     change). The record carries an approver, a date and a reference of its
+	     own, so the attribution does not rest on git alone.
+
+	     THE RECORD'S SHAPE, exactly one line, no semicolons:
+	         AUTOMAPPER-LICENCE-DECISION: <answer> | approver: <name and contact>
+	         | date: <YYYY-MM-DD> | ref: <ticket or URL>
+	     where <answer> is accepted-rpl-1.5 or declined-rpl-1.5. Anything else is
+	     refused rather than ignored, so a typo cannot read as consent.
+
+	     WHY THE DOCUMENTATION CANNOT ACCIDENTALLY APPROVE ANYTHING, which a
+	     file-reading gate has to answer: the register documents the shape using
+	     the token AUTOMAPPER-LICENCE-DECISION-EXAMPLE and placeholders in angle
+	     brackets, and the patterns below require the exact token followed by one
+	     of the two literal answers. Neither the example nor any prose mention can
+	     satisfy them. Both protections were tested against the real file.
+
 	     How the owner clears it - two supported answers, both recorded rather
 	     than assumed:
-	       - Accept RPL-1.5 (or AutoMapper's commercial agreement) and align the
-	         declared expression:
-	             dotnet pack -p:ErpAutoMapperLicenceDecision=accepted-rpl-1.5
+	       - Accept RPL-1.5 (or AutoMapper's commercial agreement): commit the
+	         record line with accepted-rpl-1.5, then pack. Confirm the declared
+	         expression still states the intended posture first.
 	       - Decline it: revert the pin per the documented reversal steps in
 	         docs/security/risk-register.md (RISK-001), then pack normally.
 	         Recording `declined-rpl-1.5` while an RPL-licensed version is still
@@ -489,6 +518,11 @@
 		     both bracketed and bare notation. Extend this list only after reading
 		     the release's own .nuspec. -->
 		<ErpPermissiveAutoMapperVersions Condition="'$(ErpPermissiveAutoMapperVersions)' == ''">[14.0.0];14.0.0</ErpPermissiveAutoMapperVersions>
+		<!-- The tracked file the owner's decision is recorded in (GOV-01). It is
+		     the risk register because RISK-001 - the assessment, both options and
+		     the reversal steps - is already there, so the answer sits beside the
+		     question rather than in a file of its own that could drift from it. -->
+		<ErpLicenceDecisionRecordFile>$(MSBuildThisFileDirectory)docs/security/risk-register.md</ErpLicenceDecisionRecordFile>
 	</PropertyGroup>
 
 	<Target Name="ErpAssertAutoMapperLicenceDecisionRecorded"
@@ -508,24 +542,60 @@
 			<ErpAutoMapperLicenceConflict>false</ErpAutoMapperLicenceConflict>
 			<ErpAutoMapperLicenceConflict Condition="'$(ErpAutoMapperPinnedVersion)' != '' AND !$(ErpPermissiveAutoMapperVersions.Contains('$(ErpAutoMapperPinnedVersion)'))">true</ErpAutoMapperLicenceConflict>
 		</PropertyGroup>
+		<!-- THE DECISION IS READ FROM THE TRACKED RECORD (GOV-01), inside the
+		     target rather than at evaluation time, so an ordinary build never reads
+		     the file at all and only `dotnet pack` pays for it.
+		     The text is defaulted to a non-empty sentinel first: a property function
+		     invoked with an empty argument is a syntax error, not a false, so an
+		     absent record file would otherwise break the gate rather than block it.
+		     The anchor pattern deliberately requires a decision-shaped token
+		     FOLLOWED BY A PIPE, which is what makes a prose mention of the token in
+		     the register harmless while a real but malformed attempt is still
+		     recognised as an attempt and refused by name. -->
+		<PropertyGroup>
+			<ErpLicenceRecordText>(no licence decision record file)</ErpLicenceRecordText>
+			<ErpLicenceRecordText Condition="Exists('$(ErpLicenceDecisionRecordFile)')">$([System.IO.File]::ReadAllText($(ErpLicenceDecisionRecordFile)))</ErpLicenceRecordText>
+			<ErpLicenceRecordAnchor>AUTOMAPPER-LICENCE-DECISION:[ \t]*[a-zA-Z0-9.-]+[ \t]*\|</ErpLicenceRecordAnchor>
+			<ErpLicenceRecordShape>AUTOMAPPER-LICENCE-DECISION:[ \t]*DECISIONTOKEN[ \t]*\|[ \t]*approver:[ \t]*[^|]+\|[ \t]*date:[ \t]*[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*\|[ \t]*ref:[ \t]*[^ \t|]+</ErpLicenceRecordShape>
+			<ErpLicenceRecordAttempted>$([System.Text.RegularExpressions.Regex]::IsMatch($(ErpLicenceRecordText), $(ErpLicenceRecordAnchor)))</ErpLicenceRecordAttempted>
+			<ErpLicenceRecordAccepted>$([System.Text.RegularExpressions.Regex]::IsMatch($(ErpLicenceRecordText), $(ErpLicenceRecordShape.Replace('DECISIONTOKEN','accepted-rpl-1\.5'))))</ErpLicenceRecordAccepted>
+			<ErpLicenceRecordDeclined>$([System.Text.RegularExpressions.Regex]::IsMatch($(ErpLicenceRecordText), $(ErpLicenceRecordShape.Replace('DECISIONTOKEN','declined-rpl-1\.5'))))</ErpLicenceRecordDeclined>
+			<ErpAutoMapperLicenceDecisionRecorded Condition="'$(ErpLicenceRecordAccepted)' == 'true'">accepted-rpl-1.5</ErpAutoMapperLicenceDecisionRecorded>
+			<ErpAutoMapperLicenceDecisionRecorded Condition="'$(ErpLicenceRecordDeclined)' == 'true' AND '$(ErpLicenceRecordAccepted)' != 'true'">declined-rpl-1.5</ErpAutoMapperLicenceDecisionRecorded>
+		</PropertyGroup>
 		<!-- Fail closed when the pin cannot be read, so the gate cannot be
 		     disabled by moving or renaming the manifest it reads. -->
 		<Error Condition="'$(ErpAutoMapperPinnedVersion)' == ''"
 		       Code="ERPLIC004"
 		       Text="Packing is blocked: the AutoMapper pin could not be read from '$(ErpCoreProjectFile)', so the licence-governance gate for CR2-F-04 cannot evaluate whether this package's declared PackageLicenseExpression '$(PackageLicenseExpression)' is accurate. This fails closed on purpose - a gate that cannot read its input must not pass. Restore the manifest, or update ErpCoreProjectFile in Directory.Build.props. See docs/security/risk-register.md (RISK-001)." />
+		<!-- THE TRANSIENT FORM IS REFUSED, NOT IGNORED (GOV-01). Silently ignoring
+		     a command-line decision would be worse than accepting it: the owner
+		     would believe they had approved and would be told nothing. -->
+		<Error Condition="'$(ErpAutoMapperLicenceDecision)' != ''"
+		       Code="ERPLIC005"
+		       Text="ErpAutoMapperLicenceDecision was supplied as an MSBuild property, and that form is no longer accepted as approval (review finding GOV-01: a transient 'dotnet pack -p:...' property is not durable authenticated approval - it records no approver, no date and no reviewable trace, and any script can supply it). Record the decision instead as one committed line in docs/security/risk-register.md: 'AUTOMAPPER-LICENCE-DECISION: accepted-rpl-1.5 | approver: NAME AND CONTACT | date: YYYY-MM-DD | ref: TICKET OR URL'. Then pack with no property at all. See RISK-001 for both options and the reversal steps." />
+		<!-- Fail closed when the record file itself cannot be read, for the same
+		     reason ERPLIC004 fails closed on an unreadable pin. -->
+		<Error Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND !Exists('$(ErpLicenceDecisionRecordFile)')"
+		       Code="ERPLIC006"
+		       Text="Packing is blocked: the licence decision record file '$(ErpLicenceDecisionRecordFile)' does not exist, so the owner's decision for CR2-F-04 cannot be read and this gate cannot evaluate whether $(MSBuildProjectName)'s declared PackageLicenseExpression '$(PackageLicenseExpression)' is accurate. This fails closed on purpose - a gate that cannot read its input must not pass. Restore the file, or update ErpLicenceDecisionRecordFile in Directory.Build.props." />
+		<!-- A contradiction is refused rather than resolved by precedence. -->
+		<Error Condition="'$(ErpLicenceRecordAccepted)' == 'true' AND '$(ErpLicenceRecordDeclined)' == 'true'"
+		       Code="ERPLIC007"
+		       Text="Packing is blocked: '$(ErpLicenceDecisionRecordFile)' contains BOTH an accepted-rpl-1.5 and a declined-rpl-1.5 decision record. Two contradictory answers are not resolved by order or precedence here, because either choice would be this gate inventing the owner's intent. Leave exactly one record line and remove the other. See RISK-001." />
 		<!-- Fail closed on a malformed answer, so a typo cannot read as consent. -->
-		<Error Condition="'$(ErpAutoMapperLicenceDecision)' != '' AND '$(ErpAutoMapperLicenceDecision)' != 'accepted-rpl-1.5' AND '$(ErpAutoMapperLicenceDecision)' != 'declined-rpl-1.5'"
+		<Error Condition="'$(ErpLicenceRecordAttempted)' == 'true' AND '$(ErpAutoMapperLicenceDecisionRecorded)' == ''"
 		       Code="ERPLIC003"
-		       Text="ErpAutoMapperLicenceDecision is set to '$(ErpAutoMapperLicenceDecision)', which is not a recognised answer. Use 'accepted-rpl-1.5' or 'declined-rpl-1.5'. An unrecognised value is refused rather than ignored, so a typo cannot be mistaken for the owner's consent. See docs/security/risk-register.md (RISK-001)." />
-		<Error Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecision)' == ''"
+		       Text="Packing is blocked: '$(ErpLicenceDecisionRecordFile)' contains something shaped like an AUTOMAPPER-LICENCE-DECISION record, but it does not match the required form, so it is refused rather than ignored - a typo must not be mistaken for the owner's consent. The line must read exactly: 'AUTOMAPPER-LICENCE-DECISION: accepted-rpl-1.5 | approver: NAME AND CONTACT | date: YYYY-MM-DD | ref: TICKET OR URL', with declined-rpl-1.5 as the only other accepted answer, an ISO date, and no semicolons. See RISK-001." />
+		<Error Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecisionRecorded)' == ''"
 		       Code="ERPLIC001"
-		       Text="Packing is blocked: $(MSBuildProjectName) declares PackageLicenseExpression '$(PackageLicenseExpression)' while its dependency graph reaches AutoMapper $(ErpAutoMapperPinnedVersion), which is published under the Reciprocal Public License 1.5. Publishing that combination would state a licence this package does not carry, to every downstream consumer, irrevocably. This is a repository-owner decision (RISK-001) and is deliberately not settled automatically. To pack, record the decision: dotnet pack -p:ErpAutoMapperLicenceDecision=accepted-rpl-1.5 - or decline it, revert the pin using the reversal steps in docs/security/risk-register.md (RISK-001), and pack normally. Build, publish and run are unaffected by this gate." />
-		<Error Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecision)' == 'declined-rpl-1.5'"
+		       Text="Packing is blocked: $(MSBuildProjectName) declares PackageLicenseExpression '$(PackageLicenseExpression)' while its dependency graph reaches AutoMapper $(ErpAutoMapperPinnedVersion), which is published under the Reciprocal Public License 1.5. Publishing that combination would state a licence this package does not carry, to every downstream consumer, irrevocably. This is a repository-owner decision (RISK-001) and is deliberately not settled automatically. To pack, commit ONE line to docs/security/risk-register.md - 'AUTOMAPPER-LICENCE-DECISION: accepted-rpl-1.5 | approver: NAME AND CONTACT | date: YYYY-MM-DD | ref: TICKET OR URL' - so the approval is durable, attributable and reviewable; or decline it, revert the pin using the reversal steps in RISK-001, and pack normally. Build, publish and run are unaffected by this gate." />
+		<Error Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecisionRecorded)' == 'declined-rpl-1.5'"
 		       Code="ERPLIC002"
-		       Text="Packing is blocked: the Reciprocal Public License 1.5 is recorded as DECLINED, but AutoMapper $(ErpAutoMapperPinnedVersion) is still referenced, so $(MSBuildProjectName)'s declared licence expression '$(PackageLicenseExpression)' would still be inaccurate. Complete the decline by reverting the pin as documented in docs/security/risk-register.md (RISK-001), which also restores advisory GHSA-rvv3-g6hj-g44x and therefore requires the narrow audit suppression and formal risk acceptance described there." />
-		<Message Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecision)' == 'accepted-rpl-1.5'"
+		       Text="Packing is blocked: the Reciprocal Public License 1.5 is recorded as DECLINED in '$(ErpLicenceDecisionRecordFile)', but AutoMapper $(ErpAutoMapperPinnedVersion) is still referenced, so $(MSBuildProjectName)'s declared licence expression '$(PackageLicenseExpression)' would still be inaccurate. Complete the decline by reverting the pin as documented in docs/security/risk-register.md (RISK-001), which also restores advisory GHSA-rvv3-g6hj-g44x and therefore requires the narrow audit suppression and formal risk acceptance described there." />
+		<Message Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecisionRecorded)' == 'accepted-rpl-1.5'"
 		         Importance="high"
-		         Text="CR2-F-04: packing $(MSBuildProjectName) with the Reciprocal Public License 1.5 recorded as ACCEPTED for AutoMapper $(ErpAutoMapperPinnedVersion). Confirm PackageLicenseExpression '$(PackageLicenseExpression)' still states the intended posture before publishing. See docs/security/risk-register.md (RISK-001)." />
+		         Text="CR2-F-04: packing $(MSBuildProjectName) with the Reciprocal Public License 1.5 recorded as ACCEPTED for AutoMapper $(ErpAutoMapperPinnedVersion), from the committed record in '$(ErpLicenceDecisionRecordFile)'. Confirm PackageLicenseExpression '$(PackageLicenseExpression)' still states the intended posture before publishing. See docs/security/risk-register.md (RISK-001)." />
 		<Message Condition="'$(ErpAutoMapperLicenceConflict)' != 'true' AND '$(ErpAutoMapperPinnedVersion)' != ''"
 		         Importance="high"
 		         Text="CR2-F-04: no reciprocal-licence conflict detected for $(MSBuildProjectName) - AutoMapper resolves to a permissively licensed version, so no owner decision is required to pack." />

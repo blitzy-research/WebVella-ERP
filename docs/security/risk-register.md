@@ -264,7 +264,7 @@ investigation. Nothing here is blocked on further analysis; all of them are bloc
 
 | # | Decision | Owner | Blocking effect while undecided | Detail |
 | --- | --- | --- | --- | --- |
-| 1 | **`AutoMapper` licence** — accept the Reciprocal Public License 1.5 (or the vendor's commercial agreement) for `[15.1.3]`, **or** decline it and take the documented narrow-suppression fallback | Repository owner / legal — a licensing and product-distribution decision, not an engineering one | The product links a dependency whose licence is **incompatible with its own declared `Apache-2.0` distribution posture**. The security advisory is closed and the build gate is green, so nothing fails loudly *at build time* — which is exactly how this came to be recorded as decided by Engineering, and why `CR2-F-04` reopened it. It is now enforced instead of merely disclosed: `dotnet pack` fails with `ERPLIC001` until the answer is recorded in `ErpAutoMapperLicenceDecision`, so the question blocks **publishing** and nothing else. Executing either answer is a one-property change plus, for the decline, the documented pin reversal | `RISK-001` below, [`WebVella.Erp/WebVella.Erp.csproj`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/WebVella.Erp/WebVella.Erp.csproj) (the gate and both licence comments), and [`LIBRARIES.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/LIBRARIES.md) |
+| 1 | **`AutoMapper` licence** — accept the Reciprocal Public License 1.5 (or the vendor's commercial agreement) for `[15.1.3]`, **or** decline it and take the documented narrow-suppression fallback | Repository owner / legal — a licensing and product-distribution decision, not an engineering one | The product links a dependency whose licence is **incompatible with its own declared `Apache-2.0` distribution posture**. The security advisory is closed and the build gate is green, so nothing fails loudly *at build time* — which is exactly how this came to be recorded as decided by Engineering, and why `CR2-F-04` reopened it. It is now enforced instead of merely disclosed: `dotnet pack` fails with `ERPLIC001` until the answer is recorded as one committed, attributable line in this file — the transient command-line property that used to satisfy it is now refused (`ERPLIC005`, review finding `GOV-01`) — so the question blocks **publishing** and nothing else. Executing either answer is a one-line commit plus, for the decline, the documented pin reversal | `RISK-001` below, [`WebVella.Erp/WebVella.Erp.csproj`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/WebVella.Erp/WebVella.Erp.csproj) (the gate and both licence comments), and [`LIBRARIES.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/LIBRARIES.md) |
 | 2 | **Content-Security-Policy promotion** — approve the staged route to enforcement and accept its component-level work, **or** formally defer enforcement | Application security owner **and** frontend maintainer, jointly | The mandated header set is emitted but the content policy is **detective, not preventive**. The by-design markup channels retained under `RISK-023` and `RISK-032` therefore rest on the privileged markup-authoring contract alone | `RISK-022`, and the rollout in [the secure configuration guide](secure-configuration.md) |
 | 3 | **Non-solution project coverage** — approve the current explicit per-project scanning, **or** authorise adding `WebVella.Erp.WebAssembly/Server` and `/Shared` to `WebVella.ERP3.sln` | Repository owner / build owner | None. Coverage is already continuous at 17 + 2 = 19 via explicit per-project steps in the workflow. The decision is only whether to simplify it to one command; the projects' frozen file contracts currently forbid changing solution membership | [`LIBRARIES.md`](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/LIBRARIES.md), *How to reproduce this inventory* |
 | 4 | **Historical commit atomicity** — acknowledge that the mandated commit ordering and one-class-per-commit grouping were not met on parts of this branch's history | Repository owner | None technically; the integrated tree is correct. Minimal Change guideline 9, *atomic commits per vulnerability class*, is recorded as **FAIL** — seven of thirteen commits carry more than one class — and the prescribed execution sequence is recorded as **FAIL** for four named ordering and atomicity findings (`F-07`–`F-10`). The acknowledgement is a process record and **cannot convert either failed item into a pass** | [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate); [the remediation log](remediation-log.md#formal-acknowledgement-of-the-four-ordering-and-atomicity-failures) |
@@ -393,9 +393,12 @@ Verified in ten directions across all four packable manifests — 26 invocations
 | `dotnet publish` (a site host) | exit 0, gate silent |
 | `dotnet list package --vulnerable` | exit 0, gate silent |
 | `dotnet pack` with no decision recorded, **each of the four packable manifests** | **exit 1, `error ERPLIC001`, no `.nupkg` produced — 4 of 4** |
-| `dotnet pack -p:ErpAutoMapperLicenceDecision=accepted-rpl-1.5`, each of the four | exit 0, `.nupkg` produced, with a high-importance notice to confirm the declared expression before publishing — 4 of 4 |
-| `dotnet pack -p:ErpAutoMapperLicenceDecision=declined-rpl-1.5`, each of the four | **exit 1, `error ERPLIC002` — 4 of 4** — declining is not complete until the pin is reverted, because the declaration would still be inaccurate |
-| `dotnet pack -p:ErpAutoMapperLicenceDecision=yes`, each of the four | **exit 1, `error ERPLIC003` — 4 of 4** — an unrecognised value is refused rather than ignored, so a typo cannot be mistaken for consent |
+| `dotnet pack` with an `accepted-rpl-1.5` record committed to this file | exit 0, `.nupkg` produced, with a high-importance notice naming the record file and asking that the declared expression be confirmed before publishing |
+| `dotnet pack` with a `declined-rpl-1.5` record committed to this file | **exit 1, `error ERPLIC002`** — declining is not complete until the pin is reverted, because the declaration would still be inaccurate |
+| `dotnet pack` with a record present but malformed | **exit 1, `error ERPLIC003`** — an unrecognised value is refused rather than ignored, so a typo cannot be mistaken for consent |
+| `dotnet pack -p:ErpAutoMapperLicenceDecision=accepted-rpl-1.5` | **exit 1, `error ERPLIC005`** — review finding `GOV-01`: the transient property form is now REFUSED rather than ignored, because silently ignoring it would leave the owner believing they had approved |
+| `dotnet pack` with BOTH an accepted and a declined record present | **exit 1, `error ERPLIC007`** — a contradiction is refused rather than resolved by order, which would be the gate inventing the owner's intent |
+| `dotnet pack` with the record file absent | **exit 1, `error ERPLIC006`** — the gate refuses to pass when it cannot read the decision, exactly as `ERPLIC004` refuses when it cannot read the pin |
 | the pinned version declared permissive (core and web) | exit 0, `.nupkg` produced, reporting no conflict — the gate disables itself when it stops applying |
 | the core manifest made unreadable | **exit 1, `error ERPLIC004`, no `.nupkg` produced** — the gate refuses to pass when it cannot read its own input, so renaming or moving that manifest disables *packaging* rather than silently disabling the *gate* |
 
@@ -434,10 +437,9 @@ the advisory does not exist.
    License 1.5 (or obtain the vendor's commercial licence). *To execute:* decide whether the published
    packages keep declaring `Apache-2.0`, are relicensed, or are covered by the vendor's commercial
    agreement; adjust `PackageLicenseExpression` in `WebVella.Erp/WebVella.Erp.csproj` if the answer is
-   relicensing; then pack with `-p:ErpAutoMapperLicenceDecision=accepted-rpl-1.5`, or set that property in
-   the project once the answer is settled. Nothing else changes: the advisory stays closed and no
-   suppression is introduced. **This is the option the repository is currently configured for in every
-   respect except ratification.**
+   relicensing; then commit the decision record described in **How the decision is recorded** below.
+   Nothing else changes: the advisory stays closed and no suppression is introduced. **This is the option
+   the repository is currently configured for in every respect except ratification.**
 2. **Decline the upgrade** and apply the documented fallback above — suppression plus formal, justified
    risk acceptance. *To execute:* follow the two reversal analyses that follow this entry, which give the
    exact file, line and property changes. Be clear about the price, because it is higher than it looks:
@@ -453,6 +455,56 @@ the advisory does not exist.
 finding was raised about: publish the package as-is, with an unratified `Apache-2.0` claim over
 RPL-licensed code, because the build was green and nothing objected. That path is closed —
 `ERPLIC001` — and closing it is the whole point of preferring a mechanical block to a paragraph.
+
+#### How the decision is recorded — review finding `GOV-01`
+
+`GOV-01` reported that the previous mechanism, an MSBuild property supplied on the `dotnet pack` command
+line, **is not durable authenticated approval**. That is correct, and it is now changed. A global property
+lives for the length of one process: it records no approver, no date and no reason, it cannot be reviewed,
+it leaves nothing behind to audit, and any script — or any accidental shell history — can supply it.
+
+**The answer is now one committed line in this file.** Being committed is what makes it durable (it
+outlives the run), attributable (git records author, committer, date and commit, and the line carries its
+own approver and reference) and reviewable (it arrives through the same review as any other change). The
+gate reads this file at pack time; nothing else is consulted.
+
+The required form is exactly one line, with no semicolons anywhere in it:
+
+```text
+AUTOMAPPER-LICENCE-DECISION-EXAMPLE: <answer> | approver: <name and contact> | date: <YYYY-MM-DD> | ref: <ticket or URL>
+```
+
+To record a real decision, use the token **without** the `-EXAMPLE` suffix and replace every placeholder;
+`<answer>` must be either `accepted-rpl-1.5` or `declined-rpl-1.5`.
+
+**Why the example above cannot approve anything.** A gate that reads a document has to be safe against the
+document describing it. Two independent protections, both tested against this file: the example uses the
+token `AUTOMAPPER-LICENCE-DECISION-EXAMPLE`, which the gate's patterns do not match, and the patterns
+additionally require the exact token followed by one of the two literal answers and then a pipe — so a
+prose mention of the token, or a placeholder in angle brackets, satisfies nothing. Verified: with this
+section in place, `dotnet pack` still reports `ERPLIC001` — no decision recorded — rather than reading the
+documentation as an answer or as a malformed attempt.
+
+**The states the gate distinguishes**, each refused by its own diagnostic code rather than folded into a
+single "blocked": no record (`ERPLIC001`), a record that is present but malformed (`ERPLIC003`), two
+contradictory records (`ERPLIC007`), a decline that leaves the RPL pin in place (`ERPLIC002`), a record
+file that cannot be read (`ERPLIC006`), an unreadable pin (`ERPLIC004`), and the retired transient
+property being supplied (`ERPLIC005` — refused, not ignored, because ignoring it would leave the owner
+believing they had approved). Build, restore, publish, run and every CI gate step remain unaffected: the
+only operation this can block is `dotnet pack`, which is the only irrevocable one.
+
+**The record is additionally bound to a commit in CI.** The MSBuild gate reads the working tree, because a
+build must work with or without git. A workflow step therefore asserts that any record present in the
+working tree is also present in the commit, that the file is tracked, and that exactly one record exists —
+so a line dropped in locally cannot approve anything, and the approver, the date and the introducing commit
+are printed into the run log. The absence of a record is not a failure there: it is this repository's
+intended state while the decision remains outstanding.
+
+**What is still not closed by it.** The gate reads a committed line; it cannot verify that the person named
+as approver is authorised to approve, and it cannot stop a `.nupkg` built before the record existed from
+being pushed. Both are named in the accepted-residual section below, and neither is what `GOV-01` asked
+for. The decision itself remains **open and outstanding** — this change makes the answer recordable, not
+recorded.
 
 ### Reversal analyses for RISK-001 — the two alternatives, neither of them in force
 
@@ -4887,11 +4939,13 @@ one. Three gaps follow from that boundary, and all three are deliberate rather t
 operate on a `.nupkg` file that is already on disk; nothing in MSBuild runs. Any artifact produced from
 an earlier commit remains pushable.
 
-*Recording the decision is not the same as being authorised to make it.* The gate checks that an answer
-exists and that it is one of the two recognised values. It cannot check who supplied it. Anyone able to
-run `dotnet pack -p:ErpAutoMapperLicenceDecision=accepted-rpl-1.5` can satisfy it. What the gate buys is
-not authorisation but **deliberateness**: the answer has to be typed, it appears in the build log, and if
-it is set in the project file rather than on the command line it appears in a diff and a review.
+*Recording the decision is not the same as being authorised to make it.* The gate checks that a record
+exists, that it is well formed, and that it carries one of the two recognised answers. It cannot check that
+the person named as approver is authorised to approve. What it now buys, since review finding `GOV-01`, is
+more than deliberateness: because the answer must be a **committed line in this file**, it appears in a
+diff, passes through review, and carries an approver, a date and a reference that git independently
+attributes to an author and a commit. The transient command-line form that could be satisfied by anyone who
+could type a pack command is refused outright (`ERPLIC005`).
 
 *The gate is a reviewed edit away from removal.* Deleting the target, or adding the pinned version to
 `ErpPermissiveAutoMapperVersions`, disables it. That is a property of every in-repository control and is
@@ -4904,11 +4958,14 @@ boundary and forbids feature work, and none of the three gaps is a code vulnerab
 chosen for the property it does have: it converts the one **irrevocable** step's precondition from "the
 build was green" into "somebody answered the question".
 
-**What closes it, if an owner wants it closed.** Require the release job to pass
-`-p:ErpAutoMapperLicenceDecision=…` from a protected environment rather than from a developer machine, so
-the answer is supplied by whoever holds the release approval; and set the property in
-`WebVella.Erp/WebVella.Erp.csproj` once the decision is ratified, so it lands as a reviewable commit
-rather than as a transient command-line argument. Both are recommendations, and neither is done here.
+**What closes it, if an owner wants it closed.** The second half of the recommendation this entry used to
+carry — that the answer should land as a reviewable commit rather than as a transient command-line argument
+— **is now done**, as review finding `GOV-01` required: the decision record described above is a committed
+line, and the transient form is refused. What remains open is the identity half: require the release job to
+run from a protected environment whose approval is held by whoever may ratify the licence, and require the
+commit that carries the record to be signed, so the approver named in it is corroborated by something the
+repository can verify. Both reach a release pipeline and a signing identity, which sit outside the
+application boundary this remediation is scoped to, so they stay recommendations.
 
 **What this residual is not.** It is not a way past the gate on the ordinary path. Measured across all
 four packable manifests: `dotnet pack` fails with `ERPLIC001` for 4 of 4 while the question is open, with
