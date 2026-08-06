@@ -1,14 +1,13 @@
 site_name: 'blitzy-WebVella-ERP'
 nav:
   - Home: index.md
-  # Security documentation set. Registered here because the navigation is what makes these
-  # pages reachable in the published site - without an entry they build but cannot be found.
+  # MkDocs publishes only nav-listed pages, so these entries are what keep the security set reachable - see security/security-audit-report.md.
   - Security:
-      - Audit Report: security/security-audit-report.md
-      - Remediation Log: security/remediation-log.md
-      - Risk Register: security/risk-register.md
-      - Secure Configuration: security/secure-configuration.md
-      - Credential Migration: security/credential-migration.md
+    - Audit Report: security/security-audit-report.md
+    - Remediation Log: security/remediation-log.md
+    - Risk Register: security/risk-register.md
+    - Secure Configuration: security/secure-configuration.md
+    - Credential Migration: security/credential-migration.md
 plugins:
   - techdocs-core
   - mermaid2
