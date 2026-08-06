@@ -1,6 +1,6 @@
 ﻿=========================================================================
 1. add to web site project 
-<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="6.0.3" />
+<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.1" />
 
 
 =========================================================================
@@ -21,15 +21,54 @@ THREAT: earlier revisions of this note published a literal signing key, and the 
 literal shipped inside Config.json. Anyone who could read this public repository could mint a
 valid bearer token for any user of any deployment that had not replaced it, and the key could
 be neither rotated nor revoked because it was identical everywhere.
-INVARIANT: the Key entry stays EMPTY in every tracked file. Supply at least 32 bytes of
-cryptographically random material per deployment, out of band, and never through this file:
+INVARIANT: the Key entry stays EMPTY in every tracked file. The value is supplied per deployment,
+out of band, and never through this file or any other tracked file.
+
+TWO SPELLINGS OF ONE SETTING - do not mix them up. Settings:Jwt:Key, with single colons, is the
+configuration key path: it is the form used in code (Configuration["Settings:Jwt:Key"], step 3
+below) and the form the dotnet user-secrets CLI takes. Settings__Jwt__Key, with double
+underscores, is the environment-variable name and nothing else - a double underscore is simply
+how an environment variable spells the ':' section separator, so both name the same setting.
+
+RESOLUTION ORDER: Config.json is read first, then environment variables override it, then in
+Development only, user secrets override those. The empty entry above is therefore a placeholder
+that the environment fills in at run time, not a default anyone has to edit in place.
+
+GENERATE the value with a cryptographically secure random generator - never a passphrase, a
+dictionary word, or a literal reused across deployments:
 
 	Settings__Jwt__Key=$(openssl rand -base64 48)
 
-or through user secrets in development. Startup rejects the key this repository once published,
-so copying the value out of the git history will not work. While the value is absent the token
-issue and refresh routes disable themselves rather than sign forgeable tokens; cookie login is
-unaffected. See docs/security/secure-configuration.md for the full list of required settings.
+HS256 signs with HMAC-SHA-256, so RFC 7518 section 3.2 requires a key at least as long as the
+hash it feeds: 256 bits, i.e. 32 bytes. Anything shorter is refused outright. 48 random bytes is
+384 bits, which clears that floor with margin. On Windows, one line of PowerShell does the same:
+[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+
+IN DEVELOPMENT the value may instead go into user secrets, which live outside the repository.
+Run this from the WebVella.Erp.Site project directory - it is the only project in this solution
+that declares a user secrets identifier:
+
+	dotnet user-secrets set "Settings:Jwt:Key" "<value generated as above>"
+
+ROTATION IS MANDATORY, NOT OPTIONAL. The literal this note used to publish is permanently
+compromised for anyone who has ever had access to this repository or its history, and blanking
+the working tree does not undo that. Every deployment that ever ran with the shipped default
+MUST be issued a new key. Startup screens the old published value by digest and refuses it, so
+copying it back out of the git history will not work either. Rotating the key invalidates every
+bearer token already issued, and clients must authenticate again: intended, and acceptable.
+
+NO INSECURE FALLBACK REMAINS. The compiled-in default signing key was deleted, so nothing is
+substituted when the value is missing. Settings:ConnectionString and Settings:EncryptionKey are
+required by every host, and their absence aborts startup with a message naming each one. This
+key is conditional instead, because five of the seven hosts serve no tokens at all: while it is
+absent, too short, or the published default, the token issue and refresh routes disable
+themselves rather than sign forgeable tokens and every presented bearer token is refused, while
+cookie login keeps working. Read either outcome as "supply the secret", not as a defect.
+
+The companion secrets follow the same double-underscore convention: Settings__ConnectionString,
+Settings__EncryptionKey and Settings__EmailSMTPPassword. See README.md, section "Configuration:
+required secrets", for the short list, and docs/security/secure-configuration.md for the
+authoritative per-host list and the rotation procedure.
 
 
 =========================================================================
@@ -44,6 +83,10 @@ in ConfigureServices method change auth to be
 .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
 {
     options.Cookie.HttpOnly = true;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SameSite = SameSiteMode.Lax;
+    options.ExpireTimeSpan = TimeSpan.FromHours(24);
+    options.SlidingExpiration = true;
     options.Cookie.Name = "erp_auth_base";
     options.LoginPath = new PathString("/login");
     options.LogoutPath = new PathString("/logout");
@@ -74,6 +117,21 @@ in ConfigureServices method change auth to be
             return CookieAuthenticationDefaults.AuthenticationScheme;
         };
     });
+
+SECURITY - finding H-15 (High); CWE-614 sensitive cookie without the 'Secure' attribute, CWE-319
+cleartext transmission of sensitive information; OWASP A02:2021 / A05:2021.
+THREAT: this note used to set HttpOnly and stop there. A host built from it let the
+authentication cookie travel over plain HTTP, where any intermediary can read it and replay the
+session, and the cookie never expired. The four lines added above close that, and two of them are
+deliberate choices rather than defaults:
+- Lax rather than Strict: Strict drops the cookie on the redirect back out of /login and breaks
+  the returnUrl round trip. Lax is the framework's own default posture.
+- 24 hours matches the bounded authentication ticket in WebVella.Erp.Web/Services/AuthService.cs
+  (1440 minutes). That ticket used to expire 100 years out (finding H-03), so a stolen cookie
+  stayed valid forever.
+The platform itself now applies all five attributes from one place - the shared cookie helper in
+WebVella.Erp.Web/ErpMvcExtensions.cs - so the seven hosts cannot drift apart. Call that helper
+rather than copying these lines into a new host.
 
  in Configure method add 
  
