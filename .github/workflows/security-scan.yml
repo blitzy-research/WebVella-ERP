@@ -1446,31 +1446,110 @@ jobs:
           # commit. Suppressing the rule, narrowing AnalysisLevelSecurity or
           # lowering a severity instead is forbidden and is separately detected by
           # the configuration assertions below.
+          #
+          # EVERY ENTRY CARRIES ITS OWN ATTRIBUTABLE DISPOSITION - code-review
+          # finding MAJ-01, which found that the list was twenty-one BARE pairs.
+          # A bare pair records that somebody once decided a diagnostic was
+          # acceptable; it does not record WHO decided, on what grounds, or when
+          # the decision stops holding. That is not a formally approved treatment,
+          # it is an unattributed silence, and it is the specific shape MAJ-01
+          # objected to for the five CA5351 residuals - the ones the engagement's
+          # own preservation requirement makes mandatory rather than merely
+          # tolerated.
+          #
+          # The line format is therefore three '|'-delimited fields:
+          #   <RULE> <path> | <RISK-nnn> | <one-line disposition>
+          # The RISK reference is the load-bearing half: it points at the register
+          # entry that carries the full acceptance - the owner, the date, the
+          # grounds and, for every mandatory residual, the EXIT CONDITION that
+          # retires it. The assertion below refuses an entry with a missing or
+          # unresolvable reference, so the justification cannot be dropped while
+          # the pair survives, and the register cannot drift out from under it.
+          #
+          # Only the first field pair is compared against the build log; the
+          # disposition is evidence, not syntax. Both halves are published, so a
+          # reviewer reads the reasoning and not just the tolerance.
           allow_list() {
             cat <<'ALLOW'
-          CA2100 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs
-          CA2100 WebVella.Erp.Plugins.SDK/Services/LogService.cs
-          CA2100 WebVella.Erp/Database/DbConnection.cs
-          CA2100 WebVella.Erp/Database/DbFileRepository.cs
-          CA2100 WebVella.Erp/Database/DbRepository.cs
-          CA2100 WebVella.Erp/Eql/EqlCommand.cs
-          CA2100 WebVella.Erp/Jobs/JobDataService.cs
-          CA2100 WebVella.Erp/Notifications/NotificationContext.cs
-          CA2326 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs
-          CA2326 WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs
-          CA2326 WebVella.Erp/Database/DbEntityRepository.cs
-          CA2326 WebVella.Erp/Database/DbRelationRepository.cs
-          CA2326 WebVella.Erp/Jobs/JobDataService.cs
-          CA2326 WebVella.Erp/Notifications/NotificationContext.cs
-          CA2328 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs
-          CA2328 WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs
-          CA2328 WebVella.Erp/Database/DbEntityRepository.cs
-          CA2328 WebVella.Erp/Database/DbRelationRepository.cs
-          CA5351 WebVella.Erp/Utilities/CryptoUtility.cs
-          CA5351 WebVella.Erp/Utilities/PasswordUtil.cs
-          CA5362 WebVella.Erp/Api/Models/QueryObject.cs
+          CA2100 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs | RISK-052 | Generated DDL for developer-authored schema; identifiers pass DbIdentifier validation and values are parameterised - H-09's remediated surface, which the rule cannot model.
+          CA2100 WebVella.Erp.Plugins.SDK/Services/LogService.cs | RISK-052 | Platform-composed diagnostic SQL over fixed table and column names; no request-derived text reaches the command.
+          CA2100 WebVella.Erp/Database/DbConnection.cs | RISK-052 | The provider seam itself - it receives an already-built command; the construction it is blamed for happens in the callers audited above.
+          CA2100 WebVella.Erp/Database/DbFileRepository.cs | RISK-052 | Fixed table and column names with parameterised values; the caller-supplied filename is a parameter, never command text.
+          CA2100 WebVella.Erp/Database/DbRepository.cs | RISK-052 | The platform's parameterisation core; the only concatenated tokens are DbIdentifier-validated identifiers.
+          CA2100 WebVella.Erp/Eql/EqlCommand.cs | RISK-052 | The query language compiles to parameterised SQL; literals become NpgsqlParameter values, which the rule does not follow through the builder.
+          CA2100 WebVella.Erp/Jobs/JobDataService.cs | RISK-052 | Fixed job-table statements; every value is a parameter.
+          CA2100 WebVella.Erp/Notifications/NotificationContext.cs | RISK-052 | PostgreSQL LISTEN/NOTIFY channel names are platform constants, not input.
+          CA2326 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs | RISK-051 | Non-None TypeNameHandling with ErpSerializationBinder attached; the rule fires on the setting's presence and does not model binders. Removing the setting breaks already-persisted payloads.
+          CA2326 WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs | RISK-051 | As above - binder attached at every site; persisted job arguments carry type discriminators.
+          CA2326 WebVella.Erp/Database/DbEntityRepository.cs | RISK-051 | As above - binder attached; persisted entity definitions carry type discriminators.
+          CA2326 WebVella.Erp/Database/DbRelationRepository.cs | RISK-051 | As above - binder attached; persisted relation definitions carry type discriminators.
+          CA2326 WebVella.Erp/Jobs/JobDataService.cs | RISK-051 | Serialise-only write counterpart of JobProfile; BindToName is deliberately unconstrained because constraining output protects nothing.
+          CA2326 WebVella.Erp/Notifications/NotificationContext.cs | RISK-051 | NOTIFY payload round trip with the binder attached on the read side.
+          CA2328 WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs | RISK-051 | The JsonSerializerSettings-shaped sibling of the CA2326 entry for the same site and the same mitigation.
+          CA2328 WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs | RISK-051 | As above, same site, same attached binder.
+          CA2328 WebVella.Erp/Database/DbEntityRepository.cs | RISK-051 | As above, same site, same attached binder.
+          CA2328 WebVella.Erp/Database/DbRelationRepository.cs | RISK-051 | As above, same site, same attached binder.
+          CA5351 WebVella.Erp/Utilities/CryptoUtility.cs | RISK-171 | MANDATORY residual, formally accepted: MD5 general-purpose digest helpers outside the remediated key handling. Exit condition and approval recorded in RISK-171.
+          CA5351 WebVella.Erp/Utilities/PasswordUtil.cs | RISK-171 | MANDATORY residual, formally accepted: the legacy verify-then-rehash path C-03's migration requires. Deleting it locks out every user whose hash is not yet upgraded. Exit condition in RISK-171.
+          CA5362 WebVella.Erp/Api/Models/QueryObject.cs | RISK-052 | Self-referential query model deserialised from platform-generated content, never from request input.
           ALLOW
           }
+
+          # The comparison form - field one only, whitespace-normalised. The
+          # dispositions are stripped here and ONLY here, so the reasoning stays
+          # attached to the entry everywhere a human reads it while `comm` still
+          # sees the exact 'RULE path' shape the diagnostic parse produces.
+          allow_pairs() {
+            allow_list | sed 's/^[[:space:]]*//' | grep -v '^$' \
+              | sed 's/[[:space:]]*|.*$//' | sed 's/[[:space:]]*$//' | sort -u
+          }
+
+          # THE ALLOW-LIST IS ITSELF ASSERTED - MAJ-01. Three failure modes are
+          # closed: an entry whose disposition was dropped, an entry whose risk
+          # reference does not resolve to a real register entry, and a register
+          # that was edited to remove an entry an allow-list line depends on. Any
+          # of the three would leave a tolerated security diagnostic with no
+          # traceable approval behind it, which is the state MAJ-01 reported.
+          register='docs/security/risk-register.md'
+          if [ ! -f "$register" ]; then
+            echo "::error::Gate 1 - $register is absent, so no allow-list entry's justification can be resolved. Every accepted security diagnostic would be unattributed. Failing closed."
+            exit 1
+          fi
+          allow_status=0
+          while IFS= read -r entry <&3 || [ -n "$entry" ]; do
+            entry=$(printf '%s' "$entry" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -n "$entry" ] || continue
+            pair=$(printf '%s' "$entry" | awk -F'|' '{ print $1 }' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            ref=$(printf '%s' "$entry" | awk -F'|' '{ print $2 }' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            why=$(printf '%s' "$entry" | awk -F'|' '{ for (i = 3; i <= NF; i++) printf "%s%s", $i, (i < NF ? "|" : "") }' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            if [ "$(printf '%s' "$entry" | awk -F'|' '{ print NF }')" -lt 3 ]; then
+              echo "::error::Gate 1 - allow-list entry '${pair}' has fewer than three fields, so it carries no risk reference or no disposition. Restore the '<RULE> <path> | <RISK-nnn> | <disposition>' form; an unattributed tolerance is not an approved treatment."
+              allow_status=1
+              continue
+            fi
+            case "$ref" in
+              RISK-[0-9][0-9][0-9]) ;;
+              *)
+                echo "::error::Gate 1 - allow-list entry '${pair}' names '${ref}' where a RISK-nnn reference is required. Point it at the register entry that carries the approval."
+                allow_status=1
+                continue
+                ;;
+            esac
+            if [ -z "$why" ]; then
+              echo "::error::Gate 1 - allow-list entry '${pair}' has an empty disposition. State why the diagnostic is accepted, on one line, in the entry itself."
+              allow_status=1
+            fi
+            if ! grep -qF "\`${ref}\`" "$register"; then
+              echo "::error::Gate 1 - allow-list entry '${pair}' references ${ref}, which does not appear in ${register}. Either the reference is wrong or the register entry was removed while the tolerance survived."
+              allow_status=1
+            fi
+          done 3<<ALLOWENTRIES
+          $(allow_list | sed 's/^[[:space:]]*//' | grep -v '^$')
+          ALLOWENTRIES
+          if [ "$allow_status" -ne 0 ]; then
+            exit 1
+          fi
+          printf 'Allow-list integrity: %s entr(ies), each carrying a resolvable RISK reference and a written disposition\n' "$(allow_pairs | wc -l | tr -d '[:space:]')"
 
           if [ ! -f analyzer-build.txt ]; then
             echo "::error::Gate 1 cannot run - analyzer-build.txt is absent, so no analyzer evidence exists to enforce. An assertion that cannot run is a failure, never a pass."
@@ -1558,13 +1637,25 @@ jobs:
           # complete with the family armed, each in 0 to 6 seconds and reporting
           # ZERO CA3001-CA3012 diagnostics, with armed and unarmed times within
           # noise of each other (45s against 43s summed). WebVella.Erp.Web alone
-          # does not terminate - killed at a 600-second timeout - because it
-          # compiles 395 Razor views into one compilation and this family's
-          # dataflow analysis is superlinear in compilation size. The exclusion is
-          # therefore conditioned on that one project in Directory.Build.props, and
-          # this step asserts the boundary in BOTH directions for EVERY tracked
-          # project: excluded there, armed everywhere else. Widening it silences a
-          # family this gate claims to cover; losing it stops CI finishing.
+          # does not terminate when the family is armed UNBOUNDED - killed at a
+          # 600-second timeout originally, and re-measured past 2,700 seconds for
+          # code-review finding MAJ-01 - because it compiles 395 Razor views into
+          # one compilation and this family's dataflow analysis is superlinear in
+          # compilation size. The exclusion is therefore conditioned on that one
+          # project in Directory.Build.props, and this step asserts the boundary in
+          # BOTH directions for EVERY tracked project: excluded there, armed
+          # everywhere else. Widening it silences a family this gate claims to
+          # cover; losing it stops CI finishing.
+          #
+          # THE EXCLUSION IS NO LONGER A COVERAGE GAP, AND THAT IS THE POINT OF
+          # MAJ-01. It is now a BUILD-TIME measure only: the step
+          # 'Gate 1 - terminating taint scan of the excluded compilation' arms the
+          # family for that one project under a cost bound, proves the bounded
+          # configuration still reports against deliberate taint flows, treats a
+          # timeout as a hard failure, and retains its result as published
+          # evidence. So this boundary assertion protects CI's ability to finish,
+          # while that step protects the coverage claim - two different jobs that
+          # were previously conflated into one silence.
           #
           # THE BOUNDARY IS READ OUT OF Directory.Build.props RATHER THAN COPIED
           # HERE, so the workflow and the build configuration cannot drift into
@@ -1607,7 +1698,7 @@ jobs:
               for taint in CA3001 CA3002 CA3003 CA3004 CA3005 CA3006 CA3007 CA3008 CA3009 CA3010 CA3011 CA3012; do
                 case ";${nowarn};" in
                   *";${taint};"*) ;;
-                  *) echo "::error::Gate 1 - ${taint} is no longer excluded for ${name}, the one compilation measured unable to finish with the interprocedural taint family armed: killed at a 600-second timeout, 395 Razor views in a single compilation. Restore the conditioned exclusion in Directory.Build.props, or tune the family's cost properties and re-measure before removing it."; boundary_status=1 ;;
+                  *) echo "::error::Gate 1 - ${taint} is no longer excluded for ${name}, the one compilation measured unable to finish with the interprocedural taint family armed UNBOUNDED: killed at 600 seconds originally and re-measured past 2,700 seconds for MAJ-01, because 395 Razor views compile into a single compilation and this family's dataflow analysis is superlinear in compilation size. Removing the exclusion makes every ordinary build non-terminating; it is not what supplies the coverage. The scan is supplied by the step 'Gate 1 - terminating taint scan of the excluded compilation', which arms the family for this project under a cost bound. Restore the conditioned exclusion in Directory.Build.props."; boundary_status=1 ;;
                 esac
               done
               printf 'ARMED=no  %-34s (measured exception) NoWarn = %s\n' "$name" "$nowarn"
@@ -1762,13 +1853,25 @@ jobs:
 
           awk 'NR==FNR { r[$1]; next } ($1 in r)' \
             security-rule-ids.txt all-ca-diagnostics.txt > security-diagnostics.txt
-          allow_list | sed 's/^[[:space:]]*//' | grep -v '^$' | sort -u > security-allowlist.txt
+          # security-allowlist.txt holds the COMPARISON form, because two `comm`
+          # invocations below require it to be exactly the shape the diagnostic
+          # parse produces. The justified form is published alongside it as
+          # security-allowlist-justified.txt (MAJ-01), so the evidence set carries
+          # the reasoning and not only the tolerance - the two files are asserted
+          # to have the same line count, which is what stops a disposition being
+          # dropped from one and not the other.
+          allow_pairs > security-allowlist.txt
+          allow_list | sed 's/^[[:space:]]*//' | grep -v '^$' | sort -u > security-allowlist-justified.txt
+          if [ "$(wc -l < security-allowlist.txt)" -ne "$(wc -l < security-allowlist-justified.txt)" ]; then
+            echo "::error::Gate 1 - the comparison allow-list and the justified allow-list have different line counts, so at least one entry lost or gained a disposition. Two derivations of one list must agree."
+            exit 1
+          fi
           comm -23 security-diagnostics.txt security-allowlist.txt > security-unreviewed.txt
 
           printf '\n--- Security-category diagnostics that fired (%s) ---\n' "$(wc -l < security-diagnostics.txt)"
           cat security-diagnostics.txt
-          printf '\n--- accepted residuals (%s) ---\n' "$(wc -l < security-allowlist.txt)"
-          cat security-allowlist.txt
+          printf '\n--- accepted residuals, with their recorded dispositions (%s) ---\n' "$(wc -l < security-allowlist-justified.txt)"
+          cat security-allowlist-justified.txt
 
           # A residual that has stopped firing is reported, never fatal: it may
           # simply mean the code was fixed. It is noted so the allow-list can be
@@ -1783,7 +1886,345 @@ jobs:
             sed 's/^/  UNREVIEWED /' security-unreviewed.txt
             exit 1
           fi
-          echo "Gate 1 passed - the Security category is armed at latest-all with the taint exclusion narrowed to its one measured exception, no repository-supplied analyzer configuration exists, the SDK's Security 'all' configuration is provably loaded into the compilation, and every Security-category diagnostic that fired across all 19 projects is an accepted, documented residual."
+          echo "Gate 1 passed - the Security category is armed at latest-all with the taint exclusion narrowed to its one measured exception, no repository-supplied analyzer configuration exists, the SDK's Security 'all' configuration is provably loaded into the compilation, and every Security-category diagnostic that fired across all 19 projects is an accepted, documented residual carrying a resolvable risk reference and a written disposition."
+
+      # Gate 1, THE TERMINATING TAINT SCAN OF THE EXCLUDED COMPILATION - code
+      # review finding MAJ-01. CWE-79 (cross-site scripting), CWE-89 (SQL
+      # injection) and CWE-78 (command injection), OWASP A03:2021.
+      #
+      # WHAT WAS WRONG. The step above arms CA3001-CA3012 for eighteen of the
+      # nineteen projects and excludes one - WebVella.Erp.Web - on a measured
+      # termination failure. That project is the controller and Razor view
+      # surface, so it is exactly where an interprocedural taint flow from a
+      # request parameter to an HTML, SQL or process sink would live. Gate 1
+      # therefore could not prove the highest-risk compilation clean, and a
+      # reader of the audit report could not tell the difference between "no
+      # taint defect" and "no taint analysis". MAJ-01 required a TERMINATING scan
+      # for it, with the result retained as evidence.
+      #
+      # WHY IT IS A SEPARATE STEP AND A BOUNDED SCAN. Re-measured for MAJ-01,
+      # armed with no cost bound, that compilation ran past 2,700 SECONDS without
+      # completing, against 0-6 seconds per project for the other eighteen. An
+      # unbounded scan is not slow, it is non-terminating, so it cannot be part
+      # of the ordinary build and the exclusion above stays as measured. What
+      # makes a scan possible is the analyzer cost options - which are readable
+      # only from an analyzer configuration file - so this step writes ONE such
+      # file OUTSIDE the repository and hands it to the build through
+      # ErpTaintAnalysisOptions, the inert hook Directory.Build.props declares
+      # for exactly this purpose.
+      #
+      # THREE PROPERTIES MAKE THE RESULT MEAN SOMETHING, and each is asserted
+      # rather than assumed:
+      #   1. THE FILE IS OUT OF TREE. Gate 1 above fails the job if any
+      #      *.globalconfig exists in the repository, tracked or untracked,
+      #      because such a file could change any rule's severity for all 19
+      #      projects at once. Writing to the runner temp directory keeps that
+      #      prohibition intact.
+      #   2. THE FILE CARRIES NO SEVERITY. Asserted by reading it back: a
+      #      dotnet_diagnostic.*.severity entry would turn this cost hook into
+      #      the per-rule escalation that stays outside this gate's scope.
+      #   3. TERMINATION IS THE ASSERTION, NOT A HOPE. A timeout is a hard
+      #      failure. A scan that was killed reports nothing, and reporting
+      #      nothing must never be readable as reporting clean - which is the
+      #      precise defect MAJ-01 identified.
+      #
+      # DISCLOSED LIMIT, STATED HERE RATHER THAN IN A DOCUMENT NOBODY DIFFS. The
+      # cost bound narrows the analysis depth for this ONE project: flows longer
+      # than the configured interprocedural chain are not followed. That is a
+      # bounded scan, not an exhaustive one, and it is strictly more coverage
+      # than the zero this project had. The residual is carried as RISK-051.
+      - name: Gate 1 - terminating taint scan of the excluded compilation
+        run: |
+          set -u
+          project="$(dotnet msbuild Directory.Build.props -nologo \
+            -getProperty:ErpTaintAnalysisExcludedProject 2>/dev/null | tr -d '[:space:]')"
+          if [ -z "$project" ]; then
+            echo "::error::Gate 1 taint scan - ErpTaintAnalysisExcludedProject could not be read from Directory.Build.props, so this step does not know which compilation to scan. The boundary has exactly one home by design; restore it rather than hard-coding a name here."
+            exit 1
+          fi
+          csproj="$(git ls-files "*/${project}.csproj" | head -1)"
+          if [ -z "$csproj" ] || [ ! -f "$csproj" ]; then
+            echo "::error::Gate 1 taint scan - no tracked project file was found for ${project}, so the scan would run on nothing and pass vacuously."
+            exit 1
+          fi
+
+          # The cost bound. ONE interprocedural hop is retained rather than none,
+          # so a request value reaching a sink through a single helper is still
+          # followed; the default of three is what does not terminate here.
+          opts_dir="$(mktemp -d)"
+          opts="${opts_dir}/erp-taint-cost.globalconfig"
+          cleanup() { rm -rf "$opts_dir"; }
+          trap cleanup EXIT
+          {
+            printf 'is_global = true\n'
+            printf 'dotnet_code_quality.max_interprocedural_method_call_chain = 1\n'
+            printf 'dotnet_code_quality.max_interprocedural_lambda_or_local_function_call_chain = 1\n'
+          } > "$opts"
+          case "$opts" in
+            "${PWD}"/*)
+              echo "::error::Gate 1 taint scan - the cost configuration was written INSIDE the repository at ${opts}. Gate 1 forbids a *.globalconfig in the tree because it is the one mechanism that can change a rule's severity everywhere at once. Write it to the runner temp directory."
+              exit 1
+              ;;
+          esac
+          if grep -qiE 'dotnet_diagnostic\.[A-Za-z0-9]+\.severity' "$opts"; then
+            echo "::error::Gate 1 taint scan - the cost configuration carries a per-rule severity entry, which would make this cost hook a back door to the per-rule escalation that is outside this gate's scope. Remove it; this file may carry dotnet_code_quality.* options only."
+            exit 1
+          fi
+          printf 'Cost configuration (out of tree, no severities): %s\n' "$(tr '\n' ' ' < "$opts")"
+
+          # THE CAPABILITY SELF-TEST, AND IT IS THE LOAD-BEARING PART OF THIS STEP.
+          # A bounded analysis that reports nothing is indistinguishable from a
+          # disabled one, and this step's whole purpose is to stop a zero being read
+          # as clean when nothing looked. So before scanning the real project, the
+          # SAME cost bound is applied to a probe carrying two deliberate taint
+          # flows - a request parameter into a file path and a query value into a
+          # command text - and both rules MUST report. Measured on this toolchain
+          # against this exact source and this exact bound: CA3003 at the path flow
+          # and CA3001 at the command-text flow, in 1.6 s. If a future toolchain or
+          # a tightened bound silences them, this step fails HERE rather than
+          # publishing a meaningless zero for the real project.
+          probe_dir='.gate-taint-control'
+          probe_cleanup() { rm -rf "$probe_dir" "$opts_dir"; }
+          trap probe_cleanup EXIT
+          rm -rf "$probe_dir"
+          mkdir -p "$probe_dir"
+          cat > "$probe_dir/probe.csproj" <<'PROBEPROJ'
+          <Project Sdk="Microsoft.NET.Sdk.Web">
+            <PropertyGroup>
+              <TargetFramework>net10.0</TargetFramework>
+              <Nullable>disable</Nullable>
+              <ImplicitUsings>disable</ImplicitUsings>
+              <GenerateDocumentationFile>false</GenerateDocumentationFile>
+            </PropertyGroup>
+          </Project>
+          PROBEPROJ
+          cat > "$probe_dir/Probe.cs" <<'PROBESRC'
+          using System.Data.Common;
+          using Microsoft.AspNetCore.Mvc;
+
+          // Two DELIBERATE taint flows. Both must be reported under the cost bound
+          // above; silence here means the family is not analysing.
+          public class ProbeController : Controller
+          {
+            [HttpGet]
+            public IActionResult TaintedPath(string name)
+            {
+              return Content(System.IO.File.ReadAllText("/tmp/" + name));
+            }
+            [HttpGet]
+            public IActionResult TaintedSql(string name, DbCommand command)
+            {
+              command.CommandText = "SELECT * FROM probe WHERE n = " + Request.Query["q"];
+              command.ExecuteNonQuery();
+              return Content(name);
+            }
+          }
+          PROBESRC
+          cat > "$probe_dir/Program.cs" <<'PROBEMAIN'
+          public static class ProbeProgram { public static void Main() { } }
+          PROBEMAIN
+          # `|| true`: no CA rule is promoted to an error, so this build is expected
+          # to succeed - but the assertion reads the LOG rather than the exit code so
+          # a future severity change cannot turn a working control into a step that
+          # aborts before asserting.
+          dotnet build "$probe_dir/probe.csproj" --no-incremental -m:1 \
+            -p:ErpSecurityTaintAnalysis=all \
+            -p:ErpTaintAnalysisOptions="$opts" > taint-control.txt 2>&1 || true
+          if ! grep -qE 'Probe\.cs' taint-control.txt; then
+            echo "::error::Gate 1 taint scan - the capability probe did not compile, so neither its silence nor its noise means anything. Fix the probe before trusting any scan result below."
+            tail -40 taint-control.txt | sed 's/^/  /'
+            exit 1
+          fi
+          control_status=0
+          for rule in CA3001 CA3003; do
+            if grep -qE "Probe\.cs\([0-9]+,[0-9]+\): (warning|error) ${rule}" taint-control.txt; then
+              printf 'PASS  %s reported against the deliberate taint flow UNDER THE COST BOUND\n' "$rule"
+            else
+              echo "::error::Gate 1 taint scan - ${rule} was NOT reported against a probe carrying a deliberate taint flow while the cost bound was applied. The bound has narrowed the analysis to the point where it detects nothing, so a zero from the real scan would be the silence of a disabled analysis. Loosen the bound and re-measure the termination time; do not accept the zero."
+              control_status=1
+            fi
+          done
+          if [ "$control_status" -ne 0 ]; then
+            exit 1
+          fi
+          rm -rf "$probe_dir"
+
+          # 1800 s is deliberately far above the observed bounded cost and far
+          # below the unbounded >2,700 s: it is a regression detector, not a
+          # target. If a future toolchain makes the bounded scan slower than
+          # this, that is a finding, not a reason to raise the number quietly.
+          bound=1800
+          started="$(date -u +%s)"
+          timeout "$bound" dotnet build "$csproj" -c Debug -t:Rebuild -m:1 \
+            -p:ErpSecurityTaintAnalysis=all \
+            -p:ErpTaintAnalysisOptions="$opts" > taint-scan-raw.txt 2>&1
+          scan_rc=$?
+          elapsed="$(( $(date -u +%s) - started ))"
+
+          {
+            printf 'taint scan of the excluded compilation\n'
+            printf 'project      : %s\n' "$project"
+            printf 'csproj       : %s\n' "$csproj"
+            printf 'family       : CA3001-CA3012, armed by ErpSecurityTaintAnalysis=all\n'
+            printf 'cost bound   : max_interprocedural_method_call_chain=1, max_interprocedural_lambda_or_local_function_call_chain=1\n'
+            printf 'time bound   : %ss\n' "$bound"
+            printf 'elapsed      : %ss\n' "$elapsed"
+            printf 'build exit   : %s\n' "$scan_rc"
+            printf 'commit       : %s\n' "${GITHUB_SHA:-$(git rev-parse HEAD)}"
+          } > taint-scan-web.txt
+
+          if [ "$scan_rc" -eq 124 ]; then
+            echo "::error::Gate 1 taint scan - the scan of ${project} was KILLED at the ${bound}s bound after ${elapsed}s, so it produced no diagnostics. An analysis that did not finish proves nothing, and its silence must never be read as a clean result. Tighten the cost bound in this step and re-measure, or record a wider bound deliberately together with the measurement."
+            printf 'result       : TIMED OUT - no diagnostics, nothing proven\n' >> taint-scan-web.txt
+            exit 1
+          fi
+          if [ "$scan_rc" -ne 0 ]; then
+            echo "::error::Gate 1 taint scan - the scan build of ${project} failed with exit ${scan_rc}. A compilation that did not succeed emits an incomplete diagnostic set, so this step cannot report on it."
+            printf 'result       : BUILD FAILED - diagnostic set incomplete\n' >> taint-scan-web.txt
+            tail -40 taint-scan-raw.txt | sed 's/^/  /'
+            exit 1
+          fi
+
+          # THE ANALYSIS MUST BE PROVEN TO HAVE RUN, not merely to have finished.
+          # A build that skipped CoreCompile - up-to-date outputs, a cached
+          # result - would report zero diagnostics while analysing nothing, which
+          # is the same fail-open shape as a timeout read as clean. -t:Rebuild
+          # forces the compile; this asserts the compile actually happened.
+          if ! grep -qE '(^|[[:space:]])CoreCompile:' taint-scan-raw.txt \
+             && ! grep -qE "${project}(\.dll)? ->" taint-scan-raw.txt; then
+            echo "::error::Gate 1 taint scan - the log shows no evidence that ${project} was actually compiled, so a zero diagnostic count would be the silence of a skipped compilation. Failing closed."
+            exit 1
+          fi
+
+          # The family's diagnostics, reduced to (rule, file) pairs with the
+          # MSBuild node prefix stripped, exactly as the step above does - the
+          # two parses must agree or one of them is measuring a different thing.
+          sed -nE 's#^([^(]*)\(([0-9]+),[0-9]+\)[[:space:]]*: (warning|error) (CA30(0[1-9]|1[0-2])):.*#\4 \1#p' \
+            taint-scan-raw.txt \
+            | sed "s#${PWD}/##" \
+            | sed -E 's#^(CA[0-9]+)[[:space:]]+([0-9]+>)?[[:space:]]*#\1 #' \
+            | sort -u > taint-pairs.txt
+
+          # THE REVIEWED TAINT RESIDUAL SET. Empty on this tree, and it is a
+          # ratchet for the same reason the Security allow-list is: a pair added
+          # here is a review act needing a RISK reference and a disposition.
+          taint_allow_list() {
+            cat <<'TAINT'
+          TAINT
+          }
+          taint_allow_list | sed 's/^[[:space:]]*//' | grep -v '^$' | sort -u > taint-allowlist.txt
+          comm -23 taint-pairs.txt taint-allowlist.txt > taint-unreviewed.txt
+
+          {
+            printf 'diagnostics  : %s CA3001-CA3012 (rule, file) pair(s)\n' "$(wc -l < taint-pairs.txt | tr -d '[:space:]')"
+            printf 'reviewed     : %s\n' "$(wc -l < taint-allowlist.txt | tr -d '[:space:]')"
+            printf 'unreviewed   : %s\n' "$(wc -l < taint-unreviewed.txt | tr -d '[:space:]')"
+            if [ -s taint-pairs.txt ]; then
+              printf -- '--- pairs ---\n'
+              cat taint-pairs.txt
+            fi
+          } >> taint-scan-web.txt
+
+          if [ -s taint-unreviewed.txt ]; then
+            printf 'result       : FAILED - unreviewed taint diagnostic(s)\n' >> taint-scan-web.txt
+            echo "::error::Gate 1 taint scan FAILED - ${project} carries an interprocedural taint diagnostic that has not been reviewed and accepted. Fix the flow, or add a (rule, file) entry to taint_allow_list in this step with a RISK reference and a disposition. Do not suppress the rule and do not widen the exclusion."
+            sed 's/^/  UNREVIEWED /' taint-unreviewed.txt
+            exit 1
+          fi
+          printf 'result       : PASSED - terminating scan, no unreviewed taint diagnostic\n' >> taint-scan-web.txt
+          # The raw log carries absolute runner paths for the same reason the
+          # analyzer log does, so it is written locally and never published; the
+          # derived record above is what leaves the runner.
+          rm -f taint-scan-raw.txt
+          cat taint-scan-web.txt
+          printf 'Gate 1 taint scan passed - %s was scanned to completion in %ss with CA3001-CA3012 armed under a cost bound, so its zero is the absence of a detected flow rather than the absence of analysis.\n' "$project" "$elapsed"
+
+      # COMPLIANCE GATE, THE MANDATED HEADER NAMES - code-review finding MAJ-03.
+      # CWE-693 (protection mechanism failure), CWE-1021 (improper restriction of
+      # rendered UI layers), OWASP A05:2021.
+      #
+      # WHAT WAS WRONG, AND IT WAS A VERIFICATION DEFECT RATHER THAN A CODE ONE.
+      # The engagement's fix implementation standards specify seven response
+      # headers WITH THEIR EXACT NAMES AND VALUES. Six are emitted under their
+      # mandated names. The seventh is not: SecurityHeadersOptions ships
+      # ContentSecurityPolicyReportOnly = true, so what a browser receives is
+      # Content-Security-Policy-Report-Only, and a report-only policy is advisory
+      # by specification - the browser reports violations and enforces nothing.
+      # The Gate 5 scenario M06 had been REWRITTEN to expect that name, which is
+      # how an unmet acceptance criterion came to be recorded as met. MAJ-03
+      # refused exactly that: "Do not weaken the test to accept a different
+      # header name."
+      #
+      # WHY THE CODE IS NOT CHANGED HERE, AND WHY THAT IS NOT AN EVASION. AAP
+      # 0.3.2 declines "Enforcing the Content-Security-Policy on first deployment"
+      # BY NAME, on the ground that it would break the components whose stated
+      # purpose is to emit author-supplied inline script - measured in RISK-170 as
+      # 59 inline <script> elements and 27 inline style attributes across five
+      # by-design emitters. The AAP is the frozen source of truth and forbids the
+      # code change; the code therefore stays as authorised. What MAJ-03 makes
+      # impossible is the OTHER half - pretending the requirement is satisfied.
+      #
+      # SO THIS STEP REPORTS THE REQUIREMENT AS UNMET, MECHANICALLY. It reads the
+      # shipped default out of the source rather than out of a document, writes
+      # its verdict to header-compliance.txt, and Gate 5 carries it as row A17.
+      # The consequence is deliberate and is the point: RELEASE-READY prints `no`
+      # and the release gate exits non-zero while the enforcing name is absent, so
+      # a green ordinary run cannot be read as compliance with the exact-header
+      # standard. Advancing the rollout needs no code change - one configuration
+      # key, SecurityHeaders__ContentSecurityPolicyReportOnly=false - which is why
+      # this is an owner decision rather than an engineering follow-up. See
+      # RISK-022 for the promotion governance and RISK-170 for the backlog.
+      #
+      # THE STEP ITSELF EXITS 0. It is a REPORTER, not the enforcer: the verdict
+      # belongs to Gate 5 and the release gate, which is where every other
+      # release-blocking condition already lives. A step that exited non-zero here
+      # would stop the remaining evidence-gathering steps from running and would
+      # therefore reduce, not increase, what the run proves.
+      - name: Compliance gate - the mandated header set must be emitted under its mandated names
+        if: always()
+        run: |
+          set -u
+          mw='WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs'
+          : > header-compliance.txt
+          record() { printf '%s\n' "$1" | tee -a header-compliance.txt; }
+          if [ ! -f "$mw" ]; then
+            record "FAIL  ${mw} is absent, so no header can be asserted at all"
+            exit 0
+          fi
+          # The six that must be emitted under their mandated names, asserted at
+          # source. The runtime observation is M06's job; this is the static half,
+          # and it is what makes the verdict reproducible without a running host.
+          missing=''
+          for header in 'Strict-Transport-Security' 'X-Content-Type-Options' 'X-Frame-Options' \
+                        'X-XSS-Protection' 'Referrer-Policy' 'Permissions-Policy'; do
+            if grep -qF "\"${header}\"" "$mw"; then
+              record "PASS  ${header} is emitted under its mandated name"
+            else
+              record "FAIL  ${header} is NOT emitted under its mandated name"
+              missing="${missing} ${header}"
+            fi
+          done
+          # The seventh. The shipped DEFAULT is what a deployment receives unless an
+          # operator overrides it, so the default is what compliance is measured
+          # against - not the fact that the enforcing name appears somewhere in the
+          # file, which it does, as the branch that is not taken.
+          default_report_only=$(sed -nE 's/.*ContentSecurityPolicyReportOnly[^=]*=[[:space:]]*(true|false).*/\1/p' "$mw" | tail -1)
+          if [ -z "$default_report_only" ]; then
+            record "FAIL  the shipped default of ContentSecurityPolicyReportOnly could not be read from ${mw}, so the delivery mode of the seventh header is unknown and cannot be reported as compliant"
+            missing="${missing} Content-Security-Policy"
+          elif [ "$default_report_only" = 'false' ]; then
+            record "PASS  Content-Security-Policy is emitted under its mandated name - the report-only default is false"
+          else
+            record "UNMET Content-Security-Policy is NOT emitted under its mandated name. The shipped default of SecurityHeadersOptions.ContentSecurityPolicyReportOnly is true, so a deployment receives Content-Security-Policy-Report-Only, which enforces nothing. The mandated VALUE is emitted byte for byte and is a public const no configuration source can weaken, so the gap is delivery mode alone - but an advisory header does not satisfy a requirement for an enforced one. AAP 0.3.2 declines enforcement by name because five by-design components emit inline script (RISK-170: 59 inline script elements, 27 inline style attributes), so this is an OWNER DECISION, not an engineering follow-up: set SecurityHeaders__ContentSecurityPolicyReportOnly=false once that backlog is cleared, or record an authoritative requirement change. Raised by code-review finding MAJ-03; governance in RISK-022."
+            missing="${missing} Content-Security-Policy"
+          fi
+          if [ -n "$missing" ]; then
+            record "RESULT UNMET - the exact-header standard requires all SEVEN mandated names. Not emitted under their mandated names:${missing}"
+            echo "::warning::Compliance gate - the engagement's exact-header standard is NOT satisfied:${missing}. This is reported rather than hidden: Gate 5 row A17 fails, RELEASE-READY prints 'no', and the release gate exits non-zero. See header-compliance.txt and RISK-022."
+          else
+            record "PASS  all seven mandated response headers are emitted under their mandated names"
+          fi
+          exit 0
 
       # Gate 1, RUNTIME-COMPILATION CONTROL FLOW - review finding GATE-03,
       # CWE-94 (code injection) with CWE-862/CWE-863 (missing and incorrect
@@ -3534,7 +3975,17 @@ jobs:
           # reach: the authorization gate on the page-component render route,
           # and the restart, multi-instance, capacity and transport-downgrade
           # boundaries of session revocation, login lockout and mail transport.
-          expected_rows=48
+          # 50 = 18 evidence-derived A-rows + 32 manual M-rows. It was 48 = 16 + 32
+          # until this revision, which added two A-rows for two controls that had
+          # none: A17, the mandated-header-name compliance verdict raised by
+          # code-review finding MAJ-03, and A18, the terminating taint scan of the
+          # excluded compilation raised by MAJ-01. The number is declared rather
+          # than counted so that adding or dropping a scenario without updating it
+          # is a failure: a matrix that silently shrinks is exactly how a checklist
+          # item disappears. It was 33 before A15, A16 and M20-M25 took it to 41,
+          # then 45, then 48 when M26-M32 covered the open Critical and High
+          # findings the matrix could not previously reach.
+          expected_rows=50
           # Rows: ID~KIND~ARG~SCENARIO. The ID is a stable identifier that an
           # attestation refers to, not a position, so a row added later is
           # appended rather than renumbered.
@@ -3567,6 +4018,8 @@ jobs:
             A11~pass_lines~positive-control.txt@^PASS CA[0-9]+ reported against the deliberate defect in the probe@9~Positive control - all nine ratcheted security families provably report defects in the probe rather than merely being listed, anchored to the probe's own file so the tree's diagnostics cannot satisfy it
             A15~pass_lines~positive-control.txt@^PASS CA300[13] reported against the deliberate taint flow@2~Positive control - the interprocedural taint family provably reports both deliberate flows, so the zero CA3001-CA3012 measured across the other eighteen projects is an absence of defects rather than an absence of analysis, proved against deliberate taint flows that fire CA3001 and CA3003 when the exclusion is removed
             A16~pass_lines~secret-sweep.txt@^  SELFTEST ok    the history scanner reaches@1~The history-wide credential scan proved itself able to find something before reporting any zero
+            A17~pass_lines~header-compliance.txt@^PASS  all seven mandated response headers are emitted under their mandated names@1~The engagement's exact-header standard: all SEVEN mandated names, not six plus an advisory substitute. RED BY DESIGN while Content-Security-Policy ships under the report-only name - code-review finding MAJ-03 refused a verification that accepts a different header name, and AAP 0.3.2 forbids enforcing the policy before the inline-script backlog is cleared, so this row records an UNMET acceptance criterion pending an owner decision rather than letting a green run read as compliance
+            A18~pass_lines~taint-scan-web.txt@^result *: PASSED@1~The interprocedural taint family CA3001-CA3012 was run to completion against the one compilation the ordinary build excludes, under a cost bound whose reporting capability is proved against deliberate taint flows in the same step, so taint coverage is 19 of 19 compilations rather than 18 (MAJ-01)
             A12~pass_lines~negative-control.txt@NU1903@1~Negative control - the dependency audit provably fails on a known High advisory
             A13~pass_lines~analyzer-build-summary.txt@^ *0 Error\(s\)@1~All nineteen projects build with analyzers enabled and zero errors
             A14~pass_lines~secret-sweep.txt@^PASS  .*web\.config - ASPNETCORE_ENVIRONMENT is Production@1~The IIS environment marker is Production, so the developer exception page cannot engage (H-12) - statically provable, so not deferred for want of IIS
@@ -3575,7 +4028,7 @@ jobs:
             M03~manual~-~The previously seeded default administrator credential no longer authenticates on a fresh installation, and is invalidated on an upgraded one (C-01)
             M04~manual~-~A guest-role account cannot create users or roles (C-05)
             M05~manual~-~No API response and no query projection returns a password hash, for any role (C-02)
-            M06~manual~-~All seven mandated response headers are present on a dynamically generated response AND on a static file response (M-01, H-15)
+            M06~manual~-~Six of the seven mandated response headers are emitted under their mandated NAMES with their mandated values on a dynamic response AND a static file response, and the seventh - Content-Security-Policy - is observed and RECORDED rather than accepted: this row does not certify the exact-header standard, which the compliance gate reports UNMET while the policy ships report-only (M-01, H-15, MAJ-03)
             M07~manual~-~A cross-origin request from a non-listed origin is refused at the two previously permissive hosts, and preflight still succeeds for listed origins with HTTPS redirection enabled (H-14)
             M08~manual~-~HSTS and HTTPS redirection are active outside Development and a plaintext request redirects (H-15)
             M09~manual~-~The framework rate limiter rejects a burst beyond the configured fixed window (H-16)
@@ -3611,7 +4064,7 @@ jobs:
             M03~Provision a fresh database and attempt the documented historical default credential; it must be refused. Then upgrade a database whose schema version is 3 and attempt it again; the version-4 migration must have invalidated it.
             M04~Sign in as a guest-role account and POST a user record and a role record through the API; both must be refused.
             M05~CORRECTED - the previous wording ("no response may contain the password field") would have FAILED the intended remediation: C-02 redacts the VALUE to a sentinel and may still emit the key, so a correct build fails a check written against the key. Assert the value instead. (1) As administrator, then as a regular-role user, then as a guest-role user, GET a user record and run a query projection over the user entity. (2) For every response assert that no field value matches a stored-hash shape - neither the 32-character lowercase hexadecimal legacy form nor the PBKDF2 form - using a regular expression over the whole body, not a field-name check. (3) Where the password field IS present, assert its value is exactly the redaction sentinel and nothing else. (4) Assert the sentinel is byte-identical across all three roles, so the value cannot be used to infer the caller's privilege. Record which of the three roles saw the key at all.
-            M06~CORRECTED - a literal comparison against the seven mandated NAMES would FAIL a correct build on two headers that are deliberately delivered differently, and both differences are documented staged decisions rather than defects. (1) Publish a host, run it over HTTPS in the Production posture, then request a dynamic page AND a static asset. (2) For five of the seven - X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy and Permissions-Policy - assert the mandated name and the mandated value verbatim on BOTH responses. (3) For the Content-Security-Policy assert the mandated VALUE verbatim, but expect it under the Content-Security-Policy-Report-Only name while the staged rollout is in force: the shipping default of the report-only switch is true, and enforcing it immediately would suppress the by-design inline-script components M16 covers. Assert exactly one of the two names is present, never both, and record which one you observed. (4) For Strict-Transport-Security assert it is present on the Production-posture responses and ABSENT in Development, which M08 asserts from the other direction. (5) Assert the header set is identical on the static asset and the dynamic page - ordering the middleware after static file serving is the regression this step exists to catch.
+            M06~CORRECTED TWICE. The first correction relaxed this row so a report-only policy header would satisfy it; code-review finding MAJ-03 rejected that, because a verification that accepts a DIFFERENT header name from the mandated one lets an unmet acceptance criterion be recorded as met. This row therefore no longer certifies the exact-header standard at all - it OBSERVES delivery, and the separate step 'Compliance gate - the mandated header set must be emitted under its mandated names' is what reports the standard's status. (1) Publish a host, run it over HTTPS in the Production posture, then request a dynamic page AND a static asset. (2) For five of the seven - X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy and Permissions-Policy - assert the mandated NAME and the mandated VALUE verbatim on BOTH responses. (3) For Strict-Transport-Security assert the mandated name and value are present on the Production-posture responses and ABSENT in Development, which M08 asserts from the other direction. That is six of the seven names, and all six must pass for this row to pass. (4) For the Content-Security-Policy: assert the mandated VALUE verbatim, assert that exactly one of Content-Security-Policy and Content-Security-Policy-Report-Only is present and never both, and RECORD WHICH NAME YOU OBSERVED in the attestation note. Do NOT treat either observation as a pass or a failure of the mandated header set - that verdict belongs to the compliance gate, which fails while the enforcing name is absent. If you observe Content-Security-Policy-Report-Only, the mandated standard is NOT satisfied and your note must say so; the value being byte-correct does not make an advisory header an enforcing one. (5) Assert the header set is identical on the static asset and the dynamic page - ordering the middleware after static file serving is the regression this step exists to catch.
             M07~With an allow-list configured, issue a cross-origin request from a listed origin (must succeed, including the OPTIONS preflight with redirection on) and from a non-listed origin (must be refused) against Site and Site.Project.
             M08~Request the host over plaintext HTTP and assert a redirect to HTTPS, then assert Strict-Transport-Security is present on the HTTPS response and absent in Development.
             M09~Issue a burst of requests exceeding the configured fixed window and assert the excess is rejected rather than served.
@@ -4138,7 +4591,7 @@ jobs:
       #
       # TWO SEPARATE DEFECTS, BOTH FIXED HERE AND IN THE UPLOAD BELOW.
       #
-      # 1. THE EVIDENCE WAS NOT SELF-DESCRIBING. Twenty files of build and scan
+      # 1. THE EVIDENCE WAS NOT SELF-DESCRIBING. The files of build and scan
       #    output carried nothing that tied them to a commit, a run or a moment. An
       #    artifact downloaded a week later could not be attributed without trusting
       #    the folder it came from, which is exactly the "stale record vouching for
@@ -4179,7 +4632,10 @@ jobs:
           all-ca-diagnostics.txt
           security-diagnostics.txt
           security-allowlist.txt
+          security-allowlist-justified.txt
           security-unreviewed.txt
+          taint-scan-web.txt
+          header-compliance.txt
           positive-control.txt
           sln-members.txt
           tracked-projects.txt
@@ -4234,7 +4690,12 @@ jobs:
           $evidence_files
           EVIDENCE
           cat evidence-manifest.txt
-          echo "Evidence complete - 20 files present, each digested and bound to commit ${GITHUB_SHA:-<unknown>}."
+          # The count is DERIVED, never restated. An earlier revision hard-coded
+          # "20 files" and the list grew to 23 while the sentence did not, which is
+          # the same drift MAJ-06 and MAJ-07 report across the documentation set.
+          # A figure that is computed cannot go stale.
+          printf 'Evidence complete - %s file(s) present, each digested and bound to commit %s.\n' \
+            "$(grep -cE '^[0-9a-f]{64} ' evidence-manifest.txt)" "${GITHUB_SHA:-<unknown>}"
 
       - name: Publish the scan evidence
         if: always()
@@ -4277,7 +4738,10 @@ jobs:
             all-ca-diagnostics.txt
             security-diagnostics.txt
             security-allowlist.txt
+            security-allowlist-justified.txt
             security-unreviewed.txt
+            taint-scan-web.txt
+            header-compliance.txt
             positive-control.txt
             sln-members.txt
             tracked-projects.txt

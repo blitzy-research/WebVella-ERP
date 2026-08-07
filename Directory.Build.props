@@ -322,11 +322,34 @@
 	     because the probe is not the excluded project it now asserts those two
 	     rules MUST FIRE rather than merely observing that they stay quiet.
 
-	     FOR THE ONE PROJECT STILL EXCLUDED, the weaknesses this family would
-	     have flagged are covered by manual review: every finding from C-01
-	     through C-05 and H-01 through H-20 carries a file-and-line locator in
-	     docs/security/security-audit-report.md, and the residual coverage gap is
-	     carried as an accepted risk in docs/security/risk-register.md.
+	     FOR THE ONE PROJECT STILL EXCLUDED, THE FAMILY NOW RUNS - separately,
+	     bounded, and to completion. Code-review finding MAJ-01 rejected the
+	     position this comment used to end on, which was that manual review
+	     covered the gap: an unscanned compilation and a clean one are
+	     indistinguishable from the outside, and this was the controller and view
+	     surface. So the exclusion below is now a BUILD-TIME measure only, and
+	     the scan itself is supplied by the workflow step
+	     'Gate 1 - terminating taint scan of the excluded compilation', through
+	     the ErpTaintAnalysisOptions hook further down this file. Measured for
+	     MAJ-01 on this toolchain and this tree:
+	         - Armed with NO cost bound: more than 2,700 SECONDS without
+	           completing, a larger bound than the original 600-second
+	           observation and the same outcome.
+	         - Armed with the interprocedural chain bounded to ONE hop:
+	           completes in about 220 SECONDS, exit 0, and reports ZERO
+	           CA3001-CA3012 diagnostics.
+	         - That zero is proven rather than assumed: the same bound applied to
+	           a probe carrying two deliberate taint flows still reports CA3001
+	           and CA3003, so the analysis demonstrably speaks under the bound it
+	           is given. The workflow step asserts that probe BEFORE it trusts
+	           the project's zero, and treats a timeout as a hard failure,
+	           because an analysis that did not finish must never read as clean.
+	     What remains a residual is DEPTH, not coverage: a flow longer than one
+	     interprocedural hop is not followed in that one project. Every finding
+	     from C-01 through C-05 and H-01 through H-20 additionally carries a
+	     file-and-line locator in docs/security/security-audit-report.md, and the
+	     remaining depth residual is carried as an accepted risk in
+	     docs/security/risk-register.md as RISK-051.
 
 	     TO RE-MEASURE, set ErpSecurityTaintAnalysis=all, which arms the family
 	     everywhere including that project. It exists so the exclusion can be
@@ -378,6 +401,49 @@
 	<PropertyGroup Condition="'$(ErpSecurityTaintAnalysis)' != 'all' AND '$(MSBuildProjectName)' == '$(ErpTaintAnalysisExcludedProject)'">
 		<NoWarn>$(NoWarn);$(ErpTaintAnalysisFamily)</NoWarn>
 	</PropertyGroup>
+
+	<!-- THE TERMINATING SCAN OF THE EXCLUDED COMPILATION - code-review finding
+	     MAJ-01. THREAT ADDRESSED: an analysis family that never terminates
+	     produces no diagnostics, and an absence of diagnostics is
+	     indistinguishable from an absence of defects. The one project the
+	     exclusion above covers is WebVella.Erp.Web, which is the controller and
+	     view surface - precisely where CWE-79, CWE-89 and CWE-78 taint flows
+	     would live - so leaving it with NO scan at all is the largest coverage
+	     hole in Gate 1.
+
+	     WHY A HOOK RATHER THAN LIFTING THE EXCLUSION. Re-measured for MAJ-01
+	     with the family armed and NO cost bound: the compilation ran for more
+	     than 2,700 SECONDS without completing, against 0-6 seconds for each of
+	     the other eighteen projects. That is not a slow build, it is a
+	     non-terminating one, and an ordinary build must not be made to depend on
+	     it. The exclusion above therefore stays exactly as measured, and the
+	     scan is supplied SEPARATELY - by the workflow step
+	     'Gate 1 - terminating taint scan of the excluded compilation', which
+	     arms the family for that one project with a COST BOUND and retains its
+	     output as published evidence.
+
+	     WHAT THIS ITEM DOES, AND THE ONE PROPERTY THAT MAKES IT SAFE. The cost
+	     bound can only be delivered as analyzer configuration - the
+	     dotnet_code_quality.* options are read from an analyzer config file and
+	     from nowhere else - so this item lets a caller supply ONE such file BY
+	     ABSOLUTE PATH. The file is written OUTSIDE the repository, into the
+	     runner's temporary directory, and is never tracked: Gate 1 separately
+	     fails the job if any *.globalconfig exists in the tree, tracked or
+	     untracked, because a file there is the one mechanism that could change
+	     any rule's SEVERITY for all 19 projects at once. Keeping the file out of
+	     the tree keeps that prohibition intact while still allowing the cost
+	     bound, and the workflow step additionally asserts that the file it
+	     writes carries no dotnet_diagnostic.*.severity entry at all - so this
+	     hook cannot become a back door to the per-rule ESCALATION that stays
+	     outside this gate's scope.
+
+	     INERT UNLESS ASKED FOR. With ErpTaintAnalysisOptions unset - which is
+	     every ordinary restore, build, publish, pack and IDE load - the
+	     condition is false, no item is added, and the compilation is
+	     byte-for-byte the one measured above. -->
+	<ItemGroup Condition="'$(ErpTaintAnalysisOptions)' != ''">
+		<GlobalAnalyzerConfigFiles Include="$(ErpTaintAnalysisOptions)" />
+	</ItemGroup>
 
 	<!-- NO GLOBAL ANALYZER CONFIG IS SUPPLIED, AND NONE MAY BE ADDED. A
 	     '.globalconfig' at the repository root is the only mechanism that can

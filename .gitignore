@@ -253,6 +253,32 @@ _Pvt_Extensions
 /positive-control.txt
 /secret-sweep.txt
 /security-allowlist.txt
+# Code-review finding MAJ-01 added two evidence files, and they are listed here
+# for the same reason as every other one: the gate's commands are run by hand to
+# re-measure its baselines, so an omission here leaves a scan artifact untracked
+# in the working tree and one `git add -A` away from becoming a stale record.
+# security-allowlist-justified.txt carries each accepted diagnostic's risk
+# reference and disposition; taint-scan-web.txt is the terminating CA3001-CA3012
+# scan of the one compilation the ordinary build excludes.
+/security-allowlist-justified.txt
+/taint-scan-web.txt
+# The raw log of that scan, withheld from publication for the same reason as
+# analyzer-build.txt: it carries an absolute path per diagnostic. The scan step
+# deletes it on success; this entry covers an interrupted run.
+/taint-scan-raw.txt
+/taint-pairs.txt
+/taint-allowlist.txt
+/taint-unreviewed.txt
+# The capability self-test of that scan: its log, and the scratch project it
+# builds. The step removes both on every exit path, so these cover an
+# interrupted run - and they must never be committed, because a probe carrying
+# deliberate taint flows inside the tracked tree would be a real defect.
+/taint-control.txt
+/.gate-taint-control/
+# The mandated-header-name compliance verdict raised by code-review finding
+# MAJ-03. Generated per run and carried into Gate 5 as row A17; a committed
+# copy would assert a compliance state it never measured.
+/header-compliance.txt
 /security-diagnostics.txt
 /security-rule-ids.txt
 /security-unreviewed.txt
