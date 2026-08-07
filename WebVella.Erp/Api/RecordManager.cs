@@ -2,11 +2,13 @@
 using System;
 using System.Collections.Generic;
 using System.Dynamic;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Threading;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Database;
+using WebVella.Erp.Diagnostics;
 using WebVella.Erp.Exceptions;
 using WebVella.Erp.Hooks;
 using WebVella.Erp.Utilities;
@@ -169,6 +171,163 @@ namespace WebVella.Erp.Api
 			this.executeHooks = executeHooks;
 		}
 
+		#region << Protected relation authorization >>
+
+		//THREAT ADDRESSED - review finding CR-01 (Critical), privilege escalation to administrator.
+		//CWE-269 improper privilege management, with CWE-862 missing authorization and CWE-639
+		//authorization bypass through a user-controlled key; OWASP A01:2021 Broken Access Control.
+		//
+		//THE ATTACK. Role membership is a row in the many-to-many relation user_role, and NOTHING in
+		//this class asked who was attaching it. An authenticated Regular user could read both the
+		//user entity and the role entity - the seed grants Regular CanRead on both, deliberately, so
+		//that screens can render an author's name - which hands them the administrator role's
+		//identifier and their own user identifier. Posting those two identifiers at the generic
+		//relation endpoint attached their own account to the administrator role, and because
+		//Api/SecurityManager.cs reloads a principal's roles from rel_user_role on the next request,
+		//the escalation took effect immediately and permanently. No vulnerability in the
+		//authentication layer was needed: the authorization was simply absent.
+		//
+		//WHY THE INVARIANT LIVES HERE AND NOT ONLY AT THE ENDPOINT. These two methods are the ONLY
+		//route to a relation row in the entire platform - DbRelationRepository.CreateManyToManyRecord
+		//and DeleteManyToManyRecord are called from nowhere else, and the $relation.field branches of
+		//CreateRecord and UpdateRecord funnel back through here too. A check placed only in
+		//Web/Controllers/WebApiController.cs would guard the two endpoints the review found and leave
+		//every present and future caller - a page model, a hook, a plugin, generated code - able to
+		//reach the same row. One guard at the choke point cannot be forgotten by a later caller.
+		//
+		//WHY ONLY user_role, AND NOT EVERY RELATION. The engagement's Minimal Change Clause requires
+		//the least invasive control that closes the vulnerability, and the vulnerability that was
+		//confirmed is escalation to administrator. Requiring administrator rights for EVERY relation
+		//would refuse the platform's own working flows - task watchers, project membership, comment
+		//subscriptions - which are ordinary users attaching ordinary records by design. The residual,
+		//general gap in relation-level authorization is documented in docs/security/risk-register.md
+		//rather than closed by a change that would break working functionality.
+		//
+		//WHY ignoreSecurity IS THE ONLY BYPASS. It is this platform's own marker for a trusted system
+		//operation and it is constructed at exactly ONE site in the repository - Api/ERPService.cs
+		//line 89, which owns both the first-run seed that creates these very rows and the version-gated
+		//security migration. It cannot be reached from a request. The system principal is honoured as
+		//well, because background jobs and internal hooks run under SecurityContext.OpenSystemScope.
+		//An anonymous caller - CurrentUser null - is refused, which is deny-by-default at the one edge
+		//where a missing context would otherwise read as "no restriction applies".
+		private static readonly Guid[] AdministratorOnlyRelationIds = new Guid[] { SystemIds.UserRoleRelationId };
+
+		//Source name for the refusal records below. A single const so the audit trail can be queried
+		//on one exact value rather than on a family of near-identical strings.
+		private const string ProtectedRelationLogSource = "RecordManager.ProtectedRelationAuthorization";
+
+		//Count of refusal records that could not be persisted, carried into the next one that can, so
+		//a gap in the trail is visible IN the trail rather than only as an absence of rows (CWE-778).
+		private static int protectedRelationReportFailures;
+
+		/// <summary>
+		/// Decides whether a many-to-many mutation of an administrator-only relation must be refused,
+		/// and records the refusal when it must.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding CR-01. See the block comment above for the threat and for why the
+		/// invariant is enforced at this choke point. Returns true when the caller may NOT proceed.
+		/// </remarks>
+		private bool IsProtectedRelationMutationRefused(Guid relationId, string operation, Guid? originValue, Guid? targetValue)
+		{
+			if (!AdministratorOnlyRelationIds.Contains(relationId))
+				return false;
+
+			//The platform's own trusted-system marker - see above for why it is safe as a bypass.
+			if (ignoreSecurity)
+				return false;
+
+			ErpUser currentUser = SecurityContext.CurrentUser;
+
+			//The system principal covers background jobs, provisioning and internal hooks, which open
+			//a system scope rather than constructing a manager with ignoreSecurity.
+			if (currentUser != null && currentUser.Id == SystemIds.SystemUserId)
+				return false;
+
+			if (currentUser != null && currentUser.IsAdmin)
+				return false;
+
+			ReportProtectedRelationRefusal(relationId, operation, currentUser, originValue, targetValue);
+			return true;
+		}
+
+		/// <summary>
+		/// Records an authorization refusal for an administrator-only relation.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - CWE-778 insufficient logging, and the requirement that authorization
+		/// failures be logged. This method CANNOT throw and CANNOT change the outcome it records: the
+		/// caller has already decided to refuse, and an audit fault must never convert a clean refusal
+		/// into a server error - nor, more dangerously, unwind a refusal. It follows the shape
+		/// Api/SecurityManager.cs already established for a report that must not fail its caller, and
+		/// writes through the core WebVella.Erp.Diagnostics.Log deliberately: that writer opens a
+		/// connection and executes one parameterised INSERT into system_log with no mail branch, so a
+		/// caller who can repeat this refusal at will cannot drive it into an outbound mail flood.
+		/// Every interpolated value is either a platform identifier or a GUID, so no caller-authored
+		/// text reaches the record and CWE-117 log forging has no operand to work with.
+		/// </remarks>
+		private static void ReportProtectedRelationRefusal(Guid relationId, string operation, ErpUser currentUser, Guid? originValue, Guid? targetValue)
+		{
+			try
+			{
+				int unreported = Volatile.Read(ref protectedRelationReportFailures);
+
+				string details = "relation_id: " + relationId.ToString()
+					+ "; operation: " + (operation ?? string.Empty)
+					+ "; user_id: " + (currentUser == null ? "anonymous" : currentUser.Id.ToString())
+					+ "; origin_id: " + (originValue.HasValue ? originValue.Value.ToString() : "none")
+					+ "; target_id: " + (targetValue.HasValue ? targetValue.Value.ToString() : "none");
+
+				string message = "Refused a many-to-many mutation of an administrator-only relation.";
+				if (unreported > 0)
+				{
+					message = message + " | " + unreported.ToString(CultureInfo.InvariantCulture)
+						+ " earlier refusal record(s) could not be persisted and are unrecorded.";
+				}
+
+				//LogType.Error matches the level the web layer already uses for an authorization or
+				//credential denial, so refusals from both layers surface in one query rather than two.
+				//DoNotNotify is explicit rather than defaulted: the default is NotNotified, which is what
+				//makes Web/Services/LogService.cs mail a record, and this refusal is repeatable at will.
+				new Log().Create(LogType.Error, ProtectedRelationLogSource, message, details, LogNotificationStatus.DoNotNotify);
+
+				if (unreported > 0)
+					Interlocked.Add(ref protectedRelationReportFailures, -unreported);
+			}
+			catch (Exception reportFailure)
+			{
+				//Counted BEFORE the fallback is attempted, so the loss is recorded even if the fallback
+				//also fails. Absorbed here, and only here, because the alternative - propagating - would
+				//turn a correct refusal into a server error.
+				Interlocked.Increment(ref protectedRelationReportFailures);
+
+				try
+				{
+					Console.Error.WriteLine("[WebVella.Erp] " + ProtectedRelationLogSource
+						+ ": a relation authorization refusal could not be persisted ("
+						+ reportFailure.GetType().Name + "). relation_id: " + relationId.ToString());
+				}
+				catch (Exception)
+				{
+					//No usable error stream is left - redirected, closed or disposed. The increment above
+					//is then the only surviving record of the loss, and the next report that reaches the
+					//log carries it. Nothing further can be done without risking the refusal itself.
+				}
+			}
+		}
+
+		/// <summary>
+		/// Message returned to a caller whose relation mutation was refused.
+		/// </summary>
+		/// <remarks>
+		/// Deliberately generic and identical for every refusal reason. It states that the operation is
+		/// not permitted and nothing else: naming the relation, the role required or the identifiers
+		/// involved would let an unprivileged caller map the platform's privilege model by probing.
+		/// </remarks>
+		internal const string ProtectedRelationRefusalMessage = "This relation cannot be modified by the current user.";
+
+		#endregion
+
 		public QueryResponse CreateRelationManyToManyRecord(Guid relationId, Guid originValue, Guid targetValue)
 		{
 			QueryResponse response = new QueryResponse();
@@ -188,6 +347,21 @@ namespace WebVella.Erp.Api
 					response.Object = null;
 					response.Success = false;
 					response.Timestamp = DateTime.UtcNow;
+					return response;
+				}
+
+				//SECURITY - review finding CR-01. Checked AFTER the relation is known to exist so a
+				//refusal cannot be told apart from a bad relation identifier by response shape, and
+				//BEFORE any hook runs or any row is written, so no side effect of an unauthorized
+				//mutation is observable.
+				if (IsProtectedRelationMutationRefused(relationId, "create", originValue, targetValue))
+				{
+					response.Object = null;
+					response.Success = false;
+					response.Timestamp = DateTime.UtcNow;
+					response.StatusCode = HttpStatusCode.Forbidden;
+					response.Message = ProtectedRelationRefusalMessage;
+					response.Errors.Add(new ErrorModel { Message = ProtectedRelationRefusalMessage });
 					return response;
 				}
 
@@ -268,6 +442,20 @@ namespace WebVella.Erp.Api
 					return response;
 				}
 
+				//SECURITY - review finding CR-01. The REMOVE half matters as much as the create half:
+				//without it an unprivileged caller could strip the administrator role from every
+				//administrator and lock the installation out of its own administration, which is a
+				//denial of service reached through the same missing authorization.
+				if (IsProtectedRelationMutationRefused(relationId, "remove", originValue, targetValue))
+				{
+					response.Object = null;
+					response.Success = false;
+					response.Timestamp = DateTime.UtcNow;
+					response.StatusCode = HttpStatusCode.Forbidden;
+					response.Message = ProtectedRelationRefusalMessage;
+					response.Errors.Add(new ErrorModel { Message = ProtectedRelationRefusalMessage });
+					return response;
+				}
 
 				bool hooksExists = RecordHookManager.ContainsAnyHooksForRelation(relation.Name);
 				if (hooksExists)

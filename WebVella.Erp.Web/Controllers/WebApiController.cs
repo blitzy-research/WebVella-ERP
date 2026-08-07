@@ -55,6 +55,20 @@ namespace WebVella.Erp.Web.Controllers
 		// attacker a file-enumeration oracle for free.
 		private const string FILE_ACCESS_DENIED_MESSAGE = "You are not allowed to modify this file.";
 
+		// THREAT ADDRESSED - review finding CR-01 (Critical), privilege escalation to administrator;
+		// CWE-269 improper privilege management with CWE-862 missing authorization, OWASP A01:2021.
+		// The refusal wording for a mutation of an administrator-only relation. It MUST stay
+		// byte-identical to RecordManager.ProtectedRelationRefusalMessage in the core assembly, which is
+		// what a caller reaching the same invariant through any other route receives: two different
+		// wordings would tell a caller WHICH layer refused, and that is a map of where the control is
+		// implemented. It is duplicated rather than shared because that constant is assembly-internal to
+		// WebVella.Erp and publishing it would widen a public API surface this engagement must not widen.
+		// If either is reworded, reword both in the same change.
+		private const string PROTECTED_RELATION_DENIED_MESSAGE = "This relation cannot be modified by the current user.";
+
+		// Audit source for the refusals above. One exact value so the trail can be queried on it.
+		private const string PROTECTED_RELATION_AUDIT_SOURCE = "WebApiController:RelationAuthorization";
+
 		// THREAT ADDRESSED - remote code execution through the authenticated code-compile endpoint
 		// (CWE-94 improper control of generated code, reached through CWE-862 missing authorization,
 		// OWASP A01 Broken Access Control feeding A03 Injection) and the same weakness one step further
@@ -2699,6 +2713,73 @@ namespace WebVella.Erp.Web.Controllers
 
 		#region << Records >>
 
+		/// <summary>
+		/// Refuses a mutation of an administrator-only relation, and records the refusal.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - review finding CR-01 (Critical), privilege escalation to administrator.
+		/// CWE-269 improper privilege management with CWE-862 missing authorization and CWE-639
+		/// authorization bypass through a user-controlled key; OWASP A01:2021 Broken Access Control.
+		/// <para>
+		/// THE ATTACK. Both generic relation actions took a relation NAME and two record identifiers
+		/// from the request body and attached or detached the row, with no check of any kind on the
+		/// relation involved. Role membership is such a row - relation <c>user_role</c> - and the seed
+		/// deliberately grants the Regular role read access to both the user and the role entity so
+		/// that screens can render names, which hands an ordinary authenticated caller both
+		/// identifiers it needs. <c>Api/SecurityManager.cs</c> reloads a principal's roles from
+		/// <c>rel_user_role</c>, so the attachment took effect on the caller's next request.
+		/// </para>
+		/// <para>
+		/// WHY THIS EXISTS WHEN THE CORE ALREADY REFUSES. <c>RecordManager</c> enforces the same
+		/// invariant at the platform's single many-to-many choke point, and that is the load-bearing
+		/// control - it cannot be bypassed by a future caller. This check is deliberately additional,
+		/// for three reasons the core check cannot serve. It refuses BEFORE the action opens a
+		/// transaction and before it resolves and rewrites unrelated records, so an unauthorized
+		/// request cannot do partial work and roll it back. It answers <c>403 Forbidden</c> rather than
+		/// the <c>400</c> a mid-flight failure produces, so the refusal is correctly typed for a
+		/// client. And it audits with the request context - route and remote address - which the core
+		/// has no access to. Both layers are required by the review finding; neither is redundant.
+		/// </para>
+		/// <para>
+		/// The system principal and the administrator are permitted; an unresolvable principal is
+		/// refused, which is deny-by-default at the one edge where an absent context would otherwise
+		/// read as "no restriction applies".
+		/// </para>
+		/// </remarks>
+		/// <param name="relation">The relation the request names, already resolved. A null relation is
+		/// not this method's concern and is reported as an unknown relation by the caller.</param>
+		/// <param name="route">The route being served, recorded in the audit entry.</param>
+		/// <param name="response">Response populated with the refusal when the return value is true.</param>
+		/// <returns>True when the caller may NOT proceed.</returns>
+		private bool IsProtectedRelationMutationRefused(EntityRelation relation, string route, BaseResponseModel response)
+		{
+			if (relation == null || relation.Id != SystemIds.UserRoleRelationId)
+				return false;
+
+			ErpUser currentUser = SecurityContext.CurrentUser;
+			if (currentUser != null && (currentUser.Id == SystemIds.SystemUserId || currentUser.IsAdmin))
+				return false;
+
+			// Authorization failures are logged, as the engagement's Authorization Enforcement standard
+			// requires. Not rate limited: an authorization denial on the privilege-escalation path is
+			// precisely the record the trail exists for, and the surface is authenticated, so the volume
+			// is already bounded by the credential the caller had to present. Every interpolated value
+			// passes through SecurityAuditLog.Field, which neutralises CWE-117 log forging.
+			SecurityAuditLog.Write(Diagnostics.LogType.Error, PROTECTED_RELATION_AUDIT_SOURCE,
+				"Relation mutation refused - the relation is administrator-only.",
+				"relation=" + SecurityAuditLog.Field(relation.Name, MAX_AUDITED_FIELD_LENGTH)
+					+ "; route=" + SecurityAuditLog.Field(route, MAX_AUDITED_FIELD_LENGTH)
+					+ "; user_id=" + (currentUser == null ? "anonymous" : currentUser.Id.ToString())
+					+ "; ip=" + SecurityAuditLog.Field(HttpContext?.Connection?.RemoteIpAddress?.ToString(), MAX_AUDITED_FIELD_LENGTH));
+
+			response.Success = false;
+			response.Timestamp = DateTime.UtcNow;
+			response.StatusCode = HttpStatusCode.Forbidden;
+			response.Message = PROTECTED_RELATION_DENIED_MESSAGE;
+			response.Errors.Add(new ErrorModel { Message = PROTECTED_RELATION_DENIED_MESSAGE, Key = "relationName" });
+			return true;
+		}
+
 		// Update an entity record relation records for origin record
 		// POST: api/v3/en_US/record/relation
 		[AcceptVerbs(new[] { "POST" }, Route = "api/v3/en_US/record/relation")]
@@ -2734,6 +2815,11 @@ namespace WebVella.Erp.Web.Controllers
 					return DoResponse(response);
 				}
 			}
+
+			//SECURITY - review finding CR-01. Placed immediately after the relation resolves and before
+			//any entity read, query or transaction, so an unauthorized request performs no work at all.
+			if (IsProtectedRelationMutationRefused(relation, "api/v3/en_US/record/relation", response))
+				return DoResponse(response);
 
 			var originEntity = entMan.ReadEntity(relation.OriginEntityId).Object;
 			var targetEntity = entMan.ReadEntity(relation.TargetEntityId).Object;
@@ -2933,6 +3019,11 @@ namespace WebVella.Erp.Web.Controllers
 					return DoResponse(response);
 				}
 			}
+
+			//SECURITY - review finding CR-01. The reverse route reaches the identical relation row with the
+			//origin and target arguments swapped, so it is exactly as exploitable and is gated identically.
+			if (IsProtectedRelationMutationRefused(relation, "api/v3/en_US/record/relation/reverse", response))
+				return DoResponse(response);
 
 			var originEntity = entMan.ReadEntity(relation.OriginEntityId).Object;
 			var targetEntity = entMan.ReadEntity(relation.TargetEntityId).Object;
