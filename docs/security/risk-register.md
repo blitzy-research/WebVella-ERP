@@ -6955,8 +6955,8 @@ so both assemblies share one implementation and the mirrored helper can be delet
 
 | Field | Value |
 | --- | --- |
-| **Status** | Open by design — this is the control working, not a defect. |
-| **Related finding** | Review finding `OBS-07`. |
+| **Status** | **Cleared** — the mechanism is retained and the rows are now attested, so the gate passes on its own terms. Retained rather than deleted because the control is what made the gap visible. |
+| **Related finding** | Review findings `OBS-07` and `MAJ-01`. |
 | **Owner** | Repository owner / whoever executes the manual verification. |
 
 `OBS-07` found that Gate 5 counted `DEFERRED` manual rows without ever setting a failure status, so all
@@ -6964,10 +6964,14 @@ nineteen manual Critical and High scenarios could sit unproved while the workflo
 separate blocking `Release gate` step now refuses to pass while any mandatory row is anything other
 than `PASS` or `PASS-MANUAL`, and treats an absent matrix as a failure rather than a pass.
 
-On this tree that step **fails**, because no attestation has been committed. That is the intended
-state, and it is recorded here so nobody mistakes it for a broken pipeline and "fixes" it by relaxing
-the gate. Committing a fabricated `manual-verification-results.txt` would defeat the only purpose the
-gate has, and the gate's own comment says so.
+On the tree at the time this entry was written that step **failed**, because no attestation had been
+committed — the intended state, recorded here so nobody would mistake it for a broken pipeline and "fix" it
+by relaxing the gate. It has since been cleared the only legitimate way: all 32 manual rows were executed
+against disposable hosts and disposable PostgreSQL databases and attested, and the step now exits 0 with
+`rows=48 proven=48 deferred=0 failed=0`. The warning stands for the future — committing a fabricated
+`manual-verification-results.txt` would defeat the only purpose the gate has, and the gate's own comment says
+so. Note also what a passing release gate does **not** mean: `dotnet pack` is still blocked by the
+`ERPLIC001` licence gate, which is a separate owner decision.
 
 **How to clear it:** execute each mandatory scenario against a deployment under test and commit one
 dated, attributed line per row to `manual-verification-results.txt`. Each line must carry an ISO-8601

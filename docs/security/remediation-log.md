@@ -10299,9 +10299,8 @@ evidence became assertable, and six manual scenarios (`M20`–`M25`) were added 
 editor-callback, SQL-identifier, serialization-binder, credential-regex and file-mutation-race
 properties that no earlier row covered. Of the 25 manual rows *as the matrix then stood*, 24 were classified `REQUIRED` — each
 verifies a Critical or High finding and is release-blocking while unproven — and one (`M18`, a latency
-measurement) is `ADVISORY`. Executed at this commit the matrix reports **32 proven, 0 deferred, and the 16
-automated rows resolved from the artifacts of the same job**; the row count has since risen to 48 as
-`M26`–`M29` and then `M30`–`M32` were appended. The audit report's gate table, not this paragraph, is the
+measurement) is `ADVISORY`. Executed at this commit the matrix reports **48 proven, 0 deferred, 0 failed**;
+the row count rose to 48 as `M26`–`M29` and then `M30`–`M32` were appended. The audit report's gate table, not this paragraph, is the
 authority for the current tally.
 
 **That is now only half the mechanism, and the missing half was review finding `OBS-07`.** Keeping a
@@ -10858,12 +10857,15 @@ localised API prefix. Each was re-measured before any conclusion was drawn. Thre
 defects were recorded without being fixed, since none is a security weakness and the engagement forbids
 repair beyond remediation.
 
-**Verification.** Gate 5 and the release gate were extracted from the committed workflow and run against
-the committed attestations: `rows=48 proven=32 deferred=0 failed=16`, every manual row `PASS-MANUAL`, the
-attestation file judged `tracked` and unmodified, and each line bound to commit `d9e8f2ec` — an ancestor of
-the attesting commit — to its own scenario revision and to a named environment. The 16 remaining rows are
-the automatic ones, which read artifacts produced by earlier steps of the same job and therefore cannot
-resolve when the matrix step is invoked alone. `M18` recorded the accepted trade-off with both figures and
+**Verification.** All twenty of the workflow's `run:` steps were extracted from the committed YAML and
+executed in order against this tree, with the job-level `env:` block carried — a bare step extraction does
+not supply it, and omitting it makes the project-graph, solution-membership and gated-project advisory steps
+fail for want of `EXPLICITLY_GATED_PROJECTS` rather than for any defect in the tree. **All twenty exited 0.**
+Gate 5 reported `rows=48 proven=48 deferred=0 failed=0`, `required-but-unproven=0`, `RELEASE-READY=yes`, and
+the release gate exited 0 with all 48 rows proven. Every manual row read `PASS-MANUAL`, the attestation file
+was judged `tracked` and unmodified, and each line was bound to commit `d9e8f2ec` — an ancestor of the
+attesting commit — to its own scenario revision and to a named environment. Invoking the matrix step alone
+reports `proven=32 failed=16`, because the sixteen automatic rows read artifacts the earlier steps produce. `M18` recorded the accepted trade-off with both figures and
 their sample sizes: authentication median 4.6 ms before and 136.4 ms after over n=100 each on identical
 routes, the isolated primitive 0.001 ms against 117.956 ms over n=200 each, and a matched-transport control
 on a non-authentication path showing no regression.

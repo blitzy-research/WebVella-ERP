@@ -38,9 +38,10 @@ now runs for eighteen of the nineteen projects — it is excluded from `WebVella
 per-project measurement — so the gap is one project rather than eleven families. Manual verification is
 **executed in full**: the matrix carries 48 rows, and all **32** manual rows — 31 mandatory plus the single
 advisory row — have been executed against disposable hosts and live databases and hold committed,
-commit-bound attestations, so the matrix reports `deferred=0`. Release readiness is still not established:
-it depends on the 16 automatic evidence rows resolving inside a full workflow job and on the open AutoMapper
-licence decision. A third gate is **vacuous by
+commit-bound attestations. Executing the workflow's twenty `run:` steps in order reports
+`rows=48 proven=48 deferred=0 failed=0` with `RELEASE-READY=yes` and a release gate that exits 0. The
+project is still not shippable: the open AutoMapper licence decision is reserved to the repository owner and
+blocks `dotnet pack`. A third gate is **vacuous by
 construction** — the repository contains no test suite. One process requirement, *atomic commits per
 vulnerability class*, **FAILED** historically and has been complied with for every commit since. The authoritative gate-by-gate table is
 [Status at this revision](security/security-audit-report.md#status-at-this-revision-gate-by-gate).

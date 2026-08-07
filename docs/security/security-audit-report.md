@@ -72,7 +72,7 @@ revision, and one engagement process requirement failed outright.
 | 2 | Dependency scan: 0 Critical/High CVEs | **PASS** | Solution-wide restore with `NuGetAudit`/`NuGetAuditMode=all`/`NuGetAuditLevel=low` and `NU1900`–`NU1905` promoted to errors, plus per-project coverage for the two non-solution-member projects, corroborated by `dotnet list package --vulnerable --include-transitive`. Nothing suppressed anywhere. Contingent on the `H-19` casing repair, which had to land first. |
 | 3 | Secrets scan: 0 hardcoded credentials | **PASS** | The named external scanner could not be installed. The substitute is a multi-layer signature sweep over the tracked tree plus a known-published-value layer that fingerprints candidates against digests of the five published values, with **no evidence-field exemption** and a positive control that must fire. |
 | 4 | Existing test suite: 100% pass rate | **VACUOUS — no suite exists** | There is no test project, no test file and no test-framework reference in any of the nineteen projects; `dotnet test` discovers nothing. **No test suite was run and no reader should infer that one was.** Creating one is out of scope under the engagement's modification boundaries. Reported as vacuous rather than passed. |
-| 5 | Manual verification of all Critical/High fixes | **PASS for the manual half — every declared manual row is now executed and attested** | The matrix declares **48** rows: 16 proven by an evidence artifact the workflow produces, and 32 manual (`M01`–`M32`), of which **31 are REQUIRED and one — `M18`, a latency measurement — is ADVISORY**. Under code-review finding `MAJ-01` three scenarios were appended for the findings the matrix could not previously reach — `M30` for relation privilege escalation, `M31` for the data-bound HTML Block, `M32` for watcher tampering — and **all 32 manual rows have since been executed against running hosts and live PostgreSQL databases and are attested** in the tracked `manual-verification-results.txt`, each line bound to commit `d9e8f2ec`, to the hash of its own scenario text, and to a named environment. Running the gate's own logic against this tree reports `rows=48 proven=32 deferred=0 failed=16`: **zero deferred manual rows**, with the 16 remaining rows being the automatic ones, which read their evidence from artifacts produced by earlier steps of the same workflow job and are therefore FAIL only when the matrix step is invoked in isolation. Two earlier revisions of this row were wrong in opposite directions — one marked Gate 5 *Satisfied* while 25 mandatory rows were unexecuted, the other counted them honestly as `DEFERRED`; this revision records their execution. |
+| 5 | Manual verification of all Critical/High fixes | **PASS — every declared row is proven, and the release gate exits 0** | The matrix declares **48** rows: 16 proven by an evidence artifact the workflow produces, and 32 manual (`M01`–`M32`), of which **31 are REQUIRED and one — `M18`, a latency measurement — is ADVISORY**. Under code-review finding `MAJ-01` three scenarios were appended for the findings the matrix could not previously reach — `M30` for relation privilege escalation, `M31` for the data-bound HTML Block, `M32` for watcher tampering — and **all 32 manual rows have since been executed against running hosts and live PostgreSQL databases and are attested** in the tracked `manual-verification-results.txt`, each line bound to commit `d9e8f2ec`, to the hash of its own scenario text, and to a named environment. Running the workflow's twenty `run:` steps in order against this tree — with the job-level `env:` block carried, which a bare step extraction does not supply — reports **`rows=48 proven=48 deferred=0 failed=0`, `required-but-unproven=0`, `RELEASE-READY=yes`**, and the separate release gate exits 0 with *all 48 mandatory verification rows proven by retained evidence or a dated attestation*. All twenty steps exited 0. Invoking the matrix step alone instead reports `proven=32 failed=16`, because the sixteen automatic rows read artifacts the earlier steps produce; that is a property of the invocation, not of the tree. Two earlier revisions of this row were wrong in opposite directions — one marked Gate 5 *Satisfied* while 25 mandatory rows were unexecuted, the other counted them honestly as `DEFERRED`; this revision records their execution. |
 
 | Engagement process requirement | Status | Where the evidence is |
 | --- | --- | --- |
@@ -708,20 +708,22 @@ What the gate does, and what it now measures:
 
 - The verification matrix carries **48 rows: 16 proven by an evidence artifact the workflow itself
   produced, and 32 manual (`M01`–`M32`).** Running the matrix logic against this tree reports
-  `rows=48 proven=32 deferred=0 failed=16`: all 32 manual rows read `PASS-MANUAL` on a committed,
-  commit-bound attestation, and the 16 remaining rows are the automatic ones, which read artifacts
-  produced by earlier steps of the same job and so cannot pass when the step is invoked alone.
+  `rows=48 proven=48 deferred=0 failed=0` when the workflow's twenty `run:` steps are executed in order:
+  all 32 manual rows read `PASS-MANUAL` on a committed, commit-bound attestation, and all 16 automatic rows
+  resolve from the evidence artifacts the earlier steps produce. Invoking the matrix step alone reports
+  `proven=32 failed=16`, which is a property of the invocation rather than of the tree.
 - Every manual row is classified **REQUIRED** (31 of them — each verifies a Critical or High finding) or
   **ADVISORY** (1 — `M18`, a latency measurement). An unproven REQUIRED row is reported on an ordinary run
   and is **fatal** on a version-tag push or a release-candidate dispatch, so a release cannot proceed while
   a Critical or High fix is unverified. The release gate is stricter still: it refuses **any** row that is
   not `PASS`, advisory rows included, which is why `M18` was executed rather than left deferred.
 - A **RELEASE-READY** verdict is computed and printed on every run, so a green ordinary run can never be
-  read as release readiness. At this commit **no manual scenario is unproven**, so the verdict is no longer
-  gated on manual verification. It remains gated on the automatic evidence rows, which pass only inside a
-  full workflow job, and — outside this workflow entirely — on the open AutoMapper licence decision
-  recorded in the [risk register](risk-register.md), which is release-blocking and reserved to the
-  repository owner.
+  read as release readiness. At this commit it reads **`yes`**: no scenario is unproven and the release gate
+  exits 0. That verdict covers this workflow's own gates and nothing more — **the project is still not
+  shippable**, because the open AutoMapper licence decision recorded in the
+  [risk register](risk-register.md) is reserved to the repository owner and blocks `dotnet pack` through the
+  `ERPLIC001` gate. Step 15 asserts that the decision *mechanism* is durable and attributable; it does not
+  make the decision.
 - A manual row leaves DEFERRED only on a **bound** attestation: tied to a commit that is an ancestor of
   the commit under test, to a scenario revision that is the hash of the row's own text plus its procedure
   plus the shared prerequisites block, and to a named environment — in a file that must be committed.
@@ -808,8 +810,9 @@ mandated value, and it is not closed by asserting compliance.
   declares **20** `run:` steps, of which **19** are the evidence-gathering gates — every one of those
   nineteen was extracted from the parsed YAML, executed in order against this tree, and exited 0. The
   twentieth is the `Release gate`. It exited **1** at that measurement while 24 mandatory manual scenarios
-  were unattested, and it is reported separately rather than folded into the "all exited 0" claim. All 32
-  manual scenarios have since been attested, so the release gate no longer blocks on manual verification.
+  were unattested, and it was reported separately rather than folded into the "all exited 0" claim.
+  Re-measured after every manual scenario was executed and attested, **all twenty `run:` steps exit 0**,
+  the release gate included.
 - **The API contract changed in exactly four intentional ways, and no others.** An earlier revision of this
   bullet read *no controller route, verb or response envelope changed, with one deliberate exception: the
   removal of stack-trace text from two error bodies* — and that absolute form was **false**, because this very

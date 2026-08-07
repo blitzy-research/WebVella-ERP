@@ -231,12 +231,12 @@ the gate working, not a broken build. Clear it by upgrading the package, or by r
 suppression in the risk register.
 
 **Audited and remediated is not the same as cleared for release, and this file does not claim it is.** At
-this revision the dependency, analyzer and secret gates all pass, but the workflow's separate release gate
-exits non-zero: every one of the **32 manual runtime verification scenarios has now been executed against
-disposable environments and attested**, but those scenarios need a live PostgreSQL instance, a browser or an
-SMTP server, none of which a CI runner has, so the automatic evidence rows resolve only inside a full
-workflow job — and one dependency **licence** question is an open repository-owner decision that blocks
-`dotnet pack`. The authoritative,
+this revision the dependency, analyzer and secret gates all pass, and the workflow's separate release gate
+now passes: every one of the **32 manual runtime verification scenarios has been executed against
+disposable environments and attested**, and executing the workflow's twenty `run:` steps in order reports
+`rows=48 proven=48 deferred=0 failed=0` with `RELEASE-READY=yes`. The project is nonetheless **not
+shippable**, because one dependency **licence** question is an open repository-owner decision that blocks
+`dotnet pack` through the `ERPLIC001` gate. The authoritative,
 gate-by-gate status is
 [Status at this revision](docs/security/security-audit-report.md#status-at-this-revision-gate-by-gate);
 where any sentence elsewhere reads as a completion claim, that table governs.
