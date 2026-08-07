@@ -145,7 +145,7 @@ so that existing deployments keep working and are not recommended for new config
 
 The two tables above cover the settings an operator normally has a decision to make about. **This table
 is the exhaustive one**, and it exists because earlier revisions of this guide claimed to be an
-authoritative inventory while naming 23 of the 40 keys the source actually reads — omitting, among
+authoritative inventory while naming 23 of the 41 keys the source actually reads — omitting, among
 others, every SMTP server, port, username, sender and recipient setting, which is precisely the group an
 operator configuring mail delivery needs. Every row below was generated from the source tree, not from
 memory, and the sweep is reproducible:
@@ -165,27 +165,33 @@ grep -ohE '`(Settings|ApiUrlTemplates|SecurityHeaders|Development):[A-Za-z0-9_:]
 comm -23 /tmp/from-source.txt /tmp/from-docs.txt   # read but undocumented - must be empty
 ```
 
-**Read the sweep's output carefully: 39 lines, 40 keys, and the gap is a limitation of the pattern
-rather than a missing row.** The pattern can only see a key read by its **full literal path**. Two keys
-are read *section-relative* — `WebVella.Erp.Web/ErpMvcExtensions.cs` resolves
-`GetSection("Settings:ForwardedHeaders")` once and then reads `section["KnownProxies"]` and
-`section["KnownNetworks"]` — so the literal strings `Settings:ForwardedHeaders:KnownProxies` and
-`Settings:ForwardedHeaders:KnownNetworks` never appear in source and the sweep cannot match them. What it
+**Read the sweep's output carefully: 39 lines, 41 keys, and the gap is a limitation of the pattern
+rather than a missing row.** The pattern can only see a key read by its **full literal path**. **Three**
+keys are read *section-relative* — `WebVella.Erp.Web/ErpMvcExtensions.cs` resolves
+`GetSection("Settings:ForwardedHeaders")` once and then reads `section["KnownProxies"]`,
+`section["KnownNetworks"]` and `section["ForwardLimit"]` — so the literal strings
+`Settings:ForwardedHeaders:KnownProxies`, `Settings:ForwardedHeaders:KnownNetworks` and
+`Settings:ForwardedHeaders:ForwardLimit` never appear in source and the sweep cannot match them. What it
 matches instead is the section name `Settings:ForwardedHeaders`, which is one line but not a key. So: 39
-lines, minus 1 section, plus 2 section-relative leaves, equals **40 keys**. The reverse comparison
-therefore reports three keys as "documented but not read", and all three are correct as documented: those
-two, plus `Settings:EmailSMTPCheckCertificateRevocation`, which this guide names **precisely in order to
+lines, minus 1 section, plus **3** section-relative leaves, equals **41 keys**. *(This paragraph read
+"two … equals 40" until code-review finding `MED-02`, which found `ForwardLimit` read at
+`ErpMvcExtensions.cs` and documented nowhere in the inventory. Both the count and the arithmetic are
+corrected, and the third leaf now has its own row in the table above.)* The reverse comparison therefore
+reports **four** keys as "documented but not read", and all four are correct as documented: those three,
+plus `Settings:EmailSMTPCheckCertificateRevocation`, which this guide names **precisely in order to
 record that it does not exist** — see its row below. Anyone re-deriving the inventory should add a second
 sweep for `GetSection` reads rather than trusting the single pattern; the single pattern is retained
 because it is what the original inventory was built from and silently replacing it would hide this
 qualification.
 
 The reverse direction, `comm -13`, is **not** expected to be empty, and the reason is worth stating so
-nobody reads it as two invented keys. It reports exactly
-`Settings:ForwardedHeaders:KnownProxies` and `Settings:ForwardedHeaders:KnownNetworks`, which are read
+nobody reads it as invented keys. It reports exactly
+`Settings:ForwardedHeaders:KnownProxies`, `Settings:ForwardedHeaders:KnownNetworks` and
+`Settings:ForwardedHeaders:ForwardLimit`, which are read
 by *relative* name — `BuildForwardedHeadersOptions` binds the section once and then indexes it as
-`section["KnownProxies"]` — so their absolute paths never appear as literals in the source and an
-absolute-path sweep cannot see them. They are genuinely read; the sweep is what is partial. Confirm
+`section["KnownProxies"]`, `section["KnownNetworks"]` and `section["ForwardLimit"]` — so their absolute
+paths never appear as literals in the source and an absolute-path sweep cannot see them. They are
+genuinely read; the sweep is what is partial. Confirm
 directly:
 
 ```bash
@@ -211,6 +217,7 @@ default is a literal the code supplies.
 | `Settings:Cors:AllowedOrigins` | none — every origin denied outside Development | `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` only | both `Startup.cs` files |
 | `Settings:ForwardedHeaders` | n/a — bound as a **section**, not read as a leaf | Only behind a TLS-terminating reverse proxy. `BuildForwardedHeadersOptions` takes `GetSection("Settings:ForwardedHeaders")` and then reads the two child keys below by relative name, which is why the section itself appears in a source sweep while the children do not | `ErpMvcExtensions.cs` |
 | `Settings:ForwardedHeaders:KnownProxies` and `Settings:ForwardedHeaders:KnownNetworks` | none — with both empty the middleware is **not registered at all**, which is the deny-by-default position | Only behind a TLS-terminating reverse proxy. Entries are separated by `,` or `;` | `ErpMvcExtensions.cs` (`section["KnownProxies"]`, `section["KnownNetworks"]`) |
+| `Settings:ForwardedHeaders:ForwardLimit` | `1` — the `DefaultForwardedHeadersForwardLimit` constant, i.e. exactly one trusted proxy entry is consumed | Only behind a TLS-terminating reverse proxy, and only when that middleware is registered at all. Set it to the number of trusted proxies chained in front of this application. **Validated, not guessed:** a value that is not a positive whole number — zero, negative, or unparseable — **aborts startup** with an `InvalidOperationException` naming the key; blank or absent falls back to the default. This row was missing from the inventory until code-review finding `MED-02` | `ErpMvcExtensions.cs` (`section["ForwardLimit"]` → `ParseForwardLimit`) |
 | `Settings:DataProtectionKeyDirectory` | none — keys are transient, so a restart invalidates issued cookies | Every host that must survive a restart or run more than one instance | `ErpMvcExtensions.cs` |
 | `SecurityHeaders:ContentSecurityPolicyReportOnly` | `true` — report-only | Every host. `false` emits the enforcing header; an uninterpretable value **aborts startup** rather than being guessed | `ErpMvcExtensions.cs` |
 | `Settings:TimeZoneName` | `FLE Standard Time` | Every host. **A Windows-only identifier, so a non-Windows host must override it** — see [*Time zone identifier on non-Windows hosts*](#time-zone-identifier-on-non-windows-hosts) | `ErpSettings.cs` |
@@ -619,14 +626,32 @@ pattern. Two ordering constraints follow, and they are constraints rather than p
 
 ### Comments in the configuration files, and two deliberate blanks
 
-All eight `Config.json` files and `global.json` carry `//` comments, and this remediation deliberately
-kept them. RFC 8259 admits no comments, but nothing in this repository reads these files as strict
-JSON: the runtime's own reader accepts them, `dotnet` accepts them in `global.json`, and no gate in
+~~All eight `Config.json` files and `global.json` carry `//` comments~~ — **corrected under code-review
+finding `MED-07`: they do not, and the distribution matters because an operator was being told to expect
+in-place explanation in files that carry none.** Measured on the tracked tree, `//` comments appear in
+**three** of the eight configuration files plus `global.json`:
+
+| File | Lines carrying `//` | What they say |
+| --- | --- | --- |
+| `WebVella.Erp.Site/Config.json` | 5 — 3 dedicated, 2 trailing | A three-line security note naming findings `H-05` (CWE-798), `H-04` (CWE-321) and `C-04` with OWASP A02/A05, the `Settings__ConnectionString` / `Settings__EncryptionKey` / `Settings__Jwt__Key` supply forms, and why the keys are retained with empty values; a trailing note on `DevelopmentMode` naming `H-12` (CWE-489, CWE-209, A05) and recording that the value is a **string** by design; and the original trailing `CacheKey` note |
+| `WebVella.Erp.ConsoleApp/Config.json` | 3 — 2 dedicated, 1 trailing | A two-line security note naming `H-05`, `H-04` and `H-12` with their CWEs and OWASP categories, the `Settings__ConnectionString` and `Settings__EncryptionKey` supply forms, and why every key is retained with an empty value; plus the original trailing `CacheKey` note. It names no `Jwt` key, because this project has no `Jwt` section and none was added |
+| `WebVella.Erp.Site.Sdk/Config.json` | 1 — trailing | A pointer to the storage library's own documentation on the `CloudBlobStorageConnectionString` line |
+| `global.json` | 18 | Why the SDK version is pinned and `rollForward` disabled |
+| `.Crm`, `.Mail`, `.MicrosoftCDM`, `.Next`, `.Project` | **0** | Nothing — these five carry no comment of any kind, so this guide is their only explanation |
+
+Reproduce the counts with `grep -c '//' <file>` for the total and `grep -cE '^[[:space:]]*//' <file>` for the
+dedicated comment lines; the difference is the trailing comments that share a line with a setting.
+
+This remediation deliberately **kept** every comment that was there and **added** only the two security
+notes, which the engagement's own change discipline requires: a security change carries a comment naming
+the threat it addresses. RFC 8259 admits no comments, but nothing in this repository reads these files as
+strict JSON: the runtime's own reader accepts them, `dotnet` accepts them in `global.json`, and no gate in
 the workflow parses either file — the secret sweep matches key-name signatures line by line and never
-invokes a JSON parser. The comments are, in several files, the only in-place explanation of what a
-setting does, so stripping them would have deleted rationale for no verifiable gain. If you introduce
-a strict consumer later, strip the comments in that consumer's own copy rather than in the tracked
-file.
+invokes a JSON parser. Where comments exist they are, in several files, the only in-place explanation of
+what a setting does, so stripping them would have deleted rationale for no verifiable gain. If you
+introduce a strict consumer later, strip the comments in that consumer's own copy rather than in the
+tracked file. **For the five files that carry none, this guide's inventory table above is the only
+explanation there is** — do not read their silence as "nothing to know about these settings."
 
 Two of those notes matter enough to restate, because in each case a **blank** value is a deliberate
 setting rather than an omission:
@@ -1269,13 +1294,72 @@ stolen token indefinitely: the token never had to expire, so a single theft was 
 deliberately matches the cookie horizon, so a cookie session and a bearer session expire on the same
 schedule.
 
-**What is not implemented, stated plainly:** there is no revocation list and no refresh-token rotation.
+### Session revocation: durable, shared, and fail-closed
+
+~~**What is not implemented, stated plainly:** there is no revocation list and no refresh-token rotation.
 Both require persisting issued or revoked token identifiers — a database schema change, which the
 audit's own constraints forbid. The honest consequences: signing out clears the cookie and revokes the
 cookie session identifier, but it does **not** invalidate an already-issued bearer token; and a stolen
-token stays usable until the earlier of its own expiry and the 7-day horizon. A revocable refresh-token
-table with rotation and reuse detection is recorded as future work in the
-[risk register](risk-register.md).
+token stays usable until the earlier of its own expiry and the 7-day horizon.~~
+
+**That paragraph is withdrawn under code-review finding `MAJ-08`, which established that it described a
+tree that no longer exists.** A revocation list *is* implemented, it *is* durable and shared, and it
+covers **both** credential kinds. An operator who read the withdrawn text would have under-stated the
+platform's own protection and — worse — would not have known about the one operational behaviour it
+introduces, which is described at the end of this section. Read from the source rather than from a
+sibling document, the control is as follows.
+
+**One identifier, one store, both credential kinds.** Every cookie ticket minted by `AuthService`
+carries a random session-identifier claim, and `BuildTokenAsync` stamps the *same* claim into every
+bearer token and carries it verbatim across refresh. Signing out records that one identifier as revoked
+(`AuthService.RevokeCurrentSession`), and the cookie pipeline and both bearer validators consult the
+store on **every** request before a principal is accepted. So logging out is server-validated session
+termination: the first request made with a copied cookie **or** a previously issued bearer token after
+logout is refused.
+
+**The store is durable and shared, and it needs no schema change.**
+`WebVella.Erp/Database/DbSecurityStateRepository` holds the state, which means it survives a restart,
+recycle or crash, and every instance behind a load balancer that points at the same database observes
+the same revocation. It writes under a reserved key namespace — `wv_sec_`, with revocations at
+`wv_sec_revoked_<session-id>` — inside the pre-existing `public.plugin_data` table that every
+installation already has, so no schema definition statement was needed. That table has no expiry column
+and none may be added, so the expiry travels inside the row as a fixed-width sortable UTC stamp at the
+front of the payload, and expired rows are reclaimed by an indexed predicate. **Reclamation is by expiry
+only, never by capacity**, so no live revocation can be displaced by a newer one — which is exactly what
+the earlier process-local, size-bounded cache could do.
+
+**It fails closed.** When the durable store cannot be consulted at all,
+`SessionRevocationService.IsSessionIdentifierRevoked` answers *revoked*. This is deliberate: answering
+"not revoked" when the answer is unknown is how a database outage becomes an authorisation. It costs
+nothing real, because every authenticated request in this platform already re-resolves its user from the
+same database — a database this code cannot reach is one no request could have been served from anyway.
+A fail-closed answer is deliberately **not** mirrored locally, so a transient outage cannot pin a
+legitimate session as revoked once the store is reachable again.
+
+**The local cache that remains is positive-only.** Only identifiers the durable store has already
+confirmed revoked are mirrored in process, and only for as long as the durable entry itself has left to
+live. A negative answer is never cached, because caching "not revoked" for any interval would recreate
+the window this control exists to close. A cache hit can therefore only ever refuse a credential that is
+already refused.
+
+**Retention is clamped at both ends:** a one-minute floor, so a revocation written with a near-past
+expiry is still observable by the requests it exists to reject, and a 25-hour ceiling, so no caller can
+turn the store into an unbounded one. The ceiling is the smallest round value that leaves the longest
+legitimate credential unclamped — 1440 minutes of lifetime plus the one-minute bearer clock skew.
+
+**What this means for you as an operator, and it is the only operational consequence.** Every
+authenticated request now performs one additional indexed point lookup against `plugin_data`. That cost
+is accepted and recorded. Two deployment consequences follow from the fail-closed direction: **all
+instances must point at the same database** for a logout on one to be honoured by the others, and while
+the database is unreachable authenticated requests are refused rather than admitted — which is the
+intended behaviour, not a fault to work around. There is no configuration key for any of this, and none
+should be added.
+
+**What genuinely remains not implemented, stated plainly:** **refresh-token rotation with reuse
+detection**. Revocation ends a session; it does not give each refresh a fresh, single-use identifier, so
+a stolen token that is refreshed before the theft is noticed still yields a successor until the session
+is revoked or the 7-day horizon is reached. A revocable refresh-token table with rotation and reuse
+detection is recorded as future work in the [risk register](risk-register.md).
 
 ### The Data Protection key ring, and why each host needs its own identity
 
@@ -1837,17 +1921,51 @@ in the [credential migration guide](credential-migration.md). Role privileges ar
 static-analysis and composition-analysis gate. It sets exactly these properties:
 
 ```text
-NuGetAudit          true
-NuGetAuditMode      all
-NuGetAuditLevel     low
-WarningsAsErrors    $(WarningsAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904;NU1905
-EnableNETAnalyzers  true
-AnalysisLevel       latest-recommended
+NuGetAudit                       true
+NuGetAuditMode                   all
+NuGetAuditLevel                  low
+WarningsAsErrors                 $(WarningsAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904;NU1905
+EnableNETAnalyzers               true
+AnalysisLevel                    latest-recommended
+AnalysisLevelSecurity            latest-all
+ErpTaintAnalysisFamily           CA3001;…;CA3012
+ErpTaintAnalysisExcludedProject  WebVella.Erp.Web
 ```
 
-Those six properties are the **whole** of the gate. `AnalysisLevelSecurity` is deliberately not set and
-**no global analyzer configuration file is supplied**; both evaluate empty, which the workflow asserts
-on every run.
+**This block previously listed six properties and stated that `AnalysisLevelSecurity` was "deliberately
+not set" and evaluated empty. That was true when written and is now false**; review finding `MAJ-07`
+found it still standing, and it is corrected rather than quietly replaced because an operator
+reproducing the gate from a stale property list gets a different gate. Reproduce the current values, do
+not take them from prose:
+
+```bash
+dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo \
+  -getProperty:EnableNETAnalyzers -getProperty:AnalysisLevel \
+  -getProperty:AnalysisLevelSecurity -getProperty:NuGetAuditMode \
+  -getProperty:ErpTaintAnalysisExcludedProject
+```
+
+`AnalysisLevelSecurity=latest-all` **arms the whole Security rule category**, which is what makes
+`CA2100`, `CA2326`/`CA2327`/`CA2328`, `CA5390`, `CA5401`/`CA5402`, `CA5404` and the `CA3001`–`CA3012`
+taint family execute at all. **No global analyzer configuration file is supplied**, and none may be
+added: a `.globalconfig` anywhere in the tree is the one mechanism that could change any rule's
+*severity* for all 19 projects at once, per-rule escalation is outside this gate's scope, and the
+workflow fails the job on finding one — tracked or untracked.
+
+The two `ErpTaintAnalysis*` properties are the taint family and the single compilation it is excluded
+from, declared as readable properties so the workflow's Gate 1 reads the boundary out of this file
+instead of carrying its own copy. **The exclusion is a build-time measure, not a coverage gap.**
+`WebVella.Erp.Web` compiles 395 Razor views into one compilation and the family's dataflow analysis is
+superlinear in compilation size: armed with no cost bound that project ran past **2,700 seconds** without
+completing, so an ordinary build must not depend on it. Under review finding `MAJ-01` the scan is supplied
+separately, by the workflow step *Gate 1 - terminating taint scan of the excluded compilation*, which arms
+the family for that one project with the interprocedural chain bounded to one hop — **about 220 seconds,
+exit 0, zero `CA3001`–`CA3012` diagnostics** — proves the bounded configuration still reports by requiring
+`CA3001` and `CA3003` against deliberate taint flows in the same step, treats a timeout as a hard failure,
+and publishes `taint-scan-web.txt` as evidence. Taint coverage is therefore **19 of 19** compilations. The
+cost configuration is written **outside** the repository and handed to the build through the
+`ErpTaintAnalysisOptions` property, which is inert unless set, so the `.globalconfig` prohibition above is
+not weakened. What remains a residual is analysis *depth* for that one project — `RISK-051`.
 
 `NU1901`, `NU1902`, `NU1903` and `NU1904` are the dependency-audit diagnostics for low, moderate, high
 and critical severity. **A dependency advisory therefore fails the build by design. That is the gate
@@ -1956,37 +2074,45 @@ which ones was established by probe rather than by reading documentation.**
 | `CA5359` | 0 | Disabled certificate validation |
 | `CA5364` | 0 | Deprecated security protocols |
 
-**Every other Security-category rule is inactive at this level**, including `CA2100` (query
-construction), `CA2326`/`CA2327`/`CA2328` (type-name handling), `CA5382`/`CA5383` (cookie security),
-`CA5390` (hard-coded key), `CA5401`/`CA5402` (non-random initialisation vector), `CA5404` (disabled
-token-validation checks) and the whole `CA3001`–`CA3012` taint family. **A zero from an inactive rule is
-not evidence** — it is the silence of a disabled rule, and it must not be read as clearance.
+**THE WHOLE SECURITY CATEGORY IS ACTIVE, AND THREE PARAGRAPHS THAT STOOD HERE SAID THE OPPOSITE.** They
+read *"every other Security-category rule is inactive at this level"*, listed `CA2100`,
+`CA2326`/`CA2327`/`CA2328`, `CA5382`/`CA5383`, `CA5390`, `CA5401`/`CA5402`, `CA5404` and the whole
+`CA3001`–`CA3012` taint family as disabled, and said activating them was outside the gate's frozen scope
+so the weaknesses they cover *"were established by manual review instead"*. Every sentence of that was
+accurate when written and **is now false**: `AnalysisLevelSecurity=latest-all` arms the category and the
+taint family runs, so review finding `MAJ-07` correctly reported the passage as invalidating both operator
+reproduction and gate interpretation. It is corrected here in place, and the withdrawal is recorded rather
+than the text simply replaced, because a security guide that silently rewrites its own account of coverage
+is the exact defect `MAJ-07` names. What remains true from the old passage, and only this: **a zero from an
+inactive rule is not evidence.** Which is why the rules are armed and why the reporting capability of the
+one bounded scan is proved against deliberate defects rather than assumed.
 
-Activating them would need a per-rule severity entry, which needs a global analyzer configuration file
-to reach past the four `root = true` `.editorconfig` files — and the taint family needs per-rule cost
-tuning on top of that merely to terminate: enabled untuned, a whole-solution build exceeded 2,400
-seconds without completing and the compiler server began failing under memory load, because one project
-compiles 395 Razor views into a single compilation. Neither that file nor the widening is inside the
-frozen scope of this gate, **so the weaknesses those rules would have flagged were established by
-manual review instead**: every one of C-01 through C-05 and H-01 through H-20 is traceable to a
-file-and-line locator in the [security audit report](security-audit-report.md), and the residual tooling
-coverage gap is carried as an accepted risk under `RISK-051` and `RISK-052` rather than left as an
-unstated assumption.
+**Measured at this revision, and every figure here is a live measurement rather than an estimate.** A full
+`-t:Rebuild` of the solution reports **0 errors and 3,055 warnings**. Of those, **641** are distinct
+`(rule, file)` `CA` diagnostics across all categories, and **55** are Security-category diagnostics, from
+exactly five rules — `CA2100` (20), `CA2326` (20), `CA2328` (9), `CA5351` (5) and `CA5362` (1) — which
+collapse to **21** distinct `(rule, file)` pairs. Earlier revisions of this section quoted 3,044, 3,043 and
+3,028; those were measurements of earlier trees and are superseded, not merely restated. None of the 3,055
+is newly introduced by the remediation — they are pre-existing code the gate made *visible*.
 
-**All analyzer diagnostics remain warnings; only the six dependency codes are errors.** Promoting
-roughly 700 source files' worth of pre-existing analyzer warnings wholesale would demand exactly the
-mass refactor the change scope forbids, so no `CA` identifier is added to the promotion above and
-build-time code-style enforcement is left off. A full rebuild reports around **3,044 warnings**; none is
-newly introduced — every one is pre-existing code the gate made *visible*.
+**All analyzer diagnostics remain warnings; only the six dependency codes are errors.** Promoting roughly
+700 source files' worth of pre-existing warnings wholesale would demand exactly the mass refactor the
+change scope forbids, so no `CA` identifier is added to the promotion above and build-time code-style
+enforcement is left off.
 
 **Analyzer enforcement therefore lives in the workflow rather than in the compiler.** Gate 1 parses the
-analyzer log, extracts every Security-category diagnostic and fails the job on any that is not in an
-inline, individually justified allow-list — currently **two** `(rule, file)` pairs, both `CA5351` on the
-retained legacy verification path. The pass criterion is consequently **zero *unreviewed*
-Security-category diagnostics across the remediated files, and no increase over the recorded per-rule
-baseline** — narrower and more reviewable than "zero repository-wide", and narrower still because only
-four rules execute at all. Those baselines must not be "fixed" by weakening the gate: the `CA5351` sites
-exist precisely so already-stored credentials keep working.
+analyzer log, extracts every Security-category diagnostic and fails the job on any that is not on an
+inline allow-list — **21** `(rule, file)` pairs at this revision, not the *two* an earlier revision of this
+sentence recorded. Under review finding `MAJ-01` each of the 21 now carries a `RISK-` reference and a
+one-line disposition, and the step fails on a missing, unresolvable or empty one, so a tolerated diagnostic
+cannot exist without a traceable acceptance behind it; both forms of the list are published, the comparison
+form as `security-allowlist.txt` and the justified form as `security-allowlist-justified.txt`. The pass
+criterion is consequently **zero *unreviewed* Security-category diagnostics and no increase over the
+recorded per-rule baseline** — measured at this revision as **0 unreviewed and 0 stale**. Read that
+precisely: it means every diagnostic that fired is accounted for, **not** that none fired. Those baselines
+must not be "fixed" by weakening the gate: the five `CA5351` sites are the legacy verification path that
+exists so already-stored credentials keep working, and they are formally accepted with a measurable exit
+condition in `RISK-171`.
 
 Two counting traps are worth knowing, because they made earlier revisions of this section quote every
 figure at twice its true value. **MSBuild emits every diagnostic twice** in a solution build — once
