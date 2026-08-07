@@ -328,7 +328,9 @@ remediation**.
 > `CA5362` 1 — reducing to **21 `(rule, file)` pairs**, every one of them enumerated with a written
 > justification in the workflow's Gate 1 allow-list and failed upon if it is not. Across all categories the
 > same normalisation yields **3,066 distinct `CA` diagnostics** and **650 `(rule, file)` pairs**. Any later
-> claim of "no new warnings" is measured against **3,093**.
+> claim of "no new warnings" is measured against **3,093**. *(All-category figures superseded under
+> code-review finding `MAJ-07`: the shipped tree measures 3,055 warnings, 3,028 distinct `CA` diagnostics
+> and 641 `(rule, file)` pairs. The Security-category half — 55 diagnostics over 21 pairs — is unchanged.)*
 >
 > **Superseded downwards by the frontend and API seam remediation, and stated here so this note cannot be
 > read as current.** That pass measured **3,062** warnings and `0` errors on a `--no-incremental` solution
@@ -382,8 +384,10 @@ remediation**.
 > whole category and `NoWarn` removes the taint family. The `(rule, file)` pair count is **not** the same:
 > re-measured on the tree this commit publishes, with the same normalisation Gate 1 applies, there are
 > **650 distinct `(rule, file)` CA pairs across all categories**, of which **21 are Security-category
-> pairs**. The pairs are identical whether or not the two non-members' build output is appended, which is
-> the measurement that proves they emit no Security-category diagnostic of their own.
+> pairs**. *(The all-category figure is superseded under code-review finding `MAJ-07`: the shipped tree
+> measures **641**. The 21 Security-category pairs are unchanged.)* The pairs are identical whether or not
+> the two non-members' build output is appended, which is the measurement that proves they emit no
+> Security-category diagnostic of their own.
 >
 > Reproduce it with `dotnet build WebVella.ERP3.sln -t:Rebuild -v n` and read the `N Warning(s)` summary
 > line. `-t:Rebuild` is mandatory: an incremental build skips unchanged projects and undercounts badly —
@@ -1611,7 +1615,7 @@ so.
 
 | Step | Command / method | Result |
 | --- | --- | --- |
-| The default key is gone | `git grep` of the tracked tree for the 64-hex-character constant and for `defaultCryptKey` | **no occurrence** anywhere, and — since the redaction pass — no occurrence in the documentation set either. Recorded honestly: when this row was first written it described only the removal of the compiled-in constant from `CryptoUtility.cs`, and the constant still appeared in the shipped `Config.json` files. It became true of the whole tracked tree only once the configuration files were scrubbed — see [Checkpoint corrections](#checkpoint-corrections-gate-honesty-solution-graph-fidelity-and-the-secret-scrub) |
+| The default key is gone | `git grep` of the tracked tree for the 64-hex-character constant and, separately, for the identifier `defaultCryptKey` | **No compiled identifier and no secret value remains: zero occurrences in any source, configuration or script file, and zero occurrences of the key *value* anywhere in the tracked tree including the documentation.** The identifier itself still appears **seven times, in documentation only** — twice in this log and five times in the audit report's `C-04` record, across three of its fields — where it names the removed constant so a reader can find what was removed; those are references to a name, not a key. *(This cell read "**no occurrence** anywhere" until code-review finding `LOW-01`, which is stated as an over-claim and corrected rather than left standing: the claim that matters is that no compiled identifier and no secret literal remains, and that is what is now asserted and what Gate 3 enforces.)* Recorded honestly: when this row was first written it described only the removal of the compiled-in constant from `CryptoUtility.cs`, and the constant still appeared in the shipped `Config.json` files. It became true of the whole tracked tree only once the configuration files were scrubbed — see [Checkpoint corrections](#checkpoint-corrections-gate-honesty-solution-graph-fidelity-and-the-secret-scrub) |
 | The placeholder signing key is gone | `git grep` of the tracked tree for the published signing-key literal | **no occurrence anywhere in the tracked tree, documentation included.** This row has been corrected twice. It first read "no occurrence" while the literal was still republished by `WebVella.Erp.Site/JWT_README.txt` and carried in two `Config.json` files; those were reconciled in the checkpoint corrections. It then read "no occurrence **outside** this documentation's `EVIDENCE` fields", on the argument that the mandated eight-field format requires the observed construct to be quoted. **That argument is withdrawn.** The format requires the observed *construct* — the conditional, the fallback, the file and the line — not the *secret value* the construct carried, and an exemption for evidence fields is exactly the exemption that let a compromised key stay in a tracked file. The values are redacted and fingerprinted instead, and the Gate 3 sweep now covers tracked documentation with no evidence-field exemption, so the claim is enforced rather than asserted |
 | The fallback is genuinely removed, not merely hidden — the negative test | resolve the key property with no key configured | throws `InvalidOperationException` with an actionable message; no key is returned |
 | Startup refuses to proceed without required secrets | initialise settings with the connection string and encryption key absent | throws, listing both missing key names and neither value |
@@ -2836,13 +2840,22 @@ audit already said they would — which is the point of a scanner-derived gate:
 > the plan of record freezes the analyzer gate at `EnableNETAnalyzers` plus
 > `AnalysisLevel=latest-recommended`.
 >
-> **The current position, measured:** exactly **one** Security-category rule fires anywhere in the
+> ~~**The current position, measured:** exactly **one** Security-category rule fires anywhere in the
 > repository — `CA5351` at 5 sites, 4 in `WebVella.Erp/Utilities/CryptoUtility.cs` and 1 in
 > `WebVella.Erp/Utilities/PasswordUtil.cs`. `CA5350`, `CA5359` and `CA5364` execute and report zero.
 > `CA2100`, `CA2326`, `CA2328` and `CA5362` do not execute at all, so their site counts can no longer be
 > measured and their nineteen reviewed `(rule, file)` pairs are inventoried by hand in the risk register
-> under `RISK-052`. The measurements in this subsection are retained as the record of what was true when
-> this class shipped.
+> under `RISK-052`.~~
+>
+> **Superseded under code-review finding `MAJ-07`. The withdrawal described above was itself reversed:**
+> `AnalysisLevelSecurity=latest-all` ships in `Directory.Build.props` and Gate 1 asserts it, so **five**
+> Security-category rules report on the shipped tree — `CA2100` 20 diagnostics across 8 files, `CA2326` 20
+> across 6, `CA2328` 9 across 4, `CA5351` 5 across 2, `CA5362` 1 across 1: **55 diagnostics over 21
+> distinct `(rule, file)` pairs**, all 21 allow-listed with a written disposition and a resolvable
+> `RISK-nnn` reference, leaving zero unreviewed and zero stale. `CA2327`, `CA5350`, `CA5359`, `CA5364` and
+> the whole `CA3001`–`CA3012` family report zero, and the positive control proves nine of those families
+> genuinely run rather than merely being listed. The measurements in this subsection are retained as the
+> record of what was true when this class shipped.
 
 - `CA5359` (certificate validation disabled) ×5, at `WebVella.Erp.Plugins.Mail/Api/SmtpService.cs`
   lines 145, 288, 417 and 559 and `WebVella.Erp.Plugins.Mail/Services/SmtpInternalService.cs` line
@@ -2867,13 +2880,17 @@ removed, together with the second global analyzer config they accompanied, becau
 configs at the same `global_level` are an unresolvable-conflict hazard and a suppression ledger hides a
 site instead of counting it. Adjudication then moved to a severity ratchet in a single repository-root
 `.globalconfig` — ten rules at `error` and five held at `warning`. **That file has since been removed too**,
-because the plan of record freezes the analyzer gate at `EnableNETAnalyzers` plus
-`AnalysisLevel=latest-recommended`, so adjudication now lives entirely in the **workflow's Gate 1
-allow-list**: two `(rule, file)` entries, both `CA5351`. Of the five rules that had a population, only
-`CA5351` still executes; `CA2100`, `CA2326`, `CA2328` and `CA5362` do not, so their nineteen reviewed pairs
-were pruned from the allow-list and their justifications moved to the risk register under `RISK-052`. The
-accurate statement is therefore **no analyzer rule is at `error` at all**, and the pass criterion is zero
-*unreviewed* Security-category diagnostics — with the important caveat that only four such rules run.
+because the plan of record freezes per-rule severity escalation, so adjudication now lives entirely in the
+**workflow's Gate 1 allow-list**. ~~Two `(rule, file)` entries, both `CA5351`. Of the five rules that had a
+population, only `CA5351` still executes; `CA2100`, `CA2326`, `CA2328` and `CA5362` do not, so their
+nineteen reviewed pairs were pruned from the allow-list and their justifications moved to the risk register
+under `RISK-052`.~~ **Superseded under `MAJ-07`:** the category is armed by
+`AnalysisLevelSecurity=latest-all`, which promotes nothing, so all five rules that had a population still
+have one and the allow-list carries **21** `(rule, file)` entries — 8 `CA2100`, 6 `CA2326`, 4 `CA2328`, 2
+`CA5351`, 1 `CA5362` — each with a written disposition and a `RISK-nnn` reference, and each of their
+justifications is also preserved in the risk register under `RISK-052` and `RISK-171`. The accurate
+statement is therefore **no analyzer rule is at `error` at all**, and the pass criterion is zero
+*unreviewed* Security-category diagnostics — measured at zero on this tree, over rules that provably run.
 
 That distinction is the whole point of the gate's design. Gate 1's pass criterion is that no
 designated rule fires **without** a written justification, which lets it separate "reviewed and
@@ -2886,14 +2903,17 @@ and demanding it would have produced either false suppressions or a permanently 
 > **The first sentence is superseded, and its original caveat has been restored.** `CA2100` and `CA3xxx`
 > are not enabled by `AnalysisLevel=latest-recommended`, so "zero" was the silence of a rule that was
 > never running rather than a measurement of clean code. Under `AnalysisLevelSecurity=latest-all` that
-> changed — `CA2100` reported at 20 sites and `CA5362` at one, while `CA3xxx` genuinely remained zero —
-> but that upgrade has been **withdrawn**, so the rules are inactive once more and "zero" is again the
-> silence of a rule that is not running. The **second** sentence — the pass criterion — is unchanged and
-> is enforced: the workflow's Gate 1 step fails the job on any Security-category diagnostic outside its
-> allow-list, which now holds **2** `(rule, file)` pairs rather than 21. The other 19 were pruned because
-> an allow-list entry for a rule that never fires would pre-accept unreviewed diagnostics if it were ever
-> re-enabled; they are inventoried in the risk register under `RISK-052`, which records explicitly that no
-> automated gate covers those four rules.
+> changed — `CA2100` reported at 20 sites and `CA5362` at one, while `CA3xxx` genuinely remained zero.
+> ~~but that upgrade has been **withdrawn**, so the rules are inactive once more and "zero" is again the
+> silence of a rule that is not running.~~ **Superseded a second time under `MAJ-07`: the withdrawal was
+> itself reversed and `AnalysisLevelSecurity=latest-all` is what ships**, so those measurements are live
+> again — `CA2100` at 20 diagnostics over 8 files, `CA5362` at 1, `CA2326` at 20, `CA2328` at 9, and
+> `CA3001`–`CA3012` at a genuine zero that the positive control proves is a measurement rather than a
+> silence. The **second** sentence — the pass criterion — is unchanged and is enforced: the workflow's
+> Gate 1 step fails the job on any Security-category diagnostic outside its allow-list, which holds **21**
+> `(rule, file)` pairs, each carrying an attributable disposition and a resolvable `RISK-nnn` reference,
+> and which also fails when an entry stops matching anything. Their engineering justifications remain
+> inventoried in the risk register under `RISK-052` and `RISK-171`.
 
 #### WebAssembly Server and Shared — coverage stated explicitly
 
@@ -6475,8 +6495,17 @@ below. The only deliberate raw channels still accepted are the four under `RISK-
 | `F-06` — page-header colour and icon metadata reached style/class attributes without a strict boundary | `WvPageHeader.cs:L168-L170` computes `CssColor`-guarded colours and an `ApprovedIconClass` token allow-list once, then uses those values at every style/class sink and for the `has-icon`/`no-icon` layout decision | The hostile colour generated no declaration or outbound request, the hostile utility class generated no icon, and every measured legitimate product colour/icon value retained its exact rendering |
 
 The original audit counted **128** `Html.Raw(` invocation sites across **69** Razor views. The current
-tree contains **114 invocation sites across 62 views**; the reduction is the removed confirmed sinks,
-not a reclassification of the deliberate server-generated-markup or by-design channels.
+tree contains **111 invocation sites across 61 views** — re-measured under code-review finding `MED-03`,
+counting invocation sites rather than textual mentions, so the count is of active code rather than of the
+prose and comments a looser pattern also matches. *(This sentence read "114 across 62" until that
+finding. That figure was accurate for the tree at commits `88136e3b` through `0f7419ae`; commit
+`859356e4` (`L-OPEN-04`) replaced the three raw wrappers in
+`WebVella.Erp.Web/Pages/ckeditor/ImageFinder.cshtml` with script-context serialisation, and that one
+view is the entire three-call difference — deleted code, not commented-out code. Stripping Razor
+(`@* *@`) and HTML (`<!-- -->`) comment blocks changes nothing today, because no surviving invocation
+sits inside a comment. `RISK-170` is canonical for the census.)* The
+reduction from 128 is the removed confirmed sinks, not a reclassification of the deliberate
+server-generated-markup or by-design channels.
 
 #### The insight that determined the shape of the fix
 
@@ -6817,7 +6846,7 @@ from an assertion that had silently stopped working.**
 | --- | --- | --- |
 | `CI-01` | Every solution-scoped command reached 17 of 19 projects. `WebVella.Erp.WebAssembly/Server` and `/Shared` are not solution members, so neither was restored, built or audited in CI, and a note claimed the gap was covered out of band | A step restores, builds and audits both **explicitly** — one project per `dotnet build` invocation, because two project arguments fail `MSB1008`. Their build output is appended to the analyzer log the SAST gate parses, so they are inside Gate 1 rather than beside it. Continuous coverage is **19 of 19**; the solution graph deliberately stays 17, because this project's plan scopes `WebVella.ERP3.sln` to the `H-19` casing repair alone |
 | `CI-02` | `push` fired on every branch and a weekly `schedule` had been added, neither of which the configuration contract permits | `push` and `pull_request` restricted to `master`; `schedule` removed. The cron's underlying concern is real — an advisory can be published against a package nobody touched — so it is answered by `workflow_dispatch` and recorded as a residual rather than dismissed |
-| `CI-03` | The SAST gate was a plain build. `AnalysisLevel=latest-recommended` does **not** enable the query-construction, deserialisation, XSS or taint families the audit names, and nothing failed the job on a security diagnostic | **Partially closed, and the scope of the closure is narrower than an intermediate revision claimed.** The enforcement half is closed: a Gate 1 step derives the Security rule set **from the pinned SDK at run time**, extracts every Security-category diagnostic from the build log, and fails on any that is not in an inline, individually justified allow-list — so a security diagnostic now fails the job. The *coverage* half is **not** closed. `AnalysisLevelSecurity=latest-all` was added and has since been withdrawn, because the plan of record freezes the analyzer gate; only four Security rules execute (`CA5350`, `CA5351`, `CA5359`, `CA5364`), and the query-construction, deserialisation and taint families remain outside it. Gate 1's positive control asserts this in both directions — those four must fire against planted defects, and `CA5390`/`CA2100` must **not** — so the boundary is measured on every run rather than assumed. The residual is `RISK-051`/`RISK-052` |
+| `CI-03` | The SAST gate was a plain build. `AnalysisLevel=latest-recommended` does **not** enable the query-construction, deserialisation, XSS or taint families the audit names, and nothing failed the job on a security diagnostic | **Partially closed, and the scope of the closure is narrower than an intermediate revision claimed.** The enforcement half is closed: a Gate 1 step derives the Security rule set **from the pinned SDK at run time**, extracts every Security-category diagnostic from the build log, and fails on any that is not in an inline, individually justified allow-list — so a security diagnostic now fails the job. ~~The *coverage* half is **not** closed. `AnalysisLevelSecurity=latest-all` was added and has since been withdrawn, because the plan of record freezes the analyzer gate; only four Security rules execute (`CA5350`, `CA5351`, `CA5359`, `CA5364`), and the query-construction, deserialisation and taint families remain outside it. Gate 1's positive control asserts this in both directions — those four must fire against planted defects, and `CA5390`/`CA2100` must **not** — so the boundary is measured on every run rather than assumed.~~ **That paragraph is superseded under code-review findings `MAJ-07` and `MAJ-01`, and the coverage half is now closed too.** `AnalysisLevelSecurity=latest-all` ships in `Directory.Build.props` — Gate 1 reads the property and fails if it drifts — so the Security category is armed in full while `AnalysisLevel` stays frozen at `latest-recommended` and **nothing** is promoted to `Error`, which is arming rather than escalation and is what keeps AAP 0.3.2 satisfied. Measured on this tree: five Security rules report — `CA2100` 20 diagnostics, `CA2326` 20, `CA2328` 9, `CA5351` 5, `CA5362` 1, for **55 diagnostics over 21 `(rule, file)` pairs**, every pair allow-listed with an attributable disposition and a resolvable `RISK-nnn` reference — and `CA2327`, `CA5350`, `CA5359`, `CA5364` and `CA3001`–`CA3012` report zero. The positive control now asserts the arming rather than the exclusion: nine families must fire against planted defects, `CA2100`, `CA2326` and `CA2327` among them, anchored to the probe's own file so the tree's own diagnostics cannot satisfy the check, plus `CA3001` and `CA3003` against two deliberate taint flows. The taint family is withheld from one project's **build** on measured cost and that compilation is scanned by its own terminating step at a bounded interprocedural depth, so taint coverage is **19 of 19**. The residual is now depth and granularity rather than absence: `RISK-051` for the one-hop bound, `RISK-052` for `(rule, file)` rather than per-line granularity, `RISK-171` for the five accepted `CA5351` sites |
 | `CI-04` | The secrets sweep read only `Config.json`, `appsettings*.json` and two named C# files, then announced the tree clean. A credential added to any of the other roughly 1,500 tracked text files was never looked at | A repository-wide, format-aware sweep over `git ls-files`, with signature, configuration, keyword-plus-entropy and standalone-token tiers, that **proves itself against a planted credential for every rule in ten file formats before its verdict on the real tree is believed** |
 
 Three details from that work are worth recording, because they are the kind of thing that silently
@@ -7042,8 +7071,13 @@ Seven files changed. Six were modified and one is new.
 **Why a revocation list rather than a security stamp.** The finding's guidance offered either. A security
 stamp is the stronger design, but it is a **column on the user entity**, and the remediation constraints
 forbid a schema change. A revocation list needs no schema at all, so it is the option that closes the
-finding inside the constraints. The cost is that the list is in-process, which is recorded as `RISK-036`
-rather than left to be discovered.
+finding inside the constraints. ~~The cost is that the list is in-process, which is recorded as `RISK-036`
+rather than left to be discovered.~~ **Superseded by review finding `H-OPEN-01`, and restated here under
+code-review finding `MAJ-09`:** that cost is gone. The list moved to `DbSecurityStateRepository`, which is
+durable, shared across instances, reclaimed by expiry rather than capacity and fail-closed when it cannot
+be consulted — and it *still* needs no schema change, because it reserves a key prefix inside the
+pre-existing `plugin_data` table. The premise of the sentence above, that durability would have required a
+schema change, is what turned out to be wrong.
 
 **Why the claim is minted per sign-in rather than per user.** Revoking a *user* would sign that user out
 everywhere, including sessions they are actively using on other devices. A per-sign-in identifier makes
@@ -9223,6 +9257,10 @@ The correction was measured before it was applied, not after:
 | Before | 42 | 42 | 21 | 1,324 |
 | After | 21 | 0 | 0 | 650 |
 
+The all-category figure in the last cell is a measurement of the tree that class shipped against, and is
+superseded under code-review finding `MAJ-07`: the shipped tree measures **641**. The Security-category
+columns are unchanged, and they are the ones this correction was about.
+
 A silent regression here would restore the original condition invisibly — every comparison missing,
 nothing failing loudly — so the normalisation is backed by a guard that fails the gate if any parsed
 record still begins with a node prefix or stray whitespace, with an error that tells the reader to fix
@@ -9375,22 +9413,30 @@ compared on the authoritative `(file, rule)` aggregate: **622 pairs on both side
 differences, zero pairs added and zero removed** — and here also zero differences line-position-sensitive,
 with the Security family identical at `CA2100` 40, `CA2326` 40, `CA2328` 18, `CA5351` 10, `CA5362` 2.
 Those absolute values were measured while a repository-root `.globalconfig` was still in force; the parity
-conclusion is unaffected, and the shipped tree re-measures at **631 pairs** with `CA5351` the only
-Security-category rule that executes (10 raw occurrences over 5 sites in 2 files).
+conclusion is unaffected. ~~The shipped tree re-measures at **631 pairs** with `CA5351` the only
+Security-category rule that executes (10 raw occurrences over 5 sites in 2 files).~~ **Superseded under
+code-review finding `MAJ-07`: the shipped tree re-measures at 641 distinct `(rule, file)` `CA` pairs, and
+`CA5351` is one of five Security-category rules that execute — see the note below and the checkpoint
+verification table for the current figures.**
 `dotnet list package --vulnerable --include-transitive` reports no vulnerable package for all seventeen
 solution members and for both non-members: zero advisory rows across all nineteen projects. Gate 1 passes
-with 650 pairs and 21 accepted residuals, identically whether or not the non-members' output has been
+with 650 pairs — **superseded under `MAJ-07`: 641 on the shipped tree** — and 21 accepted residuals, identically whether or not the non-members' output has been
 appended — confirming they emit no Security-category diagnostic. Gate 3 reports `0 unreviewed and 1
-reviewed` credential-shaped location across 1,574 tracked files. The workflow parses as YAML with 20
-steps, 17 of them shell.
+reviewed` credential-shaped location across 1,574 tracked files. ~~The workflow parses as YAML with 20
+steps, 17 of them shell.~~ **Superseded: it now declares 25 steps, 22 of them shell — see the note
+below.**
 
-> **Re-measured on the tree this commit publishes.** This note previously read "**631** pairs and **2**
+> **Superseded at a later revision — see [the checkpoint verification table](#the-two-findings-closed-by-documentation-and-the-two-that-are-documented-only) for the current figures, which are 641 pairs and 21 Security-category pairs (review finding `MAJ-07`).**
+> **Re-measured on the tree this note was written against.** This note previously read "**631** pairs and **2**
 > accepted residuals - both `CA5351`" and was written before the Security category was armed, so it had
 > come to contradict the paragraph immediately above it rather than qualify it. The current figures, taken
-> from the gate executed end to end on this tree: Gate 1 passes with **650** `(rule, file)` `CA` pairs
-> across all categories, of which **21** are Security-category pairs, and all 21 are enumerated in the
-> reviewed allow-list; the underlying **55** Security-category diagnostics sit exactly on the 12-rule
-> ratchet baseline, and `CA5351` is now one family among five rather than the only one that executes. The
+> from the gate executed end to end on this tree: Gate 1 passes with ~~**650**~~ **641** `(rule, file)`
+> `CA` pairs across all categories — the 650 was measured before the taint exclusion was narrowed per
+> project and is superseded under `MAJ-07` — of which **21** are Security-category pairs, and all 21 are
+> enumerated in the
+> reviewed allow-list, each with an attributable disposition and a resolvable `RISK-nnn` reference; the
+> underlying **55** Security-category diagnostics sit exactly on the 12-rule ratchet baseline, and `CA5351`
+> is now one family among five rather than the only one that executes. The
 > figures are identical whether or not the two non-members' output is appended, confirming they emit no
 > Security-category diagnostic. Gate 3 reports `0 credential-shaped location(s), 0 tolerated` over **1,519**
 > tracked text files of **1,575** tracked files - the reviewed allowance it once carried, a commented-out
@@ -10283,10 +10329,10 @@ Each line is mapped to its row identifier in the gate 5 matrix declared in
 `.github/workflows/security-scan.yml`, so this table and that matrix can be reconciled rather than taken
 on trust. **The two artefacts answer different questions.** This table records what was executed during the
 remediation, on a host with a database, an SMTP relay and a browser. The matrix records what CI can prove
-on every push, which is narrower by construction: its sixteen automated rows (`A01`–`A16`) pass from
+on every push, which is narrower by construction: its evidence-derived rows (`A01`–`A18`) pass from
 retained evidence, and its manual rows are honestly `DEFERRED` there unless a committed attestation says
-otherwise — **48 rows in total, 16 automated and 32 manual (`M01`–`M32`), every one of which now carries a
-commit-bound attestation, so no row remains deferred** — because a GitHub-hosted runner has no PostgreSQL
+otherwise — **50 rows in total, 18 evidence-derived and 32 manual (`M01`–`M32`), every one of the 32 carrying
+a commit-bound attestation, so no row remains deferred** — because a GitHub-hosted runner has no PostgreSQL
 instance, the only supported provider, with no in-memory or SQLite substitution possible; no mail relay;
 and no interactive session. Gate 5 permits a
 `DEFERRED` row and refuses a `PASS` without an attestation, which is what keeps the deferral visible
@@ -10344,16 +10390,22 @@ attestation has been committed, and fabricating one would defeat the only purpos
 | 10 | The file **move** and **delete** actions are refused for a non-owner | `M13` | **Executed — passed** | Both actions driven as a non-owner, and separately against a target that does not resolve; both refused, with one generic refusal message so the response cannot be used to probe for the existence of another user's staged file |
 | 11 | The two previously unconditional error paths return **no stack trace**, while server-side logging still records the detail | `M14` | **Executed — passed, and re-observed anonymously at this commit** | A generic message in the response body, with the full message and stack trace still present in the log record's details column — so the disclosure was closed without trading away any diagnostic capability. Re-driven at this commit **without credentials**, since these are the anonymous token routes: bad credentials and a malformed body both returned `Invalid email or password`, the refresh route declined to mint a successor and returned a null object, and a marker sweep over both bodies for `at WebVella`, `.cs:line`, `System.` and `Exception:` found **zero** hits |
 | 12 | Mail delivery succeeds against a valid certificate and **fails** against an invalid one | `M15` | **Executed — passed, and narrowed** | An `X509Chain` probe over a purpose-built PKI plus real sends: a self-signed relay is refused with `UntrustedRoot` and a relay whose certificate names a different host is refused on host-name mismatch, in **both** revocation modes. A valid certificate still delivers. The clause that used to close this row — that the narrow revocation relaxation could not be mistaken for accept-any — is withdrawn along with the relaxation itself under review finding `INT-08`: there is no revocation setting, revocation is always checked, and the retained two-mode measurement now serves only to show that a revocation failure and an untrusted certificate are separable in an operator's diagnostics. A relay whose revocation source is unreachable is refused, by design, and that operational consequence is `RISK-060` |
-| 13 | **The markup-block component and the components emitting generated inline script still render** — proving the by-design raw channels were not broken | `M16` | **Not executed — deferred, and stated as such; the scenario has since been widened** | The argument available today is static rather than visual: the by-design raw channels were deliberately left untouched, and the encoding pass is provably absent from those files — re-verified at this revision with `git diff --quiet c8ea6bd4 --` over **seven** view files, all **UNTOUCHED**: both `PcHtmlBlock` views, `Nav.Default.cshtml`, `WvSdkPageSitemap/Form.cshtml`, and the three channels code-review finding `MAJ-09` found unnamed — `PcJavaScriptBlock/Display.cshtml`, `PcGrid/Display.cshtml` and `PcApplications/Display.cshtml`. Because the content policy ships **report-only**, an inline-script suppression cannot be the failure mode either. **The count in the earlier wording was wrong: there are five raw-output inline-script or markup emitters, not four** — see `RISK-170` for the complete 111-sink census. The `M16` procedure has been extended accordingly with four further steps covering the `PcJavaScriptBlock` channel, the `HIGH-01` sanitiser boundary asserted against the **server response bytes** rather than the parsed DOM, the `PcGrid` and `PcApplications` channels, and the observed policy header name. That extension rotated `M16`'s scenario revision from `fb8966e2c788` to `973ee74c2e08`; `M16` carried no attestation, and the four attested rows `M26`–`M29` were verified to retain their revisions unchanged. What would satisfy it: executing the extended procedure on a running host |
+| 13 | **The markup-block component and the components emitting generated inline script still render** — proving the by-design raw channels were not broken | `M16` | **Executed and attested — this row previously read *Not executed — deferred*, which is superseded (review finding `MAJ-06`)** | The argument available today is static rather than visual: the by-design raw channels were deliberately left untouched, and the encoding pass is provably absent from those files — re-verified at this revision with `git diff --quiet c8ea6bd4 --` over **seven** view files, all **UNTOUCHED**: both `PcHtmlBlock` views, `Nav.Default.cshtml`, `WvSdkPageSitemap/Form.cshtml`, and the three channels code-review finding `MAJ-09` found unnamed — `PcJavaScriptBlock/Display.cshtml`, `PcGrid/Display.cshtml` and `PcApplications/Display.cshtml`. Because the content policy ships **report-only**, an inline-script suppression cannot be the failure mode either. **The count in the earlier wording was wrong: there are five raw-output inline-script or markup emitters, not four** — see `RISK-170` for the complete 111-sink census. The `M16` procedure has been extended accordingly with four further steps covering the `PcJavaScriptBlock` channel, the `HIGH-01` sanitiser boundary asserted against the **server response bytes** rather than the parsed DOM, the `PcGrid` and `PcApplications` channels, and the observed policy header name. That extension rotated `M16`'s scenario revision from `fb8966e2c788` to `973ee74c2e08`. **`M16` has since been executed against a running host and is attested** in the tracked `manual-verification-results.txt` at that revision, together with every other manual row — so the static argument above is retained as the reasoning that preceded the execution, not as a substitute for it, and the sentence *"what would satisfy it: executing the extended procedure on a running host"* is withdrawn because that is what happened |
 | 14 | **A full-record round-trip update does not overwrite the stored hash with the redaction marker** | `M17` | **Executed — passed** | The write path recognises the sentinel at four sites and leaves the stored hash untouched; the browser receives a masked input and never the sentinel. This is the highest-risk ripple in the engagement — getting it wrong would have replaced every affected user's credential with a literal marker string, a data-destroying outcome from a fix intended to prevent disclosure |
 | 15 | All nineteen projects build; the API contract changed **only** in the four intentional ways enumerated in the cell to the right; **no schema definition statements were emitted at any point** | `A13`, `A09` | **Executed — passed, and the contract claim restated because the absolute form was false** | Solution rebuild exit 0, **0 errors**, 3,043 analyzer warnings across the 17 solution projects, with the two non-member WebAssembly projects built by their own dedicated steps at 0 errors. No unreviewed Security-category analyzer diagnostic. Column, index and constraint dumps taken before and after the version-4 migration are **md5-identical**. **The contract claim, stated exactly.** An earlier revision of this row read *no route, verb or response envelope changed except the deliberate removal of stack-trace text from two error bodies*, which contradicted this very document: the session-revocation class adds a route, and it is documented as added. The four intentional changes, and there are no others, are: (1) **stack-trace text removed from two error bodies** — the `H-13` remediation, and the only one the engagement's boundaries pre-authorised; (2) **one route ADDED**, `POST api/v3/en_US/auth/jwt/token/logout` (`RevokeJwtToken`), authenticated, carrying no `[AllowAnonymous]`, returning the controller's standard `ResponseModel` envelope — recorded in the session-revocation class of this log, which is where the contradiction was visible; (3) **the download response gains a `Content-Disposition: attachment` header** for every extension outside the four-entry inline set — the back half of the `H-08` chain, a header addition rather than a body or status change; (4) **`POST /fs/move/` returns the endpoint's own `FSResponse` refusal envelope** where a withheld or raced staged target previously escaped as an unhandled fault with a **zero-length body** — strictly a repair of a broken response rather than a new shape, since the envelope is the one this action already used for every other denial. Separately, and this is the narrower claim that IS absolute: **no route template, verb or authorization attribute changed after the checkpoint baseline `80042d8c`** — verified by `git diff 80042d8c..HEAD -- '*.cs'` filtered to `[Route]`, `[AcceptVerbs]`, `[HttpGet]`, `[HttpPost]`, `[Authorize]` and `[AllowAnonymous]` lines, which returns **nothing**. |
 | 16 | The **login-latency increase** from the deliberate high-iteration key derivation is **measured and recorded as an accepted, pre-declared trade-off** | `M18` | **Executed — measured rather than asserted** | 20-run single-threaded medians, recorded in [Class 3](#class-3-credential-integrity). The cost is confined to the authentication path, and credential resolution is bounded to a constant **two** derivations per attempt so a single anonymous request cannot amplify it. It is an accepted trade-off, pre-declared before the work rather than discovered afterwards as a regression |
 
-**The count, so it cannot be inferred favourably.** Of the sixteen lines: **fifteen** were executed and
-passed, and **one** was not executed at all — line 13, the by-design raw-channel render check. Zero lines
-failed, and zero are recorded as passing without evidence. An earlier revision of this paragraph read
-*thirteen executed, two partial, one not executed*; lines 8 and 9 were subsequently driven end to end
-against a running host and a live database, so their partial status is retired rather than left standing.
+**The count, so it cannot be inferred favourably.** Of the sixteen lines: **all sixteen** were executed and
+passed. Zero lines failed, and zero are recorded as passing without evidence. Two earlier revisions of this
+paragraph are superseded rather than overwritten, because the shape of the correction is the point: the first
+read *thirteen executed, two partial, one not executed*, and lines 8 and 9 were then driven end to end
+against a running host and a live database; the second read *fifteen executed, one not executed at all*, and
+line 13 — the by-design raw-channel render check, `M16` — has since been executed and attested too. Review
+finding `MAJ-06` found this paragraph still carrying the second of those, which is why the correction is
+recorded here explicitly. **What "all sixteen executed" does NOT mean:** it is a statement about this
+sixteen-line AAP §0.9.1 checklist, not about release readiness. The verification matrix additionally carries
+a row that fails by design — the mandated Content-Security-Policy is delivered under its report-only name —
+so `RELEASE-READY` prints `no`. See [Status at this revision](security-audit-report.md#status-at-this-revision-gate-by-gate).
 
 **Provenance of the re-observations.** The rows marked *re-observed at this commit* were driven against the
 published **Release** artifact of `WebVella.Erp.Site` running with `ASPNETCORE_ENVIRONMENT=Production` over
@@ -10406,6 +10458,20 @@ dropped the remainder of the row from the rendered table — a YAML block-scalar
 their full content. Twelve heading-increment violations in the risk register were closed by promoting
 thirty-four `####` entries to `###` and one `#####` to `####`; heading **text** was not touched, so
 every anchor slug is byte-identical and every cross-reference still resolves.
+
+**The last three heading-increment diagnostics were closed the same way, under code-review finding
+`LOW-02`, and the exit is `0` again.** Between the pass above and that finding, three had reappeared and
+had been *documented as accepted* rather than fixed, on the argument that closing them would mean a
+32-heading refactor. That argument did not survive contact with the tree, and it contradicted the pass
+recorded immediately above, which had already promoted thirty-four headings for exactly this reason.
+Nine `####` entries were promoted to `###` in the register's two remaining outlier sections — seventeen
+of its nineteen *Detailed entries* sections already opened at `###` — and one `###` band heading was
+added to Part 5 of the audit report, which was the only one of its five parts lacking the band heading
+its siblings all carry. Again no heading text moved, so all nine slugs are byte-identical; the check was
+run rather than assumed — **147 in-document anchor links re-resolved with zero breakages**, and the audit
+report's census is unchanged at **138** records and **53** Part 1 entries. Two anchors that *were* broken,
+both written by this remediation pass itself while recording supersessions, were found by that same check
+and repaired in the same change.
 
 One caution for whoever next runs the formatter with `--fix`: `MD010`'s fix defaults to
 `spaces_per_tab: 1`. Applied blindly it converted a tab-indented list continuation in `LIBRARIES.md` to
@@ -10806,7 +10872,7 @@ message. Every other row is one identifier to one class.
 
 **What changed.** Conditioned the `CA3001`–`CA3012` suppression on `MSBuildProjectName` so it applies to `WebVella.Erp.Web` alone, exposed the family and the excluded project as readable properties, made Gate 1 read them back and assert the boundary per project, flipped the positive control from must-not-fire to **must fire**, and added a Gate 1 step asserting the render route's authorization invariants, their ordering by line number and the runtime-compilation inventory.
 
-**Verification.** Measured per project: eighteen of nineteen complete in 0 to 6 seconds each with zero `CA3001`–`CA3012` diagnostics; `WebVella.Erp.Web` alone is killed at 600 s. Full solution build before and after produced identical diagnostics — 614 distinct (file, rule) pairs over 6,108 occurrences, 3,055 warnings, 0 errors. Three negative controls each fail the gate.
+**Verification.** Measured per project: eighteen of nineteen complete in 0 to 6 seconds each with zero `CA3001`–`CA3012` diagnostics; `WebVella.Erp.Web` alone is killed at 600 s — re-measured past **2,700 s** for code-review finding `MAJ-01`, which then closed the coverage half by scanning that one compilation in its own workflow step at a bounded interprocedural depth (about 220 s, exit 0, zero diagnostics), taking taint coverage to **19 of 19**. Full solution build before and after produced identical diagnostics — 614 distinct (file, rule) pairs over 6,108 occurrences, 3,055 warnings, 0 errors *(the pair and occurrence figures are superseded under `MAJ-07`: the shipped tree measures 641 distinct `(rule, file)` pairs over 6,056 raw `CA` warning lines, reducing to 3,028 unique `(file, line, column, rule)` diagnostics; the warning and error totals are unchanged)*. Three negative controls each fail the gate.
 
 #### `0a1deeff` — Dependency-scan non-vacuity, commit-bound evidence and drift (CK-18)
 
@@ -10830,7 +10896,7 @@ message. Every other row is one identifier to one class.
 
 **What changed.** Added four REQUIRED scenarios `M26`–`M29` for the open Critical and High findings, raised the declared total to 45, corrected eight existing procedures the remediation had invalidated, and committed one dated, attributable, commit-bound attestation per executed row.
 
-**Verification.** Gate 5 and the release gate extracted and run: 45 rows against a declared 45, the attestation file judged `tracked`, all four rows `PASS-MANUAL` with provenance. Three negative controls — a locally modified file, a stale scenario revision and a non-ancestor commit — are each refused per line. Twenty-five rows remain honestly `DEFERRED` and the release gate still blocks.
+**Verification.** Gate 5 and the release gate extracted and run: 45 rows against a declared 45 — since superseded, the matrix declares **50** rows at this revision — the attestation file judged `tracked`, all four rows `PASS-MANUAL` with provenance. Three negative controls — a locally modified file, a stale scenario revision and a non-ancestor commit — are each refused per line. Twenty-five rows remain honestly `DEFERRED` and the release gate still blocks.
 
 #### `d8de1683` — Gate 5 executed in full and attested (MAJ-01)
 
@@ -10857,15 +10923,36 @@ localised API prefix. Each was re-measured before any conclusion was drawn. Thre
 defects were recorded without being fixed, since none is a security weakness and the engagement forbids
 repair beyond remediation.
 
-**Verification.** All twenty of the workflow's `run:` steps were extracted from the committed YAML and
-executed in order against this tree, with the job-level `env:` block carried — a bare step extraction does
-not supply it, and omitting it makes the project-graph, solution-membership and gated-project advisory steps
-fail for want of `EXPLICITLY_GATED_PROJECTS` rather than for any defect in the tree. **All twenty exited 0.**
-Gate 5 reported `rows=48 proven=48 deferred=0 failed=0`, `required-but-unproven=0`, `RELEASE-READY=yes`, and
-the release gate exited 0 with all 48 rows proven. Every manual row read `PASS-MANUAL`, the attestation file
-was judged `tracked` and unmodified, and each line was bound to commit `d9e8f2ec` — an ancestor of the
-attesting commit — to its own scenario revision and to a named environment. Invoking the matrix step alone
-reports `proven=32 failed=16`, because the sixteen automatic rows read artifacts the earlier steps produce. `M18` recorded the accepted trade-off with both figures and
+**Verification, and a provenance limit that is stated rather than glossed.** All **22** of the workflow's
+`run:` steps were extracted from the committed YAML and executed in order against this tree, with the
+job-level `env:` block carried — a bare step extraction does not supply it, and omitting it makes the
+project-graph, solution-membership and gated-project advisory steps fail for want of
+`EXPLICITLY_GATED_PROJECTS` rather than for any defect in the tree. **Twenty of the twenty-two exited 0.**
+The two that did not are Gate 5 and the release gate, and both are red **for one stated reason**: row `A17`,
+added under code-review finding `MAJ-03`, records that the engagement's exact-header standard is not
+satisfied while the Content-Security-Policy ships under the report-only name. Gate 5 reported
+`rows=50 deferred=0`, `required-but-unproven=0` and `RELEASE-READY=no`. **That `no` is the gate working.** An
+earlier revision of this paragraph recorded `rows=48 proven=48 failed=0` and `RELEASE-READY=yes`, which was
+measured honestly but rested on a scenario — `M06` — that had been rewritten to *expect* the report-only
+header name; `MAJ-03` refused that, `M06`'s procedure was corrected, its scenario revision rotated, and it
+was **re-executed** against a published Release artifact in the Production posture and re-attested. The
+manual half is settled: `deferred=0`, every manual row carries a committed, commit-bound attestation, and no
+manual row blocks the gate — which is the reconciliation `MAJ-06` required.
+
+**What this pass does NOT establish, and code-review finding `MAJ-02` is right about it.** The run above was
+performed **locally**, and the artifacts every automatic row reads are written at run time and deliberately
+**not committed** — `.gitignore` enforces that, because a committed copy would be a stale record vouching
+for commits it never examined, which is the evidence-integrity failure this whole gate exists to prevent.
+Those artifacts expired with the working tree that produced them. **So a reader holding only this repository
+cannot independently verify the eighteen automatic rows**: invoking the matrix step on its own reports the
+automatic rows failing, because they read files the earlier steps produce, and no durable run reference
+exists in the tree to point at instead. What will supply one is a **hosted** run: the step *Assert the scan
+evidence is complete and bind it to the commit* digests every evidence file with SHA-256 and binds the set
+to the commit, run id and attempt, and the upload names the artifact `security-scan-evidence-<sha>` with an
+explicit thirty-day retention. **That run has not happened, because this environment cannot perform one, and
+no run identifier is asserted here in its place.** The commands are proven to work and proven to be
+committed; the first hosted execution's own artifacts — not this paragraph — will be the authority for
+whatever commit it examines. `M18` recorded the accepted trade-off with both figures and
 their sample sizes: authentication median 4.6 ms before and 136.4 ms after over n=100 each on identical
 routes, the isolated primitive 0.001 ms against 117.956 ms over n=200 each, and a matched-transport control
 on a non-authentication path showing no regression.
@@ -10885,9 +10972,9 @@ were produced by running the workflow's own steps:
 
 | Check | Result |
 | --- | --- |
-| Every `run:` step of the 23-step workflow, extracted from the parsed YAML and executed in order | **19 of 19 evidence-gathering steps exit 0**; the twentieth, the `Release gate`, exits `1` by design while 24 mandatory manual rows are unattested |
+| Every `run:` step of the workflow, extracted from the parsed YAML and executed in order | **RE-MEASURED at this revision: the workflow declares 25 steps, of which 22 are `run:` blocks, and 20 of the 22 exit 0.** The two that do not are `Gate 5` and the `Release gate`, and both are red for **one** stated reason: row `A17` records that the mandated seven-header set is not satisfied while the Content-Security-Policy ships under its report-only name (review finding `MAJ-03`). **The earlier reading of this row — 19 of 19 with the release gate red because 24 mandatory manual rows were unattested — is superseded:** all 32 manual rows are now executed and attested, `deferred=0`, and no manual row blocks anything (review finding `MAJ-06`) |
 | Gate 2, the authoritative dependency verdict `GATE-01` asked for | `Gate 2 passed` — **all 17 solution members enumerated** by the listing and each reporting no vulnerable packages, plus the 2 explicitly gated projects, **zero High or Critical**. The negative control still fails restore with `NU1903` on a pinned pre-remediation `AutoMapper 14.0.0` |
-| Gate 1 | `no error-severity CA diagnostic, no growth in any of the 55-diagnostic security baseline (55 observed)`, **3,028** `CA` diagnostics across all categories, **21** distinct `(rule, file)` pairs all on the reviewed allow-list, unreviewed set **empty** |
+| Gate 1 | `no error-severity CA diagnostic, no growth in any of the 55-diagnostic security baseline (55 observed)`, **641** distinct `(rule, file)` `CA` diagnostics across all categories, **21** distinct `(rule, file)` Security-category pairs all on the reviewed allow-list, unreviewed set **empty** and stale set **empty**. **The 3,028 this row previously gave was the wrong measure, not a stale one** — it is the count of unique `(file, line, column, rule)` diagnostics, which is what the audit report's analyzer table reports; the figure Gate 1 prints and compares is the distinct `(rule, file)` count. Corrected under review finding `MAJ-07`. Each of the 21 now carries a `RISK-` reference and a written disposition, asserted mechanically (`MAJ-01`) |
 | Gate 1 positive control | all nine ratcheted families report against the probe's own file, plus `CA3001` and `CA3003` against its deliberate taint flows |
 | Gate 3, re-run **after** these documentation edits | `Gate 3 passed` — the detector proved itself against credentials planted in 10 file formats, then found no credential material in any of the **1,522** tracked text files. This is the check that has caught this documentation set before, so it was re-run last rather than first |
 | Identifier uniqueness | `138 finding records ... carry 138 distinct identifiers, with the Part 1 inventory at 53`, against a floor raised from 115 to 138 in this same commit |
