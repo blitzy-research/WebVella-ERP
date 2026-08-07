@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
+//SECURITY - review finding MAJ-03. Required by the metadata-only field update that replaced
+//EntityManager.UpdateField: MapTo lives in the AutoMapper namespace, DbContext and DbEntity in Database.
+using WebVella.Erp.Api.Models.AutoMapper;
+using WebVella.Erp.Database;
 
 namespace WebVella.Erp.Plugins.Mail
 {
@@ -169,16 +173,16 @@ namespace WebVella.Erp.Plugins.Mail
 		/// grants full access when the update list contains one of the caller's roles.
 		/// </para>
 		/// <para>
-		/// Every other property is carried over from the field as currently stored rather than restated as a
-		/// literal, because <c>EntityManager.UpdateField</c> REPLACES the whole field definition - anything
-		/// not supplied would be silently reset. The field is located by NAME rather than by the identifier
-		/// provisioning uses, so an installation whose field was recreated under a different identifier is
-		/// still migrated.
+		/// The field is located by NAME rather than by the identifier provisioning uses, so an installation
+		/// whose field was recreated under a different identifier is still migrated. The stored field is then
+		/// MUTATED IN PLACE and only the entity metadata row is written - see the body for why
+		/// <c>EntityManager.UpdateField</c> is deliberately not used, and for the exact statements it emitted
+		/// against <c>rec_smtp_service</c> when it was.
 		/// </para>
 		/// <para>
-		/// NO SCHEMA DEFINITION CHANGE RESULTS, and the field type is deliberately NOT changed to a password
-		/// field: that type routes writes through the platform's one-way credential hash, which would destroy
-		/// a secret the SMTP client must present in plaintext and break all mail delivery.
+		/// NO SCHEMA DEFINITION STATEMENT IS EMITTED, and the field type is deliberately NOT changed to a
+		/// password field: that type routes writes through the platform's one-way credential hash, which would
+		/// destroy a secret the SMTP client must present in plaintext and break all mail delivery.
 		/// </para>
 		/// </remarks>
 		/// <param name="entMan">Entity manager participating in the patch transaction.</param>
@@ -198,35 +202,55 @@ namespace WebVella.Erp.Plugins.Mail
 			if (storedPasswordField == null)
 				throw new InvalidOperationException("MAIL PLUGIN PATCH 20260802. Entity: smtp_service. Field: password. The field is missing or is not a text field, so it could not be secured.");
 
-			InputTextField password = new InputTextField();
-			password.Id = storedPasswordField.Id;
-			password.Name = storedPasswordField.Name;
-			password.Label = storedPasswordField.Label;
-			password.PlaceholderText = storedPasswordField.PlaceholderText;
-			password.Description = storedPasswordField.Description;
-			password.HelpText = storedPasswordField.HelpText;
-			password.Required = storedPasswordField.Required;
-			password.Unique = storedPasswordField.Unique;
-			password.Searchable = storedPasswordField.Searchable;
-			password.Auditable = storedPasswordField.Auditable;
-			password.System = storedPasswordField.System;
-			password.DefaultValue = storedPasswordField.DefaultValue;
-			password.MaxLength = storedPasswordField.MaxLength;
+			//THREAT ADDRESSED - review finding MAJ-03, and the engagement's own acceptance criterion that no
+			//schema definition statement is emitted at any point. This step used to rebuild the field as an
+			//InputTextField and push it through EntityManager.UpdateField. UpdateField calls
+			//Api/EntityManager.cs:1353 -> Database/DbRecordRepository.cs.UpdateRecordField, which issues,
+			//against rec_smtp_service:
+			//  ALTER TABLE ONLY "rec_smtp_service" ALTER COLUMN "password" SET DEFAULT ...
+			//  ALTER TABLE "rec_smtp_service" ALTER COLUMN "password" {SET|DROP} NOT NULL
+			//  DROP INDEX IF EXISTS "idx_s_smtp_service_password"
+			//Those three were harmless in EFFECT - they re-asserted the column's existing default and
+			//nullability and dropped a search index this field has never had - but harmless DDL is still DDL,
+			//and the criterion is about what is EMITTED, not about what it happens to change. The doc comment
+			//above previously claimed no schema change resulted, which was the contradiction the review
+			//identified. This path emits none of it: it writes the entity metadata row and nothing else.
+			//
+			//Mutating the stored field in place is also strictly safer than the rebuild it replaces:
+			//UpdateField REPLACES the whole field definition from the InputField handed to it, so every
+			//property not explicitly copied across was silently reset. That made the copy list it needed
+			//load-bearing and easy to break - a property added to TextField by a later release would have
+			//started being erased by this migration, silently. Mutation cannot lose a property it does not
+			//mention, so the copy list is gone rather than merely correct.
+			//
+			//The meta-permission assertion is retained because UpdateField performed one and bypassing the
+			//manager would otherwise drop it: a security migration must not become MORE permissive than the
+			//call it replaces. The patch runs under a system scope, so this holds.
+			//
+			//This is the same technique, statement for statement, as ERPService.SecurePasswordFieldMetadata4.
+			if (!SecurityContext.HasMetaPermission())
+				throw new InvalidOperationException("MAIL PLUGIN PATCH 20260802. Entity: smtp_service. Field: password. Metadata permission is required, so the field could not be secured.");
+
 			//SECURITY - finding F31. EnableSecurity without Permissions denies everyone; Permissions without
 			//EnableSecurity denies nobody. Both are required, and administrator only - no Regular and no Guest
 			//entry belongs in either list.
-			password.EnableSecurity = true;
-			password.Permissions = new FieldPermissions();
-			password.Permissions.CanRead = new List<Guid>();
-			password.Permissions.CanUpdate = new List<Guid>();
+			storedPasswordField.EnableSecurity = true;
+			storedPasswordField.Permissions = new FieldPermissions();
+			storedPasswordField.Permissions.CanRead = new List<Guid>();
+			storedPasswordField.Permissions.CanUpdate = new List<Guid>();
 			//READ
-			password.Permissions.CanRead.Add(SystemIds.AdministratorRoleId);
+			storedPasswordField.Permissions.CanRead.Add(SystemIds.AdministratorRoleId);
 			//UPDATE
-			password.Permissions.CanUpdate.Add(SystemIds.AdministratorRoleId);
+			storedPasswordField.Permissions.CanUpdate.Add(SystemIds.AdministratorRoleId);
 
-			FieldResponse response = entMan.UpdateField(smtpServiceEntityId, password);
-			if (!response.Success)
-				throw new InvalidOperationException("MAIL PLUGIN PATCH 20260802. Entity: smtp_service. Field: password. The field could not be secured. Message:" + response.Message);
+			//Mirrors the metadata half of EntityManager.UpdateField exactly - map the whole entity, update the
+			//metadata row - minus the UpdateRecordField call that emitted the DDL. The repository's own
+			//Update clears the entity cache in a finally block (Database/DbEntityRepository.cs:208-211), so a
+			//stale definition cannot survive this write whether it succeeds or fails.
+			DbEntity updatedEntity = storedEntity.MapTo<DbEntity>();
+			bool updated = DbContext.Current.EntityRepository.Update(updatedEntity);
+			if (!updated)
+				throw new InvalidOperationException("MAIL PLUGIN PATCH 20260802. Entity: smtp_service. Field: password. The entity metadata update did not apply, so the field could not be secured.");
 		}
 	}
 }

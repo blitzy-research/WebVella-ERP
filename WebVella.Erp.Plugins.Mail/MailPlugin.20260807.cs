@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
+//SECURITY - review finding MAJ-03. Required by the metadata-only field update that replaced
+//EntityManager.UpdateField: MapTo lives in the AutoMapper namespace, DbContext and DbEntity in Database.
+using WebVella.Erp.Api.Models.AutoMapper;
+using WebVella.Erp.Database;
 
 namespace WebVella.Erp.Plugins.Mail
 {
@@ -113,12 +117,15 @@ namespace WebVella.Erp.Plugins.Mail
 		/// </summary>
 		/// <remarks>
 		/// SECURITY - review finding H-OPEN-03; see <see cref="Patch20260807"/> for the threat and for why
-		/// records are not rewritten. Every other property is carried over from the field as currently stored
-		/// rather than restated as a literal, because <c>EntityManager.UpdateField</c> REPLACES the whole field
-		/// definition and anything not supplied would be silently reset - the same trap
-		/// <see cref="SecureSmtpServicePasswordFieldMetadata20260802"/> documents. The field is located by NAME
-		/// rather than by the identifier provisioning uses, so an installation whose field was recreated under a
-		/// different identifier is still migrated.
+		/// records are not rewritten. The field is located by NAME rather than by the identifier provisioning
+		/// uses, so an installation whose field was recreated under a different identifier is still migrated.
+		/// <para>
+		/// The stored field is MUTATED IN PLACE and only the entity metadata row is written, so NO SCHEMA
+		/// DEFINITION STATEMENT IS EMITTED - see the body, and
+		/// <see cref="SecureSmtpServicePasswordFieldMetadata20260802"/>, for what
+		/// <c>EntityManager.UpdateField</c> emitted when it was used here and why mutation is also safer than
+		/// the rebuild it replaces.
+		/// </para>
 		/// </remarks>
 		/// <param name="entMan">Entity manager participating in the patch transaction.</param>
 		private static void RequireEncryptedSmtpTransportMetadata20260807(EntityManager entMan)
@@ -173,27 +180,40 @@ namespace WebVella.Erp.Plugins.Mail
 			if (!defaultNeedsChange && !optionsNeedChange)
 				return;
 
-			InputSelectField connectionSecurity = new InputSelectField();
-			connectionSecurity.Id = storedField.Id;
-			connectionSecurity.Name = storedField.Name;
-			connectionSecurity.Label = storedField.Label;
-			connectionSecurity.PlaceholderText = storedField.PlaceholderText;
-			connectionSecurity.Description = storedField.Description;
-			connectionSecurity.HelpText = storedField.HelpText;
-			connectionSecurity.Required = storedField.Required;
-			connectionSecurity.Unique = storedField.Unique;
-			connectionSecurity.Searchable = storedField.Searchable;
-			connectionSecurity.Auditable = storedField.Auditable;
-			connectionSecurity.System = storedField.System;
-			connectionSecurity.EnableSecurity = storedField.EnableSecurity;
-			connectionSecurity.Permissions = storedField.Permissions;
-			//SECURITY - review finding H-OPEN-03. The two lines this patch exists for.
-			connectionSecurity.DefaultValue = defaultNeedsChange ? MandatoryStartTlsValue20260807 : storedField.DefaultValue;
-			connectionSecurity.Options = migratedOptions;
+			//THREAT ADDRESSED - review finding MAJ-03, and the engagement's own acceptance criterion that no
+			//schema definition statement is emitted at any point. This step used to rebuild the field as an
+			//InputSelectField and push it through EntityManager.UpdateField, which reaches
+			//Database/DbRecordRepository.cs.UpdateRecordField and issues, against rec_smtp_service:
+			//  ALTER TABLE ONLY "rec_smtp_service" ALTER COLUMN "connection_security" SET DEFAULT ...
+			//  ALTER TABLE "rec_smtp_service" ALTER COLUMN "connection_security" {SET|DROP} NOT NULL
+			//  DROP INDEX IF EXISTS "idx_s_smtp_service_connection_security"
+			//Harmless in effect, but the criterion is about what is EMITTED. This path writes the entity
+			//metadata row and nothing else, and it drops the property-copy list the rebuild required - a
+			//property added to SelectField by a later release would have been silently erased by that list,
+			//whereas mutation cannot lose a property it does not mention.
+			//
+			//The assertion sits AFTER the no-op return above, exactly where UpdateField's own permission check
+			//used to sit: a run in which nothing qualifies must still be a clean no-op and must not start
+			//failing on permissions. It is retained at all because bypassing the manager would otherwise drop
+			//the check, and a security migration must not become MORE permissive than the call it replaces.
+			if (!SecurityContext.HasMetaPermission())
+				throw new InvalidOperationException("MAIL PLUGIN PATCH 20260807. Entity: smtp_service. Field: connection_security. Metadata permission is required, so connection security could not be made mandatory.");
 
-			FieldResponse response = entMan.UpdateField(smtpServiceEntityId, connectionSecurity);
-			if (!response.Success)
-				throw new InvalidOperationException("MAIL PLUGIN PATCH 20260807. Entity: smtp_service. Field: connection_security. The field could not be updated, so connection security could not be made mandatory. Message:" + response.Message);
+			//SECURITY - review finding H-OPEN-03. The two lines this patch exists for, now applied to the
+			//stored field itself. DefaultValue is left alone unless it is cleartext-capable, so an
+			//installation that had already chosen SslOnConnect or StartTls keeps its choice.
+			if (defaultNeedsChange)
+				storedField.DefaultValue = MandatoryStartTlsValue20260807;
+			storedField.Options = migratedOptions;
+
+			//Mirrors the metadata half of EntityManager.UpdateField exactly - map the whole entity, update the
+			//metadata row - minus the UpdateRecordField call that emitted the DDL. The repository's own Update
+			//clears the entity cache in a finally block (Database/DbEntityRepository.cs:208-211), so a stale
+			//definition cannot survive this write whether it succeeds or fails.
+			DbEntity updatedEntity = storedEntity.MapTo<DbEntity>();
+			bool updated = DbContext.Current.EntityRepository.Update(updatedEntity);
+			if (!updated)
+				throw new InvalidOperationException("MAIL PLUGIN PATCH 20260807. Entity: smtp_service. Field: connection_security. The entity metadata update did not apply, so connection security could not be made mandatory.");
 		}
 	}
 }
