@@ -95,9 +95,14 @@ $env:Settings__EncryptionKey = '<64-hex-characters>'
 **Environment variables are the supply channel that works everywhere** — all seven site hosts and the
 console application. Use them unless you have a specific reason not to.
 
-In Development, and **for one project only**, the same values can be kept out of the shell and out of the
-process environment with user secrets, which take the single-colon key path rather than the double
-underscore — the two spellings name the same setting. The command must name that project, because the
+In Development, the same values can be kept out of the shell and out of the process environment with user
+secrets, which take the single-colon key path rather than the double underscore — the two spellings name
+the same setting. User secrets are set **one project (one secrets store) at a time**, not once for the
+repository: every executable here declares its own `UserSecretsId`, so a value set for one host is
+invisible to the others and you repeat the command for each host you intend to start — see the table
+below. *(This paragraph read "for one project only" until code-review finding `MED-08`, which is a
+different claim and contradicted the explanation immediately below it: nothing limits you to a single
+project; each project simply has its own store.)* The command must name the project, because the
 repository root contains no project file of its own:
 
 ```bash
@@ -231,12 +236,16 @@ the gate working, not a broken build. Clear it by upgrading the package, or by r
 suppression in the risk register.
 
 **Audited and remediated is not the same as cleared for release, and this file does not claim it is.** At
-this revision the dependency, analyzer and secret gates all pass, and the workflow's separate release gate
-now passes: every one of the **32 manual runtime verification scenarios has been executed against
-disposable environments and attested**, and executing the workflow's twenty `run:` steps in order reports
-`rows=48 proven=48 deferred=0 failed=0` with `RELEASE-READY=yes`. The project is nonetheless **not
-shippable**, because one dependency **licence** question is an open repository-owner decision that blocks
-`dotnet pack` through the `ERPLIC001` gate. The authoritative,
+this revision the dependency, analyzer and secret gates all pass, and every one of the **32 manual runtime
+verification scenarios has been executed against disposable environments and attested**, so no verification
+row is outstanding (`deferred=0`). Executing the workflow's **22** `run:` steps in order nevertheless
+reports `RELEASE-READY=no`, and the release gate exits non-zero. **The project is not shippable, and three
+things keep it that way:** the mandated Content-Security-Policy is delivered under its **report-only** name,
+so the engagement's seven-header standard is genuinely unmet and the verification matrix records that as a
+failing row rather than accepting the substitute; one dependency **licence** question is an open
+repository-owner decision that blocks `dotnet pack` through the `ERPLIC001` gate; and the engagement's
+frozen file map was exceeded, which only the owner can resolve. *(An earlier revision of this paragraph read
+`rows=48 proven=48 deferred=0 failed=0` with `RELEASE-READY=yes`; that is superseded.)* The authoritative,
 gate-by-gate status is
 [Status at this revision](docs/security/security-audit-report.md#status-at-this-revision-gate-by-gate);
 where any sentence elsewhere reads as a completion claim, that table governs.

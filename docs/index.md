@@ -34,15 +34,23 @@ detect is a finding in its own right, and all four are closed.
 **Remediation is not the same as full validation, so the two are reported separately.** Two of the
 engagement's five validation gates do not pass at this revision. Static analysis is **PARTIAL**: the whole
 Security category is armed by `AnalysisLevelSecurity=latest-all`, and the `CA3001`–`CA3012` taint family
-now runs for eighteen of the nineteen projects — it is excluded from `WebVella.Erp.Web` alone, on a
-per-project measurement — so the gap is one project rather than eleven families. Manual verification is
-**executed in full**: the matrix carries 48 rows, and all **32** manual rows — 31 mandatory plus the single
-advisory row — have been executed against disposable hosts and live databases and hold committed,
-commit-bound attestations. Executing the workflow's twenty `run:` steps in order reports
-`rows=48 proven=48 deferred=0 failed=0` with `RELEASE-READY=yes` and a release gate that exits 0. The
-project is still not shippable: the open AutoMapper licence decision is reserved to the repository owner and
-blocks `dotnet pack`. A third gate is **vacuous by
-construction** — the repository contains no test suite. One process requirement, *atomic commits per
+runs for **all nineteen** projects: eighteen in the ordinary build, and `WebVella.Erp.Web` — which cannot
+finish an unbounded scan — through a dedicated terminating scan under a cost bound whose reporting
+capability is proved against deliberate taint flows in the same step, so **taint coverage is 19 of 19
+compilations** and what remains is analysis depth for one project rather than its absence (code-review
+finding `MAJ-01`). Manual verification is **executed in full**: the matrix carries 50 rows, and all **32**
+manual rows — 31 mandatory plus the single advisory row — have been executed against disposable hosts and
+live databases and hold committed, commit-bound attestations, so `deferred=0`. Executing the workflow's
+**22** `run:` steps in order reports `deferred=0` and `RELEASE-READY=no`, and the release gate exits
+non-zero. **That `no` is deliberate and its reason is exact:** row `A17` records that the engagement's
+seven-header standard is **not** satisfied, because the mandated Content-Security-Policy is delivered under
+its report-only name — which enforces nothing — and code-review finding `MAJ-03` refused the alternative of
+rewriting the check to accept the substitute name. *(An earlier revision of this paragraph read
+`rows=48 proven=48 failed=0` with `RELEASE-READY=yes`; that measurement rested on the rewritten check and
+is superseded.)* The project is not shippable, and three separate things keep it that way: that unmet header
+criterion, the open AutoMapper licence decision reserved to the repository owner which blocks `dotnet pack`,
+and the disclosed scope deviation only the owner can resolve. A third gate is **vacuous by construction** —
+the repository contains no test suite. One process requirement, *atomic commits per
 vulnerability class*, **FAILED** historically and has been complied with for every commit since. The authoritative gate-by-gate table is
 [Status at this revision](security/security-audit-report.md#status-at-this-revision-gate-by-gate).
 

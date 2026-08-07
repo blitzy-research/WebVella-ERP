@@ -107,7 +107,7 @@ cookie login keeps working. Read either outcome as "supply the secret", not as a
 The companion secrets follow the same double-underscore convention: Settings__ConnectionString,
 Settings__EncryptionKey and Settings__EmailSMTPPassword. Those three are the SECRET-BEARING ones and
 are all this note undertakes to list - it is not an inventory, and should not be read as one. The
-platform reads 40 configuration keys in total. See README.md, section "Configuration: required
+platform reads 41 configuration keys in total. See README.md, section "Configuration: required
 secrets", for the short list; docs/security/secure-configuration.md section "The complete inventory
 of every configuration key the platform reads" is the exhaustive one, with each key's default and
 applicability, and it also carries the rotation procedure.

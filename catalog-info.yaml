@@ -9,12 +9,18 @@ metadata:
   # excludes all of it. What this repository does contain is the OWASP Top 10
   # audit and its remediation, so that is what the descriptor now says.
   # 'completed' was removed from this description as part of review finding DOC-02.
-  # It read as a release-readiness claim, and the tree does not support one: the
-  # workflow's release gate exits non-zero while 24 mandatory manual verification
-  # scenarios are unattested, the AutoMapper licence question is an open owner
-  # decision that blocks 'dotnet pack', and a later checkpoint review found an
-  # authenticated code-execution path that the original audit had not. The
-  # gate-by-gate status is the authority; see the audit report link below.
+  # It read as a release-readiness claim, and the tree still does not support one -
+  # but the REASONS have changed, and this comment is corrected rather than left
+  # standing (review finding MAJ-06). All 32 mandatory manual verification
+  # scenarios are now executed and attested, so the earlier statement that 24 were
+  # unattested is superseded. What keeps release readiness gated at this revision
+  # is: the mandated Content-Security-Policy ships under its report-only name, so
+  # the seven-header acceptance criterion is UNMET and the verification matrix
+  # records that as a failing row (MAJ-03); the AutoMapper Reciprocal Public
+  # License question is an open owner decision that blocks 'dotnet pack'; and the
+  # engagement's frozen file map was exceeded, which only the repository owner can
+  # resolve (CR-01). The gate-by-gate status is the authority; see the audit report
+  # link below.
   description: WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, with an
     OWASP Top 10 (2021) security audit and remediation in the tree; release readiness is
     gated, not asserted.
