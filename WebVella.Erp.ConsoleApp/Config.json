@@ -1,10 +1,5 @@
 ﻿{
 	"Settings": {
-		// SECURITY H-05 (CWE-798 hard-coded credentials), C-04 (CWE-321 hard-coded encryption key) and
-		// H-12 (CWE-489/CWE-209 development mode); OWASP A02/A05:2021. The database credentials and
-		// encryption key below ship EMPTY and are supplied per deployment via Settings__ConnectionString
-		// and Settings__EncryptionKey; startup aborts when either is absent. This console host declares
-		// no Jwt section, so it carries no bearer-token signing key (H-04). DevelopmentMode stays off.
 		"ConnectionString": "",
 		"EncryptionKey": "",
 		"Lang": "en",
@@ -14,7 +9,7 @@
 		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "false",
 		"EnableFileSystemStorage": "false",
-		"FileSystemStorageFolder": "", // SECURITY: internal UNC storage path removed (CR2-F-12, CWE-200 exposure of sensitive information, CWE-497); blank selects the platform default, supply the deployment path via Settings__FileSystemStorageFolder.
+		"FileSystemStorageFolder": "",
 		"EmailEnabled": false,
 		"EmailSMTPServerName": "",
 		"EmailSMTPPort": "25",

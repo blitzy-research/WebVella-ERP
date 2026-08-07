@@ -1,19 +1,5 @@
 ﻿{
 	"Settings": {
-		// SECURITY - findings H-05 (plaintext database credentials), H-04 (weak bearer-token signing
-		// key) and C-04 (hard-coded encryption key); CWE-798 use of hard-coded credentials, CWE-321
-		// use of a hard-coded cryptographic key; OWASP A02:2021 and A05:2021.
-		// THREAT: this file is tracked in source control, so any secret it carries is readable by
-		// everyone with repository access, identical across every deployment that does not replace it,
-		// and impossible to rotate or revoke.
-		// INVARIANT: the secret-bearing values this file declares - ConnectionString, EncryptionKey,
-		// Jwt:Key and EmailSMTPPassword - stay EMPTY in source. Supply them per deployment through
-		// environment variables (Settings__ConnectionString, Settings__EncryptionKey,
-		// Settings__Jwt__Key, Settings__EmailSMTPPassword) or through user secrets in development; a
-		// later provider supplies its value whether or not the key already appears here. The keys are
-		// kept with empty values because this JSON source is non-optional and because they record what
-		// a deployment has to provide. Startup aborts with an actionable message when a required value
-		// is absent; see docs/security/secure-configuration.md for the complete list.
 		"ConnectionString": "",
 		"EncryptionKey": "",
 		"Lang": "en",
@@ -22,7 +8,7 @@
 		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "true",
 		"EnableFileSystemStorage": "false",
-		"FileSystemStorageFolder": "", // SECURITY: internal UNC storage path removed (CR2-F-12, CWE-200 exposure of sensitive information, CWE-497); blank selects the platform default, supply the deployment path via Settings__FileSystemStorageFolder.
+		"FileSystemStorageFolder": "",
 		"EmailEnabled": false,
 		"EmailSMTPServerName": "",
 		"EmailSMTPPort": "25",

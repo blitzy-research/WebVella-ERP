@@ -1,6 +1,6 @@
 ﻿{
 	"Settings": {
-		"ConnectionString": "", // SECURITY H-05/C-04 (CWE-798/CWE-321; OWASP A02/A05): ConnectionString, EncryptionKey and EmailSMTPPassword ship EMPTY - supply them per deployment via Settings__ConnectionString, Settings__EncryptionKey and Settings__EmailSMTPPassword; the non-secret settings below stay file-supplied. This host declares no Jwt section, so H-04 does not apply here. H-12 (CWE-489/CWE-209): DevelopmentMode stays "false".
+		"ConnectionString": "",
 		"EncryptionKey": "",
 		"Lang": "en",
 		"Locale": "en-US",
@@ -8,9 +8,9 @@
 		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "false",
 		"EnableFileSystemStorage": "false",
-		"FileSystemStorageFolder": "", // SECURITY: internal UNC storage path removed (CR2-F-12, CWE-200 exposure of sensitive information, CWE-497); blank selects the platform default, supply the deployment path via Settings__FileSystemStorageFolder.
+		"FileSystemStorageFolder": "",
 		"EnableCloudBlobStorage": "false",
-		"CloudBlobStorageConnectionString": "", // SECURITY: the local disk-provider path that used to sit here was removed (CR2-F-12, CWE-200 - a shipped filesystem layout is server information disclosure), and the key is left empty in source like every other secret-named key in this file: the Gate 3 secret sweep treats a populated value on a *ConnectionString key as a finding, and narrowing it for one key would blind it for all. Behaviour is unchanged - cloud blob storage is disabled above, and a blank value selects the platform default that ErpSettings supplies. Supply a real value through Settings__CloudBlobStorageConnectionString when the feature is enabled; format: https://github.com/aloneguid/storage/blob/develop/doc/blobs.md
+		"CloudBlobStorageConnectionString": "", // see https://github.com/aloneguid/storage/blob/develop/doc/blobs.md
 		"EmailEnabled": false,
 		"EmailSMTPServerName": "",
 		"EmailSMTPPort": "25",
