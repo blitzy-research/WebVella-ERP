@@ -1,0 +1,22 @@
+# Manual verification attestations for the AAP 0.9.1 verification matrix printed by
+# .github/workflows/security-scan.yml (step "Gate 5"). One line per row:
+#   <row id>|PASS-or-FAIL|<ISO-8601 UTC>|<actor>|<commit>|<scenario revision>|<environment>|<note>
+#
+# Every line below records a scenario that was EXECUTED against a running host and a live
+# PostgreSQL database at the commit named in the line. Nothing here is asserted from reading
+# code, and no line is written for a scenario that was not run. A row absent from this file is
+# DEFERRED and does not pass the release gate - that is the correct state for a scenario nobody
+# has executed, and it is preferable to an attestation that cannot be substantiated.
+#
+# The scenario revision binds each line to the exact scenario and procedure text it was executed
+# against. Rewriting either rotates the revision and invalidates the line by design, so a
+# corrected procedure must be re-executed rather than inheriting an earlier pass.
+#
+# The notes are summaries, bounded at 300 characters by the gate. The full transcripts, response
+# codes and database states behind each line are recorded in docs/security/remediation-log.md
+# against the finding the row verifies.
+
+M26|PASS|2026-08-07T01:35:54Z|Blitzy Agent <agent@blitzy.com>|546a5b084e22daba8884b18533353382f30b77ce|1c18135aea94|disposable local host - Erp.Site :5001 and :5011, Erp.Site.Mail :5021, PostgreSQL 16 webvella_erp|3 authoring modes and the node-less path 403 for a non-admin; display rendered the PERSISTED option; wrong-component and cross-page nid 404; admin 200. Positive control: the same payload compiled for an admin and wrote its marker, and replaying it cached still refused.
+M27|PASS|2026-08-07T01:35:54Z|Blitzy Agent <agent@blitzy.com>|546a5b084e22daba8884b18533353382f30b77ce|ff6855313f60|disposable local host - Erp.Site :5001 and :5011, Erp.Site.Mail :5021, PostgreSQL 16 webvella_erp|Both credentials proven accepted first, refused after logout with durable rows, still refused after a restart while a new token was accepted; :5011 refused a token it never saw revoked; the store renamed away made a LIVE token 401; 20049 sessions through a 20000 mirror.
+M28|PASS|2026-08-07T01:35:54Z|Blitzy Agent <agent@blitzy.com>|546a5b084e22daba8884b18533353382f30b77ce|c0b0a6e1687e|disposable local host - Erp.Site :5001 and :5011, Erp.Site.Mail :5021, PostgreSQL 16 webvella_erp|Sixth attempt and the correct password refused; the message matches a credential failure by design so asserted via the audit trail; survived a restart; observed by :5011; 3-restart-2 split count still refused; store renamed away refused from a clean mirror; accepted at minute 15 of 16.
+M29|PASS|2026-08-07T01:35:54Z|Blitzy Agent <agent@blitzy.com>|546a5b084e22daba8884b18533353382f30b77ce|701e33d5f55f|disposable local host - Erp.Site :5001 and :5011, Erp.Site.Mail :5021, PostgreSQL 16 webvella_erp|None in production refused with no TCP session opened; Auto against a no-STARTTLS relay refused, transcript ends at EHLO with no AUTH or DATA; Auto and StartTls against a trusted relay with a reachable CRL delivered, AUTH after the handshake; create page refused 0/1/4, accepted 2/3.
