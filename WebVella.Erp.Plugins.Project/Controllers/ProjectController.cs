@@ -22,6 +22,16 @@ namespace WebVella.Erp.Plugins.Project.Controllers
 		private const char RELATION_SEPARATOR = '.';
 		private const char RELATION_NAME_RESULT_SEPARATOR = '$';
 
+		// THREAT ADDRESSED - review finding MED-01, CWE-639 authorization bypass through a user-controlled
+		// key (an insecure direct object reference), OWASP A01:2021 Broken Access Control.
+		// The refusal message states the rule and nothing about the target, so it cannot confirm or deny
+		// that a requested identifier names a real user.
+		private const string FOREIGN_WATCHER_DENIED_MESSAGE = "You may only change your own watch state for this task.";
+
+		// Audit source for watcher-authorization refusals. Named for the action so the trail identifies the
+		// entry point, matching the convention the platform's other authorization denials use.
+		private const string WATCHER_AUDIT_SOURCE = "ProjectController.TaskSetWatch:WatcherAuthorization";
+
 		// THREAT ADDRESSED - review finding F27 (Anonymous Surface), CWE-20 improper input validation,
 		// CWE-117 improper output neutralization for logs, CWE-779 logging of excessive data, OWASP
 		// A01:2021 Broken Access Control and A09:2021 Security Logging and Monitoring Failures.
@@ -461,6 +471,27 @@ namespace WebVella.Erp.Plugins.Project.Controllers
 			}
 			if (userId != null)
 			{
+				// THREAT ADDRESSED - review finding MED-01 / new conflict N2, CWE-639 authorization bypass
+				// through a user-controlled key, OWASP A01:2021 Broken Access Control. This action took a
+				// caller-supplied userId and checked only that the user EXISTED before adding or removing
+				// that user's watcher relation on an arbitrary task. Any authenticated caller could
+				// therefore subscribe someone else to a task - every later comment, status change and time
+				// log on it is mailed to a watcher, so that is unsolicited traffic aimed at a chosen
+				// person - or, with startWatch=false, silently UNSUBSCRIBE someone, suppressing the
+				// notifications they rely on. The identifier is the only thing that decided whose record
+				// was written, which is the textbook shape of an insecure direct object reference.
+				// The check is placed BEFORE the existence lookup on purpose. The lookup answered "user not
+				// found" for an unknown identifier, which made this action a membership oracle for any
+				// authenticated caller. Refusing first closes that oracle without touching the message:
+				// the lookup is now reachable only by a principal already entitled to enumerate users, so
+				// the existing response is left exactly as it was rather than changed gratuitously.
+				if (IsForeignWatcherChangeRefused(taskId.Value, userId.Value, startWatch))
+				{
+					response.Success = false;
+					response.Message = FOREIGN_WATCHER_DENIED_MESSAGE;
+					return Json(response);
+				}
+
 				var userRecord = new UserService().Get(userId.Value);
 				if (userRecord == null)
 				{
@@ -506,6 +537,82 @@ namespace WebVella.Erp.Plugins.Project.Controllers
 				response.Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!";
 				return Json(response);
 			}
+		}
+
+		/// <summary>
+		/// Decides whether the caller may change the watch state of a user OTHER than themselves, and
+		/// records an audit entry when the answer is no.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - review finding MED-01 / new conflict N2, CWE-639 authorization bypass through
+		/// a user-controlled key, OWASP A01:2021 Broken Access Control.
+		/// <para>
+		/// DENY BY DEFAULT, which is what the engagement's Authorization Enforcement standard asks for: this
+		/// returns true - refused - unless a principal is positively established as entitled. Three cases
+		/// are entitled and nothing else is. The caller acting on their OWN behalf, which is the ordinary
+		/// case and stays free. The system principal, so platform-internal work under
+		/// <c>SecurityContext.OpenSystemScope</c> is unaffected. An administrator, who can already edit any
+		/// user record directly and so gains nothing from being blocked here. A null principal is REFUSED
+		/// rather than treated as absent context - the action is behind <c>[Authorize]</c>, so a null
+		/// principal means something is wrong, and the safe reading of "wrong" on an authorization path is
+		/// "no".
+		/// </para>
+		/// <para>
+		/// WHY THE CHECK LIVES HERE AND NOT IN <c>RecordManager</c>. The CR-01 remediation put an
+		/// administrator-only invariant on the user-role relation inside <c>RecordManager</c>, because no
+		/// legitimate caller needs to write it. The watcher relation is the opposite: <c>TaskService</c> and
+		/// <c>CommentService</c> deliberately and legitimately add OTHER people as watchers - the project
+		/// owner when a task moves, the comment author when they comment - by calling
+		/// <c>RecordManager.CreateRelationManyToManyRecord</c> directly. A core-level restriction would
+		/// break those flows. The defect is not the relation, it is this ONE entry point trusting a
+		/// caller-supplied identifier, so the fix belongs at that entry point.
+		/// </para>
+		/// <para>
+		/// NO ENUMERATION RISK IN THE AUDIT RECORD, and no log forging: every interpolated value is a
+		/// <see cref="Guid"/>, a <see cref="bool"/> or an <see cref="System.Net.IPAddress"/> rendered by its
+		/// own <c>ToString</c>. None is a caller-supplied string, so CWE-117 log injection is structurally
+		/// impossible here and no neutralising helper is needed.
+		/// </para>
+		/// <para>
+		/// <c>DoNotNotify</c> is explicit. The platform mails notification-eligible log records, and the
+		/// default status is the one that makes it do so; a refusal an attacker can repeat at will must
+		/// never become an outbound mail amplifier. Writing the audit record is also isolated from the
+		/// refusal decision - if the log write itself fails, the caller is still refused. An audit failure
+		/// must never become an authorization bypass.
+		/// </para>
+		/// </remarks>
+		/// <param name="taskId">The task whose watcher list was targeted.</param>
+		/// <param name="requestedUserId">The user identifier the caller supplied.</param>
+		/// <param name="startWatch">True when the caller asked to add a watcher, false to remove one.</param>
+		/// <returns>True when the request must be refused.</returns>
+		private bool IsForeignWatcherChangeRefused(Guid taskId, Guid requestedUserId, bool startWatch)
+		{
+			ErpUser currentUser = SecurityContext.CurrentUser;
+
+			if (currentUser != null
+				&& (currentUser.Id == requestedUserId
+					|| currentUser.Id == SystemIds.SystemUserId
+					|| currentUser.IsAdmin))
+				return false;
+
+			try
+			{
+				new Log().Create(LogType.Error, WATCHER_AUDIT_SOURCE,
+					"Task watcher change refused - a caller may only change their own watch state.",
+					"task_id=" + taskId
+						+ "; requested_user_id=" + requestedUserId
+						+ "; start_watch=" + startWatch
+						+ "; actor_user_id=" + (currentUser == null ? "anonymous" : currentUser.Id.ToString())
+						+ "; ip=" + (HttpContext?.Connection?.RemoteIpAddress?.ToString() ?? "unknown"),
+					LogNotificationStatus.DoNotNotify);
+			}
+			catch
+			{
+				//Deliberately swallowed. See the remarks above: the refusal is the security outcome and it
+				//must not depend on the audit write succeeding.
+			}
+
+			return true;
 		}
 
 
