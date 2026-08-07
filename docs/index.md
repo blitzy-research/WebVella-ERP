@@ -36,8 +36,11 @@ engagement's five validation gates do not pass at this revision. Static analysis
 Security category is armed by `AnalysisLevelSecurity=latest-all`, and the `CA3001`–`CA3012` taint family
 now runs for eighteen of the nineteen projects — it is excluded from `WebVella.Erp.Web` alone, on a
 per-project measurement — so the gap is one project rather than eleven families. Manual verification is
-**DEFERRED**: the matrix carries 45 rows, of which 4 have been executed against running hosts and a live
-database and are attested, and **24 mandatory rows** plus the single advisory row remain unexecuted — 20 of the 45 are therefore proven, and the workflow prints `RELEASE-READY=no` while any mandatory row is not. A third gate is **vacuous by
+**executed in full**: the matrix carries 48 rows, and all **32** manual rows — 31 mandatory plus the single
+advisory row — have been executed against disposable hosts and live databases and hold committed,
+commit-bound attestations, so the matrix reports `deferred=0`. Release readiness is still not established:
+it depends on the 16 automatic evidence rows resolving inside a full workflow job and on the open AutoMapper
+licence decision. A third gate is **vacuous by
 construction** — the repository contains no test suite. One process requirement, *atomic commits per
 vulnerability class*, **FAILED** historically and has been complied with for every commit since. The authoritative gate-by-gate table is
 [Status at this revision](security/security-audit-report.md#status-at-this-revision-gate-by-gate).

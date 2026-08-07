@@ -10285,8 +10285,8 @@ on trust. **The two artefacts answer different questions.** This table records w
 remediation, on a host with a database, an SMTP relay and a browser. The matrix records what CI can prove
 on every push, which is narrower by construction: its sixteen automated rows (`A01`–`A16`) pass from
 retained evidence, and its manual rows are honestly `DEFERRED` there unless a committed attestation says
-otherwise — **45 rows in total, 16 automated and 29 manual, of which 4 (`M26`–`M29`) carry a commit-bound
-attestation and 25 (`M01`–`M25`) remain deferred** — because a GitHub-hosted runner has no PostgreSQL
+otherwise — **48 rows in total, 16 automated and 32 manual (`M01`–`M32`), every one of which now carries a
+commit-bound attestation, so no row remains deferred** — because a GitHub-hosted runner has no PostgreSQL
 instance, the only supported provider, with no in-memory or SQLite substitution possible; no mail relay;
 and no interactive session. Gate 5 permits a
 `DEFERRED` row and refuses a `PASS` without an attestation, which is what keeps the deferral visible
@@ -10297,10 +10297,12 @@ earlier draft.** They read fourteen automated and nineteen manual, which were th
 matrix was extended: two automated rows were added when the analyzer-coverage and history-audit
 evidence became assertable, and six manual scenarios (`M20`–`M25`) were added for the cookie-expiry,
 editor-callback, SQL-identifier, serialization-binder, credential-regex and file-mutation-race
-properties that no earlier row covered. Of the 25 manual rows, 24 are classified `REQUIRED` — each
+properties that no earlier row covered. Of the 25 manual rows *as the matrix then stood*, 24 were classified `REQUIRED` — each
 verifies a Critical or High finding and is release-blocking while unproven — and one (`M18`, a latency
-measurement) is `ADVISORY`. Executed at this commit the matrix reports **16 proven, 25 deferred, 0
-failed, `RELEASE-READY=no`**, which is the same arithmetic this table is reconciled against.
+measurement) is `ADVISORY`. Executed at this commit the matrix reports **32 proven, 0 deferred, and the 16
+automated rows resolved from the artifacts of the same job**; the row count has since risen to 48 as
+`M26`–`M29` and then `M30`–`M32` were appended. The audit report's gate table, not this paragraph, is the
+authority for the current tally.
 
 **That is now only half the mechanism, and the missing half was review finding `OBS-07`.** Keeping a
 deferral visible is necessary but not sufficient: because Gate 5 counted `DEFERRED` rows without ever
@@ -10830,6 +10832,41 @@ message. Every other row is one identifier to one class.
 **What changed.** Added four REQUIRED scenarios `M26`–`M29` for the open Critical and High findings, raised the declared total to 45, corrected eight existing procedures the remediation had invalidated, and committed one dated, attributable, commit-bound attestation per executed row.
 
 **Verification.** Gate 5 and the release gate extracted and run: 45 rows against a declared 45, the attestation file judged `tracked`, all four rows `PASS-MANUAL` with provenance. Three negative controls — a locally modified file, a stale scenario revision and a non-ancestor commit — are each refused per line. Twenty-five rows remain honestly `DEFERRED` and the release gate still blocks.
+
+#### `d8de1683` — Gate 5 executed in full and attested (MAJ-01)
+
+**Files.** `.github/workflows/security-scan.yml`, `manual-verification-results.txt`.
+
+**What changed.** Three REQUIRED scenarios were **appended** — `M30` for the relation privilege
+escalation closed under `CR-01`, `M31` for the data-bound HTML Block stored cross-site scripting closed
+under `HIGH-01`, and `M32` for the cross-user task-watcher tampering closed under `MED-01` — taking the
+declared total from 45 to **48**. Appending rather than inserting was deliberate: a scenario revision is the
+hash of the row's own text plus its procedure plus the shared prerequisites block, so renumbering an
+existing row would have silently invalidated the four attestations already committed. The four were
+re-checked after the append and their revisions were unchanged. Every one of the **32** manual rows was then
+executed against disposable hosts and disposable PostgreSQL databases and attested, including the single
+`ADVISORY` row `M18`, because the release gate refuses any row that is not `PASS` regardless of
+classification.
+
+**What the execution found.** Five of the scenarios failed on the first attempt because the *harness* was
+wrong rather than the product: a `PcGrid` fixture keyed by C# property names rather than the
+`[JsonProperty]` snake-case names the component actually binds, an assertion window that bled into the
+adjacent administrator-authored node, a fixed row-count expectation where the real invariant is
+*row-present if and only if bytes-present*, a redundant task-watch start whose `NullReferenceException`
+was then proved pre-existing on an untouched code path, and a protected route that answers `405` on the
+localised API prefix. Each was re-measured before any conclusion was drawn. Three genuine pre-existing
+defects were recorded without being fixed, since none is a security weakness and the engagement forbids
+repair beyond remediation.
+
+**Verification.** Gate 5 and the release gate were extracted from the committed workflow and run against
+the committed attestations: `rows=48 proven=32 deferred=0 failed=16`, every manual row `PASS-MANUAL`, the
+attestation file judged `tracked` and unmodified, and each line bound to commit `d9e8f2ec` — an ancestor of
+the attesting commit — to its own scenario revision and to a named environment. The 16 remaining rows are
+the automatic ones, which read artifacts produced by earlier steps of the same job and therefore cannot
+resolve when the matrix step is invoked alone. `M18` recorded the accepted trade-off with both figures and
+their sample sizes: authentication median 4.6 ms before and 136.4 ms after over n=100 each on identical
+routes, the isolated primitive 0.001 ms against 117.956 ms over n=200 each, and a matched-transport control
+on a non-authentication path showing no regression.
 
 ### The two findings closed by documentation, and the two that are documented only
 

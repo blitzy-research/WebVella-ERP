@@ -232,9 +232,11 @@ suppression in the risk register.
 
 **Audited and remediated is not the same as cleared for release, and this file does not claim it is.** At
 this revision the dependency, analyzer and secret gates all pass, but the workflow's separate release gate
-exits non-zero because **24 mandatory runtime verification scenarios** have not been executed — they need a
-live PostgreSQL instance, a browser or an SMTP server, none of which a CI runner has — and one dependency
-**licence** question is an open repository-owner decision that blocks `dotnet pack`. The authoritative,
+exits non-zero: every one of the **32 manual runtime verification scenarios has now been executed against
+disposable environments and attested**, but those scenarios need a live PostgreSQL instance, a browser or an
+SMTP server, none of which a CI runner has, so the automatic evidence rows resolve only inside a full
+workflow job — and one dependency **licence** question is an open repository-owner decision that blocks
+`dotnet pack`. The authoritative,
 gate-by-gate status is
 [Status at this revision](docs/security/security-audit-report.md#status-at-this-revision-gate-by-gate);
 where any sentence elsewhere reads as a completion claim, that table governs.
