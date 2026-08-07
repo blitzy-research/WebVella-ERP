@@ -16,9 +16,9 @@
 // REPRODUCE:
 //   npx markdownlint-cli@0.45.0 SECURITY.md README.md LIBRARIES.md docs/index.md docs/security/*.md
 //
-// MEASURED OUTCOME. That command exits **1** with **3** diagnostics on this tree - all three MD001
-// heading-increment. Every number in this block is a live measurement, re-taken at the pinned 0.45.0
-// against this exact tree; none is carried over from an earlier revision.
+// MEASURED OUTCOME. That command exits **0** with **zero** diagnostics on this tree. Every number in this
+// block is a live measurement, re-taken at the pinned 0.45.0 against this exact tree; none is carried over
+// from an earlier revision.
 //
 // HISTORY OF THE COUNT, so a reader can see why it moved. An earlier revision of this file claimed a
 // clean exit, which had drifted to 14 by the time it was checked and to 19 by the checkpoint review -
@@ -28,21 +28,27 @@
 //   preceding paragraph, and 1 MD058 heading jammed against the end of a table.
 // Those 16 were mechanical whitespace corrections inside fenced-code-safe boundaries; not one word of
 // prose, not one table cell and not one heading level changed, so no normative statement moved.
+// Code-review finding LOW-02 then took the remaining 3 -> 0. See the next block.
 //
-// WHY THE REMAINING 3 ARE DOCUMENTED RATHER THAN FIXED. All three are a `####` record entry that
-// follows a `##` section heading with no `###` between them:
+// THE LAST 3 ARE NOW FIXED, NOT DOCUMENTED - and the reasoning that had declined them was wrong on its
+// facts. All three were a `####` record entry following a `##` section heading with no `###` between:
 //   docs/security/risk-register.md      RISK-129 (section "post-remediation code review")
 //   docs/security/risk-register.md      RISK-135 (section "observability review remediation")
 //   docs/security/security-audit-report.md  CK-01 (Part 5)
-// Each of those sections contains a HOMOGENEOUS run of `####` records - 2, 7 and 23 respectively - so
-// the only two fixes available are both worse than the diagnostic. Demoting the flagged heading alone
-// would put one record at a different level from its 1, 6 or 22 siblings; demoting the whole run would
-// be a 32-heading structural refactor of two large documents, which the engagement's modification
-// boundaries forbid ("no refactoring beyond security requirements"). Inserting an intervening `###` was
-// also rejected: review finding MAJ-12 objects to excess heading structures in this very document set,
-// so adding three more would trade a cosmetic diagnostic for a substantive one. MD001 carries no
-// correctness property - it cannot hide, truncate or misstate content - and the affected headings render
-// correctly. The three are recorded in the risk register as an accepted stylistic residual.
+// The declined-for-good-reason argument rested on two claims, and both were checked and found false:
+//  (1) "demoting the whole run would be a 32-heading structural refactor of two large documents". It is
+//      NINE headings, not 32, and it is not a refactor: the register has NINETEEN "Detailed entries"
+//      sections, SEVENTEEN of which already open with a `###` entry heading. The two flagged sections were
+//      the outliers, so promoting their 2 and 7 entries to `###` made them CONSISTENT with the register's
+//      own established convention rather than restructuring anything.
+//  (2) "inserting an intervening `###` adds excess heading structure". For Part 5 of the audit report the
+//      opposite holds: Parts 1, 2, 3 and 4 EACH carry a `###` band heading between the part heading and
+//      their `####` records. Part 5 was the only part missing one, so adding it removed an inconsistency
+//      instead of creating structure.
+// Neither fix moved a record heading's level, an identifier, a field or a slug: the anchor a heading
+// generates does not depend on its level, and all 147 in-document anchor links were re-resolved after the
+// change with zero breakages. The audit report's record census is unchanged at 138 records and 53 Part 1
+// entries, which is what the workflow's MILESTONE-01 step asserts.
 //
 // An earlier MD056 table-column-count error in the H-06 record was fixed rather than documented, because
 // it was the only diagnostic that LOST INFORMATION: unescaped pipe characters inside two backtick code
