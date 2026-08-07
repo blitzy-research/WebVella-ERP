@@ -1,12 +1,18 @@
-﻿# blitzy-WebVella-ERP
+# blitzy-WebVella-ERP
 
 WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, which has been through an
 OWASP Top 10 (2021) security audit and remediation. The solution comprises nineteen projects: a shared
 core library, a web framework, seven independently hosted site applications and six plugins.
 
+> **Status authority.** This document is **not** the authority for the security posture's status.
+> Exactly one surface is: the audit report's
+> [Status at this revision, gate by gate](security/security-audit-report.md#status-at-this-revision-gate-by-gate) section. Where any statement here disagrees
+> with it, that section governs and this one is superseded. Configuration requirements are owned by the [secure configuration guide](security/secure-configuration.md).
+> Recorded under code-review findings `MAJ-06` and `MAJ-12`.
+
 ## Security
 
-Of 53 findings — 5 Critical, 20 High, 18 Medium and 10 Low — every Critical and High has an
+Of 53 findings — 5 Critical, 20 High, 17 Medium and 11 Low — every Critical and High has an
 implemented fix, and every Medium and Low is documented with a recommended fix.
 
 **That count is the original audit inventory, not the total number of defects found.** Later independent

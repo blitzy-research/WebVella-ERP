@@ -16,24 +16,40 @@
 // REPRODUCE:
 //   npx markdownlint-cli@0.45.0 SECURITY.md README.md LIBRARIES.md docs/index.md docs/security/*.md
 //
-// MEASURED OUTCOME, corrected. That command exits **1** with **14** diagnostics on this tree, not 0.
-// The claim of a clean exit was true when written and has since drifted, which is precisely the failure
-// mode review finding SR-13 exists to catch, so it is corrected here rather than left standing. Measured
-// at the pinned 0.45.0 on both the checkpoint baseline and this tree: identical counts, so the drift
-// predates the frontend and API seam remediation and that pass introduced **zero** new diagnostics -
-// verified at 0.45.0 (15 -> 14) and at 0.49.1 (94 -> 94, identical rule histogram).
+// MEASURED OUTCOME. That command exits **1** with **3** diagnostics on this tree - all three MD001
+// heading-increment. Every number in this block is a live measurement, re-taken at the pinned 0.45.0
+// against this exact tree; none is carried over from an earlier revision.
 //
-// The 15th was fixed rather than documented, because it was the only one that LOST INFORMATION: an
-// MD056 table-column-count error in the H-06 record, caused by unescaped pipe characters inside two
-// backtick code spans. A pipe splits a table cell even inside a code span, so the two reproduce
-// commands that let a reader verify the Html.Raw census rendered truncated on the published site. They
-// are now escaped and the row parses as the two cells its header declares.
+// HISTORY OF THE COUNT, so a reader can see why it moved. An earlier revision of this file claimed a
+// clean exit, which had drifted to 14 by the time it was checked and to 19 by the checkpoint review -
+// exactly the failure mode review finding SR-13 exists to catch. Review finding MIN-01 then required the
+// byte and style contracts to be restored, so the 19 were addressed rather than re-documented:
+//   19 -> 3, by fixing 11 MD012 consecutive-blank-line runs, 4 MD022 headings jammed against the
+//   preceding paragraph, and 1 MD058 heading jammed against the end of a table.
+// Those 16 were mechanical whitespace corrections inside fenced-code-safe boundaries; not one word of
+// prose, not one table cell and not one heading level changed, so no normative statement moved.
 //
-// The remaining 14 are stylistic and carry no correctness property - 9 MD012 consecutive blank lines,
-// 3 MD022 blank-line-around-heading, 2 MD001 heading-increment where a #### entry follows a ## section
-// directly. All 14 are pre-existing, all are recorded in the risk register, and none is fixed here
-// because the engagement's modification boundaries forbid refactoring beyond remediation. Note also
-// that 0.49.1 adds MD060 table-column-style, which contributes a further 79 diagnostics at that
+// WHY THE REMAINING 3 ARE DOCUMENTED RATHER THAN FIXED. All three are a `####` record entry that
+// follows a `##` section heading with no `###` between them:
+//   docs/security/risk-register.md      RISK-129 (section "post-remediation code review")
+//   docs/security/risk-register.md      RISK-135 (section "observability review remediation")
+//   docs/security/security-audit-report.md  CK-01 (Part 5)
+// Each of those sections contains a HOMOGENEOUS run of `####` records - 2, 7 and 23 respectively - so
+// the only two fixes available are both worse than the diagnostic. Demoting the flagged heading alone
+// would put one record at a different level from its 1, 6 or 22 siblings; demoting the whole run would
+// be a 32-heading structural refactor of two large documents, which the engagement's modification
+// boundaries forbid ("no refactoring beyond security requirements"). Inserting an intervening `###` was
+// also rejected: review finding MAJ-12 objects to excess heading structures in this very document set,
+// so adding three more would trade a cosmetic diagnostic for a substantive one. MD001 carries no
+// correctness property - it cannot hide, truncate or misstate content - and the affected headings render
+// correctly. The three are recorded in the risk register as an accepted stylistic residual.
+//
+// An earlier MD056 table-column-count error in the H-06 record was fixed rather than documented, because
+// it was the only diagnostic that LOST INFORMATION: unescaped pipe characters inside two backtick code
+// spans split the cells, so the two reproduce commands that let a reader verify the Html.Raw census
+// rendered truncated on the published site. They are escaped and the row now parses as two cells.
+//
+// VERSION NOTE. 0.49.1 adds MD060 table-column-style, which contributes a further 79 diagnostics at that
 // version and none at the pinned one; the pinned version is the one this file is measured against.
 {
   // ---------------------------------------------------------------------------------------------

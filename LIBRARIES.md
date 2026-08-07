@@ -2,6 +2,12 @@
 
 This is the third-party dependency inventory referenced from the `### Third party libraries` section of [README](https://github.com/WebVella/WebVella-ERP/blob/master/README.md). It lists the platform's **direct** package references, the one transitive package that carries a security advisory, the shared framework reference, and the one committed native binary - each with the version in use, the project that declares it, what it is used for, and its licence.
 
+> **Status authority.** This document is **not** the authority for the security posture's status.
+> Exactly one surface is: the audit report's
+> [Status at this revision, gate by gate](docs/security/security-audit-report.md#status-at-this-revision-gate-by-gate) section. Where any statement here disagrees
+> with it, that section governs and this one is superseded. This page is authoritative only for the dependency inventory itself.
+> Recorded under code-review findings `MAJ-06` and `MAJ-12`.
+
 It is deliberately **not** a full transitive closure. Enumerating every package the restore graph resolves would bury what this product actually declares, which is the question this document exists to answer. *Scope and currency* below states the boundary exactly, and step 2 of *How to reproduce this inventory* gives the command that produces the complete closure for anyone who needs it.
 
 The inventory was produced by parsing **all 19 project manifests in the repository with XML comments stripped first**, so that commented-out entries could never be mistaken for live references. That distinction matters enough to be called out twice in this document: 15 `PackageReference` entries in this repository sit inside XML comments and are therefore absent from the build graph. They are listed separately, under *Commented-out package references*, and must not be read as dependencies of this product.

@@ -1,5 +1,11 @@
 # Credential Migration
 
+> **Status authority.** This document is **not** the authority for the security posture's status.
+> Exactly one surface is: the audit report's
+> [Status at this revision, gate by gate](security-audit-report.md#status-at-this-revision-gate-by-gate) section. Where any statement here disagrees
+> with it, that section governs and this one is superseded. This guide is authoritative for the **migration procedure** only.
+> Recorded under code-review findings `MAJ-06` and `MAJ-12`.
+
 This guide covers the password-hash migration, the operator actions it requires, and rollback.
 
 WebVella ERP stored user passwords as unsalted, single-pass MD5 digests. That is finding `C-03`

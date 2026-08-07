@@ -1,5 +1,11 @@
 # Remediation Log
 
+> **Status authority.** This document is **not** the authority for the security posture's status.
+> Exactly one surface is: the audit report's
+> [Status at this revision, gate by gate](security-audit-report.md#status-at-this-revision-gate-by-gate) section. Where any statement here disagrees
+> with it, that section governs and this one is superseded. **This log is a historical record of what was changed and why — read its measurements as dated, not as current.**
+> Recorded under code-review findings `MAJ-06` and `MAJ-12`.
+
 **Fourteen** vulnerability classes, fourteen entries, in dependency order. Each entry lists the
 findings it closes, the threat it addresses, the files it changed with their line locators, why the fix
 took that shape rather than a larger one, the verification actually executed with its outcome, and its
@@ -315,7 +321,7 @@ remediation**.
 > was subsequently narrowed to `WebVella.Erp.Web` alone** under code-review finding `GATE-03`, because the
 > measurement above implicated one project and the `NoWarn` had been applied to all nineteen. Eighteen
 > projects now run the family, each in 0 to 6 seconds with zero diagnostics — see the class entry
-> [Build, supply-chain and governance gates](#build-supply-chain-and-governance-gates-gate-01-gate-03-gov-01).
+> [Build, supply-chain and governance gates](#build-graph-gate-enforcement-supply-chain-pinning-and-documentation-integrity).
 >
 > **Re-measured on the tree this commit publishes:** `3,093` warnings, `0` errors, and **55 distinct
 > Security-category diagnostics across 5 rules** — `CA2100` 20, `CA2326` 20, `CA2328` 9, `CA5351` 5,
@@ -2043,6 +2049,22 @@ corrected rather than deleted because the superseded version was published.
 - **One deviation, and it is the staged content policy above.** The value is exactly as mandated; the
   delivery mode is report-only first. The reason, the four components that force it, and the single
   switch that enforces it are all recorded, and the accepted risk is registered rather than implied.
+  **Two corrections to this bullet, recorded here once and applying wherever this log says "four
+  by-design channels".** *First, the count is wrong:* there are **five** first-party raw-output emitters
+  of inline script or author-supplied markup, not four —
+  `WebVella.Erp.Web/Components/PcJavaScriptBlock/Display.cshtml:11` wraps `@Html.Raw(options.Script)` in a
+  literal `<script>` element and was named nowhere until code-review finding `MAJ-09` raised it. `RISK-170`
+  is now the canonical census: **111** raw-output sinks across **61** views, each with its writer and
+  authorization contract, and the enforcement cost quantified as **59** inline `<script>` elements and
+  **27** inline `style` attributes. Where a later section of this log states the older count as part of a
+  historical verification of four *specific files*, that statement stays as written, because it accurately
+  records what was verified at the time; all seven relevant views have since been re-verified `UNTOUCHED`
+  against the pre-engagement baseline. *Second, "one deviation" understates the consequence:* because the
+  policy is delivered report-only it is not enforced, so the engagement's seven-header requirement is
+  **`UNRESOLVED / PARTIAL`, not compliant**, and promotion to enforcement is a repository-owner decision
+  rather than an engineering follow-up. This log is a historical record and is **not** the authority for
+  that status — the authoritative surface is the
+  [audit report's status section](security-audit-report.md#status-at-this-revision-gate-by-gate).
 - **The permissive cross-origin policy is not changed here.** It is host configuration belonging to its
   own class, and the plan requires it to land together with HTTPS redirection — redirection breaks
   cross-origin preflight with an invalid-redirect error if the two are separated. *Later state:* it was two hosts when this
@@ -10249,7 +10271,6 @@ header gates.
 - **`client.Timeout` remains unset on all five send paths.** Pre-existing, out of this pass's scope, and
   already recorded in the risk register.
 
-
 ## The manual verification checklist, with the outcome of every line
 
 This is validation gate 5's artefact and the substitute for the vacuous gate 4 — no runnable test exists
@@ -10322,7 +10343,7 @@ attestation has been committed, and fabricating one would defeat the only purpos
 | 10 | The file **move** and **delete** actions are refused for a non-owner | `M13` | **Executed — passed** | Both actions driven as a non-owner, and separately against a target that does not resolve; both refused, with one generic refusal message so the response cannot be used to probe for the existence of another user's staged file |
 | 11 | The two previously unconditional error paths return **no stack trace**, while server-side logging still records the detail | `M14` | **Executed — passed, and re-observed anonymously at this commit** | A generic message in the response body, with the full message and stack trace still present in the log record's details column — so the disclosure was closed without trading away any diagnostic capability. Re-driven at this commit **without credentials**, since these are the anonymous token routes: bad credentials and a malformed body both returned `Invalid email or password`, the refresh route declined to mint a successor and returned a null object, and a marker sweep over both bodies for `at WebVella`, `.cs:line`, `System.` and `Exception:` found **zero** hits |
 | 12 | Mail delivery succeeds against a valid certificate and **fails** against an invalid one | `M15` | **Executed — passed, and narrowed** | An `X509Chain` probe over a purpose-built PKI plus real sends: a self-signed relay is refused with `UntrustedRoot` and a relay whose certificate names a different host is refused on host-name mismatch, in **both** revocation modes. A valid certificate still delivers. The clause that used to close this row — that the narrow revocation relaxation could not be mistaken for accept-any — is withdrawn along with the relaxation itself under review finding `INT-08`: there is no revocation setting, revocation is always checked, and the retained two-mode measurement now serves only to show that a revocation failure and an untrusted certificate are separable in an operator's diagnostics. A relay whose revocation source is unreachable is refused, by design, and that operational consequence is `RISK-060` |
-| 13 | **The markup-block component and the components emitting generated inline script still render** — proving the four by-design raw channels were not broken | `M16` | **Not executed — deferred, and stated as such** | The argument available today is static rather than visual: the four by-design raw channels were deliberately left untouched, and the encoding pass is provably absent from those four files. Because the content policy ships **report-only**, an inline-script suppression cannot be the failure mode either. What would satisfy it: rendering a page carrying the HTML-block component and a page emitting generated inline script on a running host and confirming both display as they did before the encoding pass |
+| 13 | **The markup-block component and the components emitting generated inline script still render** — proving the by-design raw channels were not broken | `M16` | **Not executed — deferred, and stated as such; the scenario has since been widened** | The argument available today is static rather than visual: the by-design raw channels were deliberately left untouched, and the encoding pass is provably absent from those files — re-verified at this revision with `git diff --quiet c8ea6bd4 --` over **seven** view files, all **UNTOUCHED**: both `PcHtmlBlock` views, `Nav.Default.cshtml`, `WvSdkPageSitemap/Form.cshtml`, and the three channels code-review finding `MAJ-09` found unnamed — `PcJavaScriptBlock/Display.cshtml`, `PcGrid/Display.cshtml` and `PcApplications/Display.cshtml`. Because the content policy ships **report-only**, an inline-script suppression cannot be the failure mode either. **The count in the earlier wording was wrong: there are five raw-output inline-script or markup emitters, not four** — see `RISK-170` for the complete 111-sink census. The `M16` procedure has been extended accordingly with four further steps covering the `PcJavaScriptBlock` channel, the `HIGH-01` sanitiser boundary asserted against the **server response bytes** rather than the parsed DOM, the `PcGrid` and `PcApplications` channels, and the observed policy header name. That extension rotated `M16`'s scenario revision from `fb8966e2c788` to `973ee74c2e08`; `M16` carried no attestation, and the four attested rows `M26`–`M29` were verified to retain their revisions unchanged. What would satisfy it: executing the extended procedure on a running host |
 | 14 | **A full-record round-trip update does not overwrite the stored hash with the redaction marker** | `M17` | **Executed — passed** | The write path recognises the sentinel at four sites and leaves the stored hash untouched; the browser receives a masked input and never the sentinel. This is the highest-risk ripple in the engagement — getting it wrong would have replaced every affected user's credential with a literal marker string, a data-destroying outcome from a fix intended to prevent disclosure |
 | 15 | All nineteen projects build; the API contract changed **only** in the four intentional ways enumerated in the cell to the right; **no schema definition statements were emitted at any point** | `A13`, `A09` | **Executed — passed, and the contract claim restated because the absolute form was false** | Solution rebuild exit 0, **0 errors**, 3,043 analyzer warnings across the 17 solution projects, with the two non-member WebAssembly projects built by their own dedicated steps at 0 errors. No unreviewed Security-category analyzer diagnostic. Column, index and constraint dumps taken before and after the version-4 migration are **md5-identical**. **The contract claim, stated exactly.** An earlier revision of this row read *no route, verb or response envelope changed except the deliberate removal of stack-trace text from two error bodies*, which contradicted this very document: the session-revocation class adds a route, and it is documented as added. The four intentional changes, and there are no others, are: (1) **stack-trace text removed from two error bodies** — the `H-13` remediation, and the only one the engagement's boundaries pre-authorised; (2) **one route ADDED**, `POST api/v3/en_US/auth/jwt/token/logout` (`RevokeJwtToken`), authenticated, carrying no `[AllowAnonymous]`, returning the controller's standard `ResponseModel` envelope — recorded in the session-revocation class of this log, which is where the contradiction was visible; (3) **the download response gains a `Content-Disposition: attachment` header** for every extension outside the four-entry inline set — the back half of the `H-08` chain, a header addition rather than a body or status change; (4) **`POST /fs/move/` returns the endpoint's own `FSResponse` refusal envelope** where a withheld or raced staged target previously escaped as an unhandled fault with a **zero-length body** — strictly a repair of a broken response rather than a new shape, since the envelope is the one this action already used for every other denial. Separately, and this is the narrower claim that IS absolute: **no route template, verb or authorization attribute changed after the checkpoint baseline `80042d8c`** — verified by `git diff 80042d8c..HEAD -- '*.cs'` filtered to `[Route]`, `[AcceptVerbs]`, `[HttpGet]`, `[HttpPost]`, `[Authorize]` and `[AllowAnonymous]` lines, which returns **nothing**. |
 | 16 | The **login-latency increase** from the deliberate high-iteration key derivation is **measured and recorded as an accepted, pre-declared trade-off** | `M18` | **Executed — measured rather than asserted** | 20-run single-threaded medians, recorded in [Class 3](#class-3-credential-integrity). The cost is confined to the authentication path, and credential resolution is bounded to a constant **two** derivations per attempt so a single anonymous request cannot amplify it. It is an accepted trade-off, pre-declared before the work rather than discovered afterwards as a regression |
@@ -10461,6 +10482,7 @@ never existed, so MSBuild skipped the Client project silently with `MSB9008` and
 restore, audit and analyzer graph — the same falsely-clean-scan failure mode as H-19, from a different
 cause. The reference now names the real manifest, `..\Client\WebVella.Erp.WebAssembly.csproj`, and both
 projects target `net10.0`.
+
 ## Observability review remediation — the disposition of `OBS-01` through `OBS-11`
 
 A code review of the final observability milestone returned **NOT APPROVED** with eleven findings: one

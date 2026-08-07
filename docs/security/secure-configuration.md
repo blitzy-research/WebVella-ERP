@@ -1,5 +1,11 @@
 # Secure Configuration
 
+> **Authority split.** This guide **is** the single authority for **what an operator must configure** —
+> the required-settings inventory below is normative. It is **not** the authority for gate or
+> requirement *status*; that is the audit report's
+> [Status at this revision, gate by gate](security-audit-report.md#status-at-this-revision-gate-by-gate) section, which governs wherever
+> the two disagree. Recorded under code-review findings `MAJ-06` and `MAJ-12`.
+
 Operator guide for running WebVella ERP securely after the OWASP Top 10 (2021) audit and remediation:
 what you must supply, how to supply it, what the platform now emits and enforces, and what is
 deliberately still open.
@@ -122,6 +128,7 @@ the file.
 | `Settings:CloudBlobStorageConnectionString` | `Settings__CloudBlobStorageConnectionString` | Only when `Settings:EnableCloudBlobStorage` is `true` | Credential-bearing, so it must never be committed. Blanked in all eight tracked files (finding `CR2-F-12`) |
 | `Settings:TimeZoneName` | `Settings__TimeZoneName` | **In practice, on any non-Windows host** | Time-zone identifier. See [*Time zone identifier on non-Windows hosts*](#time-zone-identifier-on-non-windows-hosts) |
 | `ASPNETCORE_ENVIRONMENT` | hosting environment | Recommended | Must **not** be `Development` in production (finding H-12). It also selects the Development-only cross-origin fallbacks |
+| `DOTNET_ENVIRONMENT` | hosting environment | Recommended **for `WebVella.Erp.ConsoleApp` only** | **Takes precedence over `ASPNETCORE_ENVIRONMENT` in the console host** (finding `MIN-02`). See [*The console host reads `DOTNET_ENVIRONMENT` first*](#the-console-host-reads-dotnet_environment-first) |
 
 All eight run configurations need the connection string and the encryption key: the seven site hosts
 `WebVella.Erp.Site`, `WebVella.Erp.Site.Crm`, `WebVella.Erp.Site.Mail`,
@@ -886,9 +893,29 @@ that reasons only about scripts and styles will break images and the code editor
 deployment.
 
 The inline-emitting surface is also **wider than the four components originally identified**. In
-addition to the HTML-block component and the two script-emitting components — enumerated in the
+addition to the HTML-block component and the script-emitting components — enumerated in the
 [risk register](risk-register.md) rather than duplicated here — real reports implicate the rich-text
 editor, the lazy-load bundle and the source editor.
+
+**The count of first-party emitters was wrong, and the corrected census is `RISK-170`.** Earlier
+revisions of this guide and of the risk register said *four* components emit inline script or
+author-supplied markup through a raw-output channel. There are **five**:
+`PcJavaScriptBlock/Display.cshtml:11` wraps `@Html.Raw(options.Script)` in a literal `<script>` element
+and was named in neither document until code-review finding `MAJ-09` raised it. `RISK-170` is now the
+canonical inventory — all **111** raw-output sinks across **61** views, each with the code that writes
+its value and the authorization contract governing that writer — and it quantifies the refactoring
+target as **59** inline `<script>` elements and **27** inline `style` attributes. Use it, not this
+table's prose, when scoping the work.
+
+**Status of the mandated header requirement, and where that status lives.** Because the policy is
+delivered report-only, the engagement's seven-header requirement is **`UNRESOLVED / PARTIAL`, not
+compliant** — six of the seven mandated header names are emitted and enforced, and the seventh arrives
+as `Content-Security-Policy-Report-Only`, which enforces nothing. This guide is **not** the authority for
+that status: the single authoritative status surface is the
+[audit report's status section](security-audit-report.md#status-at-this-revision-gate-by-gate), and if
+anything here disagrees with it, that section governs. Promotion to enforcement is a repository-owner
+decision, because it trades a security layer against the deliberate feature set of a page-designer
+platform; the governance is `RISK-022`.
 
 **The string-evaluation row is the one line the refactoring step cannot clear.** A nonce or a hash
 authorises a *known script*; only an `unsafe-eval` allowance authorises string evaluation, so
@@ -1576,7 +1603,39 @@ deployment. Setting one and not the other leaves diagnostics exposed.
 | Switch | Where | Shipped value now | Production value |
 | --- | --- | --- | --- |
 | `ASPNETCORE_ENVIRONMENT` | `WebVella.Erp.Site/web.config` for IIS-hosted deployments; otherwise the process environment | `Production` | `Production` |
+| `DOTNET_ENVIRONMENT` | The process environment, **`WebVella.Erp.ConsoleApp` only** | unset | unset, or `Production` |
 | `Settings:DevelopmentMode` | All eight `Config.json` files | `"false"` | `"false"` |
+
+### The console host reads `DOTNET_ENVIRONMENT` first
+
+**Finding `MIN-02`.** For the seven site hosts the environment name comes from `IWebHostEnvironment`,
+which ASP.NET Core resolves from `ASPNETCORE_ENVIRONMENT`. `WebVella.Erp.ConsoleApp` is a plain
+`Microsoft.NET.Sdk` console application with no host builder and therefore no `IHostEnvironment` to
+ask, so it reads the environment itself — and it reads **`DOTNET_ENVIRONMENT` first**, falling back to
+`ASPNETCORE_ENVIRONMENT` only when that is unset or blank
+(`WebVella.Erp.ConsoleApp/Program.cs`, the configuration-builder block).
+
+**Why an operator has to know this.** The order is the opposite of the instinct that
+`ASPNETCORE_ENVIRONMENT` is the one switch that matters, and it has a security consequence in each
+direction:
+
+- **`DOTNET_ENVIRONMENT=Development` silently wins.** A machine or container that carries it — the
+  .NET SDK and several tool images set it — puts the console host into its development branch **even
+  though `ASPNETCORE_ENVIRONMENT=Production` is also set**. The development branch adds the user-secrets
+  provider, so an unencrypted on-disk store is consulted on a host the operator believes is in
+  production.
+- **Setting only `DOTNET_ENVIRONMENT=Production` does not harden the site hosts**, which never read it.
+
+**What to do.** Treat them as one setting with a known precedence: on any host that runs the console
+application, either leave `DOTNET_ENVIRONMENT` unset and rely on `ASPNETCORE_ENVIRONMENT`, or set
+**both** to the same value. Verify with `printenv DOTNET_ENVIRONMENT ASPNETCORE_ENVIRONMENT` — an empty
+first line is the state the site hosts and the console host agree on.
+
+**The bound on the exposure.** Outside development the user-secrets provider is not added at all, so a
+non-development chain is exactly *JSON file, then environment variables*. User secrets are also added
+**last**, so a developer's own store outranks an ambient machine-wide variable — deliberate, so a
+stale environment value cannot override a deliberate local one. Neither `DOTNET_ENVIRONMENT` nor
+`ASPNETCORE_ENVIRONMENT` gates `Settings:DevelopmentMode`; that is the separate switch above.
 
 `ASPNETCORE_ENVIRONMENT` is what gates the **developer exception page.** Leaving it at `Development`
 serves full stack traces, source snippets and environment detail to anyone who triggers an error

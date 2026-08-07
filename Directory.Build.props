@@ -97,11 +97,15 @@
 
 	     DO NOT measure liveness by text search. The element form
 	         grep -cE '<(NoWarn|WarningsNotAsErrors|NuGetAuditSuppress)' Directory.Build.props
-	     returns 3 here, and all three matches are inside the seam's comment, so a
-	     text count cannot distinguish a dormant seam from an active suppression -
-	     which is precisely the mistake both earlier revisions made, in turn. The
-	     bare-word form is worse still: it also matches this prose, so it measures
-	     its own documentation.
+	     returns 4 here. THREE of those four sit inside the seam's comment and are
+	     dormant; the FOURTH, the NoWarn in THE NARROWED EXCLUSION above, is LIVE -
+	     it carries the CA3001-CA3012 taint family and nothing else. So a text count
+	     cannot distinguish a dormant seam from an active suppression, which is
+	     precisely the mistake earlier revisions made in turn. Two of those revisions
+	     said "returns 3 ... all three inside the comment"; both halves were wrong
+	     once the narrowed exclusion was added, and the count is corrected here under
+	     code-review finding MAJ-06. The bare-word form is worse still: it also
+	     matches this prose, so it measures its own documentation.
 
 	     ASK MSBUILD INSTEAD, which sees only what the build sees:
 	         dotnet msbuild <any project> -getItem:NuGetAuditSuppress   # []
@@ -109,6 +113,14 @@
 	     An empty item list and a NoWarn carrying no NU19* code together prove no
 	     advisory is silenced anywhere in this repository. That is the check to
 	     quote, and it is the one the CI gate runs.
+	     Re-measured at this revision, and note that the NoWarn value is NOT uniform
+	     across projects - quoting one project's value as though it were global is
+	     the same class of error as the text count above:
+	         WebVella.Erp            -> 1701;1702
+	         WebVella.Erp.Plugins.SDK -> 1701;1702
+	         WebVella.Erp.Web        -> ;CA3001;...;CA3012   (the narrowed exclusion)
+	     NO project's NoWarn carries an NU19* code, which is the property that
+	     actually matters, and -getItem:NuGetAuditSuppress is [] for every project.
 	     The element form does not false-positive on the live WarningsAsErrors
 	     promotion below either, since that is a different element name. If a suppression ever becomes necessary, the
 	     sanctioned shape is a NuGetAuditSuppress item naming ONE advisory URL -

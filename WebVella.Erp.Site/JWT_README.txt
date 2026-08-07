@@ -62,10 +62,32 @@ hash it feeds: 256 bits, i.e. 32 bytes. Anything shorter is refused outright. 48
 [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
 
 IN DEVELOPMENT the value may instead go into user secrets, which live outside the repository.
-Run this from the WebVella.Erp.Site project directory - it is the only project in this solution
-that declares a user secrets identifier:
+Run this from the WebVella.Erp.Site project directory:
 
 	dotnet user-secrets set "Settings:Jwt:Key" "<value generated as above>"
+
+SECURITY - review finding HIGH-02; CWE-1059 insufficient technical documentation. An earlier
+revision of this note claimed WebVella.Erp.Site was "the only project in this solution that
+declares a user secrets identifier". That was false, and the falsehood mattered: a reader
+following it would conclude that user secrets were unavailable to the other executables and
+would put a real secret into a tracked Config.json instead - reopening the very finding this
+note exists to close. ALL EIGHT executables declare a UserSecretsId, each its own store, so a
+secret set for one host is NOT visible to another. Measured from the project files:
+
+	WebVella.Erp.Site                3d84b9b1-534b-473b-b0d8-f6b47f33297b
+	WebVella.Erp.Site.Crm            7cdbf11d-ae56-5ee3-907d-2a50d47825c9
+	WebVella.Erp.Site.Mail           433b5aa4-8f48-5924-b1c5-a2b91b06b85c
+	WebVella.Erp.Site.MicrosoftCDM   1f2442e7-e410-5bd1-8ec1-b82f4388f95c
+	WebVella.Erp.Site.Next           383b4579-6bb3-55f1-a998-47adfcf25dc6
+	WebVella.Erp.Site.Project        921179fc-4177-5603-bbf9-9c8a43db8cc3
+	WebVella.Erp.Site.Sdk            e902f2c3-b59e-5aef-b217-6501e03e6a44
+	WebVella.Erp.ConsoleApp          9b3e4423-9b40-55c3-9abc-bcd7bcf79685
+
+Only WebVella.Erp.Site and WebVella.Erp.Site.Project read a Settings:Jwt section, so those two
+are the only ones for which THIS key is meaningful; the remaining six still need their own
+Settings:ConnectionString and Settings:EncryptionKey, set from each project's own directory.
+User secrets resolve only outside a Production environment, so they are a development channel
+only - a deployed host must use environment variables or another configuration provider.
 
 ROTATION IS MANDATORY, NOT OPTIONAL. The literal this note used to publish is permanently
 compromised for anyone who has ever had access to this repository or its history, and blanking
@@ -98,69 +120,67 @@ set out above.
 
 =========================================================================
 3. startup
-in ConfigureServices method change auth to be 
 
- services.AddAuthentication(options =>
-{
-    options.DefaultScheme = "JWT_OR_COOKIE";
-    options.DefaultChallengeScheme = "JWT_OR_COOKIE";
-})
-.AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
-{
-    options.Cookie.HttpOnly = true;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-    options.Cookie.SameSite = SameSiteMode.Lax;
-    options.ExpireTimeSpan = TimeSpan.FromHours(24);
-    options.SlidingExpiration = true;
-    options.Cookie.Name = "erp_auth_base";
-    options.LoginPath = new PathString("/login");
-    options.LogoutPath = new PathString("/logout");
-    options.AccessDeniedPath = new PathString("/error?access_denied");
-    options.ReturnUrlParameter = "returnUrl";
-})
-    .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = Configuration["Settings:Jwt:Issuer"],
-            ValidAudience = Configuration["Settings:Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Configuration["Settings:Jwt:Key"]))
-        };
-    })
-    .AddPolicyScheme("JWT_OR_COOKIE", "JWT_OR_COOKIE", options =>
-    {
-        options.ForwardDefaultSelector = context =>
-        {
-            string authorization = context.Request.Headers[HeaderNames.Authorization];
-            if (!string.IsNullOrEmpty(authorization) && authorization.StartsWith("Bearer "))
-                return JwtBearerDefaults.AuthenticationScheme;
+SECURITY - review finding HIGH-02 (High); CWE-1059 insufficient technical documentation, with
+CWE-613 insufficient session expiration, CWE-347 improper verification of a cryptographic
+signature and CWE-178 improper handling of case sensitivity as the concrete consequences.
 
-            return CookieAuthenticationDefaults.AuthenticationScheme;
-        };
-    });
+THIS SECTION NO LONGER PUBLISHES A COPYABLE AUTHENTICATION SETUP, AND THAT IS THE FIX.
+It used to carry a ~40-line services.AddAuthentication(...) sample. Every line of it was correct
+when written, and the platform's own wiring then moved on while the sample did not. By the time
+this note was reviewed the sample had drifted from the shipping code in FOUR security-relevant
+ways, and a reader who pasted it into a new host would have built a measurably weaker one:
 
-SECURITY - finding H-15 (High); CWE-614 sensitive cookie without the 'Secure' attribute, CWE-319
-cleartext transmission of sensitive information; OWASP A02:2021 / A05:2021.
-THREAT: this note used to set HttpOnly and stop there. A host built from it let the
-authentication cookie travel over plain HTTP, where any intermediary can read it and replay the
-session, and the cookie never expired. The four lines added above close that, and two of them are
-deliberate choices rather than defaults:
-- Lax rather than Strict: Strict drops the cookie on the redirect back out of /login and breaks
-  the returnUrl round trip. Lax is the framework's own default posture.
-- 24 hours matches the bounded authentication ticket in WebVella.Erp.Web/Services/AuthService.cs
-  (1440 minutes). That ticket used to expire 100 years out (finding H-03), so a stolen cookie
-  stayed valid forever.
-The platform itself now applies all five attributes from one place - the shared cookie helper in
-WebVella.Erp.Web/ErpMvcExtensions.cs - so the seven hosts cannot drift apart. Call that helper
-rather than copying these lines into a new host.
+  - NO ClockSkew. The sample set none, so IdentityModel's default of FIVE MINUTES applied and
+    every token stayed acceptable for five minutes past its stated expiry. The platform pins the
+    skew explicitly instead (see AuthService.JwtClockSkew).
+  - NO revocation hook. The sample validated the signature and stopped. A token issued before a
+    logout, a password rotation or an administrative disable therefore kept working until it
+    expired. The platform hooks OnTokenValidated and consults the session-revocation service, so
+    a revoked principal is refused on its next request.
+  - NO screening of the signing key. The sample fed Configuration["Settings:Jwt:Key"] straight
+    into a SymmetricSecurityKey. A host configured with a null, too-short or previously-published
+    key would therefore either throw at startup or, worse, sign and accept forgeable tokens. The
+    platform resolves acceptability ONCE at startup by the same rule the issue and refresh routes
+    apply, so the handler and the routes can never disagree about whether tokens are trustworthy.
+  - CASE-SENSITIVE scheme dispatch. The sample tested authorization.StartsWith("Bearer "). The
+    Authorization scheme token is case-INSENSITIVE per RFC 7235, and the platform's own
+    JwtMiddleware compares it with StringComparison.OrdinalIgnoreCase, so a client sending
+    "bearer " was routed to the COOKIE scheme by the sample while the middleware treated it as a
+    bearer request - the two disagreed about which scheme was in play. The platform compares
+    case-insensitively in both places.
 
- in Configure method add 
- 
- app.UseJwtMiddleware();
+A second copy of security-critical wiring is a liability, not a convenience: it cannot be
+compiled, cannot be analyzed, and drifts silently. Review finding MAJ-12 makes the same point
+about duplicated normative content across this document set. So this note now names the ONE
+canonical implementation and stops describing it:
+
+  AUTHENTICATION AND BEARER VALIDATION
+	WebVella.Erp.Site/Startup.cs, ConfigureServices - the authentication builder, the bearer
+	token validation parameters, the pinned clock skew, the signing-key acceptability check,
+	the OnTokenValidated revocation hook and the case-insensitive JWT_OR_COOKIE selector.
+
+  COOKIE ATTRIBUTES, SHARED BY ALL SEVEN HOSTS
+	WebVella.Erp.Web/ErpMvcExtensions.cs - the shared cookie helper. Call it from a new host
+	rather than restating attributes, so the hosts cannot drift apart.
+
+  MIDDLEWARE REGISTRATION
+	The Configure method calls app.UseJwtMiddleware(). That one line is the whole of the
+	pipeline change and is stated here because it is the only part a new host must add itself.
+
+Read those two files for the current contract. If they and this note ever disagree, THE CODE IS
+AUTHORITATIVE - this note is a setup guide, not a specification.
+
+TWO COOKIE CHOICES ARE DELIBERATE, and are recorded here because the reason is not visible from
+the code alone (SECURITY - finding H-15; CWE-614 sensitive cookie without the 'Secure' attribute,
+CWE-319 cleartext transmission of sensitive information; OWASP A02:2021 / A05:2021 - the helper
+sets HttpOnly, Secure, SameSite, a bounded lifetime and sliding expiration, where this note once
+set HttpOnly and stopped, leaving the cookie replayable over plain HTTP and never expiring):
+- SameSite Lax rather than Strict: Strict drops the cookie on the redirect back out of /login and
+  breaks the returnUrl round trip. Lax is the framework's own default posture.
+- A 24-hour lifetime, matching the bounded authentication ticket in
+  WebVella.Erp.Web/Services/AuthService.cs (1440 minutes). That ticket used to expire 100 years
+  out (finding H-03), so a stolen cookie stayed valid forever.
 
  =========================================================================
  

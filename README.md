@@ -1,4 +1,4 @@
-﻿[NEW PROJECT ALERT] Check out our new project for [Data collaboration - Tefter.bg](https://github.com/WebVella/WebVella.Tefter).
+[NEW PROJECT ALERT] Check out our new project for [Data collaboration - Tefter.bg](https://github.com/WebVella/WebVella.Tefter).
 
 [NEW PROJECT ALERT] Check out our new project for [Document template generation](https://github.com/WebVella/WebVella.DocumentTemplates).
 
@@ -75,6 +75,7 @@ Two overrides and one hosting variable complete the set:
 | `Settings:Jwt:Issuer` | `Settings__Jwt__Issuer` | Only to override the shipped value; blank falls back to `webvella-erp`. |
 | `Settings:Jwt:Audience` | `Settings__Jwt__Audience` | Only to override the shipped value; blank falls back to `webvella-erp`. |
 | *(hosting environment)* | `ASPNETCORE_ENVIRONMENT` | Recommended everywhere, and it must **not** be `Development` in production: that setting engages the developer exception page and its stack traces (finding H-12, CWE-489/CWE-209). `WebVella.Erp.Site/web.config` now ships `Production`; override it on the host, never in source. |
+| *(hosting environment, console host only)* | `DOTNET_ENVIRONMENT` | **Takes precedence over `ASPNETCORE_ENVIRONMENT` in `WebVella.Erp.ConsoleApp`**, which has no host builder and reads the environment itself (finding MIN-02). An ambient `DOTNET_ENVIRONMENT=Development` therefore puts that host into its development branch even when `ASPNETCORE_ENVIRONMENT=Production` is set. Either leave it unset or set both to the same value; the seven site hosts ignore it. See [*The console host reads `DOTNET_ENVIRONMENT` first*](docs/security/secure-configuration.md#the-console-host-reads-dotnet_environment-first). |
 
 Configuration is read from **`Config.json`** first — note the capital `C`, and note that it is resolved from
 the directory the application was loaded from rather than from the working directory — then from environment
@@ -204,6 +205,13 @@ The complete list, key-rotation guidance and the deployment checklist are in
 - see [LICENSE](https://github.com/WebVella/WebVella-ERP/blob/master/LICENSE.txt) file
 
 ## Security
+
+> **Status authority.** This README is **not** the authority for the security posture's status.
+> Exactly one surface is: the audit report's
+> [Status at this revision, gate by gate](docs/security/security-audit-report.md#status-at-this-revision-gate-by-gate)
+> section. Where any statement here disagrees with it, that section governs. Configuration requirements
+> are owned by the [secure configuration guide](docs/security/secure-configuration.md).
+> Recorded under code-review findings `MAJ-06` and `MAJ-12`.
 
 To report a vulnerability, and for the supported versions and the operator hardening checklist, see
 [SECURITY.md](SECURITY.md). The platform has been audited against the OWASP Top 10 (2021); the findings

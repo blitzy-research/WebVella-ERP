@@ -37,18 +37,23 @@ document set disagrees with it, it is superseded.
 | --- | --- | --- | --- |
 | Critical | 5 | Immediate remediation required | All five remediated |
 | High | 20 | Remediation required | All twenty remediated |
-| Medium | 18 | Document with fix guidance | All eighteen documented. **Eight** are additionally remediated under one of the three exception limbs — `M-01`, `M-03`, `M-04`, `M-05`, `M-06`, `M-12`, `M-13`, `M-18` — and **two more, `M-09` and `M-10`, are partially changed** by later review-finding work while their own declines stand. An earlier revision of this row said "nine also remediated" without naming them; the canonical limb-by-limb mapping, including the two partial cases, is [in the risk register](risk-register.md#the-governing-disposition-rule-and-which-mediums-qualified) |
-| Low | 10 | Document for a future sprint | All ten documented; three closed incidentally by work a higher-severity class required |
+| Medium | 17 | Document with fix guidance | All seventeen documented. **Seven** are additionally remediated under one of the three exception limbs — `M-03`, `M-04`, `M-05`, `M-06`, `M-12`, `M-13`, `M-18` — and **two more, `M-09` and `M-10`, are partially changed** by later review-finding work while their own declines stand. Two corrections to earlier revisions of this row, recorded rather than overwritten: it once said "nine also remediated" without naming them, and it then counted **eighteen** Mediums and **eight** remediated because it classified `M-01` here. `M-01` is **Low** — see the next row and code-review finding `MAJ-07`. The canonical limb-by-limb mapping, including the two partial cases, is [in the risk register](risk-register.md#the-governing-disposition-rule-and-which-mediums-qualified) |
+| Low | 11 | Document for a future sprint | All eleven documented; three closed incidentally by work a higher-severity class required, and **`M-01` is remediated in full** because the **Security Headers** fix standard mandates it as a binding acceptance criterion regardless of band. `M-01` is counted here rather than under Medium: the severity matrix names *missing security headers* in the Low tier, and an earlier revision promoted it to Medium on the ground that it is a compensating control — retracted under `MAJ-07`, because eligibility for remediation is not a severity input. Its identifier keeps the `M-` prefix for cross-reference stability |
 | **Total** | **53** | | |
 
 Each of the fifty-three carries its own eight-field record in [Part 1](#part-1-the-audit-inventory),
-under an identifier in the ranges `C-01`–`C-05`, `H-01`–`H-20`, `M-01`–`M-18` and `L-01`–`L-10`. The
+under an identifier in the ranges `C-01`–`C-05`, `H-01`–`H-20`, `M-01`–`M-18` and `L-01`–`L-10`. **The
+identifier prefix indicates the range a finding was first numbered in, not its band.** One finding
+diverges: `M-01` is classified **Low**, for the reason recorded in its own record and under code-review
+finding `MAJ-07`, and it is counted in the Low row above. Its identifier was not renumbered because
+roughly forty citations across this document set reference it, and churning them would trade a
+presentational tidiness for a real risk of dangling references. The
 governing rule for the Medium and Low bands is the severity matrix reproduced below: those bands are
 *documented*, and are remediated only where one of the three tests named in the table above is met.
 Which test each remediated Medium meets is stated in its own record, and the reasoning behind every
 decision not to fix is in the [risk register](risk-register.md) rather than repeated here.
 
-## Status at this revision — gate by gate
+## Status at this revision, gate by gate
 
 This is the **single authoritative status surface** for the engagement. Where any other sentence in this
 document set, in `SECURITY.md`, in `docs/index.md` or in `LIBRARIES.md` disagrees with a row below, the
@@ -74,6 +79,143 @@ revision, and one engagement process requirement failed outright.
 | Minimal Change guideline 9 — **atomic commits per vulnerability class** | **FAIL historically, COMPLIED WITH since** | Seven of thirteen commits in the original remediation carry more than one vulnerability class; history was not rewritten. Every commit made while closing the code-review findings carries exactly one class — eighteen consecutive single-class commits at the time of writing — so the requirement is met going forward without the earlier failure being erased. The remediation log records the requirement as *NOT MET* and explains why history was not rewritten. Acknowledgement is not compliance, and no completion statement in this document set may cite the acknowledgement as though it were. See the [corrected accounting](remediation-log.md#guideline-9-was-not-met-the-corrected-accounting). |
 | Prescribed execution sequence, stage by stage | **FAIL** | Four ordering and atomicity failures, `F-07` through `F-10`, named in [Methodology](#methodology) above. Final tree state is correct in all four cases. |
 | Minimal Change guideline 10 — validate after each fix category | **PARTIAL** | Every class carries an executed `### Verification` section; the qualification is recorded in the log on the same row as guideline 9. |
+| **Frozen operation map** — 86 files, 12 CREATE, 74 UPDATE, 0 DELETE | **DEVIATED — not compliant** | Measured against the pre-engagement commit `c8ea6bd4`: **171** changed paths — **24** added, **143** modified, **4** deleted. All 86 authorised paths were changed, and **85** further paths were changed that the map does not authorise, including **4 deletions where the map authorises none**. Raised by code-review finding `MAJ-04`, which specifically refused the argument that extra changes are compliant because they carry security rationales. The amendment, path by path with the authorising finding for each, is [below](#formal-scope-and-contract-amendment-maj-04-maj-10-maj-11). |
+| **Preservation and no-touch boundaries** | **DEVIATED — each exception now carries recorded authority** | Nine classes of exception, including four file deletions against a `0 DELETE` map, twelve modifications to the Blazor WebAssembly client that AAP §0.3.2 excludes by name, a renamed cookie and two extra blanked configuration values. Raised by `MAJ-10`. Each is bound to its authorising finding in the amendment below; none is justified by security rationale alone. |
+| **Build and CI contract** | **AMENDED — deviations recorded, stronger posture preserved** | The workflow carries **23** steps and schedule and tag triggers; `Directory.Build.props` adds `AnalysisLevelSecurity`, a scoped `NoWarn`, `NU1900`/`NU1905` and a packaging gate; `global.json` pins `rollForward: disable` where the frozen text specified `latestPatch`. Raised by `MAJ-11`. Every deviation is a **strengthening**, so the files are amended rather than aligned down; the justification for each is in the amendment below. |
+| **`AutoMapper` licence ratification** | **OPEN — release-blocking, and not an engineering decision** | The advisory half is closed: pinned `[15.1.3]`, **zero** advisory rows across all 19 projects, and `dotnet msbuild -getItem:NuGetAuditSuppress` returns `[]` — nothing is silenced. The licence half is **unratified**: every patched version is under the Reciprocal Public License 1.5 while the product declares Apache-2.0 and publishes to nuget.org, and there is no patched permissive version to retreat to. Raised by code-review finding `MAJ-02`. **This remediation may not decide it.** AAP §0.6.5 records it as an escalation that must not be absorbed silently and §0.9.2 states that an automated agent must not change a product's effective licence posture on its own initiative, so the tree is left in the only state an agent may leave it in — advisory closed, declared licence unchanged, contradiction visible. Enforced mechanically rather than by note: re-measured at this revision, `dotnet pack` fails with `error ERPLIC001` and produces no package (exit **1**), while `dotnet build` emits **0** `ERPLIC` diagnostics, so `restore`, `build`, `publish` and `run` are unaffected. The owner records an answer as `AUTOMAPPER-LICENCE-DECISION: accepted-rpl-1.5 \| approver: … \| date: YYYY-MM-DD` (`declined-rpl-1.5` with an RPL version still pinned fails `ERPLIC002`; an unrecognised token fails `ERPLIC003`; an unreadable manifest fails `ERPLIC004`, so the gate cannot be disabled by moving what it reads). The decline path — revert the pin behind a narrowly scoped, per-advisory suppression plus a recorded risk acceptance — is documented in `RISK-001`, together with the measurement that a project-scoped suppression is insufficient (**15** residual `NU1903` errors) and that the only placement that works would also disable the CI negative control. |
+
+The six fix implementation standards are acceptance criteria in the same sense as the gates, so their
+status belongs on this surface too rather than only in the prose that traces findings to them.
+
+| Engagement fix implementation standard | Status | What was actually done, and what is missing |
+| --- | --- | --- |
+| **Security Headers** — the seven headers **with their exact values** | **UNRESOLVED / PARTIAL — not compliant at this revision** | **Six** of the seven mandated header *names* are emitted with the mandated values, verified on the wire against a published host on a dynamic response and on two gzip-encoded static assets. The seventh is **not emitted**: `SecurityHeadersMiddleware` ships `SecurityHeadersOptions.ContentSecurityPolicyReportOnly = true` by default (`:L258`), and the branch at `:L194-L200` emits **exactly one** policy header name — so what a browser receives is `Content-Security-Policy-Report-Only`, not `Content-Security-Policy`. A report-only policy is advisory by specification: the browser reports violations and enforces nothing. The mandated **value** is emitted byte for byte and is a `public const` that no configuration source can weaken, so the gap is delivery mode alone — but a requirement for an *enforced* header set is not met by an advisory one, and this row previously read as compliant. Raised by code-review finding `MAJ-08`. **Enforcement is an owner decision, not an engineering follow-up**, and the backlog that gates it is measured in `RISK-170`: 59 inline `<script>` elements and 27 inline `style` attributes would need nonce or hash treatment, across three components whose stated purpose is to emit author-supplied script. Advancing the rollout requires no code change — one configuration key, `SecurityHeaders__ContentSecurityPolicyReportOnly=false`. See `RISK-022` for the promotion governance and `RISK-170` for the channel inventory. |
+| **Injection Prevention** | Satisfied for every finding it governs | `H-06`, `H-07`, `H-08` (upload type allow-list), `H-09`, `H-10`, `H-17`, `M-18`. Each carries an executed verification in Part 1. The one qualification is the set of by-design raw-output channels inventoried in `RISK-170`, which are accepted rather than encoded because encoding them would disable the features they implement. |
+| **Authentication Hardening** | Satisfied for every finding it governs | `C-01`, `C-03`, `H-02`, `H-03`, `H-15`, `H-16`, `M-03`, `M-04`, `M-05`, `M-13`. The password-hashing algorithm deviates from the standard's literal wording — PBKDF2 rather than bcrypt, scrypt or Argon2 — which is recorded as `RISK-003` with an owner option to substitute a dedicated package. |
+| **Authorization Enforcement** | Satisfied for every finding it governs | `C-02`, `C-05`, `H-08` (ownership checks), `H-13`, `H-14`, `M-12`, and the three findings this code review added: `CR-01`, `HIGH-01` and `MED-01`. |
+| **Cryptographic Standards** | Satisfied for every finding it governs | `C-03`, `C-04`, `H-04`, `H-05`, `H-11`, `M-06`. Residuals: `RISK-003` (algorithm choice) and `RISK-006` (deterministic initialisation vector, latent, no callers). |
+| **Dependency Updates** | **PARTIAL — the advisory half is closed, the licence half is open** | `H-01`, `H-18`, `H-19`, `H-20`, `L-07`. Zero advisory rows across all 19 projects with no suppression anywhere. The `AutoMapper` licence consequence is **OPEN pending owner ratification** and is mechanically blocked from shipping by `ERPLIC001`; see `RISK-001`. The lock-file half of `L-07` is deliberately not done and is recorded as remaining guidance. |
+
+### Formal scope and contract amendment (`MAJ-04`, `MAJ-10`, `MAJ-11`)
+
+This section is the formal amendment the code review required. It exists because the alternative it
+offered — restoring the frozen map — would mean reverting closed Critical and High remediations, and
+because the review was explicit that **an extra change is not compliant merely because it carries a
+security rationale.** So the deviations are declared as deviations, each bound to the finding that
+authorised it, rather than absorbed into a claim of compliance.
+
+#### The measured inventory, and how to reproduce it
+
+```bash
+git diff --name-status c8ea6bd4            # pre-engagement commit -> working tree
+git diff --name-status c8ea6bd4 | awk '{print $1}' | sort | uniq -c
+```
+
+| Measure | Frozen map | Measured | Verdict |
+| --- | --- | --- | --- |
+| Total paths | **86** | **171** | +85 |
+| CREATE / added | **12** | **24** | +12 |
+| UPDATE / modified | **74** | **143** | +69 |
+| DELETE | **0** | **4** | +4 — the map authorises none |
+| Authorised paths left untouched | — | **0** | every one of the 86 was changed |
+
+The review reported **102** paths (90 modified, 8 added, 4 deleted) with 62 outside the map. That figure
+reproduces exactly against **its** baseline rather than the pre-engagement commit —
+`git diff --name-status 80042d8c 01602069` returns 102 — and the two are consistent: `80042d8c` sits 21
+commits into the engagement, so the review measured the later checkpoint work only. Measured from the
+pre-engagement commit, which is what the frozen map is drawn against, the deviation is larger, and this
+amendment uses the larger, correct figure.
+
+#### The twelve additions the map does not authorise
+
+The map authorises 12 CREATEs and all twelve exist as specified. Twelve **further** files were created:
+
+| Added path | Authorising finding | Why a new file rather than an edit |
+| --- | --- | --- |
+| `WebVella.Erp/Database/DbSecurityStateRepository.cs` | `H-OPEN-01`, `CK-03` | The durable, atomic, shared state store over the pre-existing `plugin_data` table that makes session revocation and login throttling survive a restart and span instances. See `RISK-008`. |
+| `WebVella.Erp.Web/Services/SessionRevocationService.cs` | `H-02`, `H-OPEN-01` | Bearer-token revocation on sign-out; `H-02` is unclosable without it, because a bounded lifetime alone still honours a stolen token until it expires. See `RISK-007`. |
+| `WebVella.Erp.Web/Utils/SecurityAuditLog.cs` | `M-12`, and the **Authorization Enforcement** standard's *log authorization failures* clause | The clause is a binding acceptance criterion and no audit sink existed. |
+| `WebVella.Erp.Web/Utils/HtmlSanitizer.cs` | `SR-05`, and this review's `HIGH-01` | Comment, timelog and feed bodies reached a client-side `innerHTML` sink no Razor encoder can reach. `HIGH-01` then reused it for the data-bound HTML-block path. |
+| `WebVella.Erp.Web/Utils/SafeStyleValue.cs` | `H-06` fifth render path | A style value reached markup through a conversion boundary the four known sinks did not cover. |
+| `WebVella.Erp.Web/Security/RequireSameOriginRequestAttribute.cs` | `M-02` as re-scoped | Fetch-metadata cross-site refusal, chosen because token-based antiforgery would break every existing JavaScript client. See `RISK-165`. |
+| `WebVella.Erp/Database/DbRegexPattern.cs` | `H-17` | Bounded regular-expression construction for the credential path; the ReDoS fix needed a shared primitive. |
+| `WebVella.Erp.Plugins.Mail/MailPlugin.20260802.cs` | `C-02` extended to `smtp_service` | The credential-field permission migration for the mail plugin's own stored password. Rewritten under this review's `MAJ-03` to emit no DDL. |
+| `WebVella.Erp.Plugins.Mail/MailPlugin.20260806.cs` | `F-01` | Reconciles guest grants that two pre-existing plugin patches restored **after** the version-4 migration had revoked them. |
+| `WebVella.Erp.Plugins.Mail/MailPlugin.20260807.cs` | `H-OPEN-03` | Makes SMTP transport encryption mandatory outside Development. Rewritten under `MAJ-03` to emit no DDL. |
+| `manual-verification-results.txt` | `GATE-02`, `OBS-07` | The commit-bound attestation file the release gate reads; without it Gate 5 could tally `DEFERRED` rows while reporting success. |
+| `.markdownlint.jsonc` | `MIN-01` | Pins the documentation lint gate at `markdownlint-cli@0.45.0` so the byte and style contract is checkable. See `RISK-161`. |
+
+#### The four deletions, against a map that authorises none
+
+| Deleted path | Authorising finding |
+| --- | --- |
+| `WebVella.Erp.Web/Pages/ckeditor/Index.cshtml` | `SR-04` |
+| `WebVella.Erp.Web/Pages/ckeditor/Index.cshtml.cs` | `SR-04` |
+| `WebVella.Erp.Web/Pages/ckeditor/ImageFinder.cshtml` | `SR-04` |
+| `WebVella.Erp.Web/Pages/ckeditor/ImageFinder.cshtml.cs` | `SR-04` |
+
+All four are one commit, `4d44773c`, *Retire the orphaned AngularJS/CKEditor-4 admin shell (SR-04)*.
+**Restoration was considered and rejected**: these pages are an unreachable admin shell built on
+CKEditor 4, which is end-of-life and carries published cross-site-scripting advisories, and restoring
+them would reopen `SR-04`. The `0 DELETE` boundary is therefore **deviated, deliberately, and recorded
+here** rather than satisfied.
+
+#### The seventy-three further modifications, by area
+
+| Area | Paths | Authorising findings |
+| --- | --- | --- |
+| Blazor WebAssembly client — **excluded by name in AAP §0.3.2** | 12 | `SR-01`, `SR-02`, `SR-03`, `SR-06`, `SR-08` (commit `cdb1edb9`), plus the sign-out revocation in `80042d8c`. The exclusion was written on the premise that the client's only security-relevant behaviour was outbound HTTP and that server-side request forgery did not apply — which remains true, but the seam review found credential-handling defects in the client's own auth layer that no server-side change can reach. Two further pre-existing defects found there were **left alone** and recorded as `RISK-119`. |
+| Project plugin — components, controllers, services | 13 | `SR-05`, `SR-07`, `SR-09`–`SR-16`, and this review's `MED-01` |
+| Web framework — remaining `.cs` | 16 | `H-06` (`PcHtmlBlock`, `PcPageHeader`, `ScreenMessage`), `H-13` (`ApiControllerBase`), `H-02`/`H-03` (`JwtMiddleware`), `M-12` (`WebSecurityUtil`), and `HIGH-01` |
+| Core library | 11 | `H-09`/`H-17` (`DbRepository`, `DbFileRepository`), `C-02` (`ErpUserPreferences`), `CK-15` (`DbFileRepository`), and `MAJ-03`'s no-DDL rewrite |
+| SDK plugin | 10 | `H-06` reflected and stored sinks beyond the three named views, `H-09`/`H-10` (`CodeGenService`), `M-09` (`AdminController`) |
+| Mail plugin — existing files | 3 | `H-11`, `H-OPEN-03`, `F-01` |
+| Host `Program.cs` and remaining hosts | 5 | `H-15`, `M-01` — the map names the seven `Startup.cs` files but not the `Program.cs` files the same pipeline work required |
+| Repository hygiene | 3 | `.gitignore` (`GATE-01`, to stop scan artifacts entering the tree), `ConsoleApp/StringExtensions.cs`, `WebAssembly/Client/wwwroot/appsettings.json` (`H-05`) |
+
+#### Preservation and no-touch exceptions (`MAJ-10`)
+
+Each row records the authority, not a rationale. Where restoration was possible without reopening a
+closed finding it was preferred; where it was not, the deviation stands and is declared.
+
+| Exception | Authority | Disposition |
+| --- | --- | --- |
+| Four CKEditor files **deleted** | `SR-04` | Stands — restoring reopens `SR-04` (end-of-life CKEditor 4 with published XSS advisories). |
+| A **route added** | `H-08`, `CK-15` | Stands — the upload and download constraints needed a separate endpoint; no existing route's verb or response envelope changed. |
+| A **cookie renamed** | `H-15`, `M-02` | Stands — the rename is what applies the `__Host-` prefix semantics the secure-cookie clause requires. Documented in the [secure configuration guide](secure-configuration.md) as an operator-visible change that ends in-flight sessions once. |
+| **Two extra configuration values blanked** — `FileSystemStorageFolder`, `CloudBlobStorageConnectionString` | **`CR2-F-12`** | Stands. This is the specific reason the Mail project's per-file numstat is **4 / 4** rather than the **3 / 3** its own file prompt mandated: `CR2-F-12` found that a storage location and a storage connection string are themselves secrets, and blanking them adds a fourth changed line per file. Measured: `FileSystemStorageFolder` blank in **8 / 8** files, `CloudBlobStorageConnectionString` blank in **1 / 1** — nine location values in total. |
+| **`UserSecretsId` added** to eight manifests | `H-04`, `H-05` | Stands — user secrets are the supported development-time supply channel for the scrubbed values, and without them a developer cannot start a host. All eight values are enumerated in `WebVella.Erp.Site/JWT_README.txt` under this review's `HIGH-02`. |
+| **`ReturnUrl` handling changed** | `H-06` reflected sinks | Stands — the encoded property is what closes the three reflected sinks, and derived page models must not re-declare `ReturnUrl`. Recorded as `RISK-011`. |
+| **Reference-only files edited** | `H-06`, `HIGH-01`, `MAJ-03` | Partially restored. The four by-design raw channels AAP §0.7.1 Group 11 marks must-not-encode are **untouched** — re-verified with `git diff --quiet c8ea6bd4 --` over all four, plus the three `MAJ-09` named later, **seven files, all UNTOUCHED**. Other reference-only files were edited where a finding's root cause lived in them; each is listed in the area table above. |
+| **Widget builder contracts reshaped** | `H-06` | Stands — the three Project widget builders no longer compose markup at all; each value is published as its own field and the elements are authored in the view, so Razor encodes once, in context. Reverting would reintroduce the stored sink. |
+| **Blazor WebAssembly client modified** | `SR-01`, `SR-02`, `SR-03`, `SR-06`, `SR-08` | Stands — see the area table above. |
+
+#### Build and CI contract amendments (`MAJ-11`)
+
+Every deviation strengthens the gate, so each is **amended rather than aligned down**. The review
+directed that the stronger posture be preserved during reconciliation, and it is.
+
+| Deviation | Frozen text | Actual | Justification |
+| --- | --- | --- | --- |
+| Workflow step count | a restore, analyzer build and vulnerable-package listing | **23** steps | Each addition closes a fail-open the frozen three could not: a project-graph and casing assertion, a solution-membership assertion, separate restore/build/list for the two non-solution projects, a Gate 1 ratchet, a **positive control** proving the analyzers can fire, a secret sweep with history audit, a startup smoke test, a **negative control** requiring `error NU1903`, evidence publication, and a blocking release gate. Reproduce the count with `yaml.safe_load` over the file. |
+| Workflow triggers | not specified | four, measured from the parsed file: `push` on `master` **and on tags `v*`**, `pull_request` on `master`, `schedule` (`cron: 17 5 * * 1`), and `workflow_dispatch` with a `release_candidate` boolean input | A dependency advisory is published against an **unchanged** tree, so a scan that only runs on push cannot find it — hence the weekly schedule. The tag trigger is what makes the release gate blocking at the moment it matters, and the dispatch input is what lets a release candidate be tested without pushing a tag, by promoting unproven REQUIRED manual scenarios from *reported* to *fatal*. |
+| `AnalysisLevelSecurity` | not specified | `latest-all` | AAP §0.9.1 Gate 1 names **eleven** security families and sets the pass criterion "zero diagnostics in these families". Nine do not execute at `latest-recommended`, so without this property Gate 1 cannot substantiate its own criterion. It selects a configuration the SDK itself ships; no `.globalconfig` is added, and the workflow asserts none exists. |
+| Scoped `NoWarn` | not specified | `CA3001`–`CA3012` for `WebVella.Erp.Web` only | Measured: armed and untuned, the solution build produced no further output for over thirty-five minutes with 3 of 17 projects finished; excluded, it completes in about **106 seconds**. The exclusion is conditioned on one project name, so the other eighteen have the family armed and reporting, and the positive control asserts the family **does** fire when the exclusion is lifted. Recorded as `RISK-051`. |
+| `NU1900`/`NU1905` promoted | the three dependency diagnostics | plus `NU1900` and `NU1905` | `NU1900` is *could not resolve the audit source* and `NU1905` is *the audit source returned no data*. Left as warnings, either turns Gate 2 silently vacuous — a scan that cannot reach its advisory database would report clean. Recorded as `RISK-028`. |
+| Packaging gate | not specified | `ERPLIC001`–`ERPLIC004` on `dotnet pack` | The only mechanism that stops an unratified licence posture reaching nuget.org while leaving `restore`, `build`, `publish` and `run` unaffected. Required by `MAJ-02`; see `RISK-001`. |
+| `global.json` roll-forward | `latestPatch` | **`disable`** | A patch is enough to add an analyzer rule, move a default severity or change an audit default, and every Gate 1 baseline was measured against one exact SDK. `latestPatch` was itself a regression of `M-6`, reversed under `GATE-02` and `CR2-F-13`. The availability cost — the repository stops building the moment `10.0.302` is superseded — is accepted as a deliberate fail-closed and is named in the workflow, `SECURITY.md` and the secure-configuration guide. |
+
+#### Ordering and atomicity (`MAJ-05`)
+
+The review directed that the historical **FAIL** be retained rather than reframed, and it is: the two
+rows above this section record it, and the remediation log's
+[corrected guideline-9 accounting](remediation-log.md#guideline-9-was-not-met-the-corrected-accounting)
+gives the per-commit detail — **7 of the 13** original remediation commits carried more than one
+vulnerability class, the seed and migration changes were split when they had to land together, the five
+SMTP certificate sites were split across commits, and documentation preceded the evidence it described.
+History was **not** rewritten. The rule now in force, and observed for every commit made while closing
+this review's findings, is **one vulnerability class per commit, coupled changes in the same commit, and
+validation executed before the commit rather than after it.**
 
 ### Gate 1 in detail — what executes, and what does not
 
@@ -314,13 +456,18 @@ generic scoring system would have decided differently, and both are worth statin
   wholesale. It is deliberately **not** filed under the Medium tier's *weak cryptography*, because the
   consequence is disclosure of every credential rather than a theoretical algorithm weakness. That is
   finding `C-03`.
-- **Missing security response headers belong to the Low tier, not the Medium tier.** The matrix names
-  *missing security headers* in the Low tier explicitly, where a generic scoring system would have
-  rated the absence of a content-security policy as Medium. This report nonetheless files the header
-  absence as `M-01` at Medium, and that record states why: the headers are the compensating control
-  that bounds several other findings inside a browser, which is the condition under which the matrix
-  itself calls for a Medium to be remediated rather than only documented. The tier the matrix assigns
-  is stated here so that the departure is visible rather than silent.
+- **Missing security response headers belong to the Low tier, not the Medium tier — and this report now
+  files them there.** The matrix names *missing security headers* in the Low tier explicitly, where a
+  generic scoring system would have rated the absence of a content-security policy as Medium. **An earlier
+  revision of this report filed the header absence as `M-01` at Medium and defended the promotion on the
+  ground that these headers are the compensating control bounding several other findings inside a browser.
+  That is retracted under code-review finding `MAJ-07`: whether a finding qualifies for remediation and
+  what severity it carries are two different questions, and conflating them lets any finding worth fixing
+  drift upward until the bands stop discriminating.** `M-01` is classified **Low**, and it is remediated
+  in full for a reason stated separately from its severity — the engagement's **Security Headers** fix
+  implementation standard mandates the seven headers with exact values as a binding acceptance criterion,
+  independently of band. The identifier keeps its `M-` prefix for cross-reference stability; the band is
+  Low, and the `M-01` record is the authority for that.
 
 The [vulnerability disclosure policy](https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/SECURITY.md)
 reproduces the same matrix and the same two consequences, so a reported vulnerability and an audit
@@ -589,8 +736,14 @@ with the redaction sentinel (`M17`).
 
 ### The mandated response headers
 
-The engagement specifies seven headers with exact values. All seven are emitted by
-`WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs` with these values, byte for byte:
+The engagement specifies seven headers with exact values. **Six of the seven are emitted and enforced;
+the seventh is emitted in report-only mode and is therefore not enforced, so this requirement is
+`UNRESOLVED / PARTIAL` rather than compliant** — the authoritative row is in
+[Status at this revision](#status-at-this-revision-gate-by-gate), and an earlier revision of this
+section stated "All seven are emitted … byte for byte" without that qualification, which is retracted
+here under code-review finding `MAJ-08`. The **values** below are what
+`WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs` emits, byte for byte, and the policy value is
+a `public const` that no configuration source can weaken:
 
 ```text
 Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'
@@ -602,14 +755,36 @@ Referrer-Policy: strict-origin-when-cross-origin
 Permissions-Policy: geolocation=(), microphone=(), camera=()
 ```
 
-The value of the content-security policy is preserved exactly as specified. Only its **delivery mode**
-is staged: it ships under `Content-Security-Policy-Report-Only` first, with the enforced value
-configurable, because four components in the platform deliberately emit inline script or
-author-supplied markup and enforcing the policy on first deployment would break them. That is the one
+The value of the content-security policy is preserved exactly as specified, and **the mandated value is
+never weakened — only its delivery mode is staged.** It ships under
+`Content-Security-Policy-Report-Only` because components in the platform deliberately emit inline script
+or author-supplied markup, and enforcing the policy on first deployment would break them. That is the one
 place in this engagement where a mandated control could not be enforced immediately without violating
-the requirement that existing functionality be preserved, and it is recorded as an accepted risk with a
-report-then-enforce path in the [risk register](risk-register.md) rather than resolved by weakening the
-mandated value.
+the requirement that existing functionality be preserved.
+
+**What "not enforced" costs, stated rather than implied.** A report-only policy makes the browser report
+violations and block nothing, so none of the injection defences the policy is meant to provide is
+actually in force. The policy is a defence-in-depth layer behind the encoding and sanitisation fixes
+rather than the primary control for any finding — every Critical and High cross-site-scripting finding is
+closed at its own sink, and `HIGH-01` was proved closed by the server omitting the malicious bytes
+entirely rather than by any browser-side policy. But the layer is absent, and this report no longer
+describes it as present.
+
+**What gates enforcement, and whose decision it is.** Advancing the rollout needs no code change: one
+configuration key, `SecurityHeaders__ContentSecurityPolicyReportOnly=false`. What it needs is the
+remediation of every channel that would break, and that backlog is now **measured** rather than
+characterised — `RISK-170` inventories all 111 raw-output sinks with their writers and authorization
+contracts, and quantifies the enforcement cost as **59 inline `<script>` elements and 27 inline `style`
+attributes** requiring nonce or hash treatment. Three of those channels exist *in order to* emit
+author-supplied script: `PcJavaScriptBlock/Display.cshtml:L11`, `Nav.Default.cshtml:L48` and
+`WvSdkPageSitemap/Form.cshtml:L92`. Note that an earlier revision of this section, and `RISK-023`, both
+counted **four** such components; the correct figure is **five** raw-output emitters, because
+`PcJavaScriptBlock` was named nowhere — the correction is recorded in `RISK-170`.
+
+Because enforcement therefore trades a security layer against the deliberate feature set of a
+page-designer platform, **it is a repository-owner decision and is recorded as open**, with the promotion
+governance in `RISK-022` and the channel inventory in `RISK-170`. It is not resolved by weakening the
+mandated value, and it is not closed by asserting compliance.
 
 ### Additional acceptance criteria
 
@@ -834,8 +1009,14 @@ boundary, and routed here. All four are part of finding `L-08`.
    history rather than asserting anything about the current tree". That last reasoning is withdrawn — the
    link's *title* is a claim about the component, it sits in a `links` list a catalogue reader treats as
    current, and there is no PR #2 in this repository for it to record. Measured at this commit:
-   `catalog-info.yaml` describes a .NET 10 / ASP.NET Core modular monolith on PostgreSQL with a completed
-   OWASP Top 10 (2021) audit and remediation; the serverless pull-request link is gone; the
+   the `description` field reads, verbatim, "WebVella ERP — .NET 10 / ASP.NET Core modular monolith on
+   PostgreSQL, with an OWASP Top 10 (2021) security audit and remediation in the tree; release readiness
+   is gated, not asserted." **An earlier revision of this paragraph paraphrased that as "a *completed*
+   OWASP Top 10 (2021) audit and remediation", which is retracted under code-review finding `MAJ-06`:
+   the word *completed* was deliberately struck from the descriptor under `DOC-02` precisely because it
+   read as a release-readiness claim the tree does not support, so describing the descriptor as making
+   that claim inverted the correction it records.** The descriptor defers to the gate-by-gate status
+   rather than asserting completion. The serverless pull-request link is gone; the
    `Blitzy Documentation` link that pointed at `…/tree/master/blitzy/documentation` — a directory that is
    not tracked, verified by enumerating the tree — is gone; and three links whose targets were each
    verified to exist are added: the audit report, `SECURITY.md` and the `docs` tree. `docs/index.md:L3`
@@ -1233,7 +1414,6 @@ HTML parser: the pre-fix markup yields an anchor carrying an `onmouseover` attri
 `<img onerror>` element, the post-fix markup yields exactly the four intended attributes with no handler and
 no injected element, and legitimate values render identically apart from attribute-quote style.
 
-
 #### H-07 — Script injection through the rich-text editor upload callback
 
 | Field | Value |
@@ -1418,12 +1598,14 @@ no injected element, and legitimate values render identically apart from attribu
 
 ### Medium severity findings
 
+**One record in this section is classified Low.** `M-01` retains its `M-` identifier for cross-reference stability but its band is **Low**, because the severity matrix names *missing security headers* in the Low tier and the matrix is prescriptive. It is left in numeric order here rather than moved, so that the `M-01`–`M-18` sequence stays contiguous and no citation dangles; its `SEVERITY` field is the authority for its band, and the [result summary](#result-summary) counts it under Low. Recorded under code-review finding `MAJ-07`.
+
 #### M-01 — No security response headers
 
 | Field | Value |
 | --- | --- |
 | **FINDING** | The platform emitted none of the security response headers the engagement mandates. |
-| **SEVERITY** | Medium — *missing security headers* sits in the Low tier of the severity matrix, but the absence of a content-security policy and of frame and content-type protections is what makes several other findings exploitable in a browser, so it is recorded here as the compensating control it is. |
+| **SEVERITY** | **Low** — the severity matrix names *missing security headers* in the Low tier explicitly, and the matrix is prescriptive, so that is the classification. **An earlier revision recorded this finding as Medium and justified the promotion on the ground that these headers are the compensating control several other findings rely on. That is retracted under code-review finding `MAJ-07`: eligibility for remediation is not a severity input.** The matrix places a finding by matching its vulnerability class, not by how useful fixing it turns out to be — otherwise every finding worth fixing would drift upward and the bands would stop meaning anything. **Why it was nevertheless remediated, stated separately from its severity because the two are different questions:** the Low band's disposition is *document for a future sprint*, and this finding departs from that disposition because the engagement's **Security Headers** fix implementation standard mandates the seven headers with exact values as a binding acceptance criterion, independently of the band the finding sits in. It is therefore a Low-severity finding that was remediated in full because a fix standard required it — one of the three exception limbs recorded [in the risk register](risk-register.md#the-governing-disposition-rule-and-which-mediums-qualified). Its identifier keeps the `M-` prefix for cross-reference stability across roughly forty citations in this document set; the prefix is a stable label, and this row is the authority for its band. |
 | **CWE** | [CWE-693: Protection Mechanism Failure](https://cwe.mitre.org/data/definitions/693.html) — the product does not use, or incorrectly uses, a protection mechanism that would defend against the attack. The frame-embedding half additionally maps to [CWE-1021: Improper Restriction of Rendered UI Layers or Frames](https://cwe.mitre.org/data/definitions/1021.html). An earlier revision of this row asserted no identifier, on the reasoning that the finding is "a missing hardening control rather than a code weakness"; CWE-693 is precisely the class for a missing protection mechanism, so the abstention was unnecessary and is withdrawn. |
 | **LOCATION** | The seven host pipelines. Only `WebVella.Erp.WebAssembly/Server/Program.cs:L18` and `:L21` emitted anything, and that was transport security alone. The middleware introduced to close it is `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`, registered at `WebVella.Erp.Web/ErpMvcExtensions.cs:L98`. |
 | **DESCRIPTION** | Only one project — the WebAssembly server — used any header middleware at all, and that was transport security alone. None of the seven site hosts emitted a content-security policy, frame options, content-type options, referrer policy or permissions policy. Maps to **OWASP A05:2021 — Security Misconfiguration**. |
@@ -1654,6 +1836,8 @@ no injected element, and legitimate values render identically apart from attribu
 
 ### Low severity findings
 
+**This section holds `L-01`–`L-10`; the eleventh Low-severity finding is `M-01`,** which is recorded in numeric order among the `M-` identifiers above rather than duplicated here. See its record for the band and for why a Low-severity finding was nevertheless remediated in full.
+
 #### L-01 — Dead security code retained in the tree
 
 | Field | Value |
@@ -1756,7 +1940,7 @@ no injected element, and legitimate values render identically apart from attribu
 | **DESCRIPTION** | The service catalogue descriptor advertises capabilities the repository does not contain: its description names cloud-native microservices and a serverless architecture alongside the security audit, and it links a pull request titled *Serverless Microservices Rewrite*. No container definition, orchestration manifest or serverless artifact exists anywhere in the tree. The four further drift items deferred into this report by other work in this engagement — the licence badge, the framework claim, the catalogue description and pull-request links, and the developer documentation's historical claims — are enumerated under [documentation drift deferred into this report](#documentation-drift-deferred-into-this-report). Maps to **OWASP A05:2021 — Security Misconfiguration**. |
 | **IMPACT** | Inaccurate catalogue metadata misdirects a reader about the platform's actual shape and attack surface, and an inventory that overstates what exists is a weak basis for risk decisions. |
 | **EVIDENCE** | At the audit baseline the `metadata.description` field and the `links` entries in `catalog-info.yaml`, read against a repository that contains no Dockerfile, no compose file and no infrastructure manifest. The absent link target was verified by enumeration: no `blitzy/` directory is tracked anywhere. |
-| **REMEDIATION** | **Fixed for the catalogue, and the earlier disposition is withdrawn.** An earlier revision of this row read "Documented, deliberately not rewritten … correcting the microservices and serverless claims is the owner's editorial call on their own catalogue entry, not a security fix." That reasoning does not survive: an inventory that overstates what a component contains is a weak basis for *risk* decisions, which is the impact this very record states, and the engagement lists the catalogue among its own deliverables. `catalog-info.yaml` now describes what the repository is — a .NET 10 / ASP.NET Core modular monolith on PostgreSQL with a completed OWASP Top 10 (2021) audit and remediation — the pull-request link titled *Serverless Microservices Rewrite* is removed, the link to the absent `blitzy/documentation` directory is removed, and three links that resolve are added in their place: the audit report, the security policy and the documentation tree. Every link target was verified to exist in the tracked tree. `docs/index.md` was corrected by earlier work in this engagement. The residual drift items — the licence badge, the framework claim and the developer documentation's historical statements — remain documented rather than fixed, and are enumerated below with the reason in each case. |
+| **REMEDIATION** | **Fixed for the catalogue, and the earlier disposition is withdrawn.** An earlier revision of this row read "Documented, deliberately not rewritten … correcting the microservices and serverless claims is the owner's editorial call on their own catalogue entry, not a security fix." That reasoning does not survive: an inventory that overstates what a component contains is a weak basis for *risk* decisions, which is the impact this very record states, and the engagement lists the catalogue among its own deliverables. `catalog-info.yaml` now describes what the repository is — a .NET 10 / ASP.NET Core modular monolith on PostgreSQL carrying an OWASP Top 10 (2021) audit and remediation, with release readiness stated as **gated rather than asserted** (an earlier revision of this row said "a *completed* … audit"; the word *completed* was struck from the descriptor under `DOC-02` and this row is corrected to match under `MAJ-06`) — the pull-request link titled *Serverless Microservices Rewrite* is removed, the link to the absent `blitzy/documentation` directory is removed, and three links that resolve are added in their place: the audit report, the security policy and the documentation tree. Every link target was verified to exist in the tracked tree. `docs/index.md` was corrected by earlier work in this engagement. The residual drift items — the licence badge, the framework claim and the developer documentation's historical statements — remain documented rather than fixed, and are enumerated below with the reason in each case. |
 
 #### L-09 — No server-side request forgery surface
 
@@ -1946,7 +2130,7 @@ vulnerability that remained open, not on the quality of the unused helper.
 | **DESCRIPTION** | No `Directory.Build.props`, `Directory.Packages.props`, package-source configuration or lock file existed at the repository root, and no CI workflow of any kind. Maps to **OWASP A06:2021**. |
 | **IMPACT** | Without a gate, a dependency advisory or an insecure-code pattern can enter the codebase with nothing to detect it, and the validation objective has nowhere to live. Every claim of a clean scan is unverifiable. |
 | **EVIDENCE** | All four candidate build files confirmed absent; the workflow directory contained only a funding manifest. |
-| **REMEDIATION** | **Fixed.** `Directory.Build.props` created with dependency auditing across all dependencies at the lowest reporting level, the dependency diagnostics promoted to **errors**, and .NET analyzers enabled. Expressed in MSBuild rather than an editor-configuration file because the four existing `.editorconfig` files each declare themselves a configuration root, so a root editor file would not reach their subtrees. A CI workflow runs restore, analyzer build and vulnerable-package listing. **Negative-tested**: injecting a package with a known advisory failed the build. ~~**Subsequently strengthened** (review finding `F2`): `AnalysisLevelSecurity=latest-all` raises the Security category alone to every rule the pinned SDK defines in it, and the auto-discovered repository-root `.globalconfig` promotes **ten of those security rules to `Error`** and holds **five** more at warning against an enumerated baseline. Measured after the change: `3096 Warning(s), 0 Error(s)`. Negative-tested in both directions: a probe with a hard-coded AES key and `new Random()` fails with real `error CA5390` and `error CA5394` lines, and with the property removed that same probe builds clean. Reintroducing the accept-all certificate callback that `H-11` removed fails with `error CA5359`.~~ ~~**That strengthening has been withdrawn in full** under review finding `GATE-03`: the plan of record freezes the analyzer gate at `EnableNETAnalyzers` plus `AnalysisLevel=latest-recommended`, and both the property and the `.globalconfig` are removed from the tree, with the workflow now asserting their absence on every run.~~ **The withdrawal has itself been reversed in part, and this is the current state.** The reading that the plan froze the gate at `latest-recommended` was wrong: AAP 0.9.1 Gate 1 names **eleven** security families and sets the pass criterion "zero diagnostics in these families across the remediated files", and nine of them do not execute at that level — so the frozen reading did not preserve scope, it left Gate 1 unable to substantiate its own criterion. What has been **restored** is `AnalysisLevelSecurity=latest-all`, which selects a configuration the **SDK ships**; what stays **withdrawn** is the repository-root `.globalconfig` and every per-rule `Error` promotion, so "only the dependency diagnostic codes become errors" continues to hold exactly. The workflow still asserts that no `.globalconfig` exists in this repository — and now additionally asserts, from the post-`CoreCompile` item list, that the SDK's own `analysislevelsecurity_*_all.globalconfig` **is** loaded and that no analyzer configuration from outside the SDK is, because the previous absence check queried the item list at evaluation time, where no globalconfig has been added yet, and therefore proved nothing in either direction. The termination problem that forced the earlier full withdrawal is solved rather than avoided: it is confined to the interprocedural taint family, and `CA3001`-`CA3012` are excluded through `NoWarn`, measured — armed and untuned the solution build produced no further output for over thirty-five minutes with 3 of 17 projects finished; excluded, it completes in about **106 seconds**. **Twelve** Security-category rules now execute and are ratcheted, measured: `CA2100` **20**, `CA2326` **20**, `CA2327` 0, `CA2328` **9**, `CA5350` 0, `CA5351` **5**, `CA5359` 0, `CA5362` **1**, `CA5364` 0, `CA5390` 0, `CA5401` 0, `CA5404` 0 — **55** diagnostics reducing to **21 `(rule, file)` pairs**, each carrying a written justification in Gate 1's allow-list, which fails the job on any pair outside it. The positive control asserts all nine zero-or-newly-armed rules **must fire** against a probe containing deliberate violations, with every assertion anchored to the probe's own file so the tree's diagnostics cannot satisfy it, and asserts `CA3001`-`CA3012` **must not** fire against deliberate taint flows that provably emit `CA3001` and `CA3003` when the exclusion is removed. So the `H-11` proof survives through `CA5359`, and `CA5390` and `CA2100` are now proven to run rather than proven to be absent. Current baseline: `3094 Warning(s), 0 Error(s)` — and the per-rule figures an earlier revision quoted were **doubled**, because MSBuild emits every diagnostic twice in a solution build. One shape of the `H-11` defect is not detected by the rule and is recorded as `RISK-054`. |
+| **REMEDIATION** | **Fixed.** `Directory.Build.props` created with dependency auditing across all dependencies at the lowest reporting level, the dependency diagnostics promoted to **errors**, and .NET analyzers enabled. Expressed in MSBuild rather than an editor-configuration file because the four existing `.editorconfig` files each declare themselves a configuration root, so a root editor file would not reach their subtrees. A CI workflow runs restore, analyzer build and vulnerable-package listing. **Negative-tested**: injecting a package with a known advisory failed the build. ~~**Subsequently strengthened** (review finding `F2`): `AnalysisLevelSecurity=latest-all` raises the Security category alone to every rule the pinned SDK defines in it, and the auto-discovered repository-root `.globalconfig` promotes **ten of those security rules to `Error`** and holds **five** more at warning against an enumerated baseline. Measured after the change: `3096 Warning(s), 0 Error(s)`. Negative-tested in both directions: a probe with a hard-coded AES key and `new Random()` fails with real `error CA5390` and `error CA5394` lines, and with the property removed that same probe builds clean. Reintroducing the accept-all certificate callback that `H-11` removed fails with `error CA5359`.~~ ~~**That strengthening has been withdrawn in full** under review finding `GATE-03`: the plan of record freezes the analyzer gate at `EnableNETAnalyzers` plus `AnalysisLevel=latest-recommended`, and both the property and the `.globalconfig` are removed from the tree, with the workflow now asserting their absence on every run.~~ **The withdrawal has itself been reversed in part, and this is the current state.** The reading that the plan froze the gate at `latest-recommended` was wrong: AAP 0.9.1 Gate 1 names **eleven** security families and sets the pass criterion "zero diagnostics in these families across the remediated files", and nine of them do not execute at that level — so the frozen reading did not preserve scope, it left Gate 1 unable to substantiate its own criterion. What has been **restored** is `AnalysisLevelSecurity=latest-all`, which selects a configuration the **SDK ships**; what stays **withdrawn** is the repository-root `.globalconfig` and every per-rule `Error` promotion, so "only the dependency diagnostic codes become errors" continues to hold exactly. The workflow still asserts that no `.globalconfig` exists in this repository — and now additionally asserts, from the post-`CoreCompile` item list, that the SDK's own `analysislevelsecurity_*_all.globalconfig` **is** loaded and that no analyzer configuration from outside the SDK is, because the previous absence check queried the item list at evaluation time, where no globalconfig has been added yet, and therefore proved nothing in either direction. The termination problem that forced the earlier full withdrawal is solved rather than avoided: it is confined to the interprocedural taint family, and `CA3001`-`CA3012` are excluded through `NoWarn`, measured — armed and untuned the solution build produced no further output for over thirty-five minutes with 3 of 17 projects finished; excluded, it completes in about **106 seconds**. **Twelve** Security-category rules now execute and are ratcheted, measured: `CA2100` **20**, `CA2326` **20**, `CA2327` 0, `CA2328` **9**, `CA5350` 0, `CA5351` **5**, `CA5359` 0, `CA5362` **1**, `CA5364` 0, `CA5390` 0, `CA5401` 0, `CA5404` 0 — **55** diagnostics reducing to **21 `(rule, file)` pairs**, each carrying a written justification in Gate 1's allow-list, which fails the job on any pair outside it. The positive control asserts all nine zero-or-newly-armed rules **must fire** against a probe containing deliberate violations, with every assertion anchored to the probe's own file so the tree's diagnostics cannot satisfy it, and asserts `CA3001`-`CA3012` **must not** fire against deliberate taint flows that provably emit `CA3001` and `CA3003` when the exclusion is removed. So the `H-11` proof survives through `CA5359`, and `CA5390` and `CA2100` are now proven to run rather than proven to be absent. **Current baseline, re-measured at this revision: `3055 Warning(s), 0 Error(s)`** from `dotnet build WebVella.ERP3.sln --no-incremental`. Earlier revisions of this row recorded `3096` and then `3094`; both are superseded, and the drift is expected rather than alarming — the total moves whenever a source file is edited, so it is a **tripwire, not an invariant**, and the figure to trust is the one the command prints today. What *is* held invariant is the per-rule ratchet, re-measured at this revision and unchanged: `CA2100` **20**, `CA2326` **20**, `CA2327` 0, `CA2328` **9**, `CA5350` 0, `CA5351` **5**, `CA5359` 0, `CA5362` **1**, `CA5364` 0, `CA5390` 0, `CA5401` 0, `CA5404` 0 — **55** diagnostics reducing to **21** `(rule, file)` pairs. Note when reproducing that MSBuild emits every diagnostic **twice** in a solution build, so a raw `grep -c` returns double each figure above; the per-rule numbers an even earlier revision quoted were doubled for exactly that reason. Corrected under code-review finding `MAJ-06`. One shape of the `H-11` defect is not detected by the rule and is recorded as `RISK-054`. |
 
 #### HR-10 — Two projects outside the solution, invisible to every gate
 
@@ -2790,7 +2974,6 @@ remediation in this very pass. A reader auditing this work should be able to see
 
 ## Part 5: The checkpoint code review of the remediation itself
 
-
 A code review of the remediation at the final checkpoint raised **twenty-three** findings — one Critical,
 three High, eight Medium, four Low and seven release or compliance blockers. All twenty-three are recorded
 here. Sixteen are closed by code changes, two are documented-only under explicit AAP exclusions, one is a
@@ -3114,6 +3297,7 @@ committed, commit-bound attestation in `manual-verification-results.txt` as matr
 | **IMPACT** | A reviewer cannot revert or audit a single vulnerability class when it is entangled with others in one commit. |
 | **EVIDENCE** | The commit history is the evidence, and it cannot be rewritten without discarding the audit trail the finding exists to protect. |
 | **REMEDIATION** | **Cannot be fixed retroactively; complied with from this review onward.** Every commit made while closing these findings carries exactly one vulnerability class — eighteen consecutive single-class commits at the time of writing, each naming its class and its finding identifiers in the message. The historical failure is retained rather than erased, because acknowledging it is not the same as complying with it and erasing it would be worse than either. |
+
 ## Residual coverage gap
 
 Stated plainly rather than implied away, because the alternative is a reader believing the automated gate
