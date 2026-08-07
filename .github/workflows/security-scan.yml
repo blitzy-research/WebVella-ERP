@@ -3143,9 +3143,11 @@ jobs:
           # The single record count this repository's documentation set is measured at.
           # Raise it deliberately, in the same commit that adds records.
           # Raised 96 -> 115 by the frontend and API seam review, which added Part 4's
-          # sixteen SR- records to the audit report. Measured, not estimated: the file
-          # carries 115 finding records and 115 distinct identifiers at that commit.
-          expected_minimum_records=115
+          # sixteen SR- records to the audit report. Raised 115 -> 138 by the checkpoint
+          # code review of the remediation, which added Part 5's twenty-three CK- records.
+          # Measured, not estimated: the file carries 138 finding records and 138 distinct
+          # identifiers at that commit.
+          expected_minimum_records=138
 
           if [ ! -f "$report" ]; then
             echo "::error::MILESTONE-01 assertion could not run - $report is missing, so the audit deliverable itself is absent."

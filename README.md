@@ -181,9 +181,11 @@ Note the difference between two similarly named variables, because it is not a s
   translate it to `ASPNETCORE_URLS=https://*:<that port>`.
 
 **The first administrator credential.** The historic default administrator password that provisioning used to
-seed is gone (finding C-01, CWE-798/CWE-1392): a new database uses `Settings__InitialAdministratorPassword`
-if you supply one and otherwise a cryptographically random password surfaced **once** on standard error, and
-either way the account is flagged change-required-on-first-login. Installations provisioned by an earlier
+seed is gone (finding C-01, CWE-798/CWE-1392): a new database **requires** you to supply
+`Settings__InitialAdministratorPassword`, and provisioning is refused inside its own transaction if you do
+not — nothing is persisted and no account is created. The platform deliberately does not invent a value,
+because any value it invented would have to be reported back through an output stream that hosting
+substrates capture and retain. The account is flagged change-required-on-first-login. Installations provisioned by an earlier
 release are not left behind — the schema version 4 migration withdraws the credential that was shipped, and
 stored password hashes are upgraded to the current format on each user's next successful login, so nobody is
 locked out and no reset is forced. What operators must do about the previously seeded credential, and how
@@ -219,6 +221,15 @@ turns on NuGet dependency auditing and the .NET security analyzers for all ninet
 build and a vulnerable-package listing in CI. **A dependency advisory fails the build by design** — that is
 the gate working, not a broken build. Clear it by upgrading the package, or by recording an audited
 suppression in the risk register.
+
+**Audited and remediated is not the same as cleared for release, and this file does not claim it is.** At
+this revision the dependency, analyzer and secret gates all pass, but the workflow's separate release gate
+exits non-zero because **24 mandatory runtime verification scenarios** have not been executed — they need a
+live PostgreSQL instance, a browser or an SMTP server, none of which a CI runner has — and one dependency
+**licence** question is an open repository-owner decision that blocks `dotnet pack`. The authoritative,
+gate-by-gate status is
+[Status at this revision](docs/security/security-audit-report.md#status-at-this-revision-gate-by-gate);
+where any sentence elsewhere reads as a completion claim, that table governs.
 
 ## Contact
 

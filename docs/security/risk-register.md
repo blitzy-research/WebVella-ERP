@@ -68,7 +68,7 @@ the two commands that check *them* are given in that section.
 | `RISK-024` | The static-analysis backlog is reported as warnings rather than enforced as errors, because promoting roughly 3,000 pre-existing diagnostics would force the mass refactor the constraints forbid. | Accepted | Platform team |
 | `RISK-025` | Residual observations around the `H-10` deserialisation binder: the binder is measurably **inert at an `ExpandoObject` target**, the serialisation counterparts are deliberately unconstrained, the `JobResultWrapper` fallback branch is effectively unreachable for well-formed payloads, and — added while closing review finding `F18` — the tightened allow-list imposes a **forward-compatibility constraint on any future first-party type persisted in a polymorphic payload**. **Cited from `WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs`.** | Accepted / named, not fixed | Platform team |
 | `RISK-026` | The demo credential in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs` is **removed**; what stays is that every secret ever published in this repository's **history** remains public. | **Reduced** — the client-side literal is closed; the history residual is accepted, with a CI detective control | Platform team |
-| `RISK-027` | The generated initial administrator password has **no change-required-on-first-login marker**, because adding one requires a schema change the constraints forbid. | Accepted | Platform team |
+| `RISK-027` | **RESOLVED, and the row that stood here asserted the opposite.** It read *"the generated initial administrator password has no change-required-on-first-login marker, because adding one requires a schema change the constraints forbid"*. Both halves are false at this revision: the password is **operator-supplied and required**, not generated, and the marker **exists** — carried in the pre-existing `rec_user.preferences` JSON column with zero DDL, set at provisioning, read by the login page and enforced on the bearer-token path so an unrotated bootstrap credential cannot mint a token. The detail entry has recorded this since review finding `OBS-08`; this summary row had not caught up, which is review finding `DOC-02`. | **Resolved** | — |
 | `RISK-028` | When the only configured package source is a **local folder mirror**, the dependency restore emits no `NU19xx` diagnostic at all, so promoting the audit codes to errors cannot close that fail-open path. It is closed instead by the workflow's advisory negative control. | Accepted — mitigated by a second, independent mechanism | Platform team |
 | `RISK-029` | A `.csproj` that **assigns** rather than appends to `WarningsAsErrors` would silently discard the whole dependency gate for that project. No project does so today; the structural fix (a `Directory.Build.targets` re-appending the codes after every project body) is outside the authorised file set. | Named, not fixed — documented control only | Platform team |
 | `RISK-030` | A solution-level command reaches **17 of 19** projects; the two WebAssembly projects are covered by dedicated restore, build and advisory steps instead, so coverage is complete at 19 of 19 by two routes rather than one. A workflow step asserts every tracked `.csproj` is in exactly one of the two sets. Enrolling them in `WebVella.ERP3.sln` was tried and **reverted twice** — the frozen plan authorises only the path-casing repair in that file (`CR2-F-06`). | Accepted — disclosed in CI and in the guides. Was briefly recorded as closed by enrollment. | Platform team |
@@ -177,6 +177,14 @@ the two commands that check *them* are given in that section.
 | `RISK-159` | A **cleartext HTTP listener was live** on the API port during verification and answered a control probe, which is what made `SR-03`'s cleartext exposure reachable rather than theoretical. Removing the insecure default closed the client's half; nothing in the application prevents an operator binding a cleartext listener | Accepted — operator responsibility, now documented in [the secure configuration guide](secure-configuration.md) | Operator |
 | `RISK-160` | `HttpExt.cs` retains pre-existing analyzer findings in the helpers `SR-08` did **not** touch — one unused exception variable and two `throw new Exception` statements | Accepted — pre-existing, outside the finding's scope | Platform team |
 | `RISK-161` | `markdownlint` does **not** reach a clean exit on the nine documentation files, contrary to the claim in `.markdownlint.jsonc`. Measured at the pinned 0.45.0: **14** diagnostics — 9 `MD012`, 3 `MD022`, 2 `MD001` — all pre-existing and all stylistic. A fifteenth was **fixed** rather than accepted because it lost information | Accepted — stylistic only; the claim itself is corrected in the config | Platform team |
+| `RISK-162` | Synchronous server IO stays globally enabled (`ErpMiddleware`, `AllowSynchronousIO = true` on every request), which lets a slow client hold a thread-pool thread. AAP 0.3.2 excludes the removal as `M-11`. **New evidence narrows the risk of fixing it:** no application-code consumer of synchronous *server-stream* IO exists — zero matches for `StreamReader` over `Request.Body`, `Request.Body.Read`, `Response.Body.Write` or `StreamWriter` over `Response.Body`, and no `Response.Body` or `FileStreamResult` anywhere; the only synchronous `StreamWriter` with a `Flush` writes to a `MemoryStream`. **Recommended fix:** remove the assignment; build and exercise every upload, download and export route; convert any consumer a compile error or a runtime `InvalidOperationException` identifies. The evidence suggests that set is empty. Note the AAP text cites `WebVella.Erp/Utilities/CodeEvalService.cs`, a path that does not exist — the file is at `WebVella.Erp.Web/Services/CodeEvalService.cs`. | CWE-400 | A04 | Documented only — AAP 0.3.2 excludes it (`M-11`). Review finding `CK-11`. |
+| `RISK-163` | Two client libraries load from cdnjs with no `integrity` attribute and at mismatched versions — Leaflet CSS 1.6.0 and Leaflet JS 0.7.3 — in the geography branch of the administrator-only page `Plugins.SDK/Pages/entity/data.cshtml`. A repository-wide sweep of views returns exactly these two remote references. Advisory status was checked live rather than assumed: the GitHub Advisory Database returns **0** advisories for the `leaflet` npm package and OSV returns **0** vulnerabilities for `0.7.3` and `1.6.0`, so the risk is substitution rather than a known defect. **An adjacent defect found at the same site:** the tile layer is fetched over plaintext `http://a.tile.openstreetmap.org/...`, which is mixed content on an HTTPS page. **Recommended fix:** align both assets on 1.9.4 and add the verified digests — CSS `sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H`, JS `sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH` — with `crossorigin="anonymous"`, and switch the tile URL to HTTPS. **Cross-finding interaction:** enforcing the mandated Content-Security-Policy will refuse both cdnjs assets and break this page unless they are vendored first, so CSP enforcement has two blockers, not one. | CWE-829 | A08 | Documented only — AAP 0.3.2 excludes it (`M-15`). Review finding `CK-12`. |
+| `RISK-164` | An **administrator** can still have request-supplied C# compiled through the page-component render route's `design`, `options` and `help` modes, and through the node-less path. That is what those modes exist for — component authoring — and the privilege required is the same one that already governs the five page-node mutation actions. Every refusal and every authorized use is audited with the acting identity and the subject, and never with the submitted source. **Recommended fix, if a deployment wants the capability gone:** remove the authoring modes from production builds, or move component authoring to a build-time artefact. Neither is in scope here. | CWE-94 | A03 | Accepted by design. Residual of review finding `CK-01`. |
+| `RISK-165` | The cross-site request forgery control on the API surface is **fetch-metadata based, not token based**: it refuses a cookie-authenticated state-changing request whose `Sec-Fetch-Site` says it is cross-site, and **allows a request that sends no such header** so that an older client is not broken. No antiforgery token plumbing is added, because AAP 0.3.2 declines it as `M-02` — existing JavaScript clients post no token. **Recommended fix:** add token plumbing to the shipped clients, then require the token, then keep the fetch-metadata check as defence in depth. | CWE-352 | A01 | Accepted residual of review finding `CK-06`. |
+| `RISK-166` | Notification amplification is still unbounded per source: item 5 of the `RISK-131` remediation table — rate-bounding diagnostic notification per source, as `SecurityAuditLog.RecordRateLimitedAudit` already does for audit records — is **not implemented**. Items 1 through 4 are. **Recommended fix:** apply the existing rate-bounding helper to the notification path. | CWE-770 | A09 | Accepted residual of review finding `CK-07`. |
+| `RISK-167` | Log retention is now age-based, which is a **behaviour change** for an installation that was silently keeping 1,000 rows forever: rows older than the retention window will now be deleted on the next scheduled run. The operator-initiated *clear all* handlers are untouched and still delete unconditionally; their copy-pasted comments and row-by-row deletes are hygiene, not a security defect. **Recommended action for operators:** confirm the retention window matches your evidence-retention obligation before the first run after upgrade, and export anything older first. | CWE-1053 | A09 | Documented consequence of review finding `CK-13`. |
+| `RISK-168` | Twenty-five of the twenty-nine manual verification scenarios have **not** been executed and are recorded `DEFERRED` in the Gate 5 matrix, so the blocking release gate fails. **Twenty-four** of those twenty-five are classified `REQUIRED` and are what the release gate counts; the twenty-fifth, `M18` — measuring the deliberate login-latency increase — is the one `ADVISORY` row and does not block. Of the 45 rows overall, 20 are proven: 16 evidence-derived and 4 attested. Four — `M26` through `M29`, covering the open Critical and High findings — carry committed, commit-bound attestations in the tracked `manual-verification-results.txt`. **A plain-text attestation file is auditable, not cryptographically trustworthy:** the gate requires it to be tracked and unmodified, to name a commit that is an ancestor of the commit under test, and to match a scenario revision that rotates whenever the scenario or its procedure is rewritten. **Recommended fix:** execute the remaining twenty-five scenarios against a disposable environment and attest them, and adopt signed attestations. | CWE-693 | A09 | Open — the release gate correctly blocks. Residual of review finding `CK-19`. |
+| `RISK-169` | Two pre-existing `DbFileRepository` behaviours found while closing `CK-15` and left alone under the minimal-change constraint: blob paths are addressed in a way that assumes a single storage root, and the filesystem move operates on the file **name** rather than a fully qualified path. Neither is reachable as a security defect on the database-backed storage this platform ships, and neither was raised by the review. **Recommended fix:** none required for security; record them before any future change to the storage backend. | CWE-1164 | A04 | Documented observation, out of scope. Found while closing review finding `CK-15`. |
 
 ### Identifiers renumbered while consolidating this register
 
@@ -223,7 +231,7 @@ meaning.
 | Provisioning emits six pre-existing bootstrap DDL statements | `RISK-033` | `RISK-144` | Renumbered — a distinct subject |
 | The permission migration preserves operator-created delegations | `RISK-034` | `RISK-034` | Canonical — the subject the index carries |
 | Plugin patches seed page-component options containing server-authored code | `RISK-034` | `RISK-145` | Renumbered — a distinct subject |
-| The `CA3001`–`CA3012` taint-analysis family does not run at all | `RISK-034` | `RISK-051` | Not renumbered — the **same subject** as `RISK-051`; retained as a *Superseded statement of RISK-051* |
+| The `CA3001`–`CA3012` taint-analysis family does not run at all — **withdrawn twice over**; it now runs for eighteen of nineteen projects | `RISK-034` | `RISK-051` | Not renumbered — the **same subject** as `RISK-051`; retained as a *Superseded statement of RISK-051* |
 | Residual observations recorded while closing the SMTP credential work | `RISK-035` | `RISK-035` | Canonical — the subject the index carries |
 | The taint-dataflow family runs, but intraprocedurally only | `RISK-035` | `RISK-051` | Not renumbered — same subject; retained as a *Superseded statement of RISK-051* |
 | Security taint analysis does not run | `RISK-035` | `RISK-051` | Not renumbered — same subject; retained as a *Superseded statement of RISK-051* |
@@ -1050,10 +1058,14 @@ exercising the API, not by observing a clean build — and today that is the *on
 verification.
 
 **The families excluded, and the honest reasons.** Two exclusions apply, and they are different in kind.
-The taint-dataflow family `CA3001`–`CA3012` is excluded on **cost**: a probe confirmed `CA3001` correctly
-detects a deliberate SQL-injection flow, so the rules work, but enabling them repository-wide took the
-solution build from **102 seconds to more than 6,600 seconds without completing**, with the Roslyn
-compiler server failing outright. Separately, every security rule outside the four that `latest-recommended`
+The taint-dataflow family `CA3001`–`CA3012` is excluded on **cost from one project only** — see the
+canonical [`RISK-051`](#risk-051--the-ca3001ca3012-taint-analysis-family-runs-for-eighteen-of-nineteen-projects-one-project-is-excluded-on-measured-cost),
+which supersedes the repository-wide framing this paragraph was written under. A probe confirmed `CA3001`
+correctly detects a deliberate SQL-injection flow, so the rules work; enabling them **repository-wide**
+took the solution build from **102 seconds to more than 6,600 seconds without completing**, with the
+Roslyn compiler server failing outright — but a later per-project measurement attributed that entirely to
+`WebVella.Erp.Web`, and the family now executes for the other eighteen projects at a cost within
+measurement noise. Separately, every security rule outside the four that `latest-recommended`
 enables — `CA5390`, `CA5401`, `CA2100`, `CA2326`, `CA2327`, `CA2328`, `CA5362`, `CA5382`, `CA5383`,
 `CA5402`, `CA5404` among them — is excluded by **the frozen shape of the gate**, not by cost: reaching
 them requires an `AnalysisLevelSecurity` upgrade that AAP 0.6.1 Class 2 does not authorise.
@@ -1382,7 +1394,10 @@ uses, so no package dependency is added and no schema change is needed. Two cons
   still-counting entry is written at `Low`, so pressure discards partial counts long before it reaches
   a lockout - together with an entry lifetime sized to the counting window. A restart, however,
   discards the cache entirely, and absent state necessarily reads as "no failures recorded". An
-  in-force lockout is therefore released by a restart.
+  in-force lockout is therefore released by a restart. **Superseded by review finding `CK-03`:** the
+  counters are now held in a durable shared store, a restart no longer releases a lockout, and absent
+  state now reads as a **refusal** rather than as "no failures" because the store failing to answer is
+  a state the control must not resolve in the caller's favour.
 
 **Why absent state must read as "no failures".** The alternative — treating missing state as locked —
 would lock out every user after any restart or deployment. That is an availability failure far worse
@@ -1515,8 +1530,14 @@ otherwise will stall at stage 3. CKEditor 5 is the second `eval` source and has 
 **If the owner declines to promote.** Enforcement is then formally deferred rather than quietly
 pending: the deferral is recorded here with its date and rationale, `RISK-022` stays open, and the
 compensating control remains documented as **detective only** — which in turn means the retained
-by-design markup channels in `RISK-023` and `RISK-032` continue to rest on the privileged
-markup-authoring contract alone. That is a materially weaker position than the mandated header set
+by-design markup channels in `RISK-023` and `RISK-032` continue to rest on the markup-**placement**
+contract alone. Read that precisely, because an earlier wording said *privileged markup-authoring
+contract* and code-review finding `DOC-02` rejected it as an overstatement: what a privileged role
+controls is which channel is placed on a page and what it points at, **not** the bytes that channel
+finally emits. An administrator may point an HTML-block's option at a record field through
+`PageDataModel.GetPropertyValueByDataSource`, after which anyone able to write that field influences what
+is rendered unencoded. The full correction is at `RISK-004`. That is a materially weaker position than
+the mandated header set
 implies, and it must not be represented as the mandated posture having been achieved.
 
 Enforcing `script-src 'self'; style-src 'self'` immediately would break the interface, violating the
@@ -1579,8 +1600,11 @@ single and unconditional, the property whose absence was `CFG-04`.
 The HTML-block page component (design and display views) and two generated-inline-script emitters
 exist *in order to* emit markup and script. Encoding them would disable the features outright,
 breaching the functionality-preservation requirement. The compensating controls are restricting
-markup and script authoring to privileged roles, plus the Content-Security-Policy once enforced.
-These four channels are the concrete reason RISK-022 exists.
+markup and script authoring to privileged roles, plus the Content-Security-Policy once enforced — **read
+that first clause with the correction in the next paragraph, which narrows it from *authoring* to
+*placement*.** These four channels are the concrete reason RISK-022 exists.
+
+**What that control does and does not cover, corrected under code-review finding `DOC-02`.** Saying "authoring requires a privileged role" overstates it. What is administrator-only is *choosing the channel*: the five page-node mutation actions that write a node's options are gated by `IsCodeAuthoringAuthorized`, so only an administrator can place a markup-block component on a page or set its `Html` option. The **bytes** rendered raw need not come from that administrator. The option value is resolved through `PageDataModel.GetPropertyValueByDataSource`, so a `DATASOURCE` variable such as `{"type":0,"string":"Record.some_field"}` resolves through `GetProperty` against a model whose named properties include `Record`, `ParentRecord` and `CurrentUser` — that is, live database field values. Once an administrator points a raw channel at a record field, anyone who can write that field can influence what is emitted unencoded. The accurate statement of the control is therefore: **a privileged role decides what is rendered raw, not who supplies it**, and that is why the Content-Security-Policy is the load-bearing half of the compensation rather than an optional addition.
 
 **The four channels, quoted from source.** The constructs are reproduced exactly as the repository
 spells them, misspellings included — `ProccessedHtml` and `EmbededJs` are the source's own spellings,
@@ -1634,7 +1658,9 @@ whoever can set `IsHtml = true` and author the `Content` value. The database val
 that content are already encoded, URL-allow-listed or character-constrained at composition time in
 `BaseErpPageModel`, so an ordinary data path cannot reach the raw branch with attacker text. The
 compensating control is the same as for the four channels above — markup authoring restricted to
-privileged roles, plus the Content-Security-Policy.
+privileged roles, plus the Content-Security-Policy — read with the same correction recorded there: what is
+privileged is *choosing* the raw channel, not necessarily *supplying* its bytes. This entry is the narrower
+case, because the composition-time encoding named above does bound the data path here.
 
 **The blast radius is why this belongs here rather than being waved away.** All three views render on
 **every page of every one of the seven hosts**, so a privileged author's mistake is product-wide rather
@@ -1879,6 +1905,16 @@ therefore the *store scope* residual recorded as `RISK-036`, not the absence of 
 | --- | --- |
 | **Status** | Accepted — documented limitation. Recommended future work. |
 | **Related finding** | H-16 / H-6, H-7 (CWE-307, OWASP A07:2021) |
+
+> **RESOLVED, not accepted — superseded by review finding `CK-03`.** Everything in this entry described a
+> process-local throttle, and that is no longer what ships. `LoginThrottleService` now keeps its counters in the
+> durable, atomic, shared store `DbSecurityStateRepository` provides over the pre-existing `plugin_data` table,
+> so a lockout **survives a restart, spans instances and fails closed** when the store cannot be reached, still
+> with no schema change and no new dependency. Only an in-force lockout is mirrored locally, and only positively,
+> so eviction can cost a database read but never a partial count. Proven by executing matrix scenario `M28`: a
+> three-failure, restart, two-failure split count still refuses the correct password; a second instance observes
+> the lockout; and a login is refused while the store is renamed away. The text below is retained as the record of
+> what was accepted before that change, and its *recommended future work* has been done.
 
 The throttle is backed by an in-process store, chosen so the control required **no schema change and
 no new dependency**. In a multi-instance or load-balanced deployment each instance counts
@@ -2205,7 +2241,7 @@ from an inconsistency.
 
 | Field | Value |
 | --- | --- |
-| **Status** | Accepted. |
+| **Status** | **Resolved.** This field read *Accepted* while the body below already recorded the residual as discharged — an internal contradiction corrected under review finding `DOC-02`. The heading is deliberately left as first written, because the register's convention is that a title identifies the record rather than restating its current verdict. |
 | **Related finding** | C-01 (hardcoded default administrator password). |
 
 The seeded credential is now supplied by the operator through
@@ -2634,8 +2670,9 @@ ours to change.
 
 **Why not fixed.** Three independent reasons, any one of which would be sufficient. The component is an
 intentional-HTML channel, and this class of channel is remediated by compensating control — restricting
-authoring of markup and script to privileged roles, plus the Content-Security-Policy — rather than by
-encoding, because encoding it would disable the feature it implements. The rendering code is vendored.
+authoring of markup and script to privileged roles, plus the Content-Security-Policy, with the scope
+correction recorded against the four by-design channels: what is privileged is choosing the raw channel,
+not necessarily supplying its bytes — rather than by encoding, because encoding it would disable the feature it implements. The rendering code is vendored.
 And correcting already-seeded values in a deployed installation would require a data migration over
 stored page-component options, which is neither a confirmed Critical nor High finding and is exactly
 the change the minimal-change constraint forbids.
@@ -2883,8 +2920,11 @@ Recognised as valuable, all outside this remediation's scope, none started:
     each resolved `TargetFramework` explicitly, something a successful solution build cannot rule out.
 - Partitioning the per-address failure budget by a proxy-supplied client address, so a shared egress
   address stops being a shared fate for co-tenant clients (RISK-111, with RISK-008).
-- A `must_change_password` marker on the user entity, so the generated initial administrator password
-  is *forced* to be rotated rather than merely advised (RISK-027).
+- ~~A `must_change_password` marker on the user entity, so the initial administrator password is
+  *forced* to be rotated rather than merely advised (RISK-027).~~ **Done, and removed from the
+  recommendation list rather than left standing:** `ErpUserPreferences.PasswordChangeRequired` carries it
+  in the pre-existing `rec_user.preferences` column, `ERPService` sets it at provisioning and on rotation,
+  `login.cshtml.cs` acts on it, and `AuthService` refuses to mint a bearer token while it is set.
 - Reviewing the per-host CORS allow-lists themselves. Replacing the two permissive policies is **done**
   (`RISK-013`), and both `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` now read their lists from
   `Settings:Cors:AllowedOrigins`, so they are deployment configuration and deny every origin when
@@ -3133,9 +3173,13 @@ Review finding `INT-08` established that this was the wrong answer on two counts
   Development. That combination is the defect the follow-up exists to remove.
 - *Widen the accept-any opt-out into production.* Rejected outright. It hands back precisely the
   behaviour H-11 removed, for the sake of a missing CRL.
-- *Add a second, narrower switch.* Chosen. `Settings:EmailSMTPCheckCertificateRevocation=false`
-  disables one check and leaves the trust chain, the validity dates, the key usage and the host name
-  all enforced.
+- *Add a second, narrower switch.* Chosen, then **WITHDRAWN** — and this marker is corrected here under
+  code-review finding `DOC-02`, because it still read *Chosen* while the paragraph above and the
+  *What is in force now* paragraph below both record the removal. `Settings:EmailSMTPCheckCertificateRevocation`
+  would have disabled one check while leaving the trust chain, the validity dates, the key usage and the
+  host name enforced. **It does not exist**: no code reads it, and a search of the source returns nothing.
+  Any document that lists it as an available setting is wrong, and the settings inventory in the secure
+  configuration guide has been corrected accordingly.
 
 **What is in force now.** Nothing assigns `client.CheckCertificateRevocation` on any send path, so the
 library's own default of `true` applies and there is no code path, and no configuration, that turns it
@@ -3905,7 +3949,59 @@ revocations applied and the `role`-entity read grant correctly left behind. And 
 replays the SDK patch loses that read grant through the patch's own restatement. The withdrawn version-5
 behaviour was separately confirmed absent: no re-assertion occurs on a second start.
 
-### RISK-051 — The `CA3001`–`CA3012` taint-analysis family does not run
+### RISK-051 — The `CA3001`–`CA3012` taint-analysis family runs for eighteen of nineteen projects; one project is excluded on measured cost
+
+> **Revised a third time, and this is the canonical statement. It supersedes the statement kept below,
+> which described the family as not running at all.** That description was accurate when written and is
+> now wrong: code-review finding `GATE-03` established that a measurement taken on one project had been
+> used to justify an exclusion applied to all nineteen, and the exclusion was narrowed accordingly. The
+> earlier framing is retained verbatim rather than overwritten, per this register's convention, because
+> the timing evidence in it is still the reason the one remaining exclusion exists.
+
+**Status: Accepted, and materially reduced — the family now executes for eighteen of the nineteen projects and is excluded from exactly one, `WebVella.Erp.Web`, on a per-project measurement rather than a global assumption.**
+
+`AnalysisLevelSecurity=latest-all` arms the family, and `Directory.Build.props` now applies the
+`CA3001`–`CA3012` `NoWarn` **only** to the single project a measurement implicates, through a property
+group conditioned on `MSBuildProjectName`. The two values are declared as readable properties —
+`ErpTaintAnalysisFamily` and `ErpTaintAnalysisExcludedProject` — and the workflow's Gate 1 reads them out
+of the props file and asserts the boundary per project, so the build configuration and the gate cannot
+drift apart.
+
+**Measured per project, which is what changed the conclusion.** Each of the nineteen projects was built
+with the exclusion overridden. Eighteen completed in **0 to 6 seconds each with zero `CA3001`–`CA3012`
+diagnostics**; `WebVella.Erp.Web` alone was killed at a 600-second bound (`exit 124`), which is
+consistent with the historical figures preserved below and is explained by its 395 Razor views compiling
+into a single compilation the family's interprocedural analysis then traverses. Summed baseline for the
+other eighteen was 43 seconds against 45 seconds armed, so the cost of arming them is within measurement
+noise. A full non-incremental solution build before and after the narrowing produced **identical**
+diagnostics — 614 distinct (file, rule) pairs over 6,108 occurrences, 3,055 warnings, 0 errors — with no
+`CA30xx` and no `CS1701`/`CS1702` regression, confirming the narrowing restored the SDK's default
+`NoWarn` for the eighteen without changing any other verdict.
+
+**The eighteen zeros are an absence of defects, not an absence of analysis, and that is proven rather
+than asserted.** A throwaway probe project carrying a deliberate request-to-`File.ReadAllText` flow and a
+deliberate query-to-`CommandText` flow reported `CA3001` and `CA3003` under the same configuration. The
+workflow's positive-control step now **requires** both diagnostics to appear, so a future change that
+silently disarms the family fails the gate instead of producing a reassuring silence.
+
+**What remains accepted.** `WebVella.Erp.Web` — the project holding the controller surface and the views —
+is still outside this family's reach, so its taint paths remain covered by the four compensating controls
+enumerated in the superseded statement below rather than by dataflow analysis. `ErpSecurityTaintAnalysis=all`
+arms it on demand for an operator with more build capacity than this hardware.
+
+**What would change this.** More build capacity, or the rules becoming materially cheaper. The residual is
+now one project rather than nineteen, which is the smallest form this exclusion can take without a
+measurement that shows the build terminates.
+
+#### Superseded statement of RISK-051 — the record that the family did not run at all
+
+**This section is a superseded statement, not a second entry, and it declares no identifier of its own.**
+The current record is the canonical `RISK-051` immediately above. Everything below was accurate before
+code-review finding `GATE-03` narrowed the exclusion; the timing measurements in it are still the
+evidence for the one project that remains excluded.
+
+#### The family did not run at all
+
 
 > **Revised twice; this is the canonical entry, and it supersedes `RISK-034` and `RISK-035`.** The build
 > timings below stand and are now the *secondary* reason the family is absent. Two earlier framings are
@@ -6041,7 +6137,7 @@ above, that is stated plainly and the change itself is recorded in
 | `M-04` | Local time used for token timestamps | CWE-613 | A07:2021 | **Remediated**, limb (c). `DateTime.UtcNow` replaces `DateTime.Now`, so the expiry claim means what it says regardless of host timezone |
 | `M-05` | Password hash comparison was not constant time | CWE-208 | A02:2021 | **Remediated**, limb (c). `CryptographicOperations.FixedTimeEquals` over equal-length spans, with length checked first and absent input failing closed |
 | `M-06` | Shared mutable hash instance used from concurrent requests | CWE-362 | A02:2021 | **Remediated**, limb (c). The shared instance is gone in favour of the thread-safe static call |
-| `M-07` | Unbounded script-evaluation cache holding compiled delegates | CWE-770, CWE-94 | A08:2021 | **Documented only.** Verified locators — `WebVella.Erp.Web/Services/CodeEvalService.cs:L13`, `private static readonly Dictionary<string, object> scriptObjects = new Dictionary<string, object>();`, and `:L44`, `CSScript.EvaluatorConfig.ReferenceDomainAssemblies = true;`. **Path correction worth stating: `WebVella.Erp/Utilities/CodeEvalService.cs` does not exist**, so a fix aimed there would miss. **Fix:** replace the unbounded dictionary with a size- or time-bounded cache carrying an eviction policy, and narrow `ReferenceDomainAssemblies` to an explicit assembly list so a compiled script cannot reach the whole loaded domain |
+| `M-07` | Unbounded script-evaluation cache holding compiled delegates | CWE-770, CWE-94 | A08:2021 | **Half closed, half still documented only, and the half that closed did so for a sharper reason than this row originally gave.** Verified locators at the time of the audit — `WebVella.Erp.Web/Services/CodeEvalService.cs:L13`, `private static readonly Dictionary<string, object> scriptObjects = new Dictionary<string, object>();`, and `:L44`, `CSScript.EvaluatorConfig.ReferenceDomainAssemblies = true;`. **Path correction worth stating: `WebVella.Erp/Utilities/CodeEvalService.cs` does not exist**, so a fix aimed there would miss — that is the AAP's own path, at §0.3.2 and §0.7.1 Group 11, and it is the tenth such inaccuracy this document set records. **CLOSED half:** the checkpoint review raised the same code as `M-OPEN-04`, on the ground that the plain `Dictionary` was **read outside the lock that guarded its writes** — a data race, not merely growth — and commit `087ad593` replaced it with a `MemoryCache` using atomic get-or-add, `SizeLimit = 1000` and a one-day sliding expiry. A race probe measured 3 `KeyNotFoundException` faults before and 0 after over ~280 million reads. See record `CK-08`. **OPEN half, unchanged:** `CSScript.EvaluatorConfig.ReferenceDomainAssemblies = true;` survives at `:L74`, so a compiled script still reaches every assembly loaded in the domain. **Fix:** narrow it to an explicit assembly list |
 | `M-08` | Deterministic initialisation vector in the symmetric encryption helpers | CWE-329 | A02:2021 | **Documented only** — and latent: the helpers have no active caller, which is why this is not a Critical. RISK-006 additionally records that changing the scheme in place would make any already-encrypted data undecryptable. **Fix:** generate a per-message CSPRNG initialisation vector and prepend it to the ciphertext, and migrate the primitive to AES-256-GCM as the Cryptographic Standards block requires. Version the payload so existing ciphertext stays readable through the transition |
 | `M-09` | Anonymous access to a developer page | CWE-306 | A01:2021 | **Documented only** — it does not meet the compensating-control test. Now at `WebVella.Erp.Site.Sdk/Startup.cs:L97`, `options.Conventions.AllowAnonymousToPage("/dev")` (the audit locator `:L48` drifted as the host pipeline grew). **Fix:** delete the convention outright, or wrap it in an `environment.IsDevelopment()` guard so it cannot ship enabled |
 | `M-10` | Anonymous resource-read endpoint on the project plugin | CWE-306, CWE-200 | A01:2021 | **Documented only** as an *anonymous* surface; its log-injection and log-volume half **was** closed. The action is now at `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs:L512` (audit locator `:L462`). **Fix:** remove `[AllowAnonymous]` and require authentication, or — if the asset must stay public — bind the `file` parameter to a fixed allow-list of embedded resource names instead of accepting a caller-supplied string |
@@ -6136,7 +6232,18 @@ solution requiring the least modification (guideline 7), and exact preservation 
   [the remediation log](remediation-log.md).
 - **Fixing the empty exception handlers** at
   `WebVella.Erp.Web/Middleware/ErpErrorHandlingMiddleware.cs:L57-L60` and `:L63-L66` (`catch { }`) — a
-  **reliability** concern, not a security one.
+  **reliability** concern, not a security one. Both line locators and the byte-identity claim were
+  re-verified at the current revision: the file is unchanged from `master`, and the two `catch { }` blocks
+  sit exactly there. **One reachability fact was mis-stated in a working note during the checkpoint
+  remediation and is corrected here rather than left to be rediscovered:** this middleware is **not**
+  unregistered. All seven hosts call `app.UseErrorHandlingMiddleware()` — `WebVella.Erp.Site/Startup.cs:L409`,
+  `Site.Crm:L148`, `Site.Mail:L124`, `Site.MicrosoftCDM:L148`, `Site.Next:L148`, `Site.Project:L395`,
+  `Site.Sdk:L190` — but each does so inside the **`else` branch of the Development check**, alongside
+  `UseExceptionHandler("/error")` and `UseStatusCodePagesWithReExecute("/error")`. So it runs in the
+  shipped Production posture and does **not** run under `ASPNETCORE_ENVIRONMENT=Development`, which is why
+  a local development host can make it look like dead code. The consequence for this entry is that the two
+  empty handlers are live in production and inert in development — the reverse of the usual pattern, and
+  worth knowing before anyone tries to reproduce a swallowed fault locally.
 - **Adding any new package dependency whatsoever** — every control this remediation introduces resolves
   from the `Microsoft.AspNetCore.App` framework reference already present at
   `WebVella.Erp/WebVella.Erp.csproj:L43`: the password hasher, the rate limiter, the antiforgery
@@ -6231,8 +6338,12 @@ paragraph said it borrows the shared helper at `WebVella.Erp.Web/Utils/Cache.cs`
 bound this store needs, and raising a limit on the shared instance would change eviction for every other
 consumer. Using the same `MemoryCache` type privately is what avoided both a schema change and a new
 dependency, and is therefore still the least invasive control available (guideline 5).
-The consequence is stated rather than hidden: throttle state neither spans instances nor survives a
-restart, so a multi-instance deployment enforces the five-attempt bound once **per instance** rather than
+**Superseded by review finding `CK-03`**, which is the correction this paragraph most needs: the counters
+were moved to the durable shared store, so throttle state now spans instances and survives a restart, and
+the private `MemoryCache` retains only in-force lockouts as a positive-only fast path. The paragraph below
+records the position before that change. The consequence as it then stood: throttle state neither spanned
+instances nor survived a
+restart, so a multi-instance deployment enforced the five-attempt bound once **per instance** rather than
 once overall. It **fails closed** on cache eviction rather than granting unlimited attempts. A
 distributed backing store is a **recommendation, not a fix** — it appears in the ongoing recommendations
 and as RISK-008. **Do not confuse that live file with the dead 61-line
@@ -6300,6 +6411,8 @@ cross-site scripting `INT-14`, and the out-of-plan revocation switch `INT-08` �
 [remediation log](remediation-log.md) instead, because they are changes rather than residuals.
 
 ### RISK-131 — The diagnostic notification mailer sends exception detail and a credential in the clear
+
+**REMEDIATED — superseded by review finding `CK-07`.** This entry recorded the residual as *accepted*, conditional on `Settings:EmailEnabled` staying `false`, and its recommended-fix table below listed five ordered changes. **Items 1 through 4 have been implemented.** The log record is now persisted before any notification is attempted; the notification carries only the severity, the source and the record identifier; the diagnostic client requires validated TLS, is disposed and is bounded by an explicit 15-second timeout; and a delivery failure is recorded against the log row rather than swallowed. Item 5, rate-bounding per source, is **not** implemented and remains the residual of this entry. One correction to the table itself, made here rather than quietly: item 1 is described as *a two-line reordering with no signature change*, and that is wrong — the delivered fix **does** change `MailService`'s public method signature, because the notification had to be given the persisted record identifier to carry. Measured: with the relay black-holed the previous build blocked for 100,281 ms and the log row was **absent**, while the fixed build returned in 15,287 ms with the row present within three seconds and the notification status recorded as `NotificationFailed`. The text below is retained as the record of what was accepted before that change.
 
 **Read together with `RISK-135`.** Both entries concern the same `M-17` residual seen from two directions: this one records the *transport* — no TLS is negotiated, so the relay credential and the exception detail cross the network in the clear — while `RISK-135` records the *ordering and payload*, namely that the detail is e-mailed before it is persisted and which fields it carries. Neither supersedes the other and the recommended fixes are complementary.
 
@@ -6497,11 +6610,11 @@ the smallest:
 
 | Order | Change | Effect |
 | --- | --- | --- |
-| 1 | Persist first, notify second — move `log.Create(...)` above the `SendLogMessage(...)` call in both overloads | A delivery failure can no longer lose the diagnostic. This is a two-line reordering with no signature change |
-| 2 | Reduce the notified payload to a log identifier, a severity and a source | The detail becomes retrievable only from the database, which is access-controlled; the notification becomes a pointer rather than a copy |
-| 3 | Put a generic subject on the message and stop passing `ex.Message` into it | Removes disclosure from the least protected field |
-| 4 | Replace the bare `catch { }` with one that records the delivery failure through the non-notifying audit boundary | A broken relay becomes observable without becoming recursive |
-| 5 | Rate-bound notification per source, as `SecurityAuditLog.RecordRateLimitedAudit` already does for audit records | Removes the amplification primitive |
+| 1 | Persist first, notify second — move `log.Create(...)` above the `SendLogMessage(...)` call in both overloads | **DONE** under `CK-07`. A delivery failure can no longer lose the diagnostic. This row previously read *a two-line reordering with no signature change*, which was wrong and is corrected here: the delivered fix changes `MailService`'s public method signature, because the notification had to be given the persisted record identifier to carry |
+| 2 | Reduce the notified payload to a log identifier, a severity and a source | **DONE** under `CK-07`. The detail becomes retrievable only from the database, which is access-controlled; the notification becomes a pointer rather than a copy |
+| 3 | Put a generic subject on the message and stop passing `ex.Message` into it | **DONE** under `CK-07`. Removes disclosure from the least protected field |
+| 4 | Replace the bare `catch { }` with one that records the delivery failure through the non-notifying audit boundary | **DONE** under `CK-07`. A broken relay becomes observable without becoming recursive |
+| 5 | Rate-bound notification per source, as `SecurityAuditLog.RecordRateLimitedAudit` already does for audit records | **NOT DONE — this is the residual of this entry.** Removes the amplification primitive |
 
 Items 1, 3 and 4 are individually smaller than most changes this remediation already made; they sit
 outside scope because of the exclusion above, not because of their size.

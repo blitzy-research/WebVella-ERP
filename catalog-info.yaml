@@ -8,8 +8,16 @@ metadata:
   # orchestration manifest and no service split anywhere in the tree, and the AAP
   # excludes all of it. What this repository does contain is the OWASP Top 10
   # audit and its remediation, so that is what the descriptor now says.
-  description: WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, with a
-    completed OWASP Top 10 (2021) security audit and remediation.
+  # 'completed' was removed from this description as part of review finding DOC-02.
+  # It read as a release-readiness claim, and the tree does not support one: the
+  # workflow's release gate exits non-zero while 24 mandatory manual verification
+  # scenarios are unattested, the AutoMapper licence question is an open owner
+  # decision that blocks 'dotnet pack', and a later checkpoint review found an
+  # authenticated code-execution path that the original audit had not. The
+  # gate-by-gate status is the authority; see the audit report link below.
+  description: WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, with an
+    OWASP Top 10 (2021) security audit and remediation in the tree; release readiness is
+    gated, not asserted.
   # 'infrastructure', 'modernization' and 'refactor' are removed for the same
   # reason as the description: the AAP forbids architectural change, refactoring
   # beyond security requirements and any infrastructure work, so those tags
@@ -38,7 +46,10 @@ metadata:
   # audit report and its companions are linked instead, which is what the AAP
   # requires this descriptor to reference.
   - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/docs/security/security-audit-report.md
-    title: Security Audit Report — all 53 findings in the mandated eight-field format
+    # The count is stated as the audit inventory plus the later review inventories
+    # rather than as a single total, because the total has moved four times and a
+    # descriptor that restates it invites exactly the drift DOC-02 recorded.
+    title: Security Audit Report — the 53-finding audit inventory plus every later review finding, each in the mandated eight-field format
     icon: docs
   - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/docs/security/risk-register.md
     title: Security Risk Register — accepted risks and ongoing recommendations

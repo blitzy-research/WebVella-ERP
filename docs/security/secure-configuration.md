@@ -49,11 +49,11 @@ follow, and they are the whole point of this guide:
 | Cookies | Authentication: `SecurePolicy=Always` **unconditionally, including in Development**, `SameSite=Lax`, `HttpOnly`, a 24-hour sliding idle window and a 7-day absolute horizon. Antiforgery: `SecurePolicy=Always` outside Development and `SameAsRequest` in Development, retaining the framework's `SameSite=Strict` default |
 | Data Protection | Per-application discriminator bound to the host's application name, so one host cannot decrypt another's authentication cookie; the key-ring directory is opt-in through `Settings:DataProtectionKeyDirectory` (`RISK-115`) |
 | Rate limiting | `UseRateLimiter()` in all seven hosts — a per-address fixed window of 600 requests per minute — positioned after both static-file middlewares so assets are never throttled |
-| Login throttling | Per-account and per-address counters over a bounded in-process store, consulted at **both** credential entry points: the login page and the anonymous bearer-token route (`RISK-008`) |
-| Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors. .NET analyzers run with `AnalysisLevel=latest-recommended` and nothing further; no `AnalysisLevelSecurity` upgrade and **no** global analyzer configuration file is supplied, and the workflow fails if either appears. All analyzer diagnostics stay warnings at the project level and are enforced instead by the workflow's Gate 1 allow-list. Inherited by **19 of 19** projects, because the file is directory-scoped rather than solution-scoped |
+| Login throttling | Per-account and per-address counters in a **durable, shared** store — the existing `plugin_data` table under the reserved `wv_sec_` key prefix, mutated by atomic row-locked read-modify-write — consulted at **both** credential entry points: the login page and the anonymous bearer-token route. A lockout therefore survives a restart and spans instances, and the throttle fails closed when the store cannot be reached (`RISK-008`, review finding `H-OPEN-02`) |
+| Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors. .NET analyzers run with `AnalysisLevel=latest-recommended` **and `AnalysisLevelSecurity=latest-all`**, which arms the whole Security category; an earlier revision of this row said no such upgrade was applied, and that is no longer true. **No** global analyzer configuration file is supplied, and the workflow fails if one appears — the category level is delivered through a property the SDK honours rather than through a `.globalconfig`. One family is excluded: `CA3001`–`CA3012` for `WebVella.Erp.Web` alone, on a measured termination bound, and the workflow asserts that exclusion in both directions so it can neither be lost nor widened (`RISK-051`, `RISK-138`). All analyzer diagnostics stay warnings at the project level and are enforced instead by the workflow's Gate 1 allow-list. Inherited by **19 of 19** projects, because the file is directory-scoped rather than solution-scoped |
 | Toolchain pin | `global.json` pins `10.0.302` with `rollForward: disable`, so only that exact SDK builds the repository and the gate's recorded results are reproducible by construction (review findings `GATE-02` and `CR2-F-13`) |
 | Shipped secrets | **Scrubbed.** All eight `Config.json` files carry empty secret values and `DevelopmentMode: false`, `web.config` sets `Production`, and the seeded administrator password is no longer a literal (`RISK-021`, closed) |
-| Mail transport | **The five MailKit send paths only.** Their SMTP server certificates are validated by default, including revocation, and no setting can turn revocation off (`RISK-060`). This does **not** describe the separate diagnostic notification client in `WebVella.Erp.Web/Services/MailService.cs`, which negotiates no TLS at all — see *Mail transport* |
+| Mail transport | **Encrypted on every path, and no path can opt out of encryption.** The five MailKit send paths validate the server certificate by default including revocation, and no setting can turn revocation off (`RISK-060`); since review finding `H-OPEN-03` they additionally **refuse** a cleartext connection outside Development — `None` is rejected and `Auto`/`StartTlsWhenAvailable` are raised to mandatory `StartTls`, so a relay that does not offer the extension is refused rather than downgraded. The separate diagnostic notification client in `WebVella.Erp.Web/Services/MailService.cs` used to negotiate no TLS at all; since review finding `M-OPEN-03` it sets `EnableSsl`, is disposed and carries a 15-second timeout, with no development escape hatch — see *Mail transport* |
 | Origins | No host applies `AllowAnyOrigin()` any longer (`RISK-013`, closed). Both formerly permissive hosts read `Settings:Cors:AllowedOrigins` and deny every origin when it is absent outside Development |
 | Anonymous error paths | Both bearer-token routes return a generic message outside Development and retain their server-side log record (`RISK-014`, closed) |
 
@@ -111,7 +111,7 @@ the file.
 | --- | --- | --- | --- |
 | `Settings:Jwt:Issuer` | `Settings__Jwt__Issuer` | No — defaults to `webvella-erp` | Expected token issuer |
 | `Settings:Jwt:Audience` | `Settings__Jwt__Audience` | No — defaults to `webvella-erp` | Expected token audience |
-| `Settings:InitialAdministratorPassword` | `Settings__InitialAdministratorPassword` | **First provisioning only**, and when upgrading an installation still carrying the published default administrator password | The first administrator's password on a new database. Absent, provisioning generates a value with a CSPRNG and prints it once. Present, it must satisfy the password policy or **provisioning aborts** — see [the password policy below](#the-initial-administrator-password-must-satisfy-the-password-policy) |
+| `Settings:InitialAdministratorPassword` | `Settings__InitialAdministratorPassword` | **First provisioning only**, and when upgrading an installation still carrying the published default administrator password | The first administrator's password on a new database. **Required**: absent, provisioning is refused inside its own transaction and nothing is persisted — the platform never invents a value, because it would have to disclose it through a captured output stream. Present, it must satisfy the password policy or **provisioning aborts** — see [the password policy below](#the-initial-administrator-password-must-satisfy-the-password-policy) |
 | `Settings:EmailSMTPPassword` | `Settings__EmailSMTPPassword` | Only when e-mail is enabled | Relay credential. Ships empty |
 | `Settings:EmailSMTPAllowInvalidCertificates` | `Settings__EmailSMTPAllowInvalidCertificates` | No | Accepts **any** SMTP server certificate. Honoured only alongside `Settings:DevelopmentMode`; refused, and reported once per process, anywhere else. Never set it in production |
 | `Settings:DevelopmentMode` | `Settings__DevelopmentMode` | No — defaults to `false` | Must be `false` outside development. Gates a richer-error branch in `WebVella.Erp.Web/Controllers/ApiControllerBase.cs` (finding H-12) |
@@ -147,7 +147,7 @@ memory, and the sweep is reproducible:
 # Every configuration key read anywhere in the tree, deduplicated:
 grep -rhoE '"(Settings|ApiUrlTemplates|SecurityHeaders|Development):[A-Za-z0-9_:]+"' \
   --include='*.cs' --include='*.cshtml' . | sort -u
-#   40 keys
+#   39 lines, which is NOT the same as 39 keys - see the note below the block
 
 # Bidirectional check - every key read from source appears in this guide, and
 # every key this guide names is read from source:
@@ -157,6 +157,21 @@ grep -ohE '`(Settings|ApiUrlTemplates|SecurityHeaders|Development):[A-Za-z0-9_:]
   docs/security/secure-configuration.md | tr -d '`' | sort -u > /tmp/from-docs.txt
 comm -23 /tmp/from-source.txt /tmp/from-docs.txt   # read but undocumented - must be empty
 ```
+
+**Read the sweep's output carefully: 39 lines, 40 keys, and the gap is a limitation of the pattern
+rather than a missing row.** The pattern can only see a key read by its **full literal path**. Two keys
+are read *section-relative* — `WebVella.Erp.Web/ErpMvcExtensions.cs` resolves
+`GetSection("Settings:ForwardedHeaders")` once and then reads `section["KnownProxies"]` and
+`section["KnownNetworks"]` — so the literal strings `Settings:ForwardedHeaders:KnownProxies` and
+`Settings:ForwardedHeaders:KnownNetworks` never appear in source and the sweep cannot match them. What it
+matches instead is the section name `Settings:ForwardedHeaders`, which is one line but not a key. So: 39
+lines, minus 1 section, plus 2 section-relative leaves, equals **40 keys**. The reverse comparison
+therefore reports three keys as "documented but not read", and all three are correct as documented: those
+two, plus `Settings:EmailSMTPCheckCertificateRevocation`, which this guide names **precisely in order to
+record that it does not exist** — see its row below. Anyone re-deriving the inventory should add a second
+sweep for `GetSection` reads rather than trusting the single pattern; the single pattern is retained
+because it is what the original inventory was built from and silently replacing it would hide this
+qualification.
 
 The reverse direction, `comm -13`, is **not** expected to be empty, and the reason is worth stating so
 nobody reads it as two invented keys. It reports exactly
@@ -184,7 +199,7 @@ default is a literal the code supplies.
 | `Settings:Jwt:Key` | none — **capability degrades, startup proceeds** | The two token-issuing hosts; the routes exist on all seven | `ErpSettings.cs`, `WebVella.Erp.Site/Startup.cs`, `WebVella.Erp.Site.Project/Startup.cs` |
 | `Settings:Jwt:Issuer` | `webvella-erp` | As above | same three files |
 | `Settings:Jwt:Audience` | `webvella-erp` | As above | same three files |
-| `Settings:InitialAdministratorPassword` | none — a value is generated with a CSPRNG and printed once | First provisioning, and when upgrading an installation still carrying the published default password | `ERPService.cs` |
+| `Settings:InitialAdministratorPassword` | none — **provisioning aborts**; no value is ever generated | First provisioning, and when upgrading an installation still carrying the published default password | `ERPService.cs` |
 | `Settings:DevelopmentMode` | `false` | Every host. Must stay `false` outside development (finding H-12) | `ErpSettings.cs` |
 | `Settings:Cors:AllowedOrigins` | none — every origin denied outside Development | `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` only | both `Startup.cs` files |
 | `Settings:ForwardedHeaders` | n/a — bound as a **section**, not read as a leaf | Only behind a TLS-terminating reverse proxy. `BuildForwardedHeadersOptions` takes `GetSection("Settings:ForwardedHeaders")` and then reads the two child keys below by relative name, which is why the section itself appears in a source sweep while the children do not | `ErpMvcExtensions.cs` |
@@ -214,7 +229,7 @@ default is a literal the code supplies.
 | `Settings:EmailFrom` | none | Only when e-mail is enabled. Default sender address | `ErpSettings.cs` |
 | `Settings:EmailTo` | none | Diagnostic and exception notification recipient (`RISK-030`) | `ErpSettings.cs` |
 | `Settings:EmailSMTPAllowInvalidCertificates` | `false` | Accepts **any** relay certificate. Honoured **only** alongside `Settings:DevelopmentMode`; refused elsewhere and reported once per process. Never set it in production | `SmtpService.cs` |
-| `Settings:EmailSMTPCheckCertificateRevocation` | **`true`** | Set `false` only when the relay's chain publishes no reachable CRL or OCSP endpoint. Chain, expiry and host name stay verified; honoured in every posture (`RISK-060`) | `SmtpService.cs` |
+| `Settings:EmailSMTPCheckCertificateRevocation` — **DOES NOT EXIST** | n/a | Listed here only so an operator who found it in an earlier revision of this guide stops looking for it. No code reads this key. Certificate revocation checking is **unconditional**: nothing assigns `client.CheckCertificateRevocation`, so MailKit's own default of `true` applies on every send path and no configuration turns it off. A relay whose chain names no reachable CRL distribution point or OCSP responder therefore **cannot be used from a Production deployment** — verified at runtime, where such a relay fails with *unable to get certificate CRL* even though the chain, dates and host name all verify. Use a relay whose chain publishes a reachable revocation endpoint (`RISK-060`) | `SmtpService.cs` |
 | `ApiUrlTemplates:FieldInlineEdit` | `/api/v3/en_US/record/{entityName}/{recordId}` | Every host. Endpoint template the inline field editor posts to | `ErpSettings.cs` |
 | `Development:TestEntityName` | `test` | Development scaffolding only. Not a `Settings:` key and not part of the security posture | `ErpSettings.cs` |
 | `Development:TestRecordId` | a fixed GUID | Development scaffolding only; a non-parsing value is ignored rather than fatal | `ErpSettings.cs` |
@@ -281,8 +296,10 @@ any prefix of it**, for the same reason the missing-setting message never does (
 first credential of a new deployment. That credential is the most privileged one the system will ever
 have, and it is chosen exactly once, unattended, at the moment nobody is watching a log. A warning
 would be read by nobody; the abort is read by everybody. It also fails **closed** rather than falling
-back to a generated password, because silently substituting a different password than the operator
-asked for is worse than refusing.
+back to a generated password, because silently substituting a different password than the operator asked
+for is worse than refusing — and because a generated value would have to be disclosed through an output
+stream every hosting substrate captures and retains. There is no generated fallback anywhere in the
+administrator path.
 
 **If provisioning aborted on you.** Correct the value and start the host again. Nothing was written, so
 there is no partial state to clean up — the refusal precedes schema creation entirely.
@@ -1297,7 +1314,7 @@ permission is touched, and the effect does not repeat on subsequent deployments.
 
 ## Rate limiting and the login lockout
 
-Two independent layers, both from the shared framework or from in-process primitives — **no new
+Two independent layers, both from the shared framework or from primitives already in the tree — **no new
 dependency and no schema change.**
 
 **Transport-level rate limiting** is a per-remote-address fixed window of **600 requests per minute**,
@@ -1326,20 +1343,36 @@ The token refresh route uses the address-only counter because it presents no use
 registration is atomic — attempts are reserved before verification and finalised after — so concurrent
 requests cannot each pass the check before any of them records a failure.
 
-Three limitations, stated rather than buried:
+**The counters are durable and shared, and this reverses what an earlier revision of this page said.**
+They live in the platform's own `plugin_data` table through
+`WebVella.Erp/Database/DbSecurityStateRepository.cs`, under the reserved key prefix `wv_sec_`, with keys
+`wv_sec_lthr_acct_<username>` and `wv_sec_lthr_addr_<address>`. Every transition is a single atomic,
+row-locked read-modify-write, so five failures means five in total rather than five per process. Nothing
+about this is a schema change: the table already existed for plugin state, so no `CREATE TABLE` and no
+column was added. **The one thing mirrored in memory is an in-force lockout, and only positively** — a
+mirror hit can refuse a key that is already refused, but it can never authorise an attempt, because a
+miss always consults the database and the mirror entry expires exactly when the lockout it mirrors does.
+So the operational consequences that follow from a durable store are the ones to plan for:
 
-- **The store is in-process**, backed by the existing bounded cache primitive, so its protection is
-  **per instance**. In a multi-instance or load-balanced deployment each instance counts independently
-  and effective thresholds multiply by the instance count. A distributed backing store is a recorded
-  **recommendation, deliberately not built**; if you run more than one instance, enforce throttling at
-  the load balancer as well. The throttle **fails closed** on cache eviction, so eviction cannot grant
-  unlimited attempts.
+- **A restart no longer clears a lockout, and a second instance sees it.** That is the fix for review
+  finding `H-OPEN-02`; it also means an operator cannot release a locked-out account by bouncing the
+  process. Deleting the account's `plugin_data` row is not sufficient on its own either, because a
+  running process may still hold the lockout in its positive mirror — clearing an in-force lockout
+  immediately takes **both** the row deletion and a restart of every instance holding it. In practice
+  wait for the 15-minute window to lapse.
+- **The throttle fails closed when the store cannot be consulted.** If the database is unreachable the
+  attempt is refused rather than allowed, so a database outage cannot be used to switch the lockout off.
+  The trade is explicit: during such an outage logins are refused, which is the same posture the rest of
+  the platform already takes because every credential lookup needs the database anyway.
 - **Account lockout is a denial-of-service primitive**, which is why it lapses automatically after 15
   minutes rather than requiring an administrator to clear it. An attacker can lock a known account for
-  15 minutes; that is a deliberate trade against making credential stuffing cheap.
-- **The store is size-bounded** to cap memory against an attacker varying the username. Displacing a
-  specific account's partial count requires cycling the entire store, which buys at most a few extra
-  guesses.
+  15 minutes; that is a deliberate trade against making credential stuffing cheap. The window is
+  re-measured from the most recent attempt, so pacing attempts cannot age a counter out from under
+  itself.
+- **The mirror is size-bounded at 20,000 in-force lockouts** to cap memory against an attacker varying
+  the username. Cycling it displaces only a cached copy of a refusal, never a partial count — the count
+  itself is never cached — so unlike the previous in-process design, cache pressure cannot hand a
+  budget back.
 
 Counters are held in memory, so **restarting the application clears all lockouts** — useful during
 testing, and the fastest way to undo a deliberate lockout you created while verifying a deployment.
@@ -1448,55 +1481,70 @@ millisecond.** Check the `connection_security` value on the `smtp_service` row a
 actually offers on that port; the conventional pairings are implicit TLS with 465, and `STARTTLS` with
 587 or 25.
 
-**A service row configured for cleartext delivers with no certificate involved at all.** A
-`connection_security` of `None` connects in the clear, and the "when available" variant silently
-degrades to cleartext against a relay that does not advertise `STARTTLS`. On such a row the message body
-— and, when the row carries a username, the **relay credential** — is transmitted unencrypted, and the
-send succeeds while revocation checking sits at its secure default, because no certificate is
-presented, requested or examined. **Do not read that success as a bypass of the certificate controls:**
-there is no certificate on this path for them to act on, and concluding otherwise sends the fix toward
-the certificate policy, which cannot help, and away from the transport configuration, which is the only
-thing that can. The platform applies no minimum-security floor to the column, so this is a deployment
-responsibility: on any row that carries a username use `STARTTLS` or implicit TLS — never `None` — and
-prefer strict `STARTTLS` over the "when available" variant so a relay that stops advertising it fails
-loudly instead of quietly downgrading. Verify it on the wire rather than from the configuration.
+**A service row configured for cleartext is now refused rather than delivered, and that reverses what
+this paragraph used to say.** Until review finding `H-OPEN-03` a `connection_security` of `None`
+connected in the clear, and the "when available" variant silently degraded to cleartext against a relay
+that did not advertise `STARTTLS` — so the message body and, when the row carried a username, the
+**relay credential** went out unencrypted while revocation checking sat at its secure default, because
+no certificate was ever presented, requested or examined. There is now a **minimum-security floor**, and
+it is applied in two places:
 
-### The diagnostic notification mailer is a different client, and it is not protected by any of the above
+- **At send time, in code.** Outside Development, `None` is refused before any socket is opened — the
+  send is aborted with a diagnostic naming the mode and the `smtp_service` field, and the wire carries
+  no session at all. `Auto` and `StartTlsWhenAvailable` are **raised** to mandatory `StartTls`, so a
+  relay that does not offer the extension fails with `The SMTP server does not support the STARTTLS
+  extension.` instead of downgrading. Development posture still permits a plaintext or self-signed
+  development relay, which is the only escape hatch and is deliberate.
+- **At record-validation time, in the entity metadata.** The `connection_security` field's default value
+  is now `3` (`StartTls`), and the permitted option set on the create and edit screens is `SslOnConnect`
+  and `StartTls` only — `None`, `Auto` and `StartTlsWhenAvailable` are rejected with *Connection
+  security must be SslOnConnect or StartTls* and no row is written.
 
-Everything in this section describes the **five MailKit send paths** in
+**One thing the migration deliberately does not do: it does not rewrite stored rows.** An installation
+upgraded from an earlier version keeps whatever `connection_security` value it already had, so a row
+sitting at `None` will start **failing** its sends after the upgrade rather than silently continuing to
+leak. That is the intended direction, but it is a behaviour change to plan for: check every
+`rec_smtp_service` row before upgrading and set it to `SslOnConnect` or `StartTls`. The conventional
+pairings are implicit TLS with 465 and `STARTTLS` with 587 or 25. Verify it on the wire rather than from
+the configuration.
+
+### The diagnostic notification mailer is a different client, and it is now protected too — differently
+
+Everything above this heading describes the **five MailKit send paths** in
 `WebVella.Erp.Plugins.Mail`: the four in `Api/SmtpService.cs` and the queued one in
-`Services/SmtpInternalService.cs`. Those are the paths `H-11` closed and the paths whose certificates are
-validated.
+`Services/SmtpInternalService.cs`. Those are the paths `H-11` closed and `H-OPEN-03` made
+encryption-mandatory.
 
 The platform has a **second, entirely separate** outbound mail client, and review finding `INT-01`
 existed because earlier revisions of this guide and of the audit report generalised across the two as
-though `H-11` covered both. It does not. `WebVella.Erp.Web/Services/MailService.cs` builds a
-`System.Net.Mail.SmtpClient` and is called by `WebVella.Erp.Web/Services/LogService.cs` to e-mail an
-exception notification *before* the log record is persisted — finding `M-17`. Read its posture literally:
+though `H-11` covered both. It did not, and the distinction still matters — but the conclusion has
+reversed. `WebVella.Erp.Web/Services/MailService.cs` builds a `System.Net.Mail.SmtpClient` and is called
+by `WebVella.Erp.Web/Services/LogService.cs` when a log record is written. **Review finding `M-OPEN-03`
+closed it.** Read its posture literally, as it now stands:
 
 | Property | Actual behaviour |
 | --- | --- |
-| Transport | **No TLS.** `EnableSsl` is never set, and its default is `false`, so the session is plaintext unless the relay refuses to accept it |
-| Certificate validation | **Not reached.** With no TLS there is no certificate to validate, so neither `H-11`'s policy nor revocation checking applies here at all |
-| Credential | `NetworkCredential` with the same `Settings:EmailSMTPUsername` / `Settings:EmailSMTPPassword` values, sent over that plaintext session |
-| Payload | The exception message, the source, the serialised detail and the request URL including its query string |
-| Failure handling | Swallowed by an empty `catch`, so a delivery failure is invisible and the record is simply marked un-notified |
-| Timeout | The framework default of 100 seconds, synchronous |
+| Transport | **STARTTLS, unconditionally.** `client.EnableSsl = true`, with no development escape hatch and no configuration key that could express an opt-out. A relay that cannot offer the extension makes the notification fail; switch diagnostic mail off with `Settings:EmailEnabled` rather than reaching for a downgrade |
+| Certificate validation | The platform's **default chain policy** — chain, validity dates and host name. This type is never given a validation callback anywhere in the repository, and must not be. It does **not** check revocation, which is the one place it is weaker than the MailKit paths above; a chain-trusted certificate satisfies it even with no reachable CRL |
+| Credential | `NetworkCredential` with the same `Settings:EmailSMTPUsername` / `Settings:EmailSMTPPassword` values — now sent inside the TLS session rather than in the clear |
+| Payload | **Severity, source, host and the `system_log` identifier. Nothing else.** The exception message, the serialised detail and the request URL are no longer sent; the subject is fixed and content-free, because a subject is the part of a message intermediate relays log by default. The three interpolated values are HTML-encoded into the body |
+| Ordering | The log record is **persisted first**, then the notification is attempted. A notification failure can therefore no longer lose the record it was announcing |
+| Failure handling | Reported, not swallowed. The empty `catch` is gone; a fault goes to standard error — by exception **type** only, never the relay's response text — with the first always reported and one in 100 thereafter, and the record is marked `NotificationFailed` (`4`). Standard error rather than the platform log deliberately: this runs *inside* the platform log's own notification path, and recursing into it would be the defect being reported |
+| Timeout | **15 seconds, explicit**, and the client is disposed. The framework default of 100 seconds — measured at 100.3 s against a socket that accepts and never answers — turned an unrelated fault into a request that appeared hung |
 
-**What bounds it.** The whole path is gated on `Settings:EmailEnabled`, which is `false` in all eight
-shipped configuration files and defaults to `false` when the value is absent — so on a default
+**What still bounds it.** The whole path remains gated on `Settings:EmailEnabled`, which is `false` in
+all eight shipped configuration files and defaults to `false` when the value is absent — so on a default
 deployment this client never runs. Separately, the twenty-eight notifying `LogService` writes on the web
 API surface were replaced by a non-notifying audit sink while closing review finding `F26`, so the
-platform's largest anonymous-reachable fault surface can no longer reach this path at all.
+platform's largest anonymous-reachable fault surface does not reach this path at all.
 
-**What to do about it.** Treat `Settings:EmailEnabled=true` as a deliberate decision to send exception
-detail and an SMTP credential over an unauthenticated channel, and take it only where the relay is on a
-network segment you trust end to end. The remediation — requiring TLS on this client, disposing its
-resources, bounding its timeout and reporting its failures — is **outside the agreed scope of this
-engagement**, which documents external-service risks rather than modifying external-service
-integrations, and adding another mail configuration switch is precisely the out-of-plan widening that
-review finding `INT-08` removed elsewhere in this file. It is recorded with concrete fix
-guidance as `RISK-131`, alongside `M-17` itself.
+**What to do about it now.** Point it at a relay whose certificate this host can validate and which
+offers STARTTLS, then confirm delivery. Until it validates, notifications fail silently to the operator
+but loudly in the data: `system_log.notification_status` carries `4`. One residual is deliberately
+**not** closed and is yours to bound — the notification is attempted once per notifying write with no
+per-source ceiling, so a fault that recurs at volume still produces mail at volume. Rate-bound it at the
+relay, or leave `Settings:EmailEnabled` off and read `system_log` directly. That residual, and the
+history of this section, are recorded as `RISK-131` alongside `M-17`.
 
 ## Abandoned upload cleanup is an operator responsibility
 
@@ -2094,14 +2142,21 @@ has no reachable revocation source, and because no setting disables that check t
 or a different relay used — before this platform can send through it in Production. Record `RISK-060`
 while it stands. Re-send after publishing the CRL or OCSP endpoint; it must then deliver.
 
-Also confirm what the certificate controls do **not** cover: the diagnostic notification client in
-`WebVella.Erp.Web/Services/MailService.cs` is a different SMTP client and enables no TLS, so if
-`Settings:EmailEnabled` is `true` on your deployment, capture that traffic and satisfy yourself that the
-relay it reaches is one you are willing to send exception detail and a credential to in the clear
-(`RISK-131`).
+The diagnostic notification client in `WebVella.Erp.Web/Services/MailService.cs` **is** now covered, and
+this paragraph used to say the opposite. Review finding `M-OPEN-03` closed it: that client now requires
+validated STARTTLS, is disposed, and carries an explicit 15-second timeout, so a relay that offers no
+STARTTLS or presents a certificate this host cannot validate makes the *notification* fail while the log
+record it was announcing is already persisted. One difference from the send relay above is worth knowing
+before you test: this client is `System.Net.Mail.SmtpClient`, which validates the chain, the validity
+dates and the host name but does **not** check revocation, whereas MailKit does — so a relay whose
+certificate chains to a CA this host trusts will satisfy the diagnostic client even without a reachable
+CRL. If `Settings:EmailEnabled` is `true`, verify that relay and expect `system_log` rows to carry
+notification status `NotificationFailed` (`4`) until it validates (`RISK-131`).
 
-**Cleanup after the state-changing group:** restart the instance to clear the in-process throttle
-counters, or wait out the fifteen-minute window; delete the throwaway account and any guest-role
+**Cleanup after the state-changing group:** wait out the fifteen-minute throttle window — a restart no
+longer clears the counters, because they are durable and shared; if you must clear a lockout sooner,
+delete the account's `wv_sec_lthr_acct_*` row from `plugin_data` **and** restart every instance holding
+it in its positive mirror. Then delete the throwaway account and any guest-role
 principal created for the authorization checks; restore the database backup or re-provision; and review
 the audit log and discard the records these checks generated, so a later reader does not mistake a
 deliberate lockout for a real attack.

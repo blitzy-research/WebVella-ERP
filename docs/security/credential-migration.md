@@ -449,28 +449,13 @@ holding log or host access, and routinely forwarded off-box to aggregation. Requ
 the only shape of the code that never holds a credential it has to disclose.
 
 If you are looking for the one-time notice because older instructions mentioned it: it no longer
-exists, and its absence is not a fault. Supply the setting instead.
+exists, and its absence is not a fault. Supply the setting instead. Every remaining reference to a
+generated value in this repository's documentation has been removed for the same reason — the code has
+one credential route, and it is yours.
 
-**A generated password is never created unless a stream exists that can show it.** Route 2 is only
-usable if the notice can actually be delivered, so provisioning verifies standard error — and, if that
-fails, standard output — *before* the value is generated, by writing one value-free line announcing
-that a credential notice will follow. If neither stream accepts it, provisioning is **refused inside
-its own transaction**: nothing is persisted, no account is created, and the message names
-`Settings__InitialAdministratorPassword` as the remedy. This is the only correct behaviour for a
-process with no console — a service, a detached container, or a host whose output is redirected to an
-unwritable target — because a generated credential that is never displayed cannot be recovered from
-the stored one-way hash.
+**There is no notice to deliver, because there is no generated value.** `ERPService.ResolveInitialAdministratorPassword` reads `Settings:InitialAdministratorPassword` and throws when it is blank, so provisioning is refused **inside its own transaction**: nothing is persisted, no account is created, the schema version does not advance, and the message names the setting as the remedy without echoing any value. An earlier revision of this document described an additional provisioning route in which it generated a value, probed standard error and standard output to confirm a stream would accept it, and recorded undeliverable notices under a `system_log` source. **None of that exists in the code**, and its removal is the remediation rather than a regression: a notice described as one-time was durable plaintext in every substrate that captures those streams, and a credential the platform invents is one it must disclose. Requiring your own value is the only shape of the code that never holds a credential it has to reveal.
 
-> A probe cannot promise delivery: a stream that accepts one line can still fail on the next, and this
-> runtime discards a write into a broken pipe without reporting an error at all. If a notice is
-> nevertheless lost *after* the provisioning transaction has committed, startup is **not** aborted —
-> aborting would recover nothing, because the schema version has already advanced — the notice is
-> retained in memory rather than discarded, and the fact, the count and the recovery procedure are
-> recorded in `system_log` under the source `ErpService.CredentialNoticeDelivery`. That record
-> deliberately contains no credential, no length and no digest. Recovery is then the procedure set out in
-> the steps immediately below, whose step 3 is the capture point. (An earlier revision linked to a
-> subsection titled *If the one-time value was not captured*; **no such subsection exists in this document**,
-> so the dangling link is replaced by this direct reference rather than left pointing at nothing.)
+> The one CSPRNG generator still compiled in serves the local `system@webvella.com` account, which exists > only so background work has an identity and which nobody authenticates as. Its value is hashed on write > and is never printed, stored in plaintext or returned. Anyone auditing the credential surface will find > that generator in the source, so it is named here rather than left to look like an oversight.
 
 The steps are:
 
@@ -481,12 +466,11 @@ The steps are:
    until a usable key is supplied, while cookie login works throughout. The
    [secure configuration guide](secure-configuration.md#required-settings) sets out the two categories
    and the full key inventory.
-2. Supply `Settings__InitialAdministratorPassword` as well, unless you intend to capture the generated
-   value from the provisioning output.
-3. Start the application and, if you did not supply a password, **capture the one-time notice from
-   standard error.** It is written after the provisioning transaction commits — so that a notice only
-   ever appears for an account that really exists — and it is not written to the platform's log table,
-   because a credential in the log table would be readable by every account holding log access.
+2. Supply `Settings__InitialAdministratorPassword` as well. It is **not optional**: there is no
+   generated fallback, and provisioning refuses to run without it.
+3. Start the application. Provisioning either completes using the password you supplied, or is refused
+   with a message naming the setting — there is no third outcome and nothing to capture from any output
+   stream. If it was refused, nothing was written, so correct the value and start again.
 4. Sign in as **`erp@webvella.com`** and change the password immediately. **The sign-in identifier is
    the e-mail address, not the user name.** The account's `username` is `administrator`, and that value
    authenticates nothing: the login form's field is labelled *Email*
@@ -519,9 +503,9 @@ durable, which is the exposure `OBS-01` removed.
 Verify afterwards that `"erp"` no longer authenticates and that the schema version reads 4, then sign
 in with the value you supplied and rotate it as above.
 
-The value itself is unrecoverable — the stored form is a one-way hash, and the notice is written to
-standard error and to nothing else. What follows are the **two supported routes back in**, in order of
-preference. Both have been executed; neither destroys data.
+The value itself is unrecoverable, because the stored form is a one-way hash and the platform keeps no
+copy anywhere — there is no notice, no log row and no output stream holding it. What follows are the
+**two supported routes back in**, in order of preference. Both have been executed; neither destroys data.
 
 **Route 1 — reset it from another administrator. No database access required.** Sign in with any other
 account holding the administrator role and reset the locked-out account's password through the ordinary
@@ -615,8 +599,11 @@ the migration described in this guide - a legacy hash is rehashed on a successfu
 *either* one. Sharing a single throttle instance is what stops the anonymous route from being used as an
 unmetered oracle against the account the login page protects. The token **refresh** route is a third
 anonymous entry point but is not a third password surface: it exchanges an existing token and never sees
-a password, so it plays no part in the rehash path. Its per-instance scope and its fail-closed behaviour
-are documented in the [secure configuration guide](secure-configuration.md) and the
+a password, so it plays no part in the rehash path. **The throttle's scope is no longer per-instance** —
+review finding `H-OPEN-02` moved its counters into the platform's existing `plugin_data` table, so a
+lockout survives a restart and spans instances, and one shared bound covers both credential surfaces
+rather than one bound per process per surface. That, and its fail-closed behaviour when the store cannot
+be consulted, are documented in the [secure configuration guide](secure-configuration.md) and the
 [risk register](risk-register.md) rather than repeated here.
 
 ## Login latency is deliberate
