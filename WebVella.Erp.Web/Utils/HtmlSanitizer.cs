@@ -73,9 +73,22 @@ namespace WebVella.Erp.Web.Utils
 		/// injection surface of its own and no stored value needs it - and so is every <c>on*</c> handler,
 		/// which this list excludes by construction rather than by pattern matching.
 		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding N23. <c>class</c> was permitted here and is now removed, on exactly the
+		/// reasoning that already excluded <c>style</c> and that <c>BaseErpPageModel.EncodeMenuIconClass</c> gives
+		/// for allow-listing icon classes: the platform ships its own stylesheets, so a stored value that can name
+		/// arbitrary classes can position, size, hide or overlay elements - a user-interface redressing primitive
+		/// (CWE-1021) that no amount of element and scheme filtering touches. A token allow-list was considered and
+		/// rejected as unverifiable: any list admitting the typography utilities also has to be proved not to admit
+		/// a positioning one, for every future stylesheet. Removal is provable. The blast radius is bounded and was
+		/// measured: administrator-authored literal markup in the HTML-block component never reaches this
+		/// sanitizer (<c>PcHtmlBlock.ResolveHtmlForRawSink</c> returns it unsanitized), so what loses class
+		/// attributes is user-authored comment, timelog and feed content, whose <c>style</c> attributes this
+		/// sanitizer already dropped. Recorded as a residual in docs/security/risk-register.md.
+		/// </remarks>
 		private static readonly HashSet<string> ALLOWED_ATTRIBUTES_GLOBAL = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 		{
-			"class", "title", "dir", "lang"
+			"title", "dir", "lang"
 		};
 
 		/// <summary>
@@ -298,6 +311,37 @@ namespace WebVella.Erp.Web.Utils
 					attribute.Remove();
 				}
 			}
+
+			ForceSafeLinkRelationship(element);
+		}
+
+		/// <summary>
+		/// Guarantees that an anchor which kept a <c>target</c> also carries <c>rel="noopener noreferrer"</c>.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding N22, CWE-1022 (use of a web link to an untrusted target with a window-opener
+		/// reference), OWASP A03:2021. <c>target</c> is allow-listed on <c>&lt;a&gt;</c> because a stored value
+		/// legitimately opens a reference in a new tab. Without <c>rel</c>, the opened document receives a live
+		/// <c>window.opener</c> handle to this application's window and can navigate it - reverse tabnabbing, which
+		/// needs no script in the sanitized value at all, so no element or scheme filtering reaches it. The value is
+		/// SET rather than merely defaulted, because an author-supplied <c>rel</c> was itself allow-listed and could
+		/// have named something weaker; <c>noreferrer</c> is included with <c>noopener</c> so the destination is not
+		/// told which record the reader was on. Applied only when <c>target</c> survived attribute filtering, so an
+		/// ordinary same-tab link is untouched and its rendered markup is unchanged.
+		/// </remarks>
+		private static void ForceSafeLinkRelationship(HtmlNode element)
+		{
+			if (!string.Equals(element.Name, "a", StringComparison.OrdinalIgnoreCase))
+			{
+				return;
+			}
+
+			if (element.Attributes["target"] == null)
+			{
+				return;
+			}
+
+			element.SetAttributeValue("rel", "noopener noreferrer");
 		}
 
 		/// <summary>
@@ -310,6 +354,15 @@ namespace WebVella.Erp.Web.Utils
 		/// <c>StartsWith("javascript:")</c> test would not recognise. A value with no scheme - relative,
 		/// root-relative, query-only or fragment-only - is allowed, which is what keeps the platform's own
 		/// internally generated links working.
+		/// <para>
+		/// SECURITY - review finding N24, CWE-183 (permissive list of allowed inputs). A SCHEME-RELATIVE value is
+		/// refused before the scheme test is reached. <c>//host/path</c> carries no scheme text at all, so it left
+		/// through the no-colon branch, and <c>//host:8080/path</c> left through the path-colon branch - yet a
+		/// browser resolves both against the PAGE's scheme and fetches an entirely different origin, which is
+		/// exactly what the <c>{http, https, mailto, tel}</c> allow-list exists to decide. The backslash form
+		/// <c>/\host</c> is refused with it, because browsers normalise a backslash in the authority position to a
+		/// forward slash. A single leading slash - the platform's own root-relative links - is unaffected.
+		/// </para>
 		/// </remarks>
 		private static bool IsUrlAllowed(string value)
 		{
@@ -331,6 +384,16 @@ namespace WebVella.Erp.Web.Utils
 
 			var normalized = builder.ToString();
 			if (normalized.Length == 0)
+			{
+				return false;
+			}
+
+			//Review finding N24 - scheme-relative, tested BEFORE the scheme is read because such a value has no
+			//scheme text to test. Both delimiters are checked in both positions: a browser treats "\" in the
+			//authority position as "/", so //h, /\h, \\h and \/h all resolve to a foreign origin.
+			if (normalized.Length >= 2
+				&& (normalized[0] == '/' || normalized[0] == '\\')
+				&& (normalized[1] == '/' || normalized[1] == '\\'))
 			{
 				return false;
 			}
