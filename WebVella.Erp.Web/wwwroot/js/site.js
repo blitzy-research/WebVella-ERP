@@ -631,19 +631,67 @@ function GetFilenameFromUrl(url)
 		return path === UPLOAD_ENDPOINT || path.slice(-UPLOAD_ENDPOINT.length) === UPLOAD_ENDPOINT;
 	}
 
-	function isDefectiveHandler(handler) {
+	//Review finding N18. The source-text test below RECOGNISES the two shipped defects precisely, and that
+	//precision is worth keeping - a handler proved defective is replaced outright, which is the behaviour
+	//measured against versions 1.8.0, 1.8.1 and 1.8.2. What it must not do is decide the whole question, because
+	//any vendor edit - a version bump, a minifier pass, a re-mangled identifier - makes the strings stop
+	//matching, and the compensating control would then have failed OPEN with no diagnostic: the server would
+	//still refuse the file and the interface would still say nothing. So an UNRECOGNISED handler is no longer
+	//left alone silently. It is wrapped instead (see the prefilter below), which tests the vendor's OBSERVABLE
+	//behaviour rather than its text: the handler runs, and this file supplies the refusal only if the handler
+	//threw or rendered nothing. A future fixed handler therefore retires this override by producing its own
+	//feedback, and a future BROKEN one is still covered, neither case depending on the strings above.
+	var HANDLER_RECOGNISED = "recognised-defect";
+	var HANDLER_UNRECOGNISED = "unrecognised";
+	var unrecognisedHandlerReported = false;
+
+	function classifyHandler(handler) {
 		if (typeof handler !== "function") {
-			return false;
+			return null;
 		}
 		var source = "";
 		try {
 			source = Function.prototype.toString.call(handler);
 		}
 		catch (readError) {
-			return false;
+			//A handler whose source cannot be read is not therefore correct - it is unclassified, and is
+			//treated as such rather than as safe.
+			return HANDLER_UNRECOGNISED;
 		}
 		//The two defects, in the callback's own source: the undeclared identifier and the capitalised field
-		return source.indexOf("response.message") !== -1 || source.indexOf("responseText).Message") !== -1;
+		if (source.indexOf("response.message") !== -1 || source.indexOf("responseText).Message") !== -1) {
+			return HANDLER_RECOGNISED;
+		}
+		return HANDLER_UNRECOGNISED;
+	}
+
+	//Says so, once per page, when the packaged handler is no longer the one this override was measured against.
+	//Silence is what made the brittleness dangerous; a diagnostic makes the drift visible to whoever next
+	//upgrades the package, and the wrapper keeps the refusal visible to the user meanwhile.
+	function reportUnrecognisedHandler() {
+		if (unrecognisedHandlerReported) {
+			return;
+		}
+		unrecognisedHandlerReported = true;
+		if (typeof console !== "undefined" && console.log) {
+			console.log("WebVella: the upload error handler on " + UPLOAD_ENDPOINT + " is not the version this "
+				+ "compensating control was measured against. It is being wrapped rather than replaced, and an "
+				+ "upload refusal will still be shown. Re-verify the vendor package's error handling.");
+		}
+	}
+
+	//True when a refusal is currently visible for the field whose upload just failed. Read AFTER the vendor
+	//handler has run, so it answers "did the package report this refusal itself?" rather than "does the package
+	//look like it would".
+	function hasVisibleRejection() {
+		if (activeFieldId === null) {
+			return false;
+		}
+		var fakeInput = $("#fake-" + activeFieldId);
+		var editWrapper = $("#edit-" + activeFieldId);
+		var fileInput = $("#file-" + activeFieldId);
+		var anchor = resolveFieldAnchor(fakeInput, editWrapper, fileInput);
+		return anchor.find(".invalid-feedback").length > 0;
 	}
 
 	function readServerMessage(xhr, status, p3, p4) {
@@ -697,6 +745,11 @@ function GetFilenameFromUrl(url)
 		var fileInput = $("#file-" + activeFieldId);
 
 		fakeInput.removeClass("is-invalid");
+		//Review finding N20 - the assistive-technology state is retracted with the visual one. Leaving
+		//aria-invalid="true" behind would keep announcing a refusal that has been superseded by an accepted
+		//upload, which is the same "reports the wrong outcome" failure the visual cleanup exists to prevent.
+		fakeInput.removeAttr("aria-invalid").removeAttr("aria-describedby");
+		fileInput.removeAttr("aria-invalid").removeAttr("aria-describedby");
 		resolveFieldAnchor(fakeInput, editWrapper, fileInput).find(".invalid-feedback").remove();
 	}
 
@@ -718,7 +771,10 @@ function GetFilenameFromUrl(url)
 		fakeInput.addClass("is-invalid");
 		//The image shape's own error indicator, kept as the fixed literal the package uses. The server
 		//text goes to the feedback element and the toast below, never into markup.
-		editWrapper.find(".wrapper-text span").first().html("<i class='fa fa-exclamation-circle go-red'></i> Error").removeClass("d-none");
+		//Review finding N20 - the icon carries aria-hidden="true" because it duplicates the word beside it;
+		//without it a screen reader announces the font glyph's name as content, which is noise. This matches the
+		//widget views changed in the same engagement, which set it on their own decorative icons.
+		editWrapper.find(".wrapper-text span").first().html("<i class='fa fa-exclamation-circle go-red' aria-hidden='true'></i> Error").removeClass("d-none");
 
 		//Drop the refused file so it cannot be carried into a save. Without this the interface still
 		//holds the file the server just rejected.
@@ -727,7 +783,23 @@ function GetFilenameFromUrl(url)
 		var anchor = resolveFieldAnchor(fakeInput, editWrapper, fileInput);
 		//Replace any feedback left by an earlier rejection instead of stacking another one
 		anchor.find(".invalid-feedback").remove();
-		var feedback = $("<div class='invalid-feedback'></div>").text(message);
+		//Review finding N20 - a refusal a screen-reader user cannot perceive is the same defect, for that user,
+		//that the invisible refusal above was for a sighted one: the control appears to have accepted the file.
+		//role="alert" makes the message an assertive live region so it is announced when it is inserted, and
+		//aria-live="polite" is stated with it so a user agent that does not map the role still announces it.
+		//The id is derived from the field id, so aria-describedby below binds this exact message to this exact
+		//field even when several file fields sit on one page.
+		var feedbackId = "upload-rejection-" + activeFieldId;
+		var feedback = $("<div class='invalid-feedback'></div>")
+			.attr("id", feedbackId)
+			.attr("role", "alert")
+			.attr("aria-live", "polite")
+			.text(message);
+		//The refusal is announced AND the field is marked invalid and pointed at its reason, so a user arriving
+		//at the control afterwards - rather than at the moment of the announcement - still learns both facts.
+		//Both anchors are marked because the two widget shapes focus different elements.
+		fakeInput.attr("aria-invalid", "true").attr("aria-describedby", feedbackId);
+		fileInput.attr("aria-invalid", "true").attr("aria-describedby", feedbackId);
 		var inputGroup = anchor.find(".input-group").first();
 		if (inputGroup.length > 0) {
 			inputGroup.after(feedback);
@@ -746,9 +818,19 @@ function GetFilenameFromUrl(url)
 	}
 
 	$.ajaxPrefilter(function (options, originalOptions, jqXHR) {
-		if (!isUploadRequest(options) || !isDefectiveHandler(options.error)) {
+		if (!isUploadRequest(options)) {
 			return;
 		}
+		var handlerKind = classifyHandler(options.error);
+		if (handlerKind === null) {
+			//No error handler at all: the refusal has nowhere to surface, so this file supplies one. Previously
+			//this case was indistinguishable from a correct handler and produced silence.
+			handlerKind = HANDLER_UNRECOGNISED;
+		}
+		if (handlerKind === HANDLER_UNRECOGNISED) {
+			reportUnrecognisedHandler();
+		}
+		var packagedErrorHandler = typeof options.error === "function" ? options.error : null;
 		//The stale-refusal cleanup is registered on the jqXHR rather than by wrapping options.success, and
 		//the distinction matters twice. jQuery installs a request's own success callback AFTER prefilters
 		//have run, so a handler added here is registered first and clears the obsolete message before the
@@ -770,6 +852,43 @@ function GetFilenameFromUrl(url)
 		}
 		options.error = function (xhr, status, p3, p4) {
 			var message = readServerMessage(xhr, status, p3, p4);
+			//An unrecognised handler is RUN FIRST and its failure contained, so a package that has since been
+			//fixed keeps reporting its own refusal in its own words and this file adds nothing. A recognised
+			//defect is not run at all, which is the measured behaviour: its second statement raises a
+			//ReferenceError, so running it would buy nothing and cost an avoidable exception.
+			var packagedHandlerReported = false;
+			if (handlerKind === HANDLER_UNRECOGNISED && packagedErrorHandler !== null) {
+				//Any refusal left by an EARLIER attempt is retracted before the packaged handler runs, and that
+				//ordering is load-bearing rather than tidiness. The probe below asks "is a refusal visible now?",
+				//which without this retraction answers yes for a message this file rendered on a previous
+				//attempt - so a second failure would credit the packaged handler with output it never produced,
+				//skip the re-render, and leave the EARLIER message on screen while the live region is never
+				//re-inserted. That would report the wrong reason to a sighted user and nothing at all to a
+				//screen-reader user, which is the defect this whole block exists to prevent.
+				try {
+					clearRejection();
+				}
+				catch (clearBeforeError) {
+					if (typeof console !== "undefined" && console.log) {
+						console.log(clearBeforeError);
+					}
+				}
+				try {
+					packagedErrorHandler.apply(this, arguments);
+					packagedHandlerReported = hasVisibleRejection();
+				}
+				catch (packagedError) {
+					if (typeof console !== "undefined" && console.log) {
+						console.log(packagedError);
+					}
+				}
+			}
+			//A package that reported the refusal itself is left to speak for itself on every channel: adding a
+			//second feedback element and a second toast to a working handler would be change without benefit,
+			//and it is what lets this override retire itself when the package is fixed.
+			if (packagedHandlerReported) {
+				return;
+			}
 			//Each channel is isolated so a surprise in one cannot suppress the others - the failure mode
 			//this replaces was precisely one statement stopping every report that followed it
 			try {

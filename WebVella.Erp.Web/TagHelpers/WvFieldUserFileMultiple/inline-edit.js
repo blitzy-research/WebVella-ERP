@@ -119,7 +119,22 @@ function FileInlineEditPreEnableCallback(fieldId, fieldName, entityName, recordI
 						$(selectors.fakeInputEl).addClass("is-invalid");
 						//Replace any feedback from a previous rejection instead of stacking another one
 						$(selectors.editWrapper + " .invalid-feedback").remove();
-						$(selectors.editWrapper + " .input-group").first().after($("<div class='invalid-feedback'></div>").text(err));
+						//THREAT ADDRESSED - review finding N20. A refusal that assistive technology never announces is,
+						//for that user, the same defect the invisible refusal above was for a sighted one: the control
+						//looks as though it accepted the file. role="alert" makes the inserted message a live region so
+						//it is announced, aria-live="polite" is stated alongside it for user agents that do not map the
+						//role, and aria-invalid plus aria-describedby carry the same two facts to a user who reaches the
+						//field later rather than at the moment of the announcement. The id is derived from the field id
+						//so several file fields on one page each point at their own message.
+						var rejectionId = "upload-rejection-" + fieldId;
+						var rejectionFeedback = $("<div class='invalid-feedback'></div>")
+							.attr("id", rejectionId)
+							.attr("role", "alert")
+							.attr("aria-live", "polite")
+							.text(err);
+						$(selectors.editWrapper + " .input-group").first().after(rejectionFeedback);
+						$(selectors.fakeInputEl).attr("aria-invalid", "true").attr("aria-describedby", rejectionId);
+						$(selectors.fileUploadEl).attr("aria-invalid", "true").attr("aria-describedby", rejectionId);
 						$(selectors.editWrapper + " .invalid-feedback").first().show();
 						toastr.error(err, 'Error!', { closeButton: true, tapToDismiss: true });
 						console.log(err);
@@ -139,6 +154,10 @@ function FileInlineEditPreDisableCallback(fieldId, fieldName, entityName, record
 	var selectors = FileInlineEditGenerateSelectors(fieldId, fieldName, entityName, recordId, config);
 	$(selectors.editWrapper + " .invalid-feedback").remove();
 	$(selectors.editWrapper + " .form-control").removeClass("is-invalid");
+	//Review finding N20 - the assistive-technology state is retracted with the visual one, so a superseded
+	//refusal is not still announced against a field that has since been accepted.
+	$(selectors.fakeInputEl).removeAttr("aria-invalid").removeAttr("aria-describedby");
+	$(selectors.fileUploadEl).removeAttr("aria-invalid").removeAttr("aria-describedby");
 	$(selectors.editWrapper + " .save .fa").addClass("fa-check").removeClass("fa-spin fa-spinner");
 	$(selectors.editWrapper + " .save").attr("disabled", false);
 	$(selectors.viewWrapper).show();
