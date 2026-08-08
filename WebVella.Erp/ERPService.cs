@@ -1017,6 +1017,7 @@ namespace WebVella.Erp
 
 		#region <--- Initial administrator credential (finding C-01) --->
 
+		/// <remarks>
 		/// THREAT ADDRESSED - C-01 with CWE-532 (insertion of sensitive information into a log), OWASP A09:2021.
 		/// <para>
 		/// THE INVARIANT THIS BUFFER EXISTS TO CARRY: <b>no value added here may be, contain, measure or digest
@@ -1030,6 +1031,7 @@ namespace WebVella.Erp
 		/// </remarks>
 		private readonly List<string> pendingProvisioningNotices = new List<string>();
 
+		/// <remarks>
 		/// SECURITY - C-01. Standard error, never <c>LogService</c>, and the choice is load-bearing: the log
 		/// writer persists through the very database connection this transaction is still building. The notices
 		/// carry no credential material - see <see cref="pendingProvisioningNotices"/> - and the buffer is
@@ -1083,6 +1085,7 @@ namespace WebVella.Erp
 		/// </summary>
 		private const int InitialAdministratorPasswordLength = 20;
 
+		/// <remarks>
 		/// SECURITY - C-01, CWE-798 (hard-coded credentials) and CWE-1392 (default credentials), OWASP A07:2021,
 		/// with CWE-532 (insertion of sensitive information into a log), OWASP A09:2021. The literal password
 		/// this replaces shipped in the public source tree, so any installation that had not changed it could be
@@ -1127,6 +1130,7 @@ namespace WebVella.Erp
 			return configuredPassword;
 		}
 
+		/// <remarks>
 		/// SECURITY - CWE-532, OWASP A09:2021. One constant, so the two credential paths cannot describe the
 		/// same requirement differently, worded to be actionable without describing any value. It necessarily
 		/// appears in a startup failure, which is a captured output stream.
@@ -1159,6 +1163,7 @@ namespace WebVella.Erp
 			"The value was generated internally, so this indicates a defect in the generator constants " +
 			"rather than a configuration mistake.";
 
+		/// <remarks>
 		/// THREAT ADDRESSED - C-01 (CWE-521 weak password requirements, CWE-1392 default credential), OWASP
 		/// A07:2021. Without this the configured supply route accepted any non-blank string, so the default
 		/// credential deleted from the source could be restored through configuration.
@@ -1220,6 +1225,7 @@ namespace WebVella.Erp
 				"anywhere else, and neither is its length. See docs/security/secure-configuration.md.");
 		}
 
+		/// <remarks>
 		/// SECURITY (C-01, and the mandated cryptographic standard's CSPRNG clause): every character comes from
 		/// <see cref="System.Security.Cryptography.RandomNumberGenerator"/>, never <c>System.Random</c>, and
 		/// through <c>GetItems</c> rather than a modulo over random bytes, which would bias towards the
@@ -1847,6 +1853,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 
 		#region <--- schema version 4 security migration (findings C-01, C-02, C-05, M-13) --->
 
+		/// <remarks>
 		/// SECURITY - the version-gated half of four findings whose provisioning half is in
 		/// <see cref="InitializeSystemEntities"/>: C-01 revokes the shipped default administrator credential,
 		/// C-02 revokes the anonymous read grant on the user entity and gives the password field
@@ -1879,6 +1886,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			}
 		}
 
+		/// <remarks>
 		/// SECURITY - C-01, CWE-798 (hard-coded credentials) and CWE-1392 (default credentials), OWASP A07:2021.
 		/// THREAT: every installation provisioned by an earlier release holds an administrator account at a
 		/// published address whose password is in this repository's own history, and correcting provisioning does
@@ -1974,6 +1982,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 				"docs/security/credential-migration.md.");
 		}
 
+		/// <remarks>
 		/// SECURITY - C-05 (CWE-269, CWE-732) and C-02 (CWE-200, CWE-522), OWASP A01:2021. Guest is the role an
 		/// unauthenticated caller is evaluated against, and earlier releases granted it create on the user
 		/// entity, read on the user entity and create on the role entity, so an anonymous caller could enumerate
@@ -1995,6 +2004,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 			RevokeGuestRecordPermissions4(entMan, SystemIds.RoleEntityId, "role", false, "SCHEMA VERSION 4 MIGRATION.");
 		}
 
+		/// <remarks>
 		/// SECURITY - C-05 and C-02; see <see cref="RevokeGuestRecordPermissions4(EntityManager)"/> for the
 		/// threat. The permission lists are rebuilt as fresh copies rather than mutated in place, because
 		/// <c>EntityManager.ReadEntity</c> serves entities from a process-wide metadata cache: mutating what it
@@ -2052,6 +2062,7 @@ CREATE INDEX fki_app_page_data_fkc_page_id ON public.app_page_data_source
 				throw new InvalidOperationException(migrationLabel + " Entity: " + entityName + ". The anonymous record permissions could not be revoked. Message:" + response.Message);
 		}
 
+		/// <remarks>
 		/// SECURITY - C-02 (CWE-200, CWE-522 / OWASP A01:2021 + A02:2021) and M-13 (CWE-521). Earlier releases
 		/// provisioned this field with NO field permissions at all, so the only restriction on the stored
 		/// credential was the presentation layer, which the Authorization Enforcement standard rules out.

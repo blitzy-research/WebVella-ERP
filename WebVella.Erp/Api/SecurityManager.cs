@@ -55,11 +55,17 @@ namespace WebVella.Erp.Api
 		private const int MaxCredentialCandidates = 2;
 
 		/// <summary>
-		/// Hard upper bound on the rows any address lookup here fetches, and so on the key derivations one
-		/// request can trigger (CWE-1050, CWE-770 / OWASP A04:2021): stored addresses are not case-normalised, so
-		/// a case-fold duplicate set legitimately matches N rows for one address. The cap alone would truncate
-		/// that set, which is why <see cref="ResolveCredentialCandidates(string)"/> orders exact spelling first.
+		/// Count of credential-maintenance reports that could not be persisted, carried into the next report
+		/// that succeeds.
 		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding C-03 follow-on, CWE-778 (insufficient logging). Reporting a maintenance
+		/// failure needs the database, and the failure being reported is very often a database failure, so the
+		/// report is the single most likely thing to fail here; without this counter that loss would be
+		/// invisible. Mutated only through Interlocked/Volatile, so recording a loss can never itself throw and
+		/// can never turn a successful authentication into an error. Deliberately left uninitialised: int is
+		/// already 0 and writing "= 0" would raise CA1805.
+		/// </remarks>
 		private static int credentialMaintenanceReportFailures;
 
 		/// <summary>
@@ -290,9 +296,9 @@ namespace WebVella.Erp.Api
 		}
 
 		/// <summary>
-		/// A candidate credential row: the identifier of a user whose stored address matches the submitted one
-		/// case-insensitively, and that stored address, which travels with it so the authoritative ordinal
-		/// comparison can be made in application code without a second read.
+		/// Resolves the at most <see cref="MaxCredentialCandidates"/> stored rows whose address matches the
+		/// submitted one case-insensitively, exact spelling first, projecting only the identifier and the stored
+		/// address so the authoritative ordinal comparison can be made in application code.
 		/// </summary>
 		/// <remarks>
 		/// H-17 (CWE-1333, CWE-625 / OWASP A03:2021). The lookup this replaces matched a PostgreSQL extended

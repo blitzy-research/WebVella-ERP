@@ -87,14 +87,18 @@ namespace WebVella.Erp.Api.Models
 		private const int MaxCachedResolutions = 256;
 
 		/// <summary>
-		/// Upper bound on the length of a <c>$type</c> token, applied before any resolution is attempted.
+		/// The exact, enumerated set of core library types the platform legitimately persists inside a
+		/// polymorphic payload. Used only to BUILD <see cref="AllowedFirstPartyTypes"/> at type initialization;
+		/// it is never consulted while binding.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY H-10 hardening (CWE-400). <see cref="MaxTypeGraphDepth"/> bounds the walk over an ALREADY
-		/// RESOLVED type, which is too late to be the only bound: the allow-list inspects only the portion before
-		/// the first bracket, so a token nesting a permitted generic thousands of levels deep clears it and is
-		/// then handed to the base binder, which parses and resolves the whole structure, loading assemblies as
-		/// it goes, before the depth bound is consulted. Real discriminators are around sixty characters.
+		/// SECURITY H-10 (CWE-502 deserialization of untrusted data). This inventory is enumerated type by type
+		/// rather than discovered from a namespace, and that distinction IS the control: a namespace rule admits
+		/// whatever later lands in the namespace, and a deserialization gadget need not be a plausible DTO - it
+		/// only needs a reachable constructor or property setter with a side effect. Membership is the transitive
+		/// closure, over DATA MEMBERS only, of the types the deserialization sites actually read, so it is derived
+		/// from the sites rather than guessed; nothing here owns behaviour, and the diagnostics log record is
+		/// deliberately EXCLUDED because no site reads it and it carries behaviour.
 		/// </remarks>
 		private static readonly Type[] PersistedModelTypes =
 		{

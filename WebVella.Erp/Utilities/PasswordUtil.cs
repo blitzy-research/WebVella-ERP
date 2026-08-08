@@ -146,12 +146,16 @@ namespace WebVella.Erp.Utilities
             return "it is missing " + missingClasses.ToString();
         }
         /// <summary>
-        /// Hashes a password for storage. A fresh random salt per call means the same input never
-        /// yields the same value, so the result must never be compared for equality and never inside
-        /// a SQL predicate - use <see cref="VerifyPassword(string, string, out bool, out bool)"/>.
-        /// Returns <see cref="string.Empty"/> for absent input, matching the contract the callers of
-        /// <see cref="GetMd5Hash(string)"/> rely on, and throws
-        /// <see cref="ArgumentOutOfRangeException"/> above <see cref="MaxPasswordLength"/>.
+        /// Hashes a password for storage. A fresh random salt per call means the same input never yields the
+        /// same value, so the result must never be compared for equality and never inside a SQL predicate - use
+        /// <see cref="VerifyPassword(string, string, out bool, out bool)"/>. Returns
+        /// <see cref="string.Empty"/> for absent input, matching the contract callers of
+        /// <see cref="GetMd5Hash(string)"/> rely on, and THROWS
+        /// <see cref="ArgumentOutOfRangeException"/> above <see cref="MaxPasswordLength"/> rather than
+        /// returning empty, because an empty stored value can never verify and would lock the account out
+        /// irreversibly. Safe at all three call sites: the rehash path cannot reach the bound, the two
+        /// record-write collectors run inside handlers that turn an exception into an unsuccessful
+        /// QueryResponse, and SecurityManager.SaveUser validates first.
         /// </summary>
         internal static string HashPassword(string password)
         {
@@ -188,17 +192,23 @@ namespace WebVella.Erp.Utilities
             return Convert.ToBase64String(payload);
         }
         /// <summary>
-        /// Hashes a password for storage. A fresh random salt per call means the same input never yields the
-        /// same value, so the result must never be compared for equality and never inside a SQL predicate - use
-        /// <see cref="VerifyPassword(string, string, out bool, out bool)"/>. Returns
-        /// <see cref="string.Empty"/> for absent input, matching the contract callers of
-        /// <see cref="GetMd5Hash(string)"/> rely on, and THROWS
-        /// <see cref="ArgumentOutOfRangeException"/> above <see cref="MaxPasswordLength"/> rather than
-        /// returning empty, because an empty stored value can never verify and would lock the account out
-        /// irreversibly. Safe at all three call sites: the rehash path cannot reach the bound, the two
-        /// record-write collectors run inside handlers that turn an exception into an unsuccessful
-        /// QueryResponse, and SecurityManager.SaveUser validates first.
+        /// Verifies a password against a stored value in EITHER format - modern PBKDF2 or a legacy MD5 digest.
+        /// The enabling member for the credential migration, because a salted hash cannot be compared by SQL
+        /// equality. Never throws for a corrupt stored value: one damaged row must not become a denial of
+        /// service on the login path.
         /// </summary>
+        /// <param name="password">The plaintext password as submitted, never trimmed or case-folded.</param>
+        /// <param name="storedHash">The value currently persisted for the account, in either format.</param>
+        /// <param name="needsRehash">
+        /// True only on SUCCESS against an out-of-date value - a legacy digest, or an iteration count below
+        /// <see cref="Pbkdf2IterationCount"/>. Always false on failure, so a failed attempt cannot trigger a
+        /// write.
+        /// </param>
+        /// <param name="keyDerivationPerformed">
+        /// True if and only if a PBKDF2 derivation actually ran, so a caller that found no account can spend a
+        /// compensating one (CWE-208, CWE-203). The caller cannot predict this, because an over-long password
+        /// and a corrupt payload both return on cheap guards, and each mispredicted case is an oracle.
+        /// </param>
         internal static bool VerifyPassword(string password, string storedHash, out bool needsRehash,
             out bool keyDerivationPerformed)
         {
@@ -234,13 +244,22 @@ namespace WebVella.Erp.Utilities
             return VerifyPbkdf2Hash(password, storedHash, out needsRehash, out keyDerivationPerformed);
         }
         /// <summary>
-        /// Verifies a password against a stored value in EITHER format - modern PBKDF2 or a legacy MD5 digest.
-        /// The enabling member for the credential migration, because a salted hash cannot be compared by SQL
-        /// equality. Never throws for a corrupt stored value: one damaged row must not become a denial of
-        /// service on the login path.
+        /// Verifies against a modern PBKDF2 value using the parameters recorded inside it, and reports whether
+        /// those parameters are weaker than the current target.
         /// </summary>
+        /// <remarks>
+        /// Does not throw for MALFORMED STORED INPUT: every payload field is range-checked before use and the
+        /// Base64 decode is non-throwing, so a corrupt row returns false rather than a 500 on an endpoint
+        /// reachable without credentials. The guards run cheapest-first and all precede any derivation, because
+        /// the iteration count and salt length come out of the stored value and are attacker-controlled.
+        /// HMAC-SHA-512 is accepted although never written, for values from an interim build, and is NOT flagged
+        /// for re-hashing: at the same iteration count it costs more per guess, so converting one would reduce
+        /// the work factor. Every other PRF is rejected outright.
+        /// </remarks>
+        /// <param name="password">The plaintext password as submitted.</param>
+        /// <param name="storedHash">The persisted value, which must be a V3 payload rather than a legacy digest.</param>
         /// <param name="needsRehash">
-        /// True only on SUCCESS against an out-of-date value - a legacy digest, or an iteration count below
+        /// True only on SUCCESS against a payload whose iteration count is below
         /// <see cref="Pbkdf2IterationCount"/>. Always false on failure, so a failed attempt cannot trigger a
         /// write.
         /// </param>
@@ -346,18 +365,14 @@ namespace WebVella.Erp.Utilities
         private static readonly byte[] dummyVerificationSalt = RandomNumberGenerator.GetBytes(Pbkdf2SaltByteLength);
 
         /// <summary>
-        /// Verifies against a modern PBKDF2 value using the parameters recorded inside it, and reports whether
-        /// those parameters are weaker than the current target.
+        /// Spends the work a real modern verification would spend and discards it. Call this on a
+        /// credential-resolution path about to fail WITHOUT having performed a modern verification, so the
+        /// failure costs the same as a success; the password is derivation input only.
+        /// Moving verification out of the SQL predicate, which a per-credential salt makes unavoidable, would
+        /// otherwise create an account-enumeration oracle (CWE-208, CWE-203): an unknown address answers in
+        /// under a millisecond while a known one pays the full derivation. LoginThrottleService bounds the
+        /// amplification this exposes.
         /// </summary>
-        /// <remarks>
-        /// Does not throw for MALFORMED STORED INPUT: every payload field is range-checked before use and the
-        /// Base64 decode is non-throwing, so a corrupt row returns false rather than a 500 on an endpoint
-        /// reachable without credentials. The guards run cheapest-first and all precede any derivation, because
-        /// the iteration count and salt length come out of the stored value and are attacker-controlled.
-        /// HMAC-SHA-512 is accepted although never written, for values from an interim build, and is NOT flagged
-        /// for re-hashing: at the same iteration count it costs more per guess, so converting one would reduce
-        /// the work factor. Every other PRF is rejected outright.
-        /// </remarks>
         internal static void PerformDummyVerification(string password)
         {
             // The SAME bound in the SAME position as VerifyPassword's first action, and not thrift: without it an
@@ -397,13 +412,11 @@ namespace WebVella.Erp.Utilities
             target.Append(description);
         }
         /// <summary>
-        /// Spends the work a real modern verification would spend and discards it. Call this on a
-        /// credential-resolution path about to fail WITHOUT having performed a modern verification, so the
-        /// failure costs the same as a success; the password is derivation input only.
-        /// Moving verification out of the SQL predicate, which a per-credential salt makes unavoidable, would
-        /// otherwise create an account-enumeration oracle (CWE-208, CWE-203): an unknown address answers in
-        /// under a millisecond while a known one pays the full derivation. LoginThrottleService bounds the
-        /// amplification this exposes.
+        /// Reports whether a stored value is a legacy MD5 digest rather than a modern PBKDF2 value. The shapes
+        /// are unambiguous - exactly <see cref="Md5HexLength"/> hexadecimal characters versus an 84-character
+        /// Base64 string - so no new column is needed to tell them apart. Either casing is accepted, because the
+        /// comparison this replaces was case-insensitive and rejecting an upper-case value would lock that
+        /// account out. Internal rather than private because the version 4 data migration needs this test.
         /// </summary>
         internal static bool IsLegacyHash(string storedHash)
         {
@@ -424,11 +437,10 @@ namespace WebVella.Erp.Utilities
         }
 
         /// <summary>
-        /// Reports whether a stored value is a legacy MD5 digest rather than a modern PBKDF2 value. The shapes
-        /// are unambiguous - exactly <see cref="Md5HexLength"/> hexadecimal characters versus an 84-character
-        /// Base64 string - so no new column is needed to tell them apart. Either casing is accepted, because the
-        /// comparison this replaces was case-insensitive and rejecting an upper-case value would lock that
-        /// account out. Internal rather than private because the version 4 data migration needs this test.
+        /// Renders the MD5 digest of the supplied text as lower-case hexadecimal. LEGACY SUPPORT ONLY: it must
+        /// NEVER produce a newly persisted value. MD5 being unsalted and fast is what made C-03 Critical and why
+        /// CA5351 reports here, accepted in docs/security/risk-register.md. Returns
+        /// <see cref="string.Empty"/> for absent input, preserved because callers depend on it.
         /// </summary>
         internal static string GetMd5Hash(string input)
         {
@@ -439,8 +451,8 @@ namespace WebVella.Erp.Utilities
                 return string.Empty;
             }
 
-			if (string.IsNullOrWhiteSpace(input))
-				return string.Empty;
+            if (string.IsNullOrWhiteSpace(input))
+                return string.Empty;
 
             // M-06 (CWE-362) - the shared static MD5 instance this replaces was not thread-safe, so
             // two simultaneous authentications could interleave inside ComputeHash.
@@ -454,11 +466,15 @@ namespace WebVella.Erp.Utilities
         }
 
         /// <summary>
-        /// Renders the MD5 digest of the supplied text as lower-case hexadecimal. LEGACY SUPPORT ONLY: it must
-        /// NEVER produce a newly persisted value. MD5 being unsalted and fast is what made C-03 Critical and why
-        /// CA5351 reports here, accepted in docs/security/risk-register.md. Returns
-        /// <see cref="string.Empty"/> for absent input, preserved because callers depend on it.
+        /// Verifies a password against a LEGACY MD5 digest in fixed time. LEGACY SUPPORT ONLY, retained on
+        /// purpose rather than deleted: it is the migration path for credentials written by earlier releases,
+        /// and it is the member the version 4 data migration in ERPService uses to test whether a deployment
+        /// still carries the administrator credential those releases shipped. New credentials are verified by
+        /// <see cref="VerifyPassword(string, string, out bool, out bool)"/>, which reaches here only when the
+        /// stored value has the legacy shape.
         /// </summary>
+        /// <param name="input">The plaintext password as submitted.</param>
+        /// <param name="hash">The legacy digest currently persisted for the account.</param>
         internal static bool VerifyMd5Hash(string input, string hash)
         {
             // Both operands are bounded before use. The digest bound is exact rather than generous,

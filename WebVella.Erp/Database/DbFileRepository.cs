@@ -1290,14 +1290,6 @@ namespace WebVella.Erp.Database
 		//null so platform-internal callers, which have no authenticated principal to record, keep their
 		//existing behaviour byte for byte.
 		/// <summary>
-		/// create temp file
-		/// </summary>
-		/// <param name="buffer"></param>
-		/// <param name="extension"></param>
-		/// <param name="createdBy">the authenticated principal to record as the file's creator, or null
-		/// when the platform itself creates the file rather than acting on behalf of a caller</param>
-		/// <returns></returns>
-		/// <summary>
 		/// Creates a file in the temporary namespace.
 		/// </summary>
 		/// <param name="filename">The already-validated file name.</param>
