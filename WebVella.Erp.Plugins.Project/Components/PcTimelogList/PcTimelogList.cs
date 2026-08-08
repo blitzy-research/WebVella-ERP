@@ -117,7 +117,7 @@ namespace WebVella.Erp.Plugins.Project.Components
 
 					var inputRecords = context.DataModel.GetPropertyValueByDataSource(options.Records) as List<EntityRecord> ?? new List<EntityRecord>();
 					//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding
-					//M-01. The timelog bundle assigns "body" to innerHTML, so this JSON is the sink.
+					//SR-05 (seam/M-01). The timelog bundle assigns "body" to innerHTML, so this JSON is the sink.
 					//Sanitizing here neutralises rows stored before the write path was hardened; see the
 					//equivalent site in PcPostList for the full rationale. Copies are produced, so the
 					//request's data model is unchanged.

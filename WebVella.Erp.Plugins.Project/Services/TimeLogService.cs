@@ -42,7 +42,7 @@ namespace WebVella.Erp.Plugins.Project.Services
 				record["created_by"] = createdBy;
 				record["created_on"] = createdOn;
 				record["logged_on"] = loggedOn.ConvertAppDateToUtc();
-				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding M-01.
+				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding SR-05 (seam/M-01).
 				//As in CommentService: PcTimelogList serializes this record into a JSON attribute and the
 				//client bundle assigns "body" to innerHTML, so a stored value is parsed as markup for every
 				//later reader rather than encoded by Razor. Sanitizing here preserves the field's legitimate
@@ -270,7 +270,7 @@ namespace WebVella.Erp.Plugins.Project.Services
 				}
 
 				//Add activity log
-				//THREAT ADDRESSED - CWE-79, OWASP A03:2021, review finding M-01. Trusted markup carrying
+				//THREAT ADDRESSED - CWE-79, OWASP A03:2021, review finding SR-05 (seam/M-01). Trusted markup carrying
 				//author-controlled task data into the feed's innerHTML sink; the interpolated key and subject
 				//are encoded at the point they enter markup. See the equivalent site in CommentService for
 				//the full rationale. The minute count is an int and the href identifier is a Guid.

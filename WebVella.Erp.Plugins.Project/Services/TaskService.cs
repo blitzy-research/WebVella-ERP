@@ -405,7 +405,7 @@ namespace WebVella.Erp.Plugins.Project.Services
 
 
 			//Add activity log
-			//THREAT ADDRESSED - CWE-79, OWASP A03:2021, review finding M-01. Trusted markup carrying
+			//THREAT ADDRESSED - CWE-79, OWASP A03:2021, review finding SR-05 (seam/M-01). Trusted markup carrying
 			//author-controlled task data into the feed's innerHTML sink; the interpolated key and subject are
 			//encoded at the point they enter markup. See the equivalent site in CommentService for the full
 			//rationale. The href identifier is a Guid.

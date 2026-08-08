@@ -12,7 +12,7 @@ namespace WebVella.Erp.Web.Utils
 	/// </summary>
 	/// <remarks>
 	/// <para>
-	/// THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding M-01. The
+	/// THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding SR-05 (seam/M-01). The
 	/// project activity surfaces do not render their text through Razor, so Razor's automatic encoding never
 	/// applies to them: the page components serialize whole records into a JSON attribute and the client
 	/// bundles assign the record's <c>body</c> and <c>subject</c> straight to <c>innerHTML</c>. Anything an

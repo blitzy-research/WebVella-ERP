@@ -72,7 +72,7 @@ revision, and one engagement process requirement failed outright.
 | 2 | Dependency scan: 0 Critical/High CVEs | **PASS** | Solution-wide restore with `NuGetAudit`/`NuGetAuditMode=all`/`NuGetAuditLevel=low` and `NU1900`–`NU1905` promoted to errors, plus per-project coverage for the two non-solution-member projects, corroborated by `dotnet list package --vulnerable --include-transitive`. Nothing suppressed anywhere. Contingent on the `H-19` casing repair, which had to land first. |
 | 3 | Secrets scan: 0 hardcoded credentials | **PASS** | The named external scanner could not be installed. The substitute is a multi-layer signature sweep over the tracked tree plus a known-published-value layer that fingerprints candidates against digests of the five published values, with **no evidence-field exemption** and a positive control that must fire. |
 | 4 | Existing test suite: 100% pass rate | **VACUOUS — no suite exists** | There is no test project, no test file and no test-framework reference in any of the nineteen projects; `dotnet test` discovers nothing. **No test suite was run and no reader should infer that one was.** Creating one is out of scope under the engagement's modification boundaries. Reported as vacuous rather than passed. |
-| 5 | Manual verification of all Critical/High fixes | **MANUAL HALF PASSES — all 32 manual rows are attested; the AUTOMATIC half is NOT durably evidenced by the delivered tree, and the matrix now carries a failing compliance row, so `RELEASE-READY` prints `no`** | The matrix declares **50** rows: **18** derived from an evidence artifact the workflow produces (`A01`–`A18`) and **32** manual (`M01`–`M32`), of which **31 are REQUIRED and one — `M18`, a latency measurement — is ADVISORY**. **The manual half is settled.** Under code-review finding `MAJ-01` three scenarios were appended for findings the matrix could not previously reach — `M30` for relation privilege escalation, `M31` for the data-bound HTML Block, `M32` for watcher tampering — and **all 32 manual rows have been executed against running hosts and live PostgreSQL databases and are attested** in the tracked `manual-verification-results.txt`, each line bound to commit `d9e8f2ec`, to the hash of its own scenario text and to a named environment. So `deferred=0`, and **no manual row blocks the release gate** — which is the reconciliation code-review finding `MAJ-06` required, because several documents still described 24 or 25 rows as unattested. **Two things are nevertheless NOT settled, and this row previously read as though they were.** **(1) The automatic rows are not durably evidenced by what is delivered — code-review finding `MAJ-02`.** They are proven by artifacts the workflow writes at run time, and those artifacts are deliberately **not committed**: a committed copy would be a stale record vouching for commits it never examined, which is the exact evidence-integrity failure this gate exists to prevent, and `.gitignore` enforces it. The 48/48 result recorded in the [remediation log](remediation-log.md) came from running the workflow's `run:` steps **in order on a local machine**, and its artifacts expired with that working tree. **So a reader holding only this repository cannot independently verify the 18 automatic rows**; invoking the matrix step alone against the tree reports `proven=32 failed=18`, because those rows read artifacts the earlier steps produce. What will make them durable is a **hosted** run: the step *Assert the scan evidence is complete and bind it to the commit* writes `evidence-manifest.txt`, digesting every evidence file with SHA-256 and binding the set to the commit, run id and attempt, and the upload names the artifact `security-scan-evidence-<sha>`. **That run has not happened, because this environment cannot perform one**, and no run reference is asserted here in place of it. **(2) One acceptance criterion is UNMET and the matrix now says so — `MAJ-03`.** Row `A17` fails while the Content-Security-Policy ships under the report-only name, so `RELEASE-READY` prints `no` and the release gate exits non-zero. That is the gate working: the previous revision had rewritten scenario `M06` to *expect* the report-only name, which is how an unmet requirement came to be recorded as met. Three earlier revisions of this row were wrong in three different directions — one marked Gate 5 *Satisfied* while 25 mandatory rows were unexecuted, one counted them honestly as `DEFERRED`, and one recorded their execution and then read the resulting green as release readiness. |
+| 5 | Manual verification of all Critical/High fixes | **MANUAL HALF PASSES — all 32 manual rows are attested; the AUTOMATIC half is NOT durably evidenced by the delivered tree, and the matrix now carries a failing compliance row, so `RELEASE-READY` prints `no`** | The matrix declares **50** rows: **18** derived from an evidence artifact the workflow produces (`A01`–`A18`) and **32** manual (`M01`–`M32`), of which **31 are REQUIRED and one — `M18`, a latency measurement — is ADVISORY**. **The manual half is settled.** Under code-review finding `MAJ-01` three scenarios were appended for findings the matrix could not previously reach — `M30` for relation privilege escalation, `M31` for the data-bound HTML Block, `M32` for watcher tampering — and **all 32 manual rows have been executed against running hosts and live PostgreSQL databases and are attested** in the tracked `manual-verification-results.txt`, each line bound to commit `d9e8f2ec`, to the hash of its own scenario text and to a named environment. So `deferred=0`, and **no manual row blocks the release gate** — which is the reconciliation code-review finding `MAJ-06` required, because several documents still described 24 or 25 rows as unattested. **Two things are nevertheless NOT settled, and this row previously read as though they were.** **(1) The automatic rows are not durably evidenced by what is delivered — code-review finding `MAJ-02`.** They are proven by artifacts the workflow writes at run time, and those artifacts are deliberately **not committed**: a committed copy would be a stale record vouching for commits it never examined, which is the exact evidence-integrity failure this gate exists to prevent, and `.gitignore` enforces it. The 48/48 result recorded in the [remediation log](remediation-log.md) came from running the workflow's `run:` steps **in order on a local machine**, and its artifacts expired with that working tree. **So a reader holding only this repository cannot independently verify the 18 automatic rows**; invoking the matrix step alone against the tree reports `proven=32 failed=18`, because those rows read artifacts the earlier steps produce. What will make them durable is a **hosted** run: the step *Assert the scan evidence is complete and bind it to the commit* writes `evidence-manifest.txt`, digesting every evidence file with SHA-256 and binding the set to the commit, run id and attempt, and the upload names the artifact `security-scan-evidence-<sha>`. **That run has not happened, because this environment cannot perform one**, and no run reference is asserted here in place of it. **(2) One acceptance criterion is UNMET and the matrix now says so — `MAJ-03`.** Row `A17` fails while the Content-Security-Policy ships under the report-only name, so `RELEASE-READY` prints `no`. Under review finding `N27` that row is now DECLARED in the workflow's job-level `KNOWN_UNMET_BASELINE`, which changes its consequence and not its verdict: on an ordinary push, pull request, scheduled run or dispatch it is recorded `KNOWN-UNMET` with its reason and the job passes **with warnings**, and on a version-tag push or a release-candidate dispatch it is fatal again — because an unclosable row was otherwise making the conclusion permanently `failure`, which meant the gate could not serve as a required check and a genuinely new red row would have arrived indistinguishable from the standing one. Every unmet row NOT in that declared list stays fatal on every run, the job fails if a declared row starts passing, and the declaration cannot name a row the matrix does not carry. That is the gate working: the previous revision had rewritten scenario `M06` to *expect* the report-only name, which is how an unmet requirement came to be recorded as met. Three earlier revisions of this row were wrong in three different directions — one marked Gate 5 *Satisfied* while 25 mandatory rows were unexecuted, one counted them honestly as `DEFERRED`, and one recorded their execution and then read the resulting green as release readiness. |
 
 | Engagement process requirement | Status | Where the evidence is |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ revision, and one engagement process requirement failed outright.
 | Prescribed execution sequence, stage by stage | **FAIL — NOT COMPLIANT, and not remediable after the fact** | Four ordering and atomicity failures, `F-07` through `F-10`, named in [Methodology](#methodology) above. The final tree state is correct in all four cases, which is worth recording and is **not** a mitigation: the requirement is about the order in which the work was performed, and a correct end state cannot retroactively supply an order that was not followed. Under `MAJ-04` the disposition is therefore *reported noncompliant* rather than closed. |
 | Minimal Change guideline 10 — validate after each fix category | **PARTIAL — NOT COMPLIANT** | Every class carries an executed `### Verification` section, so validation exists for each category; what the requirement asks and did not happen is that it be executed **at each category boundary as the work proceeded**, and several verifications were performed later, in aggregate. The qualification is recorded in the log on the same row as guideline 9. Reported noncompliant under `MAJ-04` rather than counted as satisfied on the strength of the sections existing. |
 | **Frozen operation map** — 86 files, 12 CREATE, 74 UPDATE, 0 DELETE | **DEVIATED — not compliant** | Measured against the pre-engagement commit `c8ea6bd4`: **171** changed paths — **24** added, **143** modified, **4** deleted. All 86 authorised paths were changed, and **85** further paths were changed that the map does not authorise, including **4 deletions where the map authorises none**. Raised by code-review finding `MAJ-04`, which specifically refused the argument that extra changes are compliant because they carry security rationales, and escalated by code-review finding `CR-01`, which refused the further argument that a section inside this document could *amend* the frozen plan. **It cannot, and no longer claims to.** The deviation is DISCLOSED path by path with the finding that prompted each change, and it stays non-compliant: the two authoritative resolutions — reverting the 85 unauthorised paths and 4 deletions, or reissuing the plan — are both owner decisions, and reverting would reintroduce closed Critical and High remediations. See the [disclosure and escalation](#scope-deviation-disclosure-and-the-escalation-it-raises-cr-01-maj-04-maj-10-maj-11) below. |
-| **Preservation and no-touch boundaries** | **DEVIATED — not compliant; each exception is DISCLOSED, not authorised** | Nine classes of exception, including four file deletions against a `0 DELETE` map, twelve modifications to the Blazor WebAssembly client that AAP §0.3.2 excludes by name, a renamed cookie and two extra blanked configuration values. Raised by `MAJ-10`. Each is bound below to the review finding that prompted it — **which is provenance, not authority**. An earlier revision of this row read *"each exception now carries recorded authority"*; code-review finding `CR-01` refused that framing and it is withdrawn. A code-review finding can require a defect to be fixed; it cannot enlarge the frozen plan's file set, and neither can this document. The exceptions therefore remain outside the authorised boundary and are escalated with the scope deviation. |
+| **Preservation and no-touch boundaries** | **DEVIATED — not compliant; each exception is DISCLOSED, not authorised** | Twelve classes of exception, including four file deletions against a `0 DELETE` map, **thirteen** files modified inside the Blazor WebAssembly client that AAP §0.3.2 excludes by name, a renamed cookie and two extra blanked configuration values. Raised by `MAJ-10`. The thirteen is stated here in preference to the twelve the area table shows against that area, because the two figures count different things and the smaller one understates the boundary crossing: the area table files `WebVella.Erp.WebAssembly/Client/wwwroot/appsettings.json` under *Repository hygiene* — it was blanked under `H-05`, alongside the eight `Config.json` files, rather than for any client-specific finding — so the client's own area row reads **12** while the number of files touched inside the excluded project is **13**. Both are correct; only the larger one measures the exception. Each is bound below to the review finding that prompted it — **which is provenance, not authority**. An earlier revision of this row read *"each exception now carries recorded authority"*; code-review finding `CR-01` refused that framing and it is withdrawn. A code-review finding can require a defect to be fixed; it cannot enlarge the frozen plan's file set, and neither can this document. The exceptions therefore remain outside the authorised boundary and are escalated with the scope deviation. |
 | **Build and CI contract** | **DEVIATED — not compliant; the deviations are DISCLOSED and are a strengthening, which is still a deviation** | The workflow carries **25** steps — **22** `run:` and **3** `uses:` — and schedule and tag triggers; `Directory.Build.props` adds `AnalysisLevelSecurity`, a scoped `NoWarn`, an inert out-of-tree analyzer-config hook, `NU1900`/`NU1905` and a packaging gate; `global.json` pins `rollForward: disable` where the frozen text specified `latestPatch`. Raised by `MAJ-11`; the step and trigger counts moved again at this revision when `MAJ-01` added the terminating taint scan and `MAJ-03` added the mandated-header compliance gate. An earlier revision of this row read **AMENDED**; `CR-01` refused that word and it is withdrawn — every deviation here makes the gate *stronger*, and a stronger deviation is still a deviation from a frozen contract. The files are therefore not aligned down, and the divergence is escalated rather than declared settled. |
 | **`AutoMapper` licence ratification** | **OPEN — release-blocking, and not an engineering decision** | The advisory half is closed: pinned `[15.1.3]`, **zero** advisory rows across all 19 projects, and `dotnet msbuild -getItem:NuGetAuditSuppress` returns `[]` — nothing is silenced. The licence half is **unratified**: every patched version is under the Reciprocal Public License 1.5 while the product declares Apache-2.0 and publishes to nuget.org, and there is no patched permissive version to retreat to. Raised by code-review finding `MAJ-02` and **re-raised unresolved as code-review finding `MAJ-05`**, whose required resolution is explicit that the repository owner or legal must ratify RPL-1.5 or execute the documented decline path. **This remediation may not decide it, and has not.** The decision is therefore still OPEN at this revision, and the deliverable is consequently **not releasable** — which is stated as a status rather than a caveat. AAP §0.6.5 records it as an escalation that must not be absorbed silently and §0.9.2 states that an automated agent must not change a product's effective licence posture on its own initiative, so the tree is left in the only state an agent may leave it in — advisory closed, declared licence unchanged, contradiction visible. Enforced mechanically rather than by note: re-measured at this revision, `dotnet pack` fails with `error ERPLIC001` and produces no package (exit **1**), while `dotnet build` emits **0** `ERPLIC` diagnostics, so `restore`, `build`, `publish` and `run` are unaffected. The owner records an answer as `AUTOMAPPER-LICENCE-DECISION: accepted-rpl-1.5 \| approver: … \| date: YYYY-MM-DD` (`declined-rpl-1.5` with an RPL version still pinned fails `ERPLIC002`; an unrecognised token fails `ERPLIC003`; an unreadable manifest fails `ERPLIC004`, so the gate cannot be disabled by moving what it reads). The decline path — revert the pin behind a narrowly scoped, per-advisory suppression plus a recorded risk acceptance — is documented in `RISK-001`, together with the measurement that a project-scoped suppression is insufficient (**15** residual `NU1903` errors) and that the only placement that works would also disable the CI negative control. |
 
@@ -204,18 +204,130 @@ CKEditor 4, which is end-of-life and carries published cross-site-scripting advi
 them would reopen `SR-04`. The `0 DELETE` boundary is therefore **deviated, deliberately, and recorded
 here** rather than satisfied.
 
-#### The seventy-three further modifications, by area
+#### The sixty-nine further modifications, by area
+
+The count is **sixty-nine**, derived rather than asserted: **143** paths were modified against the
+pre-engagement commit `c8ea6bd4`, the frozen map authorises **74** UPDATE paths, every one of those 74 was
+modified, and `comm` over the two sorted sets leaves exactly **69** modified paths the map does not
+authorise. Reproduce it with
+`comm -13 <(sorted list of the map's 74 UPDATE paths) <(git diff --name-status c8ea6bd4 HEAD | awk '$1=="M"{print $2}' | sort)`.
+An earlier revision of this heading read *seventy-three* and the area rows below summed to it only because
+two of them were wrong: a row claimed **5** host `Program.cs` and remaining-host modifications where the
+measured figure is **0** — not one host `Program.cs` was modified — and the web-framework row read **16**
+where the measured figure is **17**. Both are corrected below and the rows now sum to 69. The earlier
+figure is recorded here rather than quietly replaced, because a scope-deviation count that moves without
+explanation is indistinguishable from one that was adjusted to fit.
 
 | Area | Paths | Prompting findings (NOT authorisations) |
 | --- | --- | --- |
 | Blazor WebAssembly client — **excluded by name in AAP §0.3.2** | 12 | `SR-01`, `SR-02`, `SR-03`, `SR-06`, `SR-08` (commit `cdb1edb9`), plus the sign-out revocation in `80042d8c`. The exclusion was written on the premise that the client's only security-relevant behaviour was outbound HTTP and that server-side request forgery did not apply — which remains true, but the seam review found credential-handling defects in the client's own auth layer that no server-side change can reach. Two further pre-existing defects found there were **left alone** and recorded as `RISK-119`. |
 | Project plugin — components, controllers, services | 13 | `SR-05`, `SR-07`, `SR-09`–`SR-16`, and this review's `MED-01` |
-| Web framework — remaining `.cs` | 16 | `H-06` (`PcHtmlBlock`, `PcPageHeader`, `ScreenMessage`), `H-13` (`ApiControllerBase`), `H-02`/`H-03` (`JwtMiddleware`), `M-12` (`WebSecurityUtil`), and `HIGH-01` |
+| Web framework — remaining `.cs`, `.cshtml` and `.js` | 17 | `H-06` (`PcHtmlBlock`, `PcPageHeader`, `ScreenMessage.Default.cshtml`), `H-13` (`ApiControllerBase`), `H-02`/`H-03` (`JwtMiddleware`), `M-12` (`WebSecurityUtil`), `HIGH-01`, and `SR-11`/`SR-13` with review findings `N18`/`N20` (`wwwroot/js/site.js`, `WvFieldUserFileMultiple/inline-edit.js`). The row previously read *remaining `.cs`* at **16**; the extension list is corrected because the seventeen paths are **14** `.cs`, **1** `.cshtml` and **2** `.js`, and a row headed `.cs` cannot account for three of its own members |
 | Core library | 11 | `H-09`/`H-17` (`DbRepository`, `DbFileRepository`), `C-02` (`ErpUserPreferences`), `CK-15` (`DbFileRepository`), and `MAJ-03`'s no-DDL rewrite |
 | SDK plugin | 10 | `H-06` reflected and stored sinks beyond the three named views, `H-09`/`H-10` (`CodeGenService`), `M-09` (`AdminController`) |
 | Mail plugin — existing files | 3 | `H-11`, `H-OPEN-03`, `F-01` |
-| Host `Program.cs` and remaining hosts | 5 | `H-15`, `M-01` — the map names the seven `Startup.cs` files but not the `Program.cs` files the same pipeline work required |
 | Repository hygiene | 3 | `.gitignore` (`GATE-01`, to stop scan artifacts entering the tree), `ConsoleApp/StringExtensions.cs`, `WebAssembly/Client/wwwroot/appsettings.json` (`H-05`) |
+
+##### The sixty-nine paths, enumerated (`N38`)
+
+The disclosure above promises this record **path by path**, and the area table alone does not keep
+that promise: it gives a count and a set of prompting findings per area, which leaves an individual
+path neither confirmed nor denied. Review finding `N38` raised exactly that gap. Every one of the
+sixty-nine is therefore named here, in the same areas and summing to the same counts. Each remains
+**UNAUTHORISED by the frozen map**; naming it changes nothing about that, which is the point of a
+disclosure as distinct from an amendment.
+
+**Blazor WebAssembly client — excluded by name in AAP §0.3.2 (12)**
+
+- `WebVella.Erp.WebAssembly/Client/ApiService/ApiService.Project.cs`
+- `WebVella.Erp.WebAssembly/Client/ApiService/ApiService.System.cs`
+- `WebVella.Erp.WebAssembly/Client/Components/Base/AppState.razor.cs`
+- `WebVella.Erp.WebAssembly/Client/Components/General/WvLogin.razor.cs`
+- `WebVella.Erp.WebAssembly/Client/Models/ApiErrorModel.cs`
+- `WebVella.Erp.WebAssembly/Client/Pages/Index.razor.cs`
+- `WebVella.Erp.WebAssembly/Client/Program.cs`
+- `WebVella.Erp.WebAssembly/Client/Services/AuthenticationService.cs`
+- `WebVella.Erp.WebAssembly/Client/Services/TokenManagerService.cs`
+- `WebVella.Erp.WebAssembly/Client/Utilities/HttpExt.cs`
+- `WebVella.Erp.WebAssembly/Client/Utilities/NavigatorExt.cs`
+- `WebVella.Erp.WebAssembly/Client/WasmConstants.cs`
+
+**Project plugin — components, controllers, services (13)**
+
+- `WebVella.Erp.Plugins.Project/Components/PcFeedList/PcFeedList.cs`
+- `WebVella.Erp.Plugins.Project/Components/PcPostList/PcPostList.cs`
+- `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTaskDistribution/PcProjectWidgetTaskDistribution.cs`
+- `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTasksPriorityChart/PcProjectWidgetTasksPriorityChart.cs`
+- `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs`
+- `WebVella.Erp.Plugins.Project/Components/PcProjectWidgetTimesheet/PcProjectWidgetTimesheet.cs`
+- `WebVella.Erp.Plugins.Project/Components/PcTimelogList/PcTimelogList.cs`
+- `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs`
+- `WebVella.Erp.Plugins.Project/ProjectPlugin.20211012.cs`
+- `WebVella.Erp.Plugins.Project/Services/CommentService.cs`
+- `WebVella.Erp.Plugins.Project/Services/TaskService.cs`
+- `WebVella.Erp.Plugins.Project/Services/TimeLogService.cs`
+- `WebVella.Erp.Plugins.Project/Utils/EntityRecordUtils.cs`
+
+**Web framework — remaining `.cs`, `.cshtml` and `.js` (17)**
+
+- `WebVella.Erp.Web/Components/PcHtmlBlock/PcHtmlBlock.cs`
+- `WebVella.Erp.Web/Components/PcPageHeader/PcPageHeader.cs`
+- `WebVella.Erp.Web/Components/ScreenMessage/Default.cshtml`
+- `WebVella.Erp.Web/Controllers/ApiControllerBase.cs`
+- `WebVella.Erp.Web/Middleware/JwtMiddleware.cs`
+- `WebVella.Erp.Web/Models/BaseErpPageModel.cs`
+- `WebVella.Erp.Web/Pages/logout.cshtml.cs`
+- `WebVella.Erp.Web/Services/CodeEvalService.cs`
+- `WebVella.Erp.Web/Services/LogService.cs`
+- `WebVella.Erp.Web/Services/MailService.cs`
+- `WebVella.Erp.Web/Services/UserFileService.cs`
+- `WebVella.Erp.Web/TagHelpers/WvFieldUserFileMultiple/WvFieldUserFileMultiple.cs`
+- `WebVella.Erp.Web/TagHelpers/WvFieldUserFileMultiple/inline-edit.js`
+- `WebVella.Erp.Web/TagHelpers/WvPageHeader/WvPageHeader.cs`
+- `WebVella.Erp.Web/Utils/ModelExtensions.cs`
+- `WebVella.Erp.Web/Utils/PageUtils.cs`
+- `WebVella.Erp.Web/wwwroot/js/site.js`
+
+**Core library (11)**
+
+- `WebVella.Erp/Api/Models/ErpUserPreferences.cs`
+- `WebVella.Erp/Database/DbFileRepository.cs`
+- `WebVella.Erp/Database/DbRepository.cs`
+- `WebVella.Erp/Diagnostics/Log.cs`
+- `WebVella.Erp/Eql/EqlBuilder.Sql.cs`
+- `WebVella.Erp/Eql/EqlBuilder.cs`
+- `WebVella.Erp/Eql/EqlCommand.cs`
+- `WebVella.Erp/Eql/EqlSettings.cs`
+- `WebVella.Erp/Jobs/JobDataService.cs`
+- `WebVella.Erp/Notifications/NotificationContext.cs`
+- `WebVella.Erp/Utilities/Helpers.cs`
+
+**SDK plugin (10)**
+
+- `WebVella.Erp.Plugins.SDK/Controllers/AdminController.cs`
+- `WebVella.Erp.Plugins.SDK/Pages/application/list.cshtml`
+- `WebVella.Erp.Plugins.SDK/Pages/entity/list.cshtml`
+- `WebVella.Erp.Plugins.SDK/Pages/entity/pages.cshtml`
+- `WebVella.Erp.Plugins.SDK/Pages/page/list.cshtml`
+- `WebVella.Erp.Plugins.SDK/Pages/page/manage-custom.cshtml.cs`
+- `WebVella.Erp.Plugins.SDK/Pages/page/manage.cshtml.cs`
+- `WebVella.Erp.Plugins.SDK/SdkPlugin.20201221.cs`
+- `WebVella.Erp.Plugins.SDK/SdkPlugin.20210429.cs`
+- `WebVella.Erp.Plugins.SDK/Services/LogService.cs`
+
+**Mail plugin — existing files (3)**
+
+- `WebVella.Erp.Plugins.Mail/Api/EmailServiceManager.cs`
+- `WebVella.Erp.Plugins.Mail/MailPlugin.20190215.cs`
+- `WebVella.Erp.Plugins.Mail/MailPlugin._.cs`
+
+**Repository hygiene (3)**
+
+- `.gitignore`
+- `WebVella.Erp.ConsoleApp/StringExtensions.cs`
+- `WebVella.Erp.WebAssembly/Client/wwwroot/appsettings.json`
+
+**12 + 13 + 17 + 11 + 10 + 3 + 3 = 69.**
 
 #### Preservation and no-touch exceptions (`MAJ-10`)
 
@@ -226,13 +338,16 @@ closed finding it was preferred; where it was not, the deviation stands and is d
 | --- | --- | --- |
 | Four CKEditor files **deleted** | `SR-04` | Stands — restoring reopens `SR-04` (end-of-life CKEditor 4 with published XSS advisories). |
 | A **route added** | `H-08`, `CK-15` | Stands — the upload and download constraints needed a separate endpoint; no existing route's verb or response envelope changed. |
-| A **cookie renamed** | `H-15`, `M-02` | Stands — the rename is what applies the `__Host-` prefix semantics the secure-cookie clause requires. Documented in the [secure configuration guide](secure-configuration.md) as an operator-visible change that ends in-flight sessions once. |
+| A **cookie renamed** | **`CR2-F-11`** | Stands — and the authority and the reason are both corrected here under review finding `N4`. An earlier revision of this row read *"the rename is what applies the `__Host-` prefix semantics the secure-cookie clause requires"* and cited `H-15`/`M-02`. That was **false in two ways and is withdrawn**: no cookie in this repository carries a `__Host-` prefix — a tree-wide search finds the token only in this document — and the rename does not apply that prefix's semantics, which would require the name itself to begin `__Host-` together with `Secure`, path `/` and no `Domain`. The real reason is a **name collision**: `WebVella.Erp.Site.MicrosoftCDM` and `WebVella.Erp.Site.Crm` both named their authentication cookie `erp_auth_crm`, so one host overwrote the other's ticket, and with Data Protection unconfigured a ticket minted by one application could be presented to another. `erp_auth_mscdm` renames the MicrosoftCDM host **only**, because `erp_auth_crm` is correct for the CRM host and renaming both would cost a second gratuitous sign-out. The evidence is the canonical record `P-13`, which carries the review's own identifier `CR2-F-11` and was verified at runtime with two hosts published and run concurrently against one shared key directory. The absence of `__Host-` prefixing is a real residual and is now carried as such in the [risk register](risk-register.md) rather than mis-stated as done. Documented in the [secure configuration guide](secure-configuration.md) as an operator-visible change that ends in-flight sessions once. |
 | **Two extra configuration values blanked** — `FileSystemStorageFolder`, `CloudBlobStorageConnectionString` | **`CR2-F-12`** | Stands. This is the specific reason the Mail project's per-file numstat is **4 / 4** rather than the **3 / 3** its own file prompt mandated: `CR2-F-12` found that a storage location and a storage connection string are themselves secrets, and blanking them adds a fourth changed line per file. Measured: `FileSystemStorageFolder` blank in **8 / 8** files, `CloudBlobStorageConnectionString` blank in **1 / 1** — nine location values in total. |
 | **`UserSecretsId` added** to eight manifests | `H-04`, `H-05` | Stands — user secrets are the supported development-time supply channel for the scrubbed values, and without them a developer cannot start a host. All eight values are enumerated in `WebVella.Erp.Site/JWT_README.txt` under this review's `HIGH-02`. |
 | **`ReturnUrl` handling changed** | `H-06` reflected sinks | Stands — the encoded property is what closes the three reflected sinks, and derived page models must not re-declare `ReturnUrl`. Recorded as `RISK-011`. |
 | **Reference-only files edited** | `H-06`, `HIGH-01`, `MAJ-03` | Partially restored. The four by-design raw channels AAP §0.7.1 Group 11 marks must-not-encode are **untouched** — re-verified with `git diff --quiet c8ea6bd4 --` over all four, plus the three `MAJ-09` named later, **seven files, all UNTOUCHED**. Other reference-only files were edited where a finding's root cause lived in them; each is listed in the area table above. |
 | **Widget builder contracts reshaped** | `H-06` | Stands — the three Project widget builders no longer compose markup at all; each value is published as its own field and the elements are authored in the view, so Razor encodes once, in context. Reverting would reintroduce the stored sink. |
 | **Blazor WebAssembly client modified** | `SR-01`, `SR-02`, `SR-03`, `SR-06`, `SR-08` | Stands — see the area table above. |
+| **A `public` enum removed with its two members, and three `public` properties removed** — `ApiErrorType` (`ValidationException`, `Exception`) and `ApiErrorModel.Type`, `.StackTrace`, `.ValidationData` in `WebVella.Erp.WebAssembly/Client/Models/ApiErrorModel.cs` | `SR-08` (`seam/M-04`) | Stands, and is disclosed here under review finding `N13` because the earlier revision of this table did not list it at all. The client's error model declared `Type`, `Message`, `StackTrace` and `ValidationData` against a platform envelope that emits `timestamp`, `success`, `message`, `hash`, `errors`, `accessWarnings` and `object`, so two of the four members deserialised to null on every failure and the absent `Type` defaulted to `0` — which happened to be the member the 400 branch handled, so validation errors worked **by accident** while a 500 fell through to a *"Not supported ApiErrorType"* throw that replaced the server's real message. This is a **source-breaking removal of a `public` type and of `public` members**, which the no-API-change boundary would otherwise forbid. It is permitted here only because they sit inside the project AAP §0.3.2 excludes by name, that project is not packable and is not published, and nothing consumes them: a tree-wide search for `ApiErrorType` now returns three explanatory comment mentions and **no code reference**. Restoring them would restore a model that cannot bind the envelope it exists to bind. |
+| **101 pre-existing commented-out lines deleted** — two dead action blocks in `WebVella.Erp.Web/Controllers/WebApiController.cs` | `H-13`, `L-01` | Stands, disclosed under review finding `N14`. The lines were already inert at `c8ea6bd4` — commented-out action bodies with no route registration and no caller — so their removal changes no behaviour and closes no finding by itself. It is nonetheless a **deletion inside an authorised UPDATE path**, which is a different act from the edit the map authorises, and the engagement declined exactly this kind of hygiene deletion elsewhere (`L-01`'s dead security code is left in place and documented). The inconsistency is real and is recorded rather than reconciled after the fact; the correct disposition would have been to leave them, and reinstating deleted comment text now would add churn without adding assurance. |
+| **A `public` member removed** — `MailService.SendLogMessage` in `WebVella.Erp.Web/Services/MailService.cs` | `M-OPEN-03`, `CK-07` | Stands, disclosed under review finding `N35`. The method was replaced by `SendLogNotification`, which is the remediation for the diagnostic-notification defects: no TLS, never disposed, no timeout, failure swallowed, exception detail carried, and sent **before** the log row was persisted. Replacing rather than adding an overload is what makes the insecure path unreachable instead of merely deprecated, so the old member could not be retained alongside it without leaving the defect callable. It is a **source-breaking removal of a `public` member** in a package published to nuget.org, and is therefore an API-contract deviation in its own right — the binary-compatibility consequences of this and of the added optional parameters are carried in the [risk register](risk-register.md). |
 
 #### Build and CI contract deviations (`MAJ-11`)
 
@@ -244,7 +359,7 @@ deviation escalated with the rest, per `CR-01`.
 
 | Deviation | Frozen text | Actual | Justification |
 | --- | --- | --- | --- |
-| Workflow step count | a restore, analyzer build and vulnerable-package listing | **23** steps | Each addition closes a fail-open the frozen three could not: a project-graph and casing assertion, a solution-membership assertion, separate restore/build/list for the two non-solution projects, a Gate 1 ratchet, a **positive control** proving the analyzers can fire, a secret sweep with history audit, a startup smoke test, a **negative control** requiring `error NU1903`, evidence publication, and a blocking release gate. Reproduce the count with `yaml.safe_load` over the file. |
+| Workflow step count | a restore, analyzer build and vulnerable-package listing | **25** steps — **22** `run:` and **3** `uses:` | Each addition closes a fail-open the frozen three could not: a project-graph and casing assertion, a solution-membership assertion, separate restore/build/list for the two non-solution projects, a Gate 1 ratchet, a **positive control** proving the analyzers can fire, a taint scan of the one excluded compilation, a header-compliance check, a secret sweep with history audit, an identifier-uniqueness assertion, a licence-record assertion, a startup smoke test, a **negative control** requiring `error NU1903`, evidence publication, and a blocking release gate. Reproduce the count with `yaml.safe_load` over the file. This cell read **23** in an earlier revision, which review finding `N8` corrected: 25 is the measured figure and is the same number the compliance surface above states, so the two no longer disagree. |
 | Workflow triggers | not specified | four, measured from the parsed file: `push` on `master` **and on tags `v*`**, `pull_request` on `master`, `schedule` (`cron: 17 5 * * 1`), and `workflow_dispatch` with a `release_candidate` boolean input | A dependency advisory is published against an **unchanged** tree, so a scan that only runs on push cannot find it — hence the weekly schedule. The tag trigger is what makes the release gate blocking at the moment it matters, and the dispatch input is what lets a release candidate be tested without pushing a tag, by promoting unproven REQUIRED manual scenarios from *reported* to *fatal*. |
 | `AnalysisLevelSecurity` | not specified | `latest-all` | AAP §0.9.1 Gate 1 names **eleven** security families and sets the pass criterion "zero diagnostics in these families". Nine do not execute at `latest-recommended`, so without this property Gate 1 cannot substantiate its own criterion. It selects a configuration the SDK itself ships; no `.globalconfig` is added, and the workflow asserts none exists. |
 | Scoped `NoWarn` | not specified | `CA3001`–`CA3012` for `WebVella.Erp.Web` only | Measured: armed and untuned, the solution build produced no further output for over thirty-five minutes with 3 of 17 projects finished; excluded, it completes in about **106 seconds**. The exclusion is conditioned on one project name, so the other eighteen have the family armed and reporting, and the positive control asserts the family **does** fire when the exclusion is lifted. Recorded as `RISK-051`. |
@@ -759,7 +874,11 @@ What the gate does, and what it now measures:
   workflow's **22** `run:` steps executed in order reports `deferred=0` and `RELEASE-READY=no`: all 32 manual
   rows read `PASS-MANUAL` on a committed, commit-bound attestation, the automatic rows resolve from the
   evidence artifacts the earlier steps produce, and **row `A17` fails by design** because the mandated
-  Content-Security-Policy is delivered under its report-only name. Invoking the matrix step alone reports the
+  Content-Security-Policy is delivered under its report-only name — so it is recorded `KNOWN-UNMET` on an
+  ordinary run and `FAIL` in a release context, which under review finding `N27` is what stopped an unclosable
+  row from making the workflow's conclusion permanently `failure` while leaving its verdict, and
+  `RELEASE-READY=no`, exactly as they were. Reported as
+  `rows=50 proven=49 deferred=0 failed=0 known-unmet=1`. Invoking the matrix step alone reports the
   automatic rows failing, which is a property of the invocation rather than of the tree — and, per code-review
   finding `MAJ-02`, is also the reason those rows are **not** independently verifiable from the delivered tree
   alone: the artifacts they read are written at run time and deliberately never committed. *(An earlier
@@ -1760,11 +1879,11 @@ no injected element, and legitimate values render identically apart from attribu
 | **FINDING** | Unbounded script-evaluation cache holding compiled delegates |
 | **SEVERITY** | Medium |
 | **CWE** | CWE-770, CWE-94 |
-| **LOCATION** | `WebVella.Erp.Web/Services/CodeEvalService.cs:L13` (the cache) and `:L46` (the unbounded insert) |
-| **DESCRIPTION** | Compiled page-component scripts are memoised in a `private static readonly Dictionary<string, object>` keyed by a digest of the script text. Nothing removes an entry: the file contains no `Remove`, `Clear` or eviction call of any kind, and the dictionary is not a size-bounded cache. Maps to **OWASP A08:2021 — Software and Data Integrity Failures**. |
-| **IMPACT** | Each distinct script text permanently retains a compiled object and its loaded assembly, so a workload that generates many script variants grows process memory without bound and cannot release it. Because the cache holds executable delegates keyed only by content digest, it also lengthens the lifetime of any code a privileged author has injected. |
-| **EVIDENCE** | `private static readonly Dictionary<string, object> scriptObjects = new Dictionary<string, object>();` at `:L13`; `scriptObjects[md5Key] = scriptObject;` at `:L46`; `grep -c 'Remove\|Clear\|Evict\|MemoryCache'` over the 62-line file returns **0**. |
-| **REMEDIATION** | Documented, deliberately not changed — it is a resource-exhaustion concern rather than a confirmed Critical or High, and the minimal-change rule keeps it out of the remediation. The recommended fix is to replace the dictionary with a size-bounded `MemoryCache` carrying a `SizeLimit` and a per-entry `Size`, exactly as `WebVella.Erp.Web/Services/LoginThrottleService.cs` now does, so eviction is automatic and the cardinality bound is explicit. |
+| **LOCATION** | **As found**, at the audited commit: `WebVella.Erp.Web/Services/CodeEvalService.cs:L13` (the unbounded `Dictionary`) and `:L46` (the unbounded insert). **In the shipped tree those line numbers no longer describe the defect** — `:L13` is now a lock object and `:L46` a comment; the cache is at `:L53` and its bounded insert at `:L76`–`:L80`. Both are stated because a record whose locator has silently drifted cannot be checked by the next reader. |
+| **DESCRIPTION** | Compiled page-component scripts were memoised in a `private static readonly Dictionary<string, object>` keyed by a digest of the script text. Nothing removed an entry: the file contained no `Remove`, `Clear` or eviction call of any kind, and the dictionary was not a size-bounded cache. Maps to **OWASP A08:2021 — Software and Data Integrity Failures**. |
+| **IMPACT** | Each distinct script text permanently retained a compiled object and its loaded assembly, so a workload generating many script variants grew process memory without bound and could not release it. Because the cache holds executable delegates keyed only by content digest, it also lengthened the lifetime of any code a privileged author had injected. |
+| **EVIDENCE** | **As found:** `private static readonly Dictionary<string, object> scriptObjects = new Dictionary<string, object>();` at `:L13`; `scriptObjects[md5Key] = scriptObject;` at `:L46`; `grep -cE 'Remove\|Clear\|Evict\|MemoryCache'` over the then 62-line file returned **0**. **Re-measured against the shipped tree** under review finding `N29`: the file is **96** lines and that same `grep -cE` returns **4**, so the evidence sentence above no longer reproduces and is explicitly scoped to the audited commit rather than left reading as current. |
+| **REMEDIATION** | **Half closed, half open, and the halves are separated because a single verdict would misdescribe both.** *Closed:* the unbounded dictionary is gone. `CodeEvalService` now holds a `MemoryCache` with `SizeLimit = MaxCachedScripts` (1000), inserts with `Size = 1` and a one-day `SlidingExpiration`, and reads inside the same lock it writes under — so eviction is automatic, the cardinality bound is explicit, and the memory-growth half of this finding is remediated. That work was **not** done under this record; it was done under the checkpoint review's [`CK-08`](#ck-08-the-compiled-script-cache-was-unbounded-and-read-outside-its-own-lock), which is the record that carries its verification, and this record points there rather than restating it. *Still open:* `CSScript.EvaluatorConfig.ReferenceDomainAssemblies = true` at `:L74`, which is the `CWE-94` half — it exposes every loaded domain assembly to author-supplied script text, and .NET cannot unload an assembly emitted outside a collectible context, so bounding the cache reduces retention without narrowing what a script can reach. That half remains documented and not changed: it is a Medium, it does not meet the compensating-control test, and narrowing the reference set would change what existing page-component scripts can compile. Carried in the [risk register](risk-register.md). |
 
 #### M-08 — Deterministic initialisation vector in the symmetric encryption helpers
 
@@ -2823,6 +2942,20 @@ identifiers in a document set whose workflow asserts identifier uniqueness on ev
 the review's identifier to the identifier used here is given in the first field of every record, so a reader
 holding the review can follow it without guessing.
 
+**The `seam/` citation namespace, and why the mapping alone was not enough.** Choosing `SR-` for the
+*records* left the *citations* ambiguous, and review finding `N30` is that residual: each FINDING field
+below cited the review's identifier bare — the words *Review identifier* followed immediately by an
+unqualified `C-01` — which resolves to either this record or Part 1's unrelated `C-01` with nothing to tell
+a reader, a grep or a source comment which was meant. It was not hypothetical — the collision had already propagated into twelve source comments citing
+`M-01` and `C-03` while meaning `SR-05` and `SR-03`. Every citation in this part is therefore
+**namespace-qualified** as `seam/<identifier>`: `seam/C-01` is the frontend and API seam review's own
+`C-01`, preserved verbatim inside a namespace rather than renamed, so the citation stays faithful to the
+review it cites while resolving to exactly one record. A bare Part-1-shaped citation anywhere in this
+document now **fails the workflow's identifier assertion**, so the qualification cannot silently erode. The
+mapping is positional and complete: `seam/C-01`–`seam/C-04` are `SR-01`–`SR-04`, `seam/M-01`–`seam/M-09`
+are `SR-05`–`SR-13`, and `seam/L-01` is `SR-14`; `SR-15` and `SR-16` have no seam identifier because the
+review never saw them.
+
 **On severity.** Each record states the review's own grading first, because that is the source, and then the
 tier the engagement's [severity matrix](#methodology) assigns, because that matrix is what decides
 disposition. Where the two differ the difference is stated rather than reconciled away.
@@ -2833,7 +2966,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `C-01`.* The WebAssembly client composed its token-refresh URL with a duplicated `api/` segment, producing a path the server does not serve. Every refresh therefore returned 404, and the client's own error handling treated that 404 as the server having **rejected** the token: it deleted the stored credential. The result is that a user was signed out at the moment their token entered its refresh window, with no way to remain signed in. |
+| **FINDING** | *Review identifier `seam/C-01`.* The WebAssembly client composed its token-refresh URL with a duplicated `api/` segment, producing a path the server does not serve. Every refresh therefore returned 404, and the client's own error handling treated that 404 as the server having **rejected** the token: it deleted the stored credential. The result is that a user was signed out at the moment their token entered its refresh window, with no way to remain signed in. |
 | **SEVERITY** | Critical as graded by the review. On the severity matrix this is not an authentication *bypass* — it grants nothing — but it is a total failure of the session-continuity mechanism, and it is Critical because the client's only means of holding a session is unusable. |
 | **CWE** | [CWE-1188: Insecure Default Initialization of Resource](https://cwe.mitre.org/data/definitions/1188.html) for the misconfigured base address, with the observable outcome falling under [CWE-613: Insufficient Session Expiration](https://cwe.mitre.org/data/definitions/613.html) inverted — premature, unavoidable session loss. |
 | **LOCATION** | `WebVella.Erp.WebAssembly/Client/Services/TokenManagerService.cs:L88`, resolved against the base address built in `WebVella.Erp.WebAssembly/Client/Program.cs`. The server route it was aiming at is `api/v3/en_US/auth/jwt/token/refresh` in `WebVella.Erp.Web/Controllers/WebApiController.cs`. |
@@ -2846,7 +2979,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `C-02`.* Two host pipelines selected their authentication handler by testing the `Authorization` header against the literal `"Bearer "` with an ordinal, **case-sensitive** comparison. RFC 7235 defines the scheme token as case-**insensitive**, so a standards-compliant `bearer <jwt>` was not recognised as a bearer credential and was forwarded to the **cookie** handler, which finds no cookie. A correctly authenticated API caller was therefore answered as anonymous — and because the cookie handler owns the challenge, it was issued a **login redirect** rather than a 401. |
+| **FINDING** | *Review identifier `seam/C-02`.* Two host pipelines selected their authentication handler by testing the `Authorization` header against the literal `"Bearer "` with an ordinal, **case-sensitive** comparison. RFC 7235 defines the scheme token as case-**insensitive**, so a standards-compliant `bearer <jwt>` was not recognised as a bearer credential and was forwarded to the **cookie** handler, which finds no cookie. A correctly authenticated API caller was therefore answered as anonymous — and because the cookie handler owns the challenge, it was issued a **login redirect** rather than a 401. |
 | **SEVERITY** | Critical as graded by the review. |
 | **CWE** | [CWE-178: Improper Handling of Case Sensitivity](https://cwe.mitre.org/data/definitions/178.html) |
 | **LOCATION** | Server: `WebVella.Erp.Site/Startup.cs` and `WebVella.Erp.Site.Project/Startup.cs`, in each host's `ForwardDefaultSelector`. Client: `WebVella.Erp.WebAssembly/Client/ApiService/ApiService.System.cs`, which emitted the lower-case spelling **and** set it on the shared `DefaultRequestHeaders`, and `ApiService.Project.cs`, which dereferenced the null the authorized-client method returned. |
@@ -2859,7 +2992,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `C-03`.* The WebAssembly client shipped `"serverUrl": "http://localhost:5000/"`, while the host serving it redirects to HTTPS. Two outcomes follow and both are defects: served over HTTPS, every API call is active mixed content and is **blocked**, so the client cannot function; served over plain HTTP, the same setting transmits the **bearer token in cleartext on every request**. |
+| **FINDING** | *Review identifier `seam/C-03`.* The WebAssembly client shipped `"serverUrl": "http://localhost:5000/"`, while the host serving it redirects to HTTPS. Two outcomes follow and both are defects: served over HTTPS, every API call is active mixed content and is **blocked**, so the client cannot function; served over plain HTTP, the same setting transmits the **bearer token in cleartext on every request**. |
 | **SEVERITY** | Critical as graded by the review. |
 | **CWE** | [CWE-319: Cleartext Transmission of Sensitive Information](https://cwe.mitre.org/data/definitions/319.html) |
 | **LOCATION** | `WebVella.Erp.WebAssembly/Client/wwwroot/appsettings.json` and the base-address composition in `WebVella.Erp.WebAssembly/Client/Program.cs`. |
@@ -2872,7 +3005,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `C-04`.* Two Razor Pages and their page models referenced approximately **seventy** `/jsadmin/**` AngularJS and CKEditor-4 assets that exist **nowhere** in this repository. Neither page could render. The remedy a naive reading suggests — ship the missing bundle — would have meant **adding two end-of-life vendor libraries** to a repository whose engagement forbids vendor code additions and whose whole purpose here is removing unsupported components. |
+| **FINDING** | *Review identifier `seam/C-04`.* Two Razor Pages and their page models referenced approximately **seventy** `/jsadmin/**` AngularJS and CKEditor-4 assets that exist **nowhere** in this repository. Neither page could render. The remedy a naive reading suggests — ship the missing bundle — would have meant **adding two end-of-life vendor libraries** to a repository whose engagement forbids vendor code additions and whose whole purpose here is removing unsupported components. |
 | **SEVERITY** | Critical as graded by the review. |
 | **CWE** | [CWE-1104: Use of Unmaintained Third Party Components](https://cwe.mitre.org/data/definitions/1104.html) |
 | **LOCATION** | `WebVella.Erp.Web/Pages/ckeditor/Index.cshtml` and `Index.cshtml.cs` (`JsAdminModel`), and `ImageFinder.cshtml` and `ImageFinder.cshtml.cs` (`JsAdminImageFinderModel`), together with their two `<Content Update>` entries in `WebVella.Erp.Web/WebVella.Erp.Web.csproj`. |
@@ -2887,7 +3020,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-01`.* Comment and timelog bodies were persisted **exactly as submitted**, serialized into a page attribute by three page components, and then assigned to `innerHTML` by a pre-built Stencil bundle. Feed subjects additionally interpolated a stored task key and subject into trusted markup. This is the chain that every control in Parts 1 through 3 missed, and the reason is structural: **the sink is not a Razor expression**, so no `Html.Raw(` census could ever have seen it. |
+| **FINDING** | *Review identifier `seam/M-01`.* Comment and timelog bodies were persisted **exactly as submitted**, serialized into a page attribute by three page components, and then assigned to `innerHTML` by a pre-built Stencil bundle. Feed subjects additionally interpolated a stored task key and subject into trusted markup. This is the chain that every control in Parts 1 through 3 missed, and the reason is structural: **the sink is not a Razor expression**, so no `Html.Raw(` census could ever have seen it. |
 | **SEVERITY** | High. The severity matrix places *XSS (stored)* squarely in the High tier. Graded Major by the review, which is the same disposition. |
 | **CWE** | [CWE-79: Improper Neutralization of Input During Web Page Generation](https://cwe.mitre.org/data/definitions/79.html) |
 | **LOCATION** | Write side: `WebVella.Erp.Plugins.Project/Services/CommentService.cs` and `TimeLogService.cs`, in each `Create`. Feed-subject composition: `CommentService.cs:L182`, `TimeLogService.cs:L277` and `TaskService.cs:L412`. Read side: `WebVella.Erp.Plugins.Project/Components/PcPostList/PcPostList.cs`, `PcTimelogList/PcTimelogList.cs` and `PcFeedList/PcFeedList.cs`. The sink itself is in the shipped bundles `wwwroot/js/wv-post-list/p-700a7533.entry.js` and `wv-feed-list/p-lzwqwltl.entry.js`. |
@@ -2900,7 +3033,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-02`.* The WebAssembly login component read a `returnUrl` query parameter, URL-decoded it, and passed it to `NavigationManager.NavigateTo`, which accepts an **absolute** URI and will leave the application. The server-side Razor pages already enforced a local-path policy for exactly this parameter; the client did not. |
+| **FINDING** | *Review identifier `seam/M-02`.* The WebAssembly login component read a `returnUrl` query parameter, URL-decoded it, and passed it to `NavigationManager.NavigateTo`, which accepts an **absolute** URI and will leave the application. The server-side Razor pages already enforced a local-path policy for exactly this parameter; the client did not. |
 | **SEVERITY** | Medium on the severity matrix — an unvalidated forward is neither stored injection nor a credential compromise. Graded Major by the review. It is remediated rather than merely documented because it sits **on the authentication path**, which the **Authorization Enforcement** standard's deny-by-default clause reaches directly, and because the fix is a few lines with no behavioural cost. |
 | **CWE** | [CWE-601: URL Redirection to Untrusted Site](https://cwe.mitre.org/data/definitions/601.html) |
 | **LOCATION** | `WebVella.Erp.WebAssembly/Client/Components/General/WvLogin.razor.cs`, at **both** read sites — the first-render read and the already-signed-in early-return path — with the policy helper added to `WebVella.Erp.WebAssembly/Client/Utilities/NavigatorExt.cs`. |
@@ -2913,7 +3046,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-03`.* Saving a custom page with no `returnUrl` redirected to `/sdk/objects/application/r/{id}/` using the **page's** identifier. That route resolves its identifier as an *application*, so it could never match, and the user was left on a dead end after a successful save. |
+| **FINDING** | *Review identifier `seam/M-03`.* Saving a custom page with no `returnUrl` redirected to `/sdk/objects/application/r/{id}/` using the **page's** identifier. That route resolves its identifier as an *application*, so it could never match, and the user was left on a dead end after a successful save. |
 | **SEVERITY** | Low on the severity matrix — a minor misconfiguration with no security consequence. Graded Major by the review on workflow-correctness grounds. Remediated because the fix is a single token and the sibling page already carried the correct form. |
 | **CWE** | [CWE-670: Always-Incorrect Control Flow Implementation](https://cwe.mitre.org/data/definitions/670.html) |
 | **LOCATION** | `WebVella.Erp.Plugins.SDK/Pages/page/manage-custom.cshtml.cs`, in the no-`returnUrl` branch of the POST handler. The correct form was already present at `WebVella.Erp.Plugins.SDK/Pages/page/manage.cshtml.cs`. |
@@ -2926,7 +3059,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-04`.* The WebAssembly client's error model declared `Type`, `Message`, `StackTrace` and `ValidationData`. The platform emits `timestamp`, `success`, `message`, `hash`, `errors` and `accessWarnings`. So `StackTrace` and `ValidationData` bound to null on **every** failure, and the absent `Type` discriminator defaulted to `0` — which happened to be the enum member the 400 branch handled. Validation errors therefore worked **by accident**, while a 500 fell through to `throw new Exception("Not supported ApiErrorType 0 …")`: the one case where the server had something useful to say was the one case where the client discarded it and reported its own parsing confusion to the user. |
+| **FINDING** | *Review identifier `seam/M-04`.* The WebAssembly client's error model declared `Type`, `Message`, `StackTrace` and `ValidationData`. The platform emits `timestamp`, `success`, `message`, `hash`, `errors` and `accessWarnings`. So `StackTrace` and `ValidationData` bound to null on **every** failure, and the absent `Type` discriminator defaulted to `0` — which happened to be the enum member the 400 branch handled. Validation errors therefore worked **by accident**, while a 500 fell through to `throw new Exception("Not supported ApiErrorType 0 …")`: the one case where the server had something useful to say was the one case where the client discarded it and reported its own parsing confusion to the user. |
 | **SEVERITY** | Medium on the severity matrix, as an information-handling defect. Graded Major by the review. Remediated because two status codes were being treated as success. |
 | **CWE** | [CWE-754: Improper Check for Unusual or Exceptional Conditions](https://cwe.mitre.org/data/definitions/754.html) |
 | **LOCATION** | `WebVella.Erp.WebAssembly/Client/Models/ApiErrorModel.cs` and `WebVella.Erp.WebAssembly/Client/Utilities/HttpExt.cs`. The authoritative envelope is `WebVella.Erp/Api/Models/BaseModels.cs`. |
@@ -2939,7 +3072,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-05`.* The file-download action parsed `action`, `mode`, `width`, `height` and an `isImage` flag from the query string and **never resized anything**. The parsing was inert, and its presence advertised a capability the endpoint does not have. |
+| **FINDING** | *Review identifier `seam/M-05`.* The file-download action parsed `action`, `mode`, `width`, `height` and an `isImage` flag from the query string and **never resized anything**. The parsing was inert, and its presence advertised a capability the endpoint does not have. |
 | **SEVERITY** | Low on the severity matrix — a minor misconfiguration. Graded Major by the review. |
 | **CWE** | [CWE-1164: Irrelevant Code](https://cwe.mitre.org/data/definitions/1164.html) |
 | **LOCATION** | The download action in `WebVella.Erp.Web/Controllers/WebApiController.cs`. |
@@ -2952,7 +3085,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-06`.* The upload allow-list admitted nine image types; the inline-download allow-list admitted only four. The other five — `.bmp`, `.webp`, `.ico`, `.tif`, `.tiff` — could be uploaded successfully and were then served with `Content-Disposition: attachment`, so the platform's own image field rendered a **download prompt instead of an image**. |
+| **FINDING** | *Review identifier `seam/M-06`.* The upload allow-list admitted nine image types; the inline-download allow-list admitted only four. The other five — `.bmp`, `.webp`, `.ico`, `.tif`, `.tiff` — could be uploaded successfully and were then served with `Content-Disposition: attachment`, so the platform's own image field rendered a **download prompt instead of an image**. |
 | **SEVERITY** | Low on the severity matrix. Graded Major by the review, on the grounds that the platform's own components were visibly broken. |
 | **CWE** | [CWE-1068: Inconsistency Between Implementation and Documented Design](https://cwe.mitre.org/data/definitions/1068.html) |
 | **LOCATION** | The `ALLOWED_UPLOAD_EXTENSIONS` and `INLINE_DOWNLOAD_EXTENSIONS` sets in `WebVella.Erp.Web/Controllers/WebApiController.cs`. |
@@ -2965,20 +3098,20 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-07`.* The third-party tag-helper package's upload error callbacks read `JSON.parse(xhr.responseText).Message` — the envelope member is camelCase `message`, so this is always `undefined` — and referenced an **undeclared** `response` variable, which raises a `ReferenceError` that aborts the handler. The visible effect is that a refused upload left the control **frozen with no feedback at all**. |
+| **FINDING** | *Review identifier `seam/M-07`.* The third-party tag-helper package's upload error callbacks read `JSON.parse(xhr.responseText).Message` — the envelope member is camelCase `message`, so this is always `undefined` — and referenced an **undeclared** `response` variable, which raises a `ReferenceError` that aborts the handler. The visible effect is that a refused upload left the control **frozen with no feedback at all**. |
 | **SEVERITY** | Low on the severity matrix. Graded Major by the review, because a security refusal that produces no feedback trains users to retry rather than to correct. |
 | **CWE** | [CWE-755: Improper Handling of Exceptional Conditions](https://cwe.mitre.org/data/definitions/755.html) |
 | **LOCATION** | The defect is inside `WebVella.TagHelpers` and **cannot be edited** — vendor code, version updates only. The remediation vector is `WebVella.Erp.Web/wwwroot/js/site.js`, which every page emits after jQuery. |
 | **DESCRIPTION** | **Upgrading is not a remedy, and this was checked rather than assumed**: versions 1.8.1 and 1.8.2 were fetched from nuget.org and both still contain four `.Message` reads and four `+ response.message +` references. The vendor's own toast text is additionally a hardcoded generic string, so even without the `ReferenceError` it could never have shown the server's reason. Maps to **OWASP A09:2021 Security Logging and Monitoring Failures**. |
 | **IMPACT** | Users could not tell a rejected upload from a hung one. Because the refusals here are the `SR-12` size and dimension bounds and the type allow-list, this silently undermined the visible half of three security controls. |
 | **EVIDENCE** | Verified at runtime through the real UI, not simulated: `evil.svg`, `bomb.png` and `evil.html` each surfaced the exact server sentence on two channels. Causation was proven with two synthetic probes — a defect-bearing callback was **replaced** while a correct one was **left untouched**. `bomb.png` simultaneously demonstrated `SR-12`'s pixel bound firing through the real UI on a legitimate `.png`. |
-| **REMEDIATION** | **Closed with a defensive `$.ajaxPrefilter` wrapper** that parses the real camelCase envelope, surfaces a visible message, and swallows exceptions thrown by the package's own callback so a control can never freeze — while never touching the success path. It was verified that this wrapper **pre-dated the checkpoint baseline**, so the correct disposition was to prove or disprove it at runtime rather than re-implement it. Doing so surfaced `SR-16`. |
+| **REMEDIATION** | **Closed with a defensive `$.ajaxPrefilter` wrapper** that parses the real camelCase envelope and surfaces a visible message, while never touching the success path. **The verb is corrected here under review finding `N19`:** an earlier revision said the wrapper *"swallows exceptions thrown by the package's own callback"*, which contradicted this record's own EVIDENCE row — that row states a defect-bearing callback was **replaced** while a correct one was left untouched, and a replaced callback never runs, so there is no exception of its to swallow. What the wrapper actually does is decide between two dispositions, and review finding `N18` made that decision behavioural rather than textual: a handler whose source carries either of the two **measured** defects is **replaced outright** and never invoked, because its second statement raises a `ReferenceError` and running it would buy nothing; any **other** handler — a vendor edit, a version bump, a minifier pass — is **run first inside a guard**, and this file supplies the refusal only if that handler threw or rendered nothing, emitting a one-time console diagnostic that the packaged handler is no longer the version this control was measured against. So exception containment applies to the *unrecognised* path only, a future fixed handler retires the override by producing its own feedback, and a future broken one is still covered — neither case depending on matching a source string. It was verified that the wrapper **pre-dated the checkpoint baseline**, so the correct disposition was to prove or disprove it at runtime rather than re-implement it. Doing so surfaced `SR-16`. |
 
 #### SR-12 — Image dimension reading was Windows-only, and dimensions were unbounded
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-08`.* Image dimensions were read with `System.Drawing.Image.FromStream` behind a `CA1416` platform-warning suppression. On this Linux container that call throws `System.TypeInitializationException` from `Windows.Win32.PInvokeGdiPlus`. Because all three call sites sit inside `if (mimeType.StartsWith("image"))`, **every image upload failed on Linux**. Separately, no bound existed on pixel dimensions, so a small compressed file could demand an enormous decode. |
+| **FINDING** | *Review identifier `seam/M-08`.* Image dimensions were read with `System.Drawing.Image.FromStream` behind a `CA1416` platform-warning suppression. On this Linux container that call throws `System.TypeInitializationException` from `Windows.Win32.PInvokeGdiPlus`. Because all three call sites sit inside `if (mimeType.StartsWith("image"))`, **every image upload failed on Linux**. Separately, no bound existed on pixel dimensions, so a small compressed file could demand an enormous decode. |
 | **SEVERITY** | High. A decompression-bomb path is a denial-of-service primitive on an authenticated endpoint, and the platform dependency made the feature wholly non-functional on the target OS. Graded Major by the review. |
 | **CWE** | [CWE-409: Improper Handling of Highly Compressed Data (Data Amplification)](https://cwe.mitre.org/data/definitions/409.html) and [CWE-1188](https://cwe.mitre.org/data/definitions/1188.html) for the suppressed platform warning. |
 | **LOCATION** | `WebVella.Erp/Utilities/Helpers.cs`, consumed at two sites in `WebVella.Erp.Web/Controllers/WebApiController.cs` and one in `WebVella.Erp.Web/Services/UserFileService.cs`. The shared refusal helper is in the same controller. |
@@ -2991,7 +3124,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `M-09`.* This document set recorded *Highest-severity open item — none in the code* and an output-encoding row implying the cross-site-scripting sink census was complete, while sixteen defects — four of them Critical, and one a live stored-XSS chain — were present in the frontend and API seam. The risk register carried no entry for any of them. |
+| **FINDING** | *Review identifier `seam/M-09`.* This document set recorded *Highest-severity open item — none in the code* and an output-encoding row implying the cross-site-scripting sink census was complete, while sixteen defects — four of them Critical, and one a live stored-XSS chain — were present in the frontend and API seam. The risk register carried no entry for any of them. |
 | **SEVERITY** | Medium — *information disclosure* in its inverse form: a security artefact that overstates its own coverage. Graded Major by the review. |
 | **CWE** | [CWE-1059: Insufficient Technical Documentation](https://cwe.mitre.org/data/definitions/1059.html) |
 | **LOCATION** | `docs/security/security-audit-report.md`, in the state-of-the-remediation table and the before-and-after evidence table; `docs/security/secure-configuration.md`, in the `H-06` closure guidance; and `docs/security/risk-register.md`. |
@@ -3006,7 +3139,7 @@ disposition. Where the two differ the difference is stated rather than reconcile
 
 | Field | Value |
 | --- | --- |
-| **FINDING** | *Review identifier `L-01`.* The audit report's additional-acceptance-criteria list stated that the API contract changed in exactly **one** way — the removal of stack-trace text from two error bodies. The remediation log had already been corrected to state **four** intentional changes, one of which is an added route. The two artefacts contradicted each other. |
+| **FINDING** | *Review identifier `seam/L-01`.* The audit report's additional-acceptance-criteria list stated that the API contract changed in exactly **one** way — the removal of stack-trace text from two error bodies. The remediation log had already been corrected to state **four** intentional changes, one of which is an added route. The two artefacts contradicted each other. |
 | **SEVERITY** | Low — a documentation inconsistency with no code consequence. Graded Minor by the review. |
 | **CWE** | [CWE-1059: Insufficient Technical Documentation](https://cwe.mitre.org/data/definitions/1059.html) |
 | **LOCATION** | `docs/security/security-audit-report.md`, in the additional acceptance criteria, against the authoritative statement in row 15 of `docs/security/remediation-log.md`. |

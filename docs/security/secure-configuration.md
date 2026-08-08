@@ -1212,6 +1212,56 @@ the status code while testing: a disallowed origin still receives the normal res
 body*, because CORS is enforced by the browser on the basis of those headers rather than by the server
 refusing to answer. **The absence of the header is the control.**
 
+### The five restrictive hosts allow credentialed cross-origin requests that the antiforgery control refuses
+
+Read this before diagnosing a `403` on a cross-origin call. **Two configurations in this repository now
+disagree, and the pipeline resolves the disagreement in favour of the stricter one.** Review finding `N9`
+raised it; the residual is carried as `RISK-180`.
+
+`WebVella.Erp.Site.Crm`, `.Mail`, `.MicrosoftCDM`, `.Next` and `.Sdk` each keep
+
+```csharp
+WithOrigins("http://localhost:3000", "http://localhost").AllowAnyMethod().AllowCredentials()
+```
+
+so CORS tells a browser at `http://localhost:3000` that it may send credentialed `POST`, `PUT` and
+`DELETE`. The antiforgery remediation then added `RequireSameOriginRequestAttribute`, which reads the
+browser-set `Sec-Fetch-Site` header and **refuses** a cookie-authenticated unsafe method arriving
+`cross-site` or `same-site`, returning `403` with the fixed message:
+
+```text
+This request was not accepted because it was initiated by another site.
+```
+
+**The control wins, because it runs in the pipeline.** The CORS allowance is the stale half. A client
+relying on it receives a `403` that reads like a permissions fault and is not one — it is the cross-site
+request forgery control doing exactly its job.
+
+**What to do about it, in order of preference.**
+
+1. **Authenticate the cross-origin client with a bearer token rather than the cookie.** The attribute
+   exempts a request that carries its own `Authorization: Bearer` header, precisely because such a request
+   cannot be forged by another site — an attacker's page cannot read the token. This needs no change to
+   either configuration and is the intended path; it is also what the two remediated hosts already do.
+2. **Or drop `AllowCredentials()` from those five hosts.** That makes the two configurations agree by
+   removing an allowance nothing can actually use. Cross-origin `GET` and preflight continue to work.
+
+**Do not weaken the antiforgery control to make the CORS allowance work.** Trading a cross-site request
+forgery protection for a stale development-time convenience is a net loss, and the exemption in point 1
+exists so that trade is never necessary.
+
+The attribute exempts four cases by design, which is what makes the diagnosis unambiguous: safe methods
+(`GET`, `HEAD`, `OPTIONS`, `TRACE`), requests carrying `Authorization: Bearer`, unauthenticated requests,
+and requests with **no** `Sec-Fetch-Site` header at all — the last because a non-browser client such as
+`curl` or a server-to-server caller sends none, and refusing those would break every integration without
+adding protection a browser-set header can supply.
+
+**Probe it both ways rather than trusting either configuration.** From an origin other than the host, send
+a credentialed `POST` to any `/api/**` route using cookie authentication and assert `403` with that exact
+message; then repeat the identical request with `Authorization: Bearer <token>` and **no** cookie and assert
+it is processed normally. Both outcomes are correct, and seeing both is what tells you the control and the
+exemption are each working rather than one masking the other.
+
 ## Cookies, sessions and bearer tokens
 
 ### Cookies and session lifetime

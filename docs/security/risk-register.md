@@ -22,7 +22,7 @@ exactly one *declaring* entry below.
 **The identifier contract, stated so it can be checked mechanically.** Every identifier the index lists
 is declared in exactly one of **three** ways:
 
-1. **Its own declaring heading** — text beginning `RISK-NNN`, an em dash and a space. **111** identifiers.
+1. **Its own declaring heading** — text beginning `RISK-NNN`, an em dash and a space. **121** identifiers.
 2. **A combined declaring heading** — `RISK-NNN and RISK-MMM — …`, used where one analysis genuinely
    covers two identifiers and splitting it would duplicate the reasoning. **2** identifiers
    (`RISK-152` and `RISK-153`).
@@ -49,8 +49,14 @@ echo "own heading $(wc -l < /tmp/c_head), combined $(wc -l < /tmp/c_comb), row-o
 comm -23 /tmp/c_headall /tmp/c_index | grep -q . || echo 'every declared identifier is indexed'
 ```
 
-Measured at this revision: **own heading 111, combined 2, row-only 21, indexed 134** — the routes
-partition the index and every declared identifier is indexed.
+Measured at this revision: **own heading 121, combined 2, row-only 21, indexed 144** — the routes
+partition the index and every declared identifier is indexed. Two corrections are folded into those
+numbers rather than presented as one: nine identifiers, `RISK-172`–`RISK-180`, were added by the checkpoint
+documentation and gate review, each with its own declaring heading and its own index row; and the previous
+figures read `own heading 111 … indexed 134` while the script already returned **112** and **135**, an
+off-by-one that pre-dated this pass and is corrected here rather than carried forward. A stated count that
+disagrees with the script beside it teaches a reader to stop running the script, which is the one outcome a
+reproducible contract cannot afford.
 
 **What was wrong before, recorded rather than quietly replaced.** The previous version of this contract
 claimed a declaring heading was the *only* route apart from **seven** row-declared identifiers
@@ -169,7 +175,7 @@ fourteen are declared by their index row alone.
 | `RISK-137` | Antiforgery rejections are refused by the framework filter **before** the login handler runs, so they carry no authentication audit record. Discovered at runtime, and it corrected a claim this documentation was about to make: the `!ModelState.IsValid` branch is **not** the antiforgery gate. | Accepted — pre-existing framework behaviour | Platform team |
 | `RISK-138` | Refusal-audit coalescing is now scoped to the **anonymous token-refresh route only**. `OBS-05` required one record per refusal on the login page, because sampling lets an account be refused hundreds of times behind a single row; the transport-level limiter (600 requests per address per window, no queue) is the load-bearing precondition that makes it safe. | Accepted — introduced deliberately | Platform team |
 | `RISK-139` | One core-assembly logging site, `WebVella.Erp/Database/DbFileRepository.cs:356`, cannot reach the failure-isolated audit boundary: `SecurityAuditLog` is `internal` to `WebVella.Erp.Web`, which depends **on** core, so the dependency would have to be inverted. It mirrors the boundary's field neutralisation with a local helper instead. | Accepted — structural, bounded to one site | Platform team |
-| `RISK-140` | **Restated — the gate is still red by design, but not for the reason recorded here.** ~~The `Release gate` is red until dated, attributed manual attestations are committed.~~ Those attestations exist: all **32** manual rows are executed and committed, so `deferred=0` and **no manual row blocks the gate** (`RISK-168`). The gate is red at this revision over a single evidence-derived row, `A17` — the mandated seven-header set is not satisfied while the Content-Security-Policy ships under its report-only name, and code-review finding `MAJ-03` refused the alternative of rewriting the check to accept the substitute name. Recorded so a red gate is not mistaken for a broken pipeline and "fixed" by relaxing the check; a fabricated attestation file, or a check rewritten to accept a substitute header name, would each defeat its only purpose. | Open by design — the control working, now over an unmet acceptance criterion rather than missing verification | Repository owner |
+| `RISK-140` | **Restated a second time — the row is still UNMET by design, but the JOB is no longer red for it outside a release context.** ~~The `Release gate` is red until dated, attributed manual attestations are committed.~~ ~~The gate is red at this revision over a single evidence-derived row.~~ Review finding `N27` found that folding an **unclosable** row into the exit status made the workflow's conclusion permanently `failure` on every push, pull request, scheduled run and dispatch — which cannot be a required check, so branch protection could not use it and a genuine new regression would have arrived indistinguishable from the standing red. `A17` is now DECLARED in the job-level `KNOWN_UNMET_BASELINE`: its verdict is published unchanged and it does **not** pass, it is recorded `KNOWN-UNMET` with its reason, it forces `RELEASE-READY=no`, it is **fatal again** on a version-tag push or a release-candidate dispatch, and the job fails the moment it starts passing so the exemption cannot outlive its reason. Every unmet row NOT in that list stays fatal on every run. Those attestations exist: all **32** manual rows are executed and committed, so `deferred=0` and **no manual row blocks the gate** (`RISK-168`). What remains unmet is `A17` alone — the mandated seven-header set is not satisfied while the Content-Security-Policy ships under its report-only name, and code-review finding `MAJ-03` refused the alternative of rewriting the check to accept the substitute name. Recorded so an unmet row is neither mistaken for a broken pipeline and "fixed" by relaxing the check, nor mistaken for compliance because the job is green: a fabricated attestation file, a check rewritten to accept a substitute header name, and an entry added to the baseline to quiet a row a code fix would close would each defeat its only purpose. Simulated across eight states before shipping, including a version-tag push, a release-candidate dispatch, a newly red undeclared row and the future state in which `A17` closes and the entry is removed. | Open by design — the control working, over an unmet acceptance criterion awaiting an owner decision, reported outside a release context and fatal inside one | Repository owner |
 | `RISK-141` | No health endpoint, metrics, tracing or correlation identifier exists (`L-05`, stated in full): all four probes measure **0**. Two consequences understated by "zero" — **no correlation identifier crosses the SMTP boundary**, so a notification cannot be reconciled with the record written for the same fault, and liveness cannot be distinguished from readiness during startup provisioning. Corrects the earlier claim that no smoke test or rollback procedure exists; both do. | Accepted — documented only, feature work | Platform team |
 | `RISK-142` | Authenticated API actions still return exception text in the response body, each preceded by a server-side log write. `H-13` covered the *unconditional, anonymously reachable* instances and is fixed; these sit behind class-level `[Authorize]` and are outside the authorised change scope. Previously numbered `RISK-032`. | Named, not fixed — outside the authorised change scope | Platform team |
 | `RISK-143` | `DbRepository.ConvertDefaultValue` concatenates a field default into a DDL `DEFAULT` clause without escaping an embedded quote, so an administrator authoring a schema field can influence the generated statement. Reachable only through schema design, which already executes arbitrary DDL by design. Previously numbered `RISK-033`. | Accepted — disclosed, not fixed | Platform team |
@@ -201,6 +207,15 @@ fourteen are declared by their index row alone.
 | `RISK-169` | Two pre-existing `DbFileRepository` behaviours found while closing `CK-15` and left alone under the minimal-change constraint: blob paths are addressed in a way that assumes a single storage root, and the filesystem move operates on the file **name** rather than a fully qualified path. Neither is reachable as a security defect on the database-backed storage this platform ships, and neither was raised by the review. **Recommended fix:** none required for security; record them before any future change to the storage backend. Weakness classification: CWE-1164, OWASP A04. | Documented observation, out of scope. Found while closing review finding `CK-15`. | Platform team |
 | `RISK-170` | The **complete inventory** of raw-output, inline-script and inline-style channels: **111** `Html.Raw` sinks across **61** views, **59** inline `<script>` elements and **27** inline `style=` attributes, each with its writer and the authorization contract governing that writer. Raised by `MAJ-09`, which found that RISK-023 named only eight sinks and left three channels unnamed — `PcJavaScriptBlock/Display.cshtml:L11`, `PcGrid/Display.cshtml:L64` and `PcApplications/Display.cshtml:L70`. The first is a **fifth** by-design inline-script emitter, so RISK-022's report-only justification undercounted. This entry also quantifies what enforcing the mandated `script-src`/`style-src` policy would require. | **Accepted — inventory published; per-channel dispositions recorded** | Engineering |
 | `RISK-171` | **Formal, attributable acceptance of the five `CA5351` analyzer residuals** — the legacy MD5 verification path `C-03`'s credential migration requires, plus the general-purpose digest helpers outside the remediated key handling. Raised by code-review finding `MAJ-01`, which found the Gate 1 allow-list carrying twenty-one **bare** pairs: a tolerance with no approver, no grounds and no exit condition is not an approved treatment. The acceptance, its approval record and the exit condition that retires it are in the detailed entry. | **Accepted — mandatory residual, formally approved, with a stated exit condition** | Repository owner |
+| `RISK-172` | **No authentication cookie carries the `__Host-` prefix.** A tree-wide search finds the token in no source file, manifest or configuration file, so the audit report's claim that the `erp_auth_mscdm` rename *applied* those semantics was wrong on two counts — the prefix is a property of the NAME, and the rename's real cause was a collision (`P-13`). Bounded by what is in force: `CookieSecurePolicy.Always`, `HttpOnly`, `SameSite=Lax`, bounded expiry, distinct names per host and Data Protection application isolation. **Fix:** prepend `__Host-` to all seven names in a maintenance release, keeping `Path=/` and no `Domain`, and expect one further forced sign-out | Accepted — hardening with no confirmed finding behind it; a second forced sign-out is the cost | Platform team |
+| `RISK-173` | **`DoBadRequestResponse` discards a caller-supplied message.** `ApiControllerBase.cs:L57` declares a `message` parameter and never assigns it: the non-development branch assigns the generic string only when `message` is EMPTY, so a caller supplying a specific reason gets neither. The direction of the fault is always LESS disclosure, so it is a usability defect rather than a weakness; it is `public` on a published package and called from plugin controllers, so honouring `message` would change response bodies on paths no finding implicates | Accepted — pre-existing, byte-identical to the pre-engagement tree, outside the authorised change scope | Platform team |
+| `RISK-174` | **Ten of twenty-nine tracked JSON files are JSON-with-comments**: all eight `Config.json`, plus `global.json` and `.markdownlint.jsonc`. Six of the eight acquired their comment under `N31`, which required every scrubbed file to name the threat its blank values address. Consumers tolerate it (`Microsoft.Extensions.Configuration.Json` permits comments, `setup-dotnet` reads `global.json` as JSON5). **The residual is the tooling assumption:** `jq`, `python -m json.tool` and `JsonSerializer` at default options all FAIL on these files, so a CI step must strip comments first and a strict parser must never enter the startup path | Accepted — deliberate and load-bearing under Minimal Change guideline 6 | Platform team |
+| `RISK-175` | **The HTML sanitizer performs no escaping of its own on output**, delegating it to HtmlAgilityPack's serialiser, which at default options PRESERVES the author's original attribute quoting (`OptionQuoteAllAttributes` is not set). Fifteen adversarial round-trip probes were run in-process against the compiled sanitizer and **none escaped its own quoting context** — the full probe table is in the entry. **On upgrade past `HtmlAgilityPack 1.12.4`, re-run those probes**, because this assurance is a property of that serialiser rather than of the sanitizer | Accepted — probed adversarially, no escape found; re-probe on upgrade | Platform team |
+| `RISK-176` | **Three `public` signatures are source-compatible but BINARY-breaking, and one `public` member was removed.** `DbFileRepository.Move`, `.Delete` and `.CreateTempFile` each gained optional parameters (`CK-15`), and `MailService.SendLogMessage` was removed in favour of `SendLogNotification` (`M-OPEN-03`/`CK-07`). C# bakes optional defaults into the CALL SITE, so an assembly compiled against the old signature raises `MissingMethodException` rather than picking up the new default. Both assemblies are published to nuget.org. **Consumers must recompile**; a caller of `SendLogMessage` must move to `SendLogNotification` | Accepted — disclosed; required by the findings they close | Repository owner |
+| `RISK-177` | **The vendor upload-handler override is version-sensitive by construction.** `N18` found it gated on `Function.prototype.toString` source matching, so any vendor edit would have made it fail OPEN — the server refusing the file while the interface said nothing. The decision is now behavioural: a handler carrying either measured defect is replaced outright; anything else is run inside a guard with the refusal supplied only if it threw or rendered nothing, plus a one-time console diagnostic naming the drift. **The residual is a maintenance obligation:** whoever upgrades `WebVella.TagHelpers` past `1.8.2` must look for that diagnostic and re-verify | Accepted — the fail-open is closed; a maintenance obligation remains | Platform team |
+| `RISK-178` | **The sanitizer no longer permits `class` on user-authored content** (`N23`). Arbitrary class names are a user-interface redressing primitive (**CWE-1021**) against the platform's own stylesheets, and a token allow-list is unverifiable because any list admitting typography utilities must be proved not to admit a positioning one for every future stylesheet. **User-visible consequence:** user-authored comment, timelog and feed bodies now render without `class`; administrator-authored HTML-block markup is unaffected because it never passes through this sanitizer | Accepted — a deliberate, measured narrowing of rendered output | Platform team |
+| `RISK-179` | **Compiled script text still sees every loaded domain assembly.** `CodeEvalService.cs:L74` sets `ReferenceDomainAssemblies = true`, so author-supplied page-component script can reference any assembly in the process. This is the STILL-OPEN half of `M-07`; the resource half is closed under `CK-08` (a `MemoryCache` with `SizeLimit` 1000, `Size` 1, one-day sliding expiration, read under the write lock). Bounding the cache reduces retention without narrowing reach, and narrowing the reference set would change what existing scripts compile against. Gated on the privileged authoring role already recorded in `RISK-164` | Accepted — the open half of a Medium; the control is who may author script | Platform team |
+| `RISK-180` | **Credentialed cross-origin state-changing requests are refused by the fetch-metadata control** (`N9`). Five hosts — `Crm`, `Mail`, `MicrosoftCDM`, `Next`, `Sdk` — keep `WithOrigins("http://localhost:3000", "http://localhost").AllowAnyMethod().AllowCredentials()`, while `RequireSameOriginRequestAttribute` refuses a cookie-authenticated unsafe cross-site method with `403`. The control wins because it runs in the pipeline, so the CORS allowance is what is stale. **The remedy is on the client:** authenticate cross-origin callers with `Authorization: Bearer`, which the attribute exempts by design — or drop `AllowCredentials()` from those five hosts. The control is NOT relaxed | Accepted — the interaction is intended and now disclosed | Platform team |
 
 ### Identifiers renumbered while consolidating this register
 
@@ -3022,7 +3037,8 @@ control that fires is worth considerably more than one measured against nothing.
 **Recommended fix, for a change permitted to touch this file:** constrain the colour to a strict CSS
 colour grammar and the class to a character allow-list, discarding the whole value on any violation and
 falling back to the inherited style — which is exactly the control the tasks-queue widget already
-applies through its `SafeCssColor` and `SafeIconClass` helpers, so the implementation can be reused
+applies through its `SafeStyleValue.CssColor` and `SafeStyleValue.IconClass` helpers (member names corrected
+under review finding `N37`), so the implementation can be reused
 verbatim rather than designed. Until then the Content-Security-Policy is the compensating control: once
 enforced, `default-src 'self'` blocks the cross-origin image load, and it is already **reported** today.
 
@@ -6467,7 +6483,7 @@ above, that is stated plainly and the change itself is recorded in
 | `M-14` | No multi-factor authentication | CWE-308 | A07:2021 | **Documented only.** Architectural, and no confirmed Critical or High required it, so building it would be the enhancement-beyond-remediation the constraints forbid. **Fix:** add a TOTP second factor against the existing user entity, or delegate authentication to an external identity provider. Feature work — schedule it, do not smuggle it into a remediation |
 | `M-15` | Client library loaded from a content delivery network without an integrity attribute | CWE-829 | A08:2021 | **Documented only.** **Fix:** add `integrity` (a SHA-384 subresource-integrity digest) and `crossorigin="anonymous"` to the script tag; or, preferably for a product that must build offline, vendor the library into `wwwroot` at a pinned version and drop the external origin entirely — which also removes the third-party origin from the content policy's allow-list |
 | `M-16` | Legacy timestamp behaviour enabled on every host | CWE-1254-adjacent | A05:2021 | **Documented only.** `AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);` is present in all seven hosts — `WebVella.Erp.Site/Startup.cs:L54` (audit locator `:L40`), and the equivalent line in each sibling. Declined because flipping it changes how **already-stored** timestamps are interpreted, which risks silent data corruption — a worse outcome than the finding. **Fix:** migrate stored values to `timestamptz` semantics in a dedicated, separately validated change with its own backup and rollback plan, then remove the switch from all seven hosts in one commit |
-| `M-17` | Exception details e-mailed off-box before they are persisted | CWE-532, CWE-209 | A05:2021 | **Documented only.** The earlier claim that `H-11` materially mitigated this is **withdrawn** as factually wrong — review finding `INT-01`. `H-11` hardened the five **MailKit** send paths in the mail plugin, while this notification travels through a different client entirely: `WebVella.Erp.Web/Services/MailService.cs` builds a `System.Net.Mail.SmtpClient` and never sets `EnableSsl`, whose default is `false`, so the payload and the relay credential cross a **plaintext** session and no certificate is presented for any policy to act on. What genuinely bounds it: the whole path is gated on `Settings:EmailEnabled`, which is `false` in all eight shipped configuration files and defaults to `false`; `WebVella.Erp/Diagnostics/Log.cs:L81-L114` serialises the request URL but not headers, cookies or body — with the correction that `:L111` includes the **query string**; and the twenty-eight notifying `LogService` writes on the web API surface were replaced by a non-notifying audit sink while closing `F26`. **Fix:** persist the record first and notify second so a delivery failure cannot lose the diagnostic; redact the query string from the notified payload; and secure that client separately — see `RISK-131`, which carries the full transport analysis |
+| `M-17` | Exception details e-mailed off-box before they are persisted | CWE-532, CWE-209 | A05:2021 | **PARTIALLY REMEDIATED — four of the five recommended changes are done; one residual remains.** This cell read **Documented only** and review finding `N34` corrected it: the same register already records, in `RISK-135`'s recommended-fix table, that items **1 to 4 are DONE under `CK-07`** — the record is persisted **before** the notification is attempted, the notified payload is reduced to a log identifier, a severity and a source, the subject is generic and no longer carries `ex.Message`, and the bare `catch { }` is replaced by one that records the delivery failure through the non-notifying audit boundary. Separately, the twenty-eight notifying `LogService` writes on the web API surface were replaced by a non-notifying audit sink while closing `F26`. **The residual is item 5 only:** notification is still not rate-bounded per source, which is carried as `RISK-166`. The transport half — the client negotiates no TLS — is a different residual again and is carried as `RISK-131`. Two documents disagreeing about whether a finding is closed is worse than either verdict alone, so the split is stated here rather than left to the reader to reconcile. The earlier claim that `H-11` materially mitigated this is **withdrawn** as factually wrong — review finding `INT-01`. `H-11` hardened the five **MailKit** send paths in the mail plugin, while this notification travels through a different client entirely: `WebVella.Erp.Web/Services/MailService.cs` builds a `System.Net.Mail.SmtpClient` and never sets `EnableSsl`, whose default is `false`, so the payload and the relay credential cross a **plaintext** session and no certificate is presented for any policy to act on. What genuinely bounds it: the whole path is gated on `Settings:EmailEnabled`, which is `false` in all eight shipped configuration files and defaults to `false`; `WebVella.Erp/Diagnostics/Log.cs:L81-L114` serialises the request URL but not headers, cookies or body — with the correction that `:L111` includes the **query string**; and the twenty-eight notifying `LogService` writes on the web API surface were replaced by a non-notifying audit sink while closing `F26`. **Fix:** persist the record first and notify second so a delivery failure cannot lose the diagnostic; redact the query string from the notified payload; and secure that client separately — see `RISK-131`, which carries the full transport analysis |
 | `M-18` | The codebase's only output encoder was trivially bypassable | CWE-116 | A03:2021 | **Remediated**, limb (a). The case-sensitive string substitution is replaced by the framework's JavaScript encoder |
 
 ### Low severity — L-01 through L-10
@@ -7050,7 +7066,7 @@ so both assemblies share one implementation and the mirrored helper can be delet
 | Field | Value |
 | --- | --- |
 | **Status** | **Cleared** — the mechanism is retained and the rows are now attested, so the gate passes on its own terms. Retained rather than deleted because the control is what made the gap visible. |
-| **Related finding** | Review findings `OBS-07` and `MAJ-01`. |
+| **Related finding** | Review findings `OBS-07`, `MAJ-01` and `N27`. |
 | **Owner** | Repository owner / whoever executes the manual verification. |
 
 `OBS-07` found that Gate 5 counted `DEFERRED` manual rows without ever setting a failure status, so all
@@ -7062,14 +7078,21 @@ On the tree at the time this entry was written that step **failed**, because no 
 committed — the intended state, recorded here so nobody would mistake it for a broken pipeline and "fix" it
 by relaxing the gate. It has since been cleared the only legitimate way: all 32 manual rows were executed
 against disposable hosts and disposable PostgreSQL databases and attested, so **`deferred=0` and no manual
-row blocks the gate**. **The step does not exit 0 at this revision, and the reason is not verification.** An
-earlier revision of this sentence recorded `rows=48 proven=48 deferred=0 failed=0` and a passing gate; the
-matrix has since gained two evidence-derived rows and one of them, `A17`, **fails by design** — the mandated
-Content-Security-Policy is delivered under its report-only name, so the engagement's seven-header standard is
-unmet and code-review finding `MAJ-03` refused the alternative of rewriting the check to accept the
-substitute name. The gate is therefore red over a genuinely unmet acceptance criterion awaiting an owner
-decision, which is a different state from the one it was red for before and is recorded as such rather than
-conflated with it. The warning stands for the future — committing a fabricated
+row blocks the gate**. **The step exits 0 on an ordinary run at this revision, and one row is still unmet.** Two earlier revisions of
+this passage are superseded and both are recorded rather than replaced: the first read `rows=48 proven=48
+deferred=0 failed=0` and a passing gate; the second read *"the step does not exit 0 at this revision"*, which was
+true when it was written. The matrix has since gained two evidence-derived rows and one of them, `A17`, **fails by
+design** — the mandated Content-Security-Policy is delivered under its report-only name, so the engagement's
+seven-header standard is unmet and code-review finding `MAJ-03` refused the alternative of rewriting the check to
+accept the substitute name. That verdict has **not** changed. What changed is the consequence, under review finding
+`N27`: a row that cannot be closed by any engineering change was making the whole workflow's conclusion
+permanently `failure`, which meant the gate could not serve as a required check and a genuinely new red row would
+have been invisible against the standing one. `A17` is therefore declared in the job-level
+`KNOWN_UNMET_BASELINE`, so it is recorded `KNOWN-UNMET` with its reason on an ordinary run, forces
+`RELEASE-READY=no`, and becomes fatal again on a version-tag push or a release-candidate dispatch. The gate now
+reports `rows=50 proven=49 deferred=0 failed=0 known-unmet=1` and `RELEASE-READY=no` — green with warnings
+outside a release context, red inside one, and red on the first unexpected row either way. The verdict is
+unchanged and only its blast radius is bounded, which is a different thing from relaxing the gate. The warning stands for the future — committing a fabricated
 `manual-verification-results.txt` would defeat the only purpose the gate has, and the gate's own comment says
 so. Note also what a passing release gate does **not** mean: `dotnet pack` is still blocked by the
 `ERPLIC001` licence gate, which is a separate owner decision.
@@ -7411,3 +7434,263 @@ of its entries, a `RISK-` reference and a one-line disposition, and the step **f
 no reference, an unresolvable reference, or an empty disposition. So this record cannot be deleted while
 the tolerance survives, and the tolerance cannot survive while this record is missing. That two-way
 binding is what turns a list of pairs into an approved treatment.
+
+## Detailed entries — residuals recorded by the checkpoint review of the documentation and gate (`N1`–`N38`)
+
+Nine residuals below were raised by that review as observations rather than defects, or are the disclosed
+consequence of one of its fixes. Each is recorded because the review found it **absent from this register**,
+which is the failure mode a risk register exists to prevent: a residual nobody wrote down is
+indistinguishable from one nobody has.
+
+### RISK-172 — No authentication cookie carries the `__Host-` prefix
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — named, not fixed. The prefix is a hardening measure with no confirmed finding behind it. |
+| **Related finding** | Review finding `N4`; `CR2-F-11` / canonical record `P-13` for the rename it was wrongly credited to. |
+| **Owner** | Platform team |
+
+The audit report's preservation table justified the `erp_auth_mscdm` rename as *"what applies the `__Host-`
+prefix semantics the secure-cookie clause requires"*. Review finding `N4` disproved that in two steps: a
+tree-wide search for `__Host-` returns **no** occurrence in any source file, manifest or configuration file,
+and a rename cannot confer those semantics in any case — the prefix is a property of the **name**, so a
+cookie only receives it by being called `__Host-<something>`, and the browser then additionally requires
+`Secure`, `Path=/` and **no** `Domain` attribute. The rename's real reason is a name collision, which is now
+recorded correctly.
+
+**What the residual actually is.** Without the prefix, a cookie set by a subdomain — or by a
+same-site host reachable over plain HTTP — can shadow the one this application set, because the prefix is
+the only mechanism that makes a cookie unspoofable across those boundaries. The remaining exposure is
+bounded by what is already in force and measured: every host sets `Secure` unconditionally
+(`CookieSecurePolicy.Always`), `HttpOnly`, `SameSite=Lax`, a bounded expiry and sliding expiration, and each
+host now uses a distinct cookie name with Data Protection application isolation configured, so a ticket
+minted by one host is not valid at another.
+
+**Why it is not fixed here.** Renaming every host's authentication cookie a second time would end every
+in-flight session again, for a hardening measure no finding in this engagement raised, and it would have to
+be verified across all seven hosts. Adding the prefix is the right change for a maintenance release: prepend
+`__Host-` to each of the seven names, keep `Path=/` and set no `Domain`, and expect one further forced
+sign-out.
+
+### RISK-173 — `DoBadRequestResponse` discards a caller-supplied message
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — pre-existing, byte-identical to the pre-engagement tree, and outside the authorised change scope. |
+| **Related finding** | Review finding `N16`. |
+| **Owner** | Platform team |
+
+`WebVella.Erp.Web/Controllers/ApiControllerBase.cs:L57` declares
+`DoBadRequestResponse(BaseResponseModel response, string message = null, Exception ex = null)` and then
+**never assigns `message` to anything**. In the non-development branch it assigns the generic
+`"An internal error occurred!"` *only when `message` is empty*, so a caller that supplies a specific reason
+gets neither that reason nor the generic fallback — `response.Message` keeps whatever it already held,
+which is normally null. In the development branch nothing is assigned at all unless `ex` is non-null.
+
+**Why it is a documentation matter rather than a defect to fix.** The direction of the fault is
+*less* disclosure, never more, so it is not a security weakness; it is a usability one. The method is
+`public` on a type in a package published to nuget.org and is called from plugin controllers, so making it
+honour `message` would change the response body of every caller that passes one — a behaviour change on
+paths no finding implicates, which the minimal-change rule refuses. The fix is one line in the else-branch:
+assign `message` when it is non-empty and the generic string otherwise.
+
+### RISK-174 — Ten tracked JSON files are JSON-with-comments rather than strict JSON
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — deliberate and load-bearing; recorded so a strict parser is not introduced by surprise. |
+| **Related finding** | Review findings `N17` and `N31`. |
+| **Owner** | Platform team |
+
+Measured over the tracked tree: **10 of 29** `.json`/`.jsonc` files carry `//` comments — all **eight**
+`Config.json` files, plus `global.json` and `.markdownlint.jsonc`. Six of those eight acquired their comment
+under review finding `N31`, which required every scrubbed configuration file to name the threat its blank
+values address; the count was four before that.
+
+**Why this is deliberate.** Each comment is the only place an operator reading the file learns *why* the
+values are empty and what supplies them, and Minimal Change guideline 6 requires a change to carry a comment
+naming the threat it addresses. The consumers tolerate it: `Microsoft.Extensions.Configuration.Json` parses
+with comments permitted, and `actions/setup-dotnet` reads `global.json` as JSON5.
+
+**The residual is the tooling assumption, and it is a real one.** Any tool that reads these files with a
+**strict** parser will fail — `jq`, `python -m json.tool`, `JsonSerializer` with default options, and most
+schema validators. Two consequences follow for anyone extending this repository: a CI step that parses a
+`Config.json` must strip comments first, and a strict parser must never be added to the startup path. The
+files themselves are valid once comments are removed, which was verified for all eight.
+
+### RISK-175 — The HTML sanitizer delegates serialisation escaping to HtmlAgilityPack's defaults
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — probed adversarially, no escape found; recorded so a library upgrade is re-probed rather than assumed. |
+| **Related finding** | Review finding `N21`. |
+| **Owner** | Platform team |
+
+`WebVella.Erp.Web/Utils/HtmlSanitizer.cs` parses with `new HtmlDocument()` at default options, mutates the
+node tree, and re-serialises. It performs **no escaping of its own** on the way out, so the safety of its
+output depends on HtmlAgilityPack's serialiser — and at default options that serialiser **preserves the
+author's original attribute quoting** rather than normalising it. `OptionQuoteAllAttributes` is not set.
+
+**Fifteen adversarial round-trip probes were run in-process against the compiled sanitizer, and none
+escaped its own quoting context.** The results are recorded because they are the evidence, not the claim:
+
+| Input | Output | What it shows |
+| --- | --- | --- |
+| `<p title='say "hi"'>x</p>` | unchanged | single-quote style preserved; the inner `"` is **not** escaped, and does not need to be |
+| `<p title="say 'hi'">x</p>` | unchanged | mirror case |
+| `<p title=a b>x</p>` | `<p title=a>x</p>` | an unquoted value truncates at whitespace and the stray token is dropped by the attribute allow-list |
+| `<a href=https://example.com/ >x</a>` | `<a href=https://example.com/>x</a>` | re-emitted **unquoted** |
+| `<a href=a"b>x</a>` | unchanged | a raw `"` survives inside an unquoted value; with no `>` involved there is no breakout |
+| `<p title="a>b"><em>y</em></p>` | unchanged | a raw `>` inside a quoted value cannot terminate the tag |
+| `<p title="<script>">x</p>` | unchanged | mirror case for `<` |
+| `<p title='a&#39;b'>x</p>` | unchanged | an entity is preserved, not double-decoded |
+| `<div><p>unclosed<div>nested</div>` | closed and balanced | malformed nesting is repaired and the output is inert |
+| `<img src='/a.png' alt='he said "x"'/>` | `<img src='/a.png' alt='he said "x"'>` | void element re-serialised without a self-closing slash |
+
+**Why it is not changed.** Setting `OptionQuoteAllAttributes` would alter the rendered markup of every
+sanitized value for a residual with no demonstrated exploit, which the minimal-change rule refuses, and the
+attribute allow-list plus the scheme allow-list are what actually decide safety here. **What must happen on
+upgrade:** the pinned version is `HtmlAgilityPack 1.12.4`; re-run the ten probes above against any newer
+version before adopting it, because this entry's assurance is a property of that serialiser, not of the
+sanitizer.
+
+### RISK-176 — Three `public` signatures are source-compatible but binary-breaking
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — disclosed. Required by the findings they close; consumers must recompile. |
+| **Related finding** | Review findings `N36` and `N35`; `CK-15`, `M-OPEN-03`, `CK-07`. |
+| **Owner** | Repository owner — this affects published packages |
+
+Four `public` surface changes were made in `WebVella.Erp` and `WebVella.Erp.Web`, both of which are
+published to nuget.org. Three add **optional parameters** and one **removes a member**:
+
+| Member | Before | After | Why |
+| --- | --- | --- | --- |
+| `DbFileRepository.Move` | `(string, string, bool = false)` | `+ Guid? expectedSourceId = null, bool enforceExpectedTarget = false, Guid? expectedTargetId = null` | `CK-15` — the caller must be able to assert *which* object it is moving, or a concurrent move makes the check meaningless |
+| `DbFileRepository.Delete` | `(string)` | `+ Guid? expectedFileId = null` | `CK-15` — same reasoning for delete |
+| `DbFileRepository.CreateTempFile` | `(string, byte[], string = null)` | `+ Guid? createdBy = null` | ownership must be recorded at creation, not inferred later |
+| `MailService.SendLogMessage` | present | **removed**, replaced by `SendLogNotification` | `M-OPEN-03` / `CK-07` — the old member mailed the full diagnostic over a cleartext, undisposed, untimed client **before** persisting the record; leaving it callable would have left the defect reachable |
+
+**Adding an optional parameter is source-compatible and binary-BREAKING.** The C# compiler bakes the
+default values into the *call site*, so an assembly compiled against the old signature calls a method that
+no longer exists and fails at run time with `MissingMethodException` — it does not silently pick up the
+new default. Removing a `public` member breaks both source and binary compatibility.
+
+**What a consumer must do:** recompile against the new package version. No source change is required for the
+three optional-parameter methods; a caller of `SendLogMessage` must move to `SendLogNotification`, which
+takes a log identifier, a severity and a source instead of the diagnostic text. This is why these are
+disclosed here and in the audit report's `MAJ-10` table rather than treated as additive.
+
+### RISK-177 — The vendor upload-handler override is version-sensitive by construction
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — the fail-open is closed; what remains is a maintenance obligation. |
+| **Related finding** | Review finding `N18`; `SR-11` (`seam/M-07`). |
+| **Owner** | Platform team |
+
+`site.js` overrides the third-party tag-helper package's upload error handler because that handler cannot be
+edited — vendor code, version updates only — and is itself broken. Review finding `N18` found the override
+gated on `Function.prototype.toString` source matching, which meant **any** vendor edit (a version bump, a
+minifier pass, a re-mangled identifier) would silently stop the strings matching and the compensating
+control would fail **open**: the server would still refuse the file and the interface would still say
+nothing.
+
+**What now closes the fail-open.** The decision is behavioural rather than textual. A handler whose source
+carries either of the two **measured** defects is still replaced outright, because its second statement
+raises a `ReferenceError` and running it would buy nothing. Anything else is **run first inside a guard**,
+and this file supplies the refusal only if that handler threw or rendered nothing — with a one-time console
+diagnostic naming the drift. So a future *fixed* handler retires the override by producing its own feedback,
+and a future *broken* one is still covered, neither depending on a source string.
+
+**The residual is a maintenance obligation, not an exposure.** Whoever upgrades `WebVella.TagHelpers` past
+`1.8.2` should look for that diagnostic in the browser console and re-verify: if it appears, the override is
+wrapping rather than replacing, which is correct but means the package has moved and the recognition
+strings no longer describe it. Verified at runtime through the real script in a browser across both paths,
+including a repeat failure with a differing message.
+
+### RISK-178 — The sanitizer no longer permits a `class` attribute on user-authored content
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — a deliberate, user-visible narrowing. Recorded because it changes rendered output. |
+| **Related finding** | Review finding `N23`. |
+| **Owner** | Platform team |
+
+`HtmlSanitizer.ALLOWED_ATTRIBUTES_GLOBAL` permitted `class`, which was inconsistent with the same list
+already excluding `style` and with `BaseErpPageModel.EncodeMenuIconClass` allow-listing icon classes rather
+than admitting arbitrary ones. A stored value able to name arbitrary classes can position, size, hide or
+overlay elements using the platform's own shipped stylesheets — a user-interface redressing primitive
+(**CWE-1021**) that no amount of element and scheme filtering touches. `class` is now removed; the list is
+`title`, `dir`, `lang`.
+
+**A token allow-list was considered and rejected as unverifiable:** any list admitting the typography
+utilities must also be proved not to admit a positioning one, for every stylesheet the platform ever ships.
+Removal is provable.
+
+**The user-visible consequence, measured rather than assumed.** What loses `class` is **user-authored**
+comment, timelog and feed content — the same content whose `style` attributes this sanitizer already
+dropped. Administrator-authored literal markup in the HTML-block component does **not** pass through this
+sanitizer at all (`PcHtmlBlock.ResolveHtmlForRawSink` returns it unsanitized under the privileged-role
+compensating control), so no administrator-authored layout is affected. If a deployment relied on users
+applying platform utility classes inside comment bodies, those bodies will now render unstyled — which is
+the intended trade and is recorded here so it is not diagnosed as a rendering bug.
+
+### RISK-179 — Compiled script text still sees every loaded domain assembly
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — this is the still-open half of `M-07`; the memory half is closed under `CK-08`. |
+| **Related finding** | `M-07` (CWE-94), review finding `N29`; `CK-08` for the closed half. |
+| **Owner** | Platform team |
+
+`WebVella.Erp.Web/Services/CodeEvalService.cs:L74` sets
+`CSScript.EvaluatorConfig.ReferenceDomainAssemblies = true` before compiling author-supplied page-component
+script text, so that text can reference **any** assembly already loaded into the process — including the
+core library and its data-access surface.
+
+**What is closed, and where.** `M-07`'s resource half is remediated under `CK-08`: the unbounded
+`Dictionary` is now a `MemoryCache` with `SizeLimit` 1000, per-entry `Size` 1 and a one-day sliding
+expiration, read inside the same lock it writes under. Review finding `N29` found the `M-07` record still
+describing the pre-fix state, and it now states both halves separately rather than carrying one verdict for
+two different properties.
+
+**Why the reference set is not narrowed.** Bounding the cache reduces *retention*; it does not narrow what a
+script can *reach*, and .NET cannot unload an assembly emitted outside a collectible context, so a
+narrower reference set is the only real mitigation. Narrowing it would change what existing page-component
+scripts compile against, which is a behaviour change on every deployment that authors them. The exposure is
+gated on the privileged authoring role that `RISK-164` already records for the render route, so the
+remaining control is who may author script, not what script may see.
+
+### RISK-180 — Credentialed cross-origin state-changing requests are refused by the fetch-metadata control
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — the interaction is intended; the CORS allowance is what is stale, and it is documented rather than the control weakened. |
+| **Related finding** | Review finding `N9`; `M-02` / `RISK-165` for the control itself. |
+| **Owner** | Platform team |
+
+Five hosts — `Crm`, `Mail`, `MicrosoftCDM`, `Next` and `Sdk` — keep a credentialed cross-origin policy:
+`WithOrigins("http://localhost:3000", "http://localhost").AllowAnyMethod().AllowCredentials()`. The
+antiforgery remediation added `RequireSameOriginRequestAttribute`, which reads `Sec-Fetch-Site` and
+**refuses** a cookie-authenticated unsafe method arriving `cross-site` or `same-site` with `403` and the
+fixed message *"This request was not accepted because it was initiated by another site."*
+
+**So the two configurations now disagree**, and the disagreement is undisclosed until here: CORS says a
+browser at `http://localhost:3000` may send credentialed `POST`, `PUT` and `DELETE`; the fetch-metadata
+control says it may not. The control wins, because it runs in the pipeline. Any client actually relying on
+that allowance receives `403` — which reads like a permissions fault and is not one.
+
+**The remedy is on the client, not the control.** `RequireSameOriginRequestAttribute` exempts four cases by
+design: safe methods, requests carrying their own `Authorization: Bearer` header, unauthenticated requests,
+and requests with **no** `Sec-Fetch-Site` header at all. So a cross-origin client should authenticate with a
+**bearer token** rather than the cookie, which is the exemption written for exactly this case and needs no
+change to either configuration. The alternative is to drop `AllowCredentials()` from those five hosts, which
+makes the two configurations agree by removing an allowance nothing can use.
+
+**Why the control is not relaxed.** Weakening a cross-site request forgery control to make a stale
+development-time CORS allowance work would trade a real protection for a convenience. **QA probe:** from an
+origin other than the host, send a credentialed `POST` to any `/api/**` route with cookie authentication and
+assert `403` with that exact message; then repeat with `Authorization: Bearer <token>` and no cookie and
+assert the request is processed. Both outcomes are correct.

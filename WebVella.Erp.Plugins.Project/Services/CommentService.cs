@@ -34,7 +34,7 @@ namespace WebVella.Erp.Plugins.Project.Services
 				record["id"] = id;
 				record["created_by"] = createdBy;
 				record["created_on"] = createdOn;
-				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding M-01.
+				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding SR-05 (seam/M-01).
 				//This value is never rendered through Razor: PcPostList serializes the whole record into a
 				//JSON attribute and the client bundle assigns "body" straight to innerHTML, so whatever is
 				//stored here is parsed as MARKUP in every later reader's session, on this application's own
@@ -171,7 +171,7 @@ namespace WebVella.Erp.Plugins.Project.Services
 				}
 
 				//Add activity log
-				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding M-01.
+				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding SR-05 (seam/M-01).
 				//This string is composed as TRUSTED MARKUP and the feed bundle assigns it to innerHTML, but
 				//two of its three interpolations are author-controlled task data. An unencoded task subject
 				//therefore closes the anchor and opens whatever element it likes in every watcher's feed -

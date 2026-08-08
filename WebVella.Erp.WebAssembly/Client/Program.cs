@@ -14,7 +14,7 @@ builder.Configuration
 var config = builder.Configuration.Build();
 
 // THREAT ADDRESSED - CWE-319 cleartext transmission of a credential, and the mixed-content failure that
-// masked it. Review finding C-03. "serverUrl" shipped as "http://localhost:5000/", while the host that
+// masked it. Review finding SR-03 (seam/C-03). "serverUrl" shipped as "http://localhost:5000/", while the host that
 // serves this client redirects to HTTPS - so the page loads over HTTPS and every API call is an active
 // mixed-content request that the browser blocks outright, which is why the client could not start. The
 // dangerous variant is the one that DOES work: served over plain HTTP, the same setting sends the bearer

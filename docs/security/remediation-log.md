@@ -194,7 +194,7 @@ Measured at this commit:
 | Check | Result |
 | --- | --- |
 | `dotnet restore WebVella.ERP3.sln` | exit 0, zero `NU19xx` diagnostics |
-| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore --no-incremental` | exit 0, **0 errors**, **3,044** analyzer warnings as measured for this class; the figure for the shipped tree is stated once in the warning-baseline note near the top of this log, and differs because `AnalysisLevelSecurity=latest-all` arms the Security category. Plus, run separately because they are not solution members: `WebVella.Erp.WebAssembly/Shared` 0 warnings and `/Server` 53 warnings, both **0 errors** |
+| `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore --no-incremental` | exit 0, **0 errors**, **3,044** analyzer warnings as measured for this class; the figure for the shipped tree is stated once in the warning-baseline note near the top of this log, and differs because `AnalysisLevelSecurity=latest-all` arms the Security category. Plus, run separately because they are not solution members: `WebVella.Erp.WebAssembly/Shared` 0 warnings and `/Server` **48** warnings, both **0 errors** |
 | `dotnet list WebVella.ERP3.sln package --vulnerable --include-transitive` | no vulnerable package in any of the **17 solution** projects |
 | `dotnet list <csproj> package --vulnerable --include-transitive` on `WebVella.Erp.WebAssembly/Server` and `/Shared` | no vulnerable package. **No longer run separately by hand:** these two non-member projects have permanent per-project restore, analyzer-build and audit steps in `.github/workflows/security-scan.yml`, so all **19 of 19** projects are gated on every push — coverage by two routes, with the solution supplying 17 and these steps the remaining 2. The command-coverage split itself stays disclosed as `RISK-030` rather than closed |
 | Gate properties, evaluated per project with `dotnet msbuild -getProperty` | all six present on **19 of 19** projects — including the two non-members, because `Directory.Build.props` is directory-scoped rather than solution-scoped |
@@ -743,7 +743,7 @@ the only evidence. Every figure below is a measurement, not a restatement.
 | Dependency restore | `dotnet restore WebVella.ERP3.sln` | exit 0; **zero** `NU19xx` of any kind — none of `NU1900`, `NU1901`, `NU1902`, `NU1903`, `NU1904` or `NU1905` |
 | Full rebuild under both gates | `dotnet build WebVella.ERP3.sln -c Debug -m:2 --no-restore -t:Rebuild` | exit 0; **0 errors**, **3 044 warnings** across the 17 solution projects, as measured at this entry. A warning total is only comparable against one taken under the same analyzer configuration and the same set of landed classes, so re-measure rather than compare across entries. `-t:Rebuild` is required — an incremental build under-reports, because unchanged projects emit nothing |
 | Diagnostic yardstick, before versus after the whole remediation | per-code counts from the same build | unchanged where the code still exists: `CA2200`×52, `ASPDEPR008`×42, `CS0618`×6, `CS0168`×4 — re-measured for `CR2-F-04` and identical. This row also listed `ASP0019`×2; that code now fires **zero** times, because no `Headers.Add(` call remains anywhere in the solution source. The cause is not asserted here, only the measurement. Analyzer security codes present as expected and left as warnings: `CA5351`×10 (legacy MD5, `RISK-004`), `CA5359`×10 (mail certificate validation, an open finding **at that point**: the certificate-validation callback is now installed only when the configuration opts in, so `CA5359` fires **zero** times in the shipped tree). `CA2100` and the whole `CA23xx` family: **zero** here, and non-zero later only because the repository-root `.globalconfig` made them visible — see the warning-baseline note near the top of this log |
-| The two projects the solution does not contain | each built individually, and since closing `F-08` also on every push in CI | exit 0, **0 errors** (53 and 0 warnings); zero `CA2100`, `CA23xx` and `NU19xx` in both — and here "zero" is literal rather than net of adjudication: their SARIF reports (`WebVella.Erp.WebAssembly.Server.sarif`, `…Shared.sarif`) contain **no designated result at all**, suppressed or otherwise |
+| The two projects the solution does not contain | each built individually, and since closing `F-08` also on every push in CI | exit 0, **0 errors** (**48** and **0** warnings — review finding `N32` found this cell reading *53 and 0*; **48** is the figure `WebVella.Erp.WebAssembly.Server` produces at the commit this pass measured, on SDK `10.0.302`, and `WebVella.Erp.WebAssembly.Shared` produces **0**. A warning count is commit-specific and revision-specific, so it is qualified here rather than left to read as invariant: re-measure with `dotnet restore <project> && dotnet build <project> -c Debug --no-restore -t:Rebuild` before citing it again, and note that a warm `obj/` changes what the compiler re-reports); zero `CA2100`, `CA23xx` and `NU19xx` in both — and here "zero" is literal rather than net of adjudication: their SARIF reports (`WebVella.Erp.WebAssembly.Server.sarif`, `…Shared.sarif`) contain **no designated result at all**, suppressed or otherwise |
 | Advisory scan, direct and transitive | `dotnet list … package --vulnerable --include-transitive` on the solution and on both non-member projects | **zero** vulnerable packages — *"has no vulnerable packages given the current sources"* for all nineteen projects, no package at any severity. The `AutoMapper` pin is `[15.1.3]`, so that advisory is not in the graph at all, and `RISK-001` now covers only the licensing consequence of removing it |
 | The gate is not blind — negative control, re-run at the end | restore a throwaway project inside the repository pinning `AutoMapper [14.0.0]`, so it inherits `Directory.Build.props`, then delete it | restore **fails**, exit 1, with `error NU1903: Warning As Error`. The control now reintroduces the *advisory* rather than removing a suppression, which is the only form of it that is executable against this tree, and it is the same control the CI workflow runs on every push |
 | Documentation builds strictly | `mkdocs build --strict` | exit 0, **0 warnings**; the generated output directory is removed afterwards and is never committed. Recorded when measured — `mkdocs` is not installed in every environment this repository is validated in, and where it is absent the substitute is a resolver over every relative link in `README.md`, `SECURITY.md`, `LIBRARIES.md`, `docs/index.md` and all of `docs/security/`, which reports **zero broken targets**. Anyone re-running the strict build should treat a new nav entry as the likeliest cause of a failure |
@@ -2807,7 +2807,7 @@ The commands below were also run directly, and remain the per-project record:
 | --- | --- | --- |
 | Server | `-getProperty:TargetFramework` | `net10.0` — retarget off the end-of-life `net7.0` line is live, not merely written |
 | Server | `dotnet restore …Server.csproj --force` | exit 0, zero `NU19xx` |
-| Server | `dotnet build …Server.csproj -c Debug -t:Rebuild` | exit 0, **0 errors**, 53 warnings (all `CA*` / `CS0168`); emits `net10.0/WebVella.Erp.WebAssembly.Server.dll` together with `…Shared.dll` and `…WebAssembly.dll`, so this single command also compiles the Client and Shared references |
+| Server | `dotnet build …Server.csproj -c Debug -t:Rebuild` | exit 0, **0 errors**, **48** warnings (all `CA*` / `CS0168`; this cell read *53* until review finding `N32` re-measured it); emits `net10.0/WebVella.Erp.WebAssembly.Server.dll` together with `…Shared.dll` and `…WebAssembly.dll`, so this single command also compiles the Client and Shared references |
 | Server | `dotnet list …Server.csproj package` | `Microsoft.AspNetCore.Components.WebAssembly.Server` requested `10.0.1`, resolved `10.0.1` — the end-of-life `7.0.13` pin is gone |
 | Server | `dotnet list …Server.csproj package --vulnerable --include-transitive` | exit 0, `has no vulnerable packages given the current sources` |
 | Shared | `-getProperty:TargetFramework` | `net10.0` |
@@ -4916,7 +4916,7 @@ What the revert did **not** undo, verified explicitly rather than hoped for:
 | H-19 casing repair | Intact | The one surviving diff line; the workflow's casing-regression assertion passes |
 | H-18 retarget off end-of-life `net7.0` | Intact | Both WebAssembly projects still evaluate `TargetFramework=net10.0` |
 | Gate inheritance on both non-members | Intact | `dotnet msbuild -getProperty:` on each returns `NuGetAudit=true`, `NuGetAuditMode=all`, `NuGetAuditLevel=low`, `WarningsAsErrors` with all six codes, `EnableNETAnalyzers=true`, `AnalysisLevel=latest-recommended` |
-| Both non-members clean | Intact | Standalone `restore` exit 0, `build` exit 0 (Server 53 warnings, Shared 0), `list package --vulnerable --include-transitive` reports no vulnerable packages |
+| Both non-members clean | Intact | Standalone `restore` exit 0, `build` exit 0 (Server **48** warnings, Shared 0 — *53* before review finding `N32` re-measured it), `list package --vulnerable --include-transitive` reports no vulnerable packages |
 
 The lasting consequence is a **coverage** one, not a security one: a solution-level command reaches
 17 projects, so the two WebAssembly projects must be audited explicitly. That is disclosed in three
@@ -5274,7 +5274,7 @@ above the steps it applies to.
 > the merge removed.
 | Coverage assertion fails closed | three injected faults against a sandboxed harness | **4 / 4** as expected, each with a distinct message |
 | `TargetFramework` assertion fires | six values against a fake toolchain | **6 / 6** as expected |
-| Both non-members are actually gated | the three extracted steps, run under the worst-case unterminated input | exit 0 each; **both** projects restored, built (`0 Error(s)`; Server 53 warnings, Shared 0) and audited; both assert `net10.0`; both report `has no vulnerable packages` |
+| Both non-members are actually gated | the three extracted steps, run under the worst-case unterminated input | exit 0 each; **both** projects restored, built (`0 Error(s)`; Server **48** warnings, Shared 0) and audited; both assert `net10.0`; both report `has no vulnerable packages` |
 | Evidence is published | parsed artifact `path` list | `vulnerable-packages.txt`, `vulnerable-packages-extra.txt`, `secret-sweep.txt`, `negative-control.txt` |
 | Nothing else changed | `git diff` of the workflow | 244 insertions / 30 deletions; **every** deletion is a comment line — the stale Gate 4 wording and the superseded coverage note. No pre-existing step altered. *(True of this correction. The later `GATE-01` pass did alter pre-existing steps — it merged one into another and renamed three — so this row is scoped to the change it was written about, not to the file's current diff.)* |
 | The solution graph is untouched | `git diff --stat -- WebVella.ERP3.sln '*.csproj'` | empty — the H-19 casing repair remains the solution file's only change, so correction 4 still holds |
@@ -6274,7 +6274,7 @@ neither is an accepted residual that outlives this checkpoint.
 | Solution build, `--no-incremental` | exit 0, **0 errors**, **3061** warnings (baseline 3065) |
 | Net-new analyzer warnings | **zero**, and **zero new warning codes** |
 | Warning-set delta vs baseline | three **reductions** only: `ERPService.cs CA1822` 12→10, `EqlCommand.cs CA1822` −2, `WebApiController.cs CA1865` 8→4 — each accounted for line by line |
-| Non-member projects | `restore` 0/0; `build` Server 53 warnings / 0 errors, Shared 0/0; `list --vulnerable` clean for both |
+| Non-member projects | `restore` 0/0; `build` Server **48** warnings / 0 errors, Shared 0/0; `list --vulnerable` clean for both |
 | CI workflow | YAML parses; all six executable steps green when run verbatim; five negative controls all fail as intended |
 | New package dependencies | **none** — zero `.csproj` files changed across the entire checkpoint |
 | Schema definition statements | **zero**, proven twice by PostgreSQL statement logging |
@@ -6364,10 +6364,10 @@ break the dropdowns. What changed is that nothing executable can reach it any lo
 | `WebVella.Erp.Web/Models/BaseErpPageModel.cs` | Four private static helpers added — `EncodeMenuText` (HTML text encoding), `TryEncodeMenuUrl` (URL allow-list), `EncodeMenuIconClass` (character allow-list) and `EncodeUrlPathSegment` (percent-escape then encode) — and applied at all four composition sites: the multi-node area link, both sitemap node links, the single-node area link and the site-page anchor. Each helper carries a comment naming the threat it addresses |
 | `WebVella.Erp.Web/Pages/Shared/NavItem.cshtml` | Comments only. The two blocks that declared these sinks an accepted by-design markup channel were rewritten to state the control that now exists and where it lives. The two `Html.Raw` calls, the `IsHtml` and `RenderWrapper` branches and the recursion are untouched |
 | `WebVella.Erp.Web/Pages/Shared/NavMenu.cshtml` | Comments only, same rewrite for its two blocks |
-| `WebVella.Erp.Web/Components/SiteMenu/SiteMenu.cshtml` | Comments only, same rewrite for its one block |
+| `WebVella.Erp.Web/Components/SiteMenu/SiteMenu.cshtml` | Comments only, same rewrite for its one block — and it is **now** true. Review finding `N25` found this row false: the same edit had also deleted the file's `<!--c:UserNav_Default-->` marker, so the diff was comments **plus a deletion**. The marker is restored, and `git diff` against the pre-engagement commit for this file now shows the added comment block and nothing else. The marker has no programmatic consumer — its siblings `Nav`, `NodeNav`, `UserNav` and `SearchNav` carry the same convention — which is why it survived review as a formatting change; a row that describes a diff must describe the whole diff regardless |
 | `.../PcProjectWidgetTaskDistribution/PcProjectWidgetTaskDistribution.cs` | Stops composing an `<img>` plus a username. Publishes `user_image` and `user_name` instead, on **both** the no-owner and the per-user branch |
 | `.../PcProjectWidgetTaskDistribution/Design.cshtml` and `Display.cshtml` | Render a literal `<img>` element and the name as a Razor expression; `Html.Raw` removed |
-| `.../PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs` | Stops composing an `<i>`, an `<a>` and an `<img>`. Publishes `task_id`, `task_key`, `task_subject`, `task_icon_class`, `task_color`, `user_image` and `user_name`. The icon class and the colour pass through `SafeIconClass` and `SafeCssColor`, which reject a whole value that contains anything outside their allow-list rather than sanitising it in place |
+| `.../PcProjectWidgetTasksQueue/PcProjectWidgetTasksQueue.cs` | Stops composing an `<i>`, an `<a>` and an `<img>`. Publishes `task_id`, `task_key`, `task_subject`, `task_icon_class`, `task_color`, `user_image` and `user_name`. The icon class and the colour pass through `SafeStyleValue.IconClass` and `SafeStyleValue.CssColor` (member names corrected under review finding `N37`), which reject a whole value that contains anything outside their allow-list rather than sanitising it in place |
 | `.../PcProjectWidgetTasksQueue/Design.cshtml` and `Display.cshtml` | Build the task URL from `task_id` and render literal `<i>` and `<a>` elements; `Html.Raw` removed |
 | `.../PcProjectWidgetTimesheet/PcProjectWidgetTimesheet.cs` | `label` becomes plain text on every row. A companion `label_image` carries the avatar path on user rows and is set explicitly to `null` on the three summary rows, because `EntityRecord` throws `KeyNotFoundException` for a key a row never set — every row must therefore set every key |
 | `.../PcProjectWidgetTimesheet/Design.cshtml` and `Display.cshtml` | Render the avatar behind an `@if (labelImagePath != null)` guard and the label as a Razor expression; `Html.Raw` removed |
@@ -6383,8 +6383,11 @@ cannot mistake one for the fixed version of the other.
 - **Allow-list, never deny-list, and reject the whole value.** `TryEncodeMenuUrl` admits a local path,
   a `~/` path, a bare fragment, or an explicit `http`/`https` absolute URL, and rejects everything else
   — `javascript:` and `data:` schemes, protocol-relative `//host` and `/\host` forms, and any value
-  containing a control character. `EncodeMenuIconClass`, `SafeIconClass` and `SafeCssColor` behave the
-  same way: one disallowed character discards the entire value and the element renders unstyled rather
+  containing a control character. `EncodeMenuIconClass`, `SafeStyleValue.IconClass` and
+  `SafeStyleValue.CssColor` behave the same way — review finding `N37` corrected the two member names, which
+  were written here as bare `SafeIconClass` and `SafeCssColor`; both are static methods on `SafeStyleValue` in
+  `WebVella.Erp.Web/Utils/SafeStyleValue.cs`, so the bare names resolve to no symbol and a reader checking the
+  claim would have found nothing: one disallowed character discards the entire value and the element renders unstyled rather
   than partially attacker-controlled. Sanitising in place is what deny-lists do, and it is what
   whitespace, casing and control-character evasions defeat.
 - **A rejected URL behaves exactly like an absent one.** The node link falls back to the inert
@@ -6699,7 +6702,7 @@ diagnostics repository-wide.
 | --- | --- |
 | `dotnet build WebVella.ERP3.sln` | **0 errors**, 3,115 warnings |
 | Warning delta versus the previous checkpoint | **+50, fully attributed.** Unique Security-category warning sites total 55; `CA5351` (5 sites) was already enabled at `latest-recommended`, so 50 are newly surfaced by the category upgrade — exactly the observed delta. Zero unexplained warnings, zero `error CA` |
-| WebAssembly `Server` / `Shared` | 53 W / 0 E and 0 W / 0 E — unchanged from the previous checkpoint |
+| WebAssembly `Server` / `Shared` | **48** W / 0 E and 0 W / 0 E — unchanged from the previous checkpoint (this cell read *53 W* until review finding `N32` re-measured it) |
 | Gate 1 | 94 Security rule ids derived from the SDK; 652 distinct `(rule, file)` diagnostics across all categories; **21 Security-category, all 21 accepted residuals**; the unreviewed set was empty |
 | Gate 1 positive control | **A control that only ever asserts absence cannot distinguish a clean tree from a disabled rule, so this one asserts presence too.** Nine families must be reported against planted defects, `CA2100`, `CA2326` and `CA2327` among them, each anchored to the probe's own file so the tree's own diagnostics cannot satisfy the check, plus `CA3001` and `CA3003` against two deliberate taint flows — which proves the `AnalysisLevelSecurity=latest-all` arming rather than assuming it. Two details matter: the control matches `warning` **only**, because nothing is promoted to error, and `CA5359` is keyed to `ServicePointManager.ServerCertificateValidationCallback` rather than `HttpClientHandler.ServerCertificateCustomValidationCallback`, which was measured not to fire (`RISK-054`) |
 | `CA2327` occurrences | **zero**, repository-wide. `CA2327` is the rule for a *missing* serialization binder, so its complete absence is positive evidence that `ErpSerializationBinder` is attached at every `TypeNameHandling` site |
@@ -7183,7 +7186,7 @@ been wrong:
 per-rule counts are **byte-identical** to the previous
 class's gate; against the pre-engagement baseline of 3065 the only differences remain the same four
 reductions (`CA1310` 612→610, `CA1822` 418→416, `CA1865` 8→4, `CA1866` 180→178) with **zero
-increases**. Both non-member WebAssembly projects were built explicitly (53/0 and 0/0). Per-file
+increases**. Both non-member WebAssembly projects were built explicitly (**48**/0 and 0/0). Per-file
 diagnostic fingerprints for all four edited builders are identical to baseline, and the nine edited
 views produce no diagnostics at all because Razor views compile at runtime — which is itself the
 reason the view-level comments cannot be relied on as the control and the builder must be.
@@ -7488,7 +7491,7 @@ than left to contradict the code.
 | --- | --- |
 | Solution build, non-incremental | exit 0, **3,060 warnings / 0 errors** *(as measured for this class; the shipped tree's figure is stated once in the warning-baseline note near the top of this log)* |
 | Normalised per-rule diagnostic counts | **byte-identical** to the previous class's gate |
-| Both WebAssembly projects, built explicitly | 53 / 0 and 0 / 0 |
+| Both WebAssembly projects, built explicitly | **48** / 0 and 0 / 0 |
 | Per-file diagnostic fingerprints, all six touched files | unchanged; the new 385-line file raises **0** diagnostics |
 | Ad-hoc verification harness, five sections | **70 checks, 0 failures**, run twice with identical outcomes and zero residual rows |
 | Placeholder, stub and TODO sweep | clean |
@@ -7661,7 +7664,7 @@ and is strictly cheaper than an unconditional dummy.
 ### Verification
 
 - Full-solution `--no-incremental` build: `3060 Warning(s) / 0 Error(s)` *(the shipped tree's figure is stated once in the warning-baseline note near the top of this log)*, normalized per-rule counts
-  **byte-identical** to the previous gate; both WebAssembly projects `53/0` and `0/0`; per-file
+  **byte-identical** to the previous gate; both WebAssembly projects `48/0` and `0/0`; per-file
   diagnostic fingerprints unchanged for `PasswordUtil.cs` (4), `SecurityManager.cs` (32),
   `ERPService.cs` (98) and `RecordManager.cs` (222).
 - A dedicated verification harness — **162 checks, run twice with identical outcomes** — covering
@@ -7950,7 +7953,7 @@ package for those 17, and the two dedicated listings report none for the remaini
 rows across all nineteen. Reverting the enrollment changed no diagnostic: a full `-t:Rebuild` before and
 after produced **622** `(file, rule)` pairs on both sides with zero count differences and zero pairs
 added or removed, even line-position-sensitive. The two projects genuinely emit nothing of their own into
-the solution log — the 53 warnings sometimes attributed to a standalone WebAssembly build are raised
+the solution log — the **48** warnings sometimes attributed to a standalone WebAssembly build are raised
 against files in the `Client/` project, which is and always was a solution member, confirmed by
 `git show origin/master:WebVella.ERP3.sln`.
 
@@ -9366,7 +9369,7 @@ figures below are reproducible rather than environment-dependent.
 | Analyzer diagnostics, normalised as Gate 1 normalises them | **631** distinct `(rule, file)` CA pairs, from 6,034 raw CA diagnostic lines; identical whether or not the two non-members' build output is appended |
 | Security-category diagnostics | **2** pairs, both accepted documented residuals: `CA5351` in `WebVella.Erp/Utilities/CryptoUtility.cs` and in `WebVella.Erp/Utilities/PasswordUtil.cs` - 10 raw occurrences over **5** distinct sites. `CA2100`, `CA2326`, `CA2328`, `CA5362`, `CA5390` and the `CA3001`-`CA3012` family report **zero**, because they do not execute at `latest-recommended` with no global analyzer config present |
 | Diagnostic yardstick | `CA2200` 52 raw / 26 sites, `ASPDEPR008` 42 / 14, `CS0618` 6 / 3, `CS0168` 4 / 2, and `ASP0019` **zero** - no `Headers.Add(` call remains anywhere in the solution source |
-| `WebVella.Erp.WebAssembly/Server`, built explicitly | `TargetFramework=net10.0`; exit 0, **0 errors**, 53 warnings, every one attributed to a file in the `Client` project the same command compiles |
+| `WebVella.Erp.WebAssembly/Server`, built explicitly | `TargetFramework=net10.0`; exit 0, **0 errors**, **48** warnings, every one attributed to a file in the `Client` project the same command compiles |
 | `WebVella.Erp.WebAssembly/Shared`, built explicitly | `TargetFramework=net10.0`; exit 0, **0 errors, 0 warnings** |
 | Gate properties, evaluated per project across all **19** manifests | `NuGetAudit=true`, `NuGetAuditMode=all`, `NuGetAuditLevel=low`, `EnableNETAnalyzers=true`, `AnalysisLevel=latest-recommended`, the `NU1900`-`NU1905` promotion - identical on every one, with `AnalysisLevelSecurity` **empty** and no global analyzer config discovered |
 | `dotnet list … package --vulnerable --include-transitive` | **17** solution members plus **2** explicitly gated non-members, all 19 reporting `has no vulnerable packages given the current sources`; zero advisory rows |
@@ -9485,7 +9488,7 @@ request builds its own URL and sets its own correctly-cased header, so it does n
 | Analyzer parity, normalised as Gate 1 normalises it | **631** distinct `(rule, file)` CA pairs, matching the recorded baseline exactly; zero error-severity CA diagnostics |
 | Analyzer diagnostics attributable to this class | **zero.** `WebApiController.cs` reports no CA diagnostic above line 5700 and the new action occupies 5932-5999; `Client/Services/AuthenticationService.cs` reports none at all. The nine pairs naming the controller are pre-existing and unmoved |
 | Security-category diagnostics | **2** pairs, both accepted documented residuals - `CA5351` in `WebVella.Erp/Utilities/CryptoUtility.cs` and in `WebVella.Erp/Utilities/PasswordUtil.cs`. No new security-category diagnostic |
-| `WebVella.Erp.WebAssembly/Server` and `/Shared`, built explicitly | exit 0 each; **0 errors** with 53 and 0 warnings, both on `net10.0` - unchanged |
+| `WebVella.Erp.WebAssembly/Server` and `/Shared`, built explicitly | exit 0 each; **0 errors** with **48** and 0 warnings, both on `net10.0` - unchanged |
 | `dotnet list … package --vulnerable --include-transitive` | 17 solution members plus the 2 explicitly gated non-members, all 19 reporting no vulnerable packages; zero advisory rows. No dependency was added by this class |
 | Gate 5 shape, executed locally | **33** rows evaluated against a declared 33, no row-count drift error, every row exactly 4 fields and every procedure exactly 2, no duplicate identifier, and `M19` present as `DEFERRED` with its procedure attached. Zero `M`-row failures |
 | Compiled-output proof | the interpolated route literal `v3/en_US/auth/jwt/token/logout` is present in `WebVella.Erp.WebAssembly.dll`, so the client change is genuinely compiled rather than merely saved |
@@ -9522,8 +9525,9 @@ query string into it. So the header has **one** sink that must stay raw and seve
 reflected values have to be encoded at the builder, because by the time the composed string reaches the sink
 the attacker's characters and the product's own tags are indistinguishable. It is recorded as `P-22`.
 
-The third is coverage rather than a new sink. The `SafeIconClass` and `SafeCssColor` allow-lists introduced
-for `H-06` were `private static` members of a single widget, and QA finding `F-AA` established that **four**
+The third is coverage rather than a new sink. The `SafeStyleValue.IconClass` and `SafeStyleValue.CssColor`
+allow-lists introduced for `H-06` — written here as bare `SafeIconClass` and `SafeCssColor` until review finding
+`N37` corrected both names — were `private static` members of a single widget, and QA finding `F-AA` established that **four**
 render paths consume the same two values while only that one was guarded.
 
 ### Two path corrections, stated first because they cost time otherwise
@@ -10691,11 +10695,19 @@ repair beyond remediation.
 `run:` steps were extracted from the committed YAML and executed in order against this tree, with the
 job-level `env:` block carried — a bare step extraction does not supply it, and omitting it makes the
 project-graph, solution-membership and gated-project advisory steps fail for want of
-`EXPLICITLY_GATED_PROJECTS` rather than for any defect in the tree. **Twenty of the twenty-two exited 0.**
-The two that did not are Gate 5 and the release gate, and both are red **for one stated reason**: row `A17`,
+`EXPLICITLY_GATED_PROJECTS` rather than for any defect in the tree. **Twenty of the twenty-two exited 0 when this was written; all twenty-two exit 0 now.**
+The two that did not were Gate 5 and the release gate, and both were red **for one stated reason**: row `A17`,
 added under code-review finding `MAJ-03`, records that the engagement's exact-header standard is not
-satisfied while the Content-Security-Policy ships under the report-only name. Gate 5 reported
-`rows=50 deferred=0`, `required-but-unproven=0` and `RELEASE-READY=no`. **That `no` is the gate working**,
+satisfied while the Content-Security-Policy ships under the report-only name. **Review finding `N27` closed the
+consequence without touching the verdict.** A row no engineering change can close was making the whole
+workflow's conclusion permanently `failure` — on every push, pull request, scheduled run and dispatch — so
+the gate could not be a required check and a genuinely new red row would have been invisible against the
+standing one. `A17` is now declared in the job-level `KNOWN_UNMET_BASELINE`: it is recorded `KNOWN-UNMET` with
+its reason, it does **not** pass, it forces `RELEASE-READY=no`, it is fatal again on a version-tag push or a
+release-candidate dispatch, and the job fails the moment it starts passing so the exemption cannot outlive its
+reason. Gate 5 now reports
+`rows=50 proven=49 deferred=0 failed=0 known-unmet=1`, `required-but-unproven=0` and `RELEASE-READY=no`.
+**That `no` is the gate working**,
 and it must not be turned green by rewriting a scenario to *expect* the report-only header name — the trap
 `MAJ-03` refused. `M06`'s procedure asserts the mandated name, and it is **executed** against a published
 Release artifact in the Production posture and attested. The
@@ -10764,3 +10776,331 @@ vendored.
 `CK-17` has its mechanism closed and its decision open: an automated agent must not change a product's
 effective licence posture on its own initiative, so the gate stays fail-closed and the answer belongs to the
 repository owner. `CK-23` cannot be fixed retroactively and is complied with from this pass forward.
+
+## Checkpoint review of the documentation and the gate — the disposition of `N1` through `N38`
+
+A code review at this checkpoint returned **NOT APPROVED** with thirty-eight findings: two High, six Major,
+five Medium, nine Low and sixteen Informational. Not one is a new product vulnerability. They divide into
+four kinds, and the division matters because it decides what "fixed" means for each:
+
+1. **Regressions introduced by the previous pass's own documentation edit** — eleven malformed XML
+   documentation blocks and a nine-member doc-to-member misalignment, both introduced by the commit that
+   reduced comment density, plus a deleted view marker and a whitespace change that altered rendered output.
+2. **A gate that could not pass** — the workflow's conclusion was permanently `failure` over a row no
+   engineering change can close, and the doc-comment rules that would have caught kind 1 were not merely
+   unasserted but **unmeasurable**.
+3. **Code weaknesses the review found while reading the remediation** — a credential-path asymmetry, an
+   anonymous route still composing a fault message from an exception, three sanitizer gaps, a compensating
+   control that could fail open silently, and refusal feedback invisible to assistive technology.
+4. **Documentation that no longer described the tree** — wrong counts, a phantom row, a false justification,
+   a stale record, an ambiguous citation namespace, and residuals absent from the register.
+
+**Every one of the thirty-eight is addressed.** Nothing is deferred to a future pass, and where the review's
+suggested resolution was not the right one it is stated below with the reason.
+
+### Commit boundaries — one vulnerability class each, and why this section cites no hashes
+
+Minimal Change guideline 9 requires atomic commits per vulnerability class, and this pass meets it: the work
+is committed as **seven** commits, each carrying exactly one class and naming the finding identifiers it
+closes.
+
+| # | Vulnerability class | Findings |
+| --- | --- | --- |
+| 1 | XML documentation correctness in the core library | `N1`, `N2`, `N3`, `N11` |
+| 2 | Credential-path consistency and anonymous fault disclosure | `N33`, `N15` |
+| 3 | HTML sanitizer allow-list and URL scheme hardening | `N22`, `N23`, `N24` |
+| 4 | Upload-refusal feedback — fail-closed control and accessibility | `N18`, `N20` |
+| 5 | Presentation fidelity and in-file threat comments | `N25`, `N26`, `N31` |
+| 6 | Continuous-integration gate usability and doc-comment gating | `N27`, `N10`, and the gate halves of `N1` and `N30` |
+| 7 | Documentation accuracy across the security document set | `N4`–`N9`, `N12`–`N14`, `N16`, `N17`, `N19`, `N21`, `N28`, `N29`, `N30` (citation half), `N32`, `N34`–`N38` |
+
+**This section cites no commit hashes, deliberately.** Every earlier section in this log names the commit it
+describes, which is possible because the description was written afterwards. This section is committed **in
+the same commit as the changes it describes**, so it cannot contain its own hash, and inventing one or
+omitting the boundary policy would each be worse than saying so. The classes above are the boundaries; the
+hashes are readable from `git log` and each commit message names its class and its findings.
+
+### What each class changed, and how it was verified
+
+#### Class 1 — XML documentation correctness (`N1`, `N2`, `N3`, `N11`)
+
+`N1` was graded High and is the most consequential of the four, because of *why* it happened rather than what
+it broke. The commit that reduced comment density from 26.85% to 16.72% deleted each `<summary>` block and
+each `<remarks>` **opening** tag in eleven places in `WebVella.Erp/ERPService.cs` and left the `</remarks>`
+**closing** tag behind. Eleven malformed documentation blocks therefore reached the tracked tree and were
+found by a human reader, because no build in this repository asked the compiler to parse a documentation
+comment — the defect was structurally invisible to CI. A malformed block does not fail quietly in the
+generated output: it swallows the documentation of the members around it, so the recorded threat rationale for
+a security control can disappear while every gate stays green.
+
+The fix inserts one `/// <remarks>` opener at the head of each of the eleven blocks — eleven added lines,
+nothing else. **`<summary>` was deliberately not restored:** those lines were removed as part of an intended
+density reduction, and writing replacement prose would be content authoring beyond the finding.
+
+`N2` was a nine-member doc-to-member misalignment across three files, introduced by the same pass. In
+`WebVella.Erp/Utilities/PasswordUtil.cs` the whole chain had shifted by one member, so `HashPassword`'s rich
+block sat on `VerifyPassword`, `VerifyPassword`'s on `VerifyPbkdf2Hash`, and so on down to `VerifyMd5Hash`,
+which was left with no documentation at all. In `WebVella.Erp/Api/SecurityManager.cs` two members carried
+verbatim duplicates of a neighbour's block, and in `WebVella.Erp/Api/Models/ErpSerializationBinder.cs` one
+did. Each block was re-paired with its own member, `VerifyMd5Hash` was given a doc drawn from the pre-density
+revision, and **all four parameters were documented on both `VerifyPassword` and `VerifyPbkdf2Hash`** —
+necessary because merely moving the two `out`-parameter blocks would have moved the `CS1573` rather than
+removed it.
+
+`N3` deleted a superseded terse block above `DbFileRepository.CreateTempFile` that duplicated the rich block
+below it, clearing three `CS1571` duplicate-parameter diagnostics. `N11` normalised two tab-indented lines to
+the surrounding file's space indentation.
+
+**Verification.** A structural parse of every contiguous `///` run in `ERPService.cs` reported **11 unbalanced
+blocks before and 0 after**. A documentation-generating build of the solution then reported **CS1570 11 → 0**,
+**CS1571 3 → 0** and **CS1573 in `PasswordUtil` 2 → 0**, with `CS1570` and `CS1571` at **zero anywhere in the
+solution**. The ordinary rebuild is **0 errors and 3,055 warnings**, identical to the pre-change baseline, and
+the unique `(file, rule)` diagnostic set diffs **empty in both directions** — so no warning was traded for
+another. Byte fidelity — BOM, line endings, final newline — was compared against the base for all five files.
+
+#### Class 2 — Credential-path consistency and anonymous fault disclosure (`N33`, `N15`)
+
+`N33` found the two credential entry points disagreeing about what the submitted identifier **is**:
+`GetTokenAsync` called `GetUser(email?.Trim()?.ToLowerInvariant(), password)` while `AuthenticateAsync`
+called `GetUser(email, password)`. So `" user@example.com "` obtained a bearer token and failed interactive
+sign-in. The direction was permissive-for-bearer, making it a behavioural-consistency defect rather than a
+privilege weakness — but a credential path whose entry points disagree cannot be reasoned about. Both now
+call one private normaliser.
+
+**It trims and deliberately does not case-fold, and both omissions are measured.** Case folding is immaterial
+because the lookup is `lower(email) = lower(@email)` on a bound parameter and the authoritative decision is
+`StringComparison.OrdinalIgnoreCase`; folding changed no matched set, while it **did** defeat the
+`ORDER BY (email = @email) DESC` exact-spelling preference that keeps a case-fold duplicate set
+deterministic. Trimming cannot lock any account out, because `SecurityManager.IsValidEmail` accepts an address
+only when `new MailAddress(value).Address == value` and `MailAddress` strips surrounding whitespace — so no
+stored address can carry any. The secret is still never normalised. This also **corrects the record of
+`CK-09`**, whose remediation claimed both paths "verify the identical byte sequence": true of the password,
+false of the identifier.
+
+`N15` found both `[AllowAnonymous]` JWT token routes still returning `e.ToString()` when `DevelopmentMode` was
+set. That guard is right for an authenticated surface and wrong here: these two are the only routes on the
+controller that carry an anonymous exemption **and** compose a response message from an exception — the third,
+`StylesCss`, rethrows into the environment-guarded error middleware — so the guarded form still disclosed the
+type, message, inner exceptions and stack trace to an **unauthenticated** caller on any development
+deployment. The disclosure is removed outright rather than left conditional, because a control whose safety
+depends on a configuration value is weaker than one that does not, and the server-side audit record already
+carries the exception for the operator. The authenticated surface's `SafeErrorMessage` helper is untouched.
+
+**Verification.** No `e.ToString()` remains on either route, and the only surviving `ErpSettings.DevelopmentMode`
+reference in the controller is inside `SafeErrorMessage`. Solution build 0 errors, diagnostic set unchanged.
+
+#### Class 3 — HTML sanitizer allow-list and URL scheme hardening (`N22`, `N23`, `N24`)
+
+Three gaps in `WebVella.Erp.Web/Utils/HtmlSanitizer.cs`, all in the same review:
+
+- `N22`: `target` was permitted on `<a>` without forcing `rel`. A new `ForceSafeLinkRelationship` sets
+  `rel="noopener noreferrer"` whenever an anchor retains a `target`, overwriting a weaker author-supplied
+  value. A same-tab link gains nothing, so its rendered markup is unchanged.
+- `N23`: the global allow-list permitted `class`, which is inconsistent with the same list already excluding
+  `style`. Arbitrary class names are a user-interface redressing primitive (**CWE-1021**) against the
+  platform's own stylesheets. A token allow-list was rejected as unverifiable; the attribute is removed, and
+  the user-visible consequence is recorded as `RISK-178`.
+- `N24`: `IsUrlAllowed` admitted **scheme-relative** values. `//host/path` carries no scheme text so it left
+  through the no-colon branch, and `//host:8080/path` left through the path-colon branch — yet a browser
+  resolves both against the page's scheme and fetches a foreign origin. The rejection is placed **before** the
+  scheme test and covers `//`, `/\`, `\\` and `\/`, because a browser normalises a backslash in the authority
+  position to a forward slash. A single leading slash is unaffected.
+
+**Verification.** An in-process harness compiled against the real sanitizer ran **23 assertions, all passing**:
+each of the three fixes in both its positive and negative direction, plus no-regression assertions that
+`javascript:`, entity-encoded `&#106;avascript:`, `on*` handlers, `style` and `<script>` are still refused and
+that `null` still passes through. Fifteen further adversarial round-trip probes were run and are recorded as
+`RISK-175`.
+
+#### Class 4 — Upload-refusal feedback: fail-closed control and accessibility (`N18`, `N20`)
+
+`N18` is the finding whose fix is least like its description. The compensating control in
+`WebVella.Erp.Web/wwwroot/js/site.js` overrides a third-party upload error handler that cannot be edited and
+is itself broken (`SR-11`). It decided whether to intervene by matching the handler's **source text** through
+`Function.prototype.toString`. Any vendor edit — a version bump, a minifier pass, a re-mangled identifier —
+would have made the strings stop matching, and the control would then have failed **open** with no diagnostic:
+the server still refusing the file, the interface still saying nothing. The brittleness was undisclosed.
+
+The decision is now **behavioural**. A handler whose source carries either of the two *measured* defects is
+still replaced outright, because its second statement raises a `ReferenceError` and running it would buy
+nothing. Anything else is **run first inside a guard**, and this file supplies the refusal only if that handler
+threw or rendered nothing — with a one-time console diagnostic naming the drift. A future fixed handler
+retires the override by producing its own feedback; a future broken one is still covered; neither depends on a
+source string.
+
+`N20` found the refusal invisible to assistive technology in both renderers. Each now builds the feedback
+element with an id derived from the field, `role="alert"` and `aria-live="polite"` stated together, sets
+`aria-invalid="true"` and `aria-describedby` on **both** the text input and the file input, marks the
+decorative icon `aria-hidden="true"`, and **retracts every one of those attributes** when the refusal is
+cleared — because an `aria-invalid` left behind keeps announcing a refusal that a later accepted file has
+superseded.
+
+**Verification, and a regression this verification caught.** The control was exercised in a real headless
+browser against the actual `site.js` and real jQuery 3.4.1, with a server returning HTTP 400, across both the
+recognised and unrecognised paths. Twelve named checks passed. The accessibility tree confirmed the message as
+a live region, the inputs as invalid and described-by, and the decorative icon contributing **no node at all**.
+Three independent channels proved the recognised defective callback was replaced rather than executed.
+
+That run also found a **genuine regression in this very fix**: on a *repeat* failure against a field already
+showing a refusal, the "did the vendor handler report this itself?" probe saw the **stale** leftover element
+and answered yes, so the wrapper credited the packaged handler with output it never produced and skipped the
+re-render, the toast and the log. A second failure was therefore not re-announced, and a *differing* later
+message would not have replaced a stale one. The fix retracts the previous refusal **before** invoking the
+packaged handler, and the comment records that the ordering is load-bearing rather than tidiness. A second
+browser run, with the server returning a distinct message per request so staleness would be visible, confirmed
+all eight re-verification checks: the current message shown, the pinned earlier node detached, exactly one
+feedback element with no stacking, ARIA state re-applied, retraction correctly scoped to the active field, and
+the drift diagnostic emitted **exactly once** across two unrecognised failures. No uncaught exception in either
+run.
+
+This is recorded at length for one reason: a compensating control that had already failed open once was fixed,
+and the fix itself failed in a way only runtime verification could see. The residual maintenance obligation is
+`RISK-177`.
+
+#### Class 5 — Presentation fidelity and in-file threat comments (`N25`, `N26`, `N31`)
+
+`N25`: the previous pass's `SiteMenu.cshtml` edit was logged as *"Comments only"* while it had also deleted the
+file's `<!--c:UserNav_Default-->` marker. The marker is restored, so the diff against the pre-engagement commit
+is now the added comment block and nothing else — and the log row that described it is corrected in this same
+document. The marker has no programmatic consumer; a row that describes a diff must still describe the whole
+diff.
+
+`N26`: the two `PcProjectWidgetTimesheet` twins had their label cell rewritten across several lines, so Razor
+emitted the newlines and indentation between the elements, which collapse to a leading and a trailing space
+inside the cell — visible in the right-aligned `font-weight-bold text-right` total row, where the figure no
+longer sat flush right. Both views now emit the cell on one line with an explicit separator variable, `" "`
+when an avatar is present and `""` otherwise, so the three rows that carry no avatar emit the label and nothing
+else, exactly as the builder's own markup did. Both twins are byte-identical in that region.
+
+`N31`: six of the eight `Config.json` files carried no in-file comment naming the threat their blank values
+address, while `Site` and `ConsoleApp` did. Minimal Change guideline 6 requires the comment, and an operator
+reading one of those six had no way to learn why the values are empty or what supplies them. All eight now
+carry one; `Site.Project`'s names the token signing key and `Site.Sdk`'s names the storage-location scrub.
+
+**Verification.** All eight configuration files parse under comment-stripping and every one still reports
+`DevelopmentMode false` with no non-empty secret. The workflow's own secret-sweep expressions and its
+required-keys assertion were replayed locally against all eight and both pass. `node --check` is clean on both
+changed scripts. The Project plugin builds with 0 errors, and the `git diff` for `SiteMenu.cshtml` against the
+pre-engagement commit shows only the comment block.
+
+#### Class 6 — Gate usability and doc-comment gating (`N27`, `N10`, `N1` and `N30` gate halves)
+
+`N27` was graded Major and is the finding that made the whole gate unusable. Gate 5 folds every non-passing
+row into one exit status, so row `A17` — which records that the mandated seven-header standard is unmet while
+the Content-Security-Policy ships report-only, and which **no engineering change may close** because AAP
+§0.3.2 forbids enforcing the policy — made the workflow's conclusion permanently `failure` on every push,
+pull request, scheduled run and dispatch. A gate that is red for a reason nobody can act on is a gate whose
+red carries no information: it cannot be a required check, so branch protection cannot use it, and a genuine
+new regression arrives indistinguishable from the standing red.
+
+The fix does **not** soften the row. A job-level `KNOWN_UNMET_BASELINE` declares `A17` with its reason,
+declared once and read by both Gate 5 and the release gate on the same reasoning as the existing gated-project
+list — two copies of a security boundary drift. A declared row is recorded `KNOWN-UNMET` with a warning on an
+ordinary run and is **fatal again** in a release context; it forces `RELEASE-READY=no`; every row **not** in
+the list stays fatal on every run; the declaration cannot name a row the matrix does not carry; the job fails
+the moment a declared row starts **passing**, so a cleared exemption cannot silently re-arm the fail-open it
+was granted to avoid; and the release gate verifies rather than trusts the published matrix, refusing a row
+that wears the token without a declaration.
+
+`N10` added a job-level `timeout-minutes`. The value is **90**, not the ~45 the observed times suggest, and the
+difference is the point: the longest step carries its own 1,800-second cost bound whose expiry must surface as
+the named failure that step raises, so a ceiling near 45 minutes would kill the job mid-scan on exactly the
+run that had something to report and replace a precise finding with an opaque cancellation.
+
+`N1`'s gate half closes the blindness that let eleven malformed blocks through. A new
+`ErpDocumentationDiagnostics` property in `Directory.Build.props` turns on documentation generation and
+**appends** `CS1591` to `NoWarn`; the workflow sets it on the solution build **and** on the two
+non-solution-member projects, keeping doc coverage at 19 of 19 rather than quietly falsifying the coverage
+claim at the foot of the workflow. A new Property 4 then treats `CS1570` and `CS1571` as **zero-tolerance**,
+ratchets `CS1573` at its measured 69, deliberately does not assert `CS1572` or `CS1587` with the reason stated,
+and adds a **liveness oracle** — because a build that forgot the opt-in would otherwise report the two zeros
+as clean and the backlog as "improved".
+
+**Why the suppression is in the props file and must never move to a command line:** a `-p:NoWarn=CS1591` on the
+invocation becomes a *global* MSBuild property, which overrides rather than appends, so the conditioned
+`NoWarn` stops contributing and the `CA3001`–`CA3012` taint exclusion silently disarms. Measured, not
+theorised: a documentation build invoked that way armed the unbounded taint family against
+`WebVella.Erp.Web` and had to be abandoned after 21 minutes.
+
+`N30`'s gate half extends the identifier assertion from headings to **citations**, refusing any bare
+Part-1-shaped review-identifier citation and requiring the `seam/` namespace to be explained where it is used.
+
+**Verification.** The workflow still declares **25** steps — 22 `run:` and 3 `uses:` — so no step was added
+or removed and the prose that asserts the count stays true; the YAML parses and `bash -n` is clean on all 22
+run blocks. Both changed steps were extracted from the parsed YAML and **executed** under `bash -e`, which is
+how GitHub invokes them, against synthetic evidence mirroring CI exactly. Eight states behave as designed:
+ordinary run green with warnings and `RELEASE-READY=no`; version-tag push fatal; release-candidate dispatch
+fatal; earned-out baseline fatal; a new undeclared red row fatal while `A17` stays known-unmet; a phantom
+baseline entry fatal; a forged token in the artefact refused by the release gate; and the future state, with
+`A17` closed and the entry removed, fully green at 50 of 50 with `RELEASE-READY=yes` on both an ordinary run
+and a tag.
+
+**Every `scenario_revision` was proven unchanged rather than assumed.** The workflow's own hash function was
+rebuilt from `rows()` and `procedures()` extracted verbatim from the previous commit and from the working tree,
+and all **50** revisions are byte-identical, so none of the **32** committed attestations goes stale — checked
+directly: 32 matching, 0 stale.
+
+The property evaluation was verified in both directions: with the opt-in on, `WebVella.Erp.Web`'s `NoWarn` is
+`;CA3001…CA3012;CS1591`, so the taint exclusion **survives**; with it off, `NoWarn` is unchanged and
+`GenerateDocumentationFile` is `false`, so every ordinary build compiles exactly as measured. **All twelve
+ratcheted CA baselines were re-measured under the opt-in and are unchanged**, and the unreviewed-diagnostics
+step and the `NoWarn` boundary check were both confirmed to filter CA codes only, so neither can be perturbed
+by a CS diagnostic. Property 4 was simulated three ways: the real log passes with liveness 91; one injected
+`CS1570` fails; and a non-documentation build log fails on **liveness**, which is the fail-open this closes.
+
+#### Class 7 — Documentation accuracy across the security document set
+
+Twenty findings, all of the same kind: the documents no longer described the tree. The corrections are made
+**in place**, with the superseded statement retained wherever a figure moved, because a security document
+whose numbers change without explanation teaches its reader to stop checking them.
+
+| Finding | What was wrong | What it now says |
+| --- | --- | --- |
+| `N6` | The area heading read *seventy-three* | **Sixty-nine**, derived in place: 143 modified paths less the 74 the frozen map authorises, with the reproduction command |
+| `N5` | A row claimed **5** host `Program.cs` modifications | Row deleted — the measured figure is **0**, and the deletion is explained rather than silent |
+| `N7` | The web-framework row read `.cs` at **16** | **17**, renamed to cover `.cs`, `.cshtml` and `.js`, with the composition 14 + 1 + 2 stated |
+| `N38` | `:109` promised disclosure *path by path*; the section gave counts per area | All **69** paths enumerated by name, in the same areas, summing to the same counts |
+| `N12` | *"twelve modifications"* to the excluded client | **Thirteen** files, with the reason the area table shows 12 stated rather than one figure silently overwriting the other |
+| `N4` | The cookie rename was justified as applying `__Host-` prefix semantics | Withdrawn as false on two counts, authority corrected to `CR2-F-11`, real cause (the `erp_auth_crm` collision) stated, and the `__Host-` absence carried as `RISK-172` |
+| `N8` | `MAJ-11` said **23** workflow steps | **25** — 22 `run:` and 3 `uses:` — agreeing with the compliance surface |
+| `N13` | A `public` enum and three `public` properties were removed from the excluded client with no disclosure row | A `MAJ-10` row naming the members, the authority `SR-08`, and why a source-breaking removal is permitted there |
+| `N14` | 101 pre-existing commented-out lines were deleted with no disclosure row | A `MAJ-10` row that also records the inconsistency with `L-01`, where the same hygiene deletion was declined |
+| `N35` | `MailService.SendLogMessage`, a `public` member of a published package, was removed with no disclosure row | A `MAJ-10` row explaining why replacing rather than overloading was required, with binary compatibility carried as `RISK-176` |
+| `N19` | `SR-11`'s remediation said the wrapper *swallows* the vendor callback's exceptions, contradicting its own evidence | Restated to what the code does: replace a measured defect, guard-and-wrap anything else, one-time drift diagnostic |
+| `N29` | `M-07`'s locators and evidence described the pre-fix file — the cited lines are now a lock object and a comment, and its `grep` returns 4 rather than 0 | Both the as-found and the shipped locators, evidence scoped to the audited commit, and the verdict split into the half closed under `CK-08` and the half open as `RISK-179` |
+| `N30` | Fourteen citations reused Part 1 identifiers byte-identically, and the collision had reached twelve source comments | All fourteen namespace-qualified `seam/<id>`, the namespace declared with its complete positional mapping, the twelve comments re-cited canonically, and the workflow now refuses a bare citation |
+| `N34` | The `M-17` cell said *Documented only* while the same register recorded four of five fixes **DONE** | Restated as partially remediated, with the residual named as item 5 and cross-references to `CK-07`, `RISK-131` and `RISK-166` |
+| `N32` | The two non-member projects were recorded at *53 and 0* warnings | **48 and 0**, with a commit and toolchain qualifier and the command to re-measure. The finding named one cell; the stale figure was carried in **thirteen** places in this document — nine in prose or evidence cells and four in the compact `53 W / 0 E` notation, which is why a single pattern did not find them all — and all thirteen now read **48** — the one corrected cell beside twelve uncorrected ones would have left the document contradicting itself. Re-measured at this revision on SDK 10.0.302, with and without `ErpDocumentationDiagnostics`: Server **48**, Shared **0**, both `0 errors` |
+| `N37` | Two helper members were named `SafeIconClass` and `SafeCssColor` | `SafeStyleValue.IconClass` and `SafeStyleValue.CssColor` — corrected at all four sites across two documents, because the bare names resolve to no symbol |
+| `N25` | The `SiteMenu.cshtml` row said *"Comments only"* | True now, and the row says why it was not |
+| `N28` | The `M06` attestation read `PASS` while its note said the mandated header set is **not** satisfied | The note is **scoped** — it states what the PASS covers and points at Gate 5 row `A17` for what it does not. Only the note changed: `PARTIAL` is not a verdict the evaluator recognises and would hard-fail the gate, and rewriting the scenario would rotate its revision and invalidate all 32 attestations |
+| `N9`, `N16`, `N17`, `N21`, `N36` | Five residuals were absent from the register | `RISK-180`, `RISK-173`, `RISK-174`, `RISK-175`, `RISK-176`, each with its evidence and its remedy; `N9` is additionally written into the [secure configuration guide](secure-configuration.md) where an operator will meet the `403` |
+
+**Verification.** The audit report still carries **138** finding records with **138** distinct identifiers and
+exactly **53** in the Part 1 inventory, so the workflow's `>= 138` and `== 53` assertions both hold. The real
+identifier step, extracted from the parsed YAML and run under `bash -e`, **exits 0**. `markdownlint` is clean
+across the whole security document set. **138 internal anchor links were resolved against anchors generated by
+the documentation toolchain itself, with none broken** — which also caught an incorrect anchor in this pass's
+own text before it shipped. The register's self-asserted identifier contract was re-run and re-stated:
+**own heading 121, combined 2, row-only 21, indexed 144**, the routes partitioning the index and every declared
+identifier indexed; the index remains one ascending, duplicate-free row per identifier. The previous figures
+read *111 … 134* while the script already returned 112 and 135, an off-by-one predating this pass that is
+corrected rather than carried forward.
+
+### What this pass did not change, and why
+
+- **The Content-Security-Policy still ships report-only.** AAP §0.3.2 and §0.6.5 make that an explicit
+  exception, and `MAJ-03` refused the alternative of accepting a substituted header name. `A17` records the
+  unmet criterion; `N27` bounded its blast radius without touching its verdict. Enforcement is an owner
+  decision (`MAJ-08`, `RISK-022`).
+- **The `AutoMapper` licence posture is untouched** — `RISK-001`, an owner decision no automated agent may
+  settle, and `dotnet pack` remains fail-closed by design.
+- **No test project was created.** Gate 4 stays vacuous by construction; creating a suite is the feature work
+  the engagement's modification boundaries forbid.
+- **Analyzer diagnostics stay warnings.** Promoting them would demand the mass refactor the minimal-change
+  clause forbids. Only the dependency diagnostics, and now the two zero-tolerance doc-comment rules, are
+  fatal.
+- **`CS1572` and `CS1587` are not asserted**, and `CS1591` is suppressed under the opt-in. All three are
+  pre-existing backlogs, measured at 15, 7 and thousands respectively.
+- **Minimal Change guideline 9 could not be repaired retroactively** for the original remediation, which
+  `CK-23` records; it is met for this pass, as the seven class boundaries above show.

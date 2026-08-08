@@ -20,7 +20,7 @@ namespace WebVella.Erp.Plugins.Project.Utils
 		/// </summary>
 		/// <remarks>
 		/// <para>
-		/// THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding M-01. The
+		/// THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding SR-05 (seam/M-01). The
 		/// write paths are sanitized at their own choke points, which protects everything stored FROM NOW ON
 		/// and nothing stored before. Any payload already sitting in a comment, timelog or feed row stays
 		/// live for every reader until it is neutralised on the way out, and the platform's remediation scope
