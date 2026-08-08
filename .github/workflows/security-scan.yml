@@ -121,6 +121,30 @@ jobs:
     # FALSELY CLEAN. Running here keeps all 15 corrections regression-proofed.
     runs-on: ubuntu-latest
 
+    # Review finding N10. THREAT ADDRESSED: CWE-400, uncontrolled resource
+    # consumption, applied to the gate itself. Without this the job inherits
+    # GitHub's 360-minute default, so any step that hangs rather than fails -
+    # a wedged build server, a `dotnet` awaiting stdin, a network read with no
+    # timeout of its own - holds a runner for six hours and reports nothing.
+    # A gate whose failure mode is a six-hour silence is a gate that gets
+    # cancelled by hand and then ignored.
+    #
+    # 90 IS DERIVED, NOT GUESSED, and it is deliberately not the ~45 minutes a
+    # first reading of the observed times suggests. The single longest step
+    # carries its own 1,800-second (30-minute) cost bound for the taint scan of
+    # the excluded compilation, and that bound is a REGRESSION DETECTOR whose
+    # expiry must surface as the named, explained failure that step raises. A
+    # job timeout at or near 45 minutes would kill the job mid-scan on exactly
+    # the run that had something to report, replacing a precise finding with an
+    # opaque cancellation. So the ceiling sits above the worst case every step
+    # can legitimately reach (roughly 55 minutes: restore, a non-incremental
+    # analyzer build, that 30-minute bound, two advisory listings, the two
+    # explicitly gated projects, a publish plus eight startup probes, and a
+    # history-wide secret sweep) while still cutting a runaway by a factor of
+    # four. Raise it only alongside a measurement, never to make a red run go
+    # green.
+    timeout-minutes: 90
+
     # The projects the solution does not enumerate, declared ONCE so that the
     # coverage assertion and the per-project gate steps below cannot disagree about
     # which those are. The solution enumerates 17 of the repository's 19 projects;
@@ -141,6 +165,41 @@ jobs:
       EXPLICITLY_GATED_PROJECTS: |
         WebVella.Erp.WebAssembly/Server/WebVella.Erp.WebAssembly.Server.csproj
         WebVella.Erp.WebAssembly/Shared/WebVella.Erp.WebAssembly.Shared.csproj
+
+      # KNOWN-UNMET BASELINE - review finding N27. Rows that are RED BY DESIGN
+      # because an OWNER DECISION, not an engineering change, is what closes them.
+      #
+      # THE DEFECT THIS FIXES. Gate 5 folds every non-passing row into one exit
+      # status, so a row that CANNOT pass made the job's conclusion permanently
+      # `failure` on every push, pull request, scheduled run and dispatch. A gate
+      # that is red for a reason nobody can act on is a gate whose red carries no
+      # information: it cannot be a required check, so branch protection cannot
+      # use it, and a genuine NEW regression arrives indistinguishable from the
+      # standing red. The fix is not to soften the row - its verdict is unchanged
+      # and still published - but to separate "unmet and known" from "unmet and
+      # unexpected", so an ordinary run is green WITH WARNINGS and the first
+      # unexpected red is visible instantly.
+      #
+      # DECLARED ONCE HERE, read by both Gate 5 and the release gate, on the same
+      # reasoning as the project list above: two copies of a security boundary
+      # drift. Format is ID~reason; the reason is printed in the warning, so the
+      # exemption explains itself in the run log rather than in a document nobody
+      # opens.
+      #
+      # THIS LIST IS NOT DOCUMENTATION, AND IT CANNOT ROT IN EITHER DIRECTION.
+      # Gate 5 fails the job if an entry names a row that is not in the matrix,
+      # and equally if a baselined row starts PASSING - because a cleared
+      # exemption left in place silently re-arms the fail-open this entry was
+      # granted to avoid. It is also an ORDINARY-RUN exemption only: in a release
+      # context (a v* tag push, or a release-candidate dispatch) every entry here
+      # is fatal again, so the exemption can never carry a release.
+      #
+      # ADDING AN ENTRY IS A GOVERNANCE ACT, not a convenience. It requires a
+      # recorded, justified risk acceptance in docs/security/risk-register.md
+      # naming who accepted it, in the same commit. Never add a row here to clear
+      # a red run that a code fix would close.
+      KNOWN_UNMET_BASELINE: |
+        A17~Content-Security-Policy ships under the report-only header name, so the mandated seven-name header set is not met. AAP 0.3.2 and 0.6.5 forbid enforcing the policy until the inline-script backlog is cleared, and code-review finding MAJ-03 refused a verification that accepts a different header name. Enforcement is an owner decision - see MAJ-08 and RISK-022.
 
     steps:
       # Supplies the tracked tree that the composition, static-analysis and
@@ -614,7 +673,25 @@ jobs:
           # proof of a pre-existing source defect. On a fresh runner no server is
           # running yet, so this is a no-op there and costs nothing.
           dotnet build-server shutdown || true
-          dotnet build WebVella.ERP3.sln --no-restore --no-incremental -v:n 2>&1 | tee analyzer-build.txt
+          # ErpDocumentationDiagnostics is what makes Property 4 below possible -
+          # review finding N1. The compiler only parses XML documentation comments
+          # when it is emitting a documentation file, so without this the doc-comment
+          # rules are not merely unasserted, they are UNMEASURABLE: eleven CS1570
+          # defects reached the tracked tree and were found by human review because
+          # every build in this workflow was silent about them.
+          #
+          # THE PROPERTY IS READ FROM Directory.Build.props AND MUST NOT BE REPLACED
+          # BY -p:NoWarn HERE. Generating documentation also arms CS1591 across a
+          # large pre-existing backlog, and the obvious way to quiet it -
+          # `-p:NoWarn=CS1591` on this line - is a GLOBAL MSBuild property that
+          # OVERRIDES rather than appends, which silently disarms the conditioned
+          # CA3001-CA3012 exclusion and makes this build arm the unbounded taint
+          # family against WebVella.Erp.Web. Measured: abandoned after 21 minutes.
+          # The props file appends instead, so the exclusion survives; verified there
+          # and asserted by the NoWarn boundary step. The twelve CA baselines below
+          # were re-measured under this opt-in and are unchanged by it.
+          dotnet build WebVella.ERP3.sln --no-restore --no-incremental -v:n \
+            -p:ErpDocumentationDiagnostics=true 2>&1 | tee analyzer-build.txt
 
           # Property 1 - no error-severity CA diagnostic anywhere. Nothing in this
           # repository promotes a CA rule to an error, so this is an assertion
@@ -706,8 +783,82 @@ jobs:
             status=1
           fi
 
+          # Property 4 - DOC-COMMENT CORRECTNESS. Review finding N1.
+          #
+          # WHY THIS IS A GATE AND NOT HOUSEKEEPING. Eleven malformed documentation
+          # comments reached the tracked tree in a single commit and were caught by
+          # human review, because no build in this workflow asked the compiler to
+          # parse them. That is a gate blindness with a security consequence rather
+          # than a cosmetic one: the comments this repository relies on to record WHICH
+          # THREAT each change addresses are, structurally, unparsed text. A malformed
+          # block silently swallows the sibling members' documentation into itself, so
+          # the recorded rationale for a security control can disappear from the
+          # generated documentation while every gate stays green - which is exactly
+          # what happened.
+          #
+          # CS1570 and CS1571 ARE ZERO-TOLERANCE, not ratcheted. Malformed XML and a
+          # parameter documented twice are always defects, they are cheap to fix, and
+          # the tree is at zero for both after this review - so a baseline above zero
+          # would only institutionalise the next one.
+          #
+          # CS1573 IS RATCHETED at its measured value because it is a large
+          # pre-existing backlog: 69 members document some parameters and not others,
+          # across files this engagement never touched. Clearing it is the mass
+          # documentation pass the minimal-change clause forbids; letting it GROW is a
+          # new defect, and that is what this catches.
+          #
+          # CS1572 (15) AND CS1587 (7) ARE DELIBERATELY NOT ASSERTED. Both are
+          # pre-existing at those counts and neither is a correctness hazard for the
+          # generated output the way a malformed block is; asserting them would add two
+          # more baselines to maintain for no additional protection. Their absence here
+          # is a measured decision, not an oversight - CS1591 is suppressed outright in
+          # Directory.Build.props for the same class of reason, stated there.
+          doc_rules_status=0
+          for entry in CS1570=0 CS1571=0 CS1573=69; do
+            rule=${entry%%=*}
+            baseline=${entry##*=}
+            # Guarded exactly as the CA loop above is: an unguarded grep at zero
+            # matches nothing, exits 1, and `set -o pipefail` would abort the step
+            # before it printed a single result.
+            actual=$(sed -E 's/^[[:space:]]*[0-9]+>//' analyzer-build.txt \
+              | { grep -oE "[^[:space:](]+\.cs\([0-9]+,[0-9]+\): warning ${rule}" || true; } \
+              | sed -E 's/^[0-9]+>//' \
+              | sort -u | wc -l | tr -d '[:space:]')
+            if [ "$actual" -gt "$baseline" ]; then
+              echo "::error::Gate 1 failed - ${rule} rose from its recorded baseline of ${baseline} to ${actual}. A documentation comment is malformed, documents a parameter twice, or leaves a parameter undocumented alongside documented siblings - which silently corrupts the generated documentation for the members around it. Fix the comment; do not raise the baseline."
+              sed -E 's/^[[:space:]]*[0-9]+>//' analyzer-build.txt \
+                | grep -oE "[^[:space:](]+\.cs\([0-9]+,[0-9]+\): warning ${rule}" \
+                | sed -E 's/^[0-9]+>//' | sort -u
+              doc_rules_status=1
+              status=1
+            elif [ "$actual" -lt "$baseline" ]; then
+              echo "IMPROVED ${rule} is now ${actual}, below its baseline of ${baseline} - lower the baseline in this workflow to lock the improvement in."
+            else
+              echo "PASS ${rule} at its baseline of ${baseline}"
+            fi
+          done
+          # LIVENESS FOR PROPERTY 4, on the same reasoning as Property 3. CS1570 and
+          # CS1571 both sit at zero, and a build that never generated documentation
+          # would report zero for them too - so their zeros alone cannot distinguish a
+          # clean tree from an unmeasured one. CS1573's non-zero backlog is the oracle:
+          # it is present in this repository by the dozen and can only be reported when
+          # the compiler is parsing doc comments, so a zero there means the opt-in
+          # above did not take effect. Read as an improvement it would be a fail-open.
+          if [ "$doc_rules_status" -eq 0 ]; then
+            doc_liveness=$(sed -E 's/^[[:space:]]*[0-9]+>//' analyzer-build.txt \
+              | { grep -oE "[^[:space:](]+\.cs\([0-9]+,[0-9]+\): warning CS15(7[0-3]|87)" || true; } \
+              | sed -E 's/^[0-9]+>//' \
+              | sort -u | wc -l | tr -d '[:space:]')
+            if [ "$doc_liveness" -eq 0 ]; then
+              echo "::error::Gate 1 failed - not one doc-comment diagnostic of any kind was reported, which is impossible for this repository while documentation generation is on: the CS1573 backlog alone is 69. ErpDocumentationDiagnostics did not take effect, so the doc-comment rules measured nothing and their zeros are meaningless. Do not read this as an improvement. Confirm the property reaches Directory.Build.props and re-run."
+              status=1
+            else
+              echo "PASS doc-comment analysis demonstrably ran (${doc_liveness} CS157x/CS1587 diagnostics observed)"
+            fi
+          fi
+
           if [ "$status" -eq 0 ]; then
-            echo "Gate 1 passed - no error-severity CA diagnostic, no growth in any of the ${total_baseline}-diagnostic security baseline (${total_actual} observed), and the analyzers demonstrably ran (${ca_total} CA diagnostics across all categories)."
+            echo "Gate 1 passed - no error-severity CA diagnostic, no growth in any of the ${total_baseline}-diagnostic security baseline (${total_actual} observed), no malformed or duplicated documentation comment, and the analyzers demonstrably ran (${ca_total} CA diagnostics across all categories)."
           fi
           exit "$status"
 
@@ -928,11 +1079,41 @@ jobs:
             # still propagates through the pipe rather than being masked by tee.
             # `< /dev/null` is retained: dotnet drains stdin, and the project list is
             # read from file descriptor 3 for exactly that reason.
-            if ! dotnet build "$proj" --no-restore --no-incremental < /dev/null 2>&1 \
-              | tee -a analyzer-build.txt; then
+            #
+            # ErpDocumentationDiagnostics is set here for the same reason it is set on
+            # the solution build - review finding N1 - and setting it on BOTH is what
+            # keeps doc-comment coverage at 19 of 19 rather than 17 of 19. The
+            # coverage note at the foot of this file claims two routes to complete
+            # coverage; a rule gated on one route only would quietly make that claim
+            # false. A per-project copy of the output is kept because the shared
+            # evidence file already carries the solution's counts, so asserting
+            # against it here could not tell this project's zero from the
+            # solution's backlog.
+            if ! dotnet build "$proj" --no-restore --no-incremental \
+              -p:ErpDocumentationDiagnostics=true < /dev/null 2>&1 \
+              | tee gated-build-current.txt | tee -a analyzer-build.txt; then
               printf '%s\n' "::error::Gate 1 failed for ${proj} - the analyzer-enabled build did not succeed."
               status=1
             fi
+            # Zero-tolerance on both, and measured at zero for both projects: neither
+            # carries a malformed or duplicated documentation comment, and neither
+            # carries the CS1573 backlog the solution does, so a ratchet above zero
+            # would only license the first regression here. Guarded grep for the same
+            # reason as everywhere else in this file: at zero an unguarded grep exits
+            # 1 and `set -o pipefail` would abort the step mid-loop.
+            for rule in CS1570 CS1571 CS1573; do
+              found=$(sed -E 's/^[[:space:]]*[0-9]+>//' gated-build-current.txt \
+                | { grep -oE "[^[:space:](]+\.cs\([0-9]+,[0-9]+\): warning ${rule}" || true; } \
+                | sed -E 's/^[0-9]+>//' | sort -u)
+              if [ -n "$found" ]; then
+                printf '%s\n' "::error::Gate 1 failed - ${proj} reports ${rule}, a documentation-comment defect, where it was measured at zero. A malformed block silently swallows the surrounding members' documentation, so the recorded rationale for a control can vanish while every other gate stays green. Fix the comment."
+                printf '%s\n' "$found" | sed 's/^/  /'
+                status=1
+              else
+                printf '%s\n' "PASS ${proj} carries no ${rule}"
+              fi
+            done
+            rm -f gated-build-current.txt
             tfm=$(dotnet msbuild "$proj" -getProperty:TargetFramework < /dev/null | tr -d '\r')
             case "$tfm" in
               net7.0|net6.0|net5.0|netcoreapp*|net4*)
@@ -2988,8 +3169,50 @@ jobs:
             status=1
           fi
 
+          # Review finding N30 - CITATIONS, not just headings.
+          #
+          # WHAT THE CHECK ABOVE CANNOT SEE. It proves every record HEADING is unique,
+          # which is necessary and was never sufficient: a record can head itself
+          # unambiguously and still CITE an identifier that means two different things
+          # in this one document. Part 4's records each cite the identifier the
+          # frontend and API seam review gave them, and fourteen of those are
+          # byte-identical to Part 1 identifiers - `C-01`, `M-01`, `L-01` and so on -
+          # so a reader, a grep, or a source comment pointing at "M-01" resolves to
+          # either of two unrelated findings with no way to tell which. That is not a
+          # tidiness problem: the collision already propagated into twelve source
+          # comments, where a citation naming the wrong finding misdirects whoever
+          # next reads the control to understand why it exists.
+          #
+          # THE RULE. A citation must be NAMESPACE-QUALIFIED, so it cannot collide with
+          # the Part 1 inventory. Series with their own prefix - CR-, HR-, CK-, GATE-,
+          # DOC-, P- - are qualified by construction and unaffected. What is refused is
+          # a citation whose identifier is EXACTLY the Part 1 shape, because that shape
+          # is precisely what is ambiguous. The namespaced form used here is
+          # `seam/C-01`: the source review's own identifier is preserved verbatim
+          # inside a namespace rather than renamed, so the citation stays faithful to
+          # the review it cites while resolving to exactly one record.
+          bare_citations=$(grep -nP 'Review identifier `(C|H|M|L)-[0-9]+`' "$report" || true)
+          if [ -n "$bare_citations" ]; then
+            echo "::error::MILESTONE-01 - $(printf '%s\n' "$bare_citations" | wc -l | tr -d '[:space:]') review-identifier citation(s) in $report use a bare Part 1 identifier shape, so each resolves to two unrelated findings in this one document. Namespace-qualify them - the established form is \`seam/C-01\` for the frontend and API seam review - and correct any source comment citing the bare form to the canonical SR- record identifier, in the same commit."
+            printf '%s\n' "$bare_citations" | cut -c1-200 | sed 's/^/  /'
+            status=1
+          else
+            echo "PASS no review-identifier citation collides with the Part 1 inventory"
+          fi
+          # A namespace nobody can resolve is not a qualification. If the namespaced
+          # form is in use, the document must also say what the namespace means, so a
+          # reader meeting `seam/C-01` can find out whose identifier it is.
+          if grep -qP 'Review identifier `seam/' "$report"; then
+            if ! grep -iE 'namespace|frontend and API seam review' "$report" | grep -qF 'seam/'; then
+              echo "::error::MILESTONE-01 - $report uses the \`seam/\` citation namespace but never explains it, so the qualification cannot be resolved by a reader. State once, where Part 4 is introduced, that \`seam/\` namespaces the frontend and API seam review's own identifiers and that they are distinct from the Part 1 inventory."
+              status=1
+            else
+              echo "PASS the seam/ citation namespace is declared where it is used"
+            fi
+          fi
+
           if [ "$status" -eq 0 ]; then
-            echo "MILESTONE-01 passed - $records finding records in $report carry $unique distinct identifiers, with the Part 1 inventory at $part1."
+            echo "MILESTONE-01 passed - $records finding records in $report carry $unique distinct identifiers, with the Part 1 inventory at $part1, and every review-identifier citation is namespace-qualified."
           fi
           rm -f finding-ids.txt
           exit "$status"
@@ -3413,6 +3636,16 @@ jobs:
             echo 'reported here and is FATAL in a release context, so a green ordinary run never'
             echo 'implies release readiness - read RELEASE-READY in the summary.'
             echo ''
+            echo 'A row recorded KNOWN-UNMET is unmet AND declared in the job-level'
+            echo 'KNOWN_UNMET_BASELINE, because an owner decision rather than an engineering'
+            echo 'change is what closes it. Its verdict below is unchanged and it does NOT pass;'
+            echo 'it only stops failing an ORDINARY run, so that the first unexpected red row is'
+            echo 'visible at once instead of hiding behind a permanent one. Each such row is fatal'
+            echo 'again in a release context, forces RELEASE-READY=no, requires a recorded risk'
+            echo 'acceptance in docs/security/risk-register.md, and fails the job the moment it'
+            echo 'starts passing so the exemption cannot outlive its reason. Any unmet row NOT in'
+            echo 'that list is fatal on every run.'
+            echo ''
             echo 'EVERY MUTATING PROCEDURE BINDS THE PREREQUISITES BLOCK PRINTED AT THE END OF'
             echo 'THIS FILE. A scenario executed without them can corrupt real data or leave'
             echo 'test state behind, and an attestation from such a run is not evidence.'
@@ -3495,6 +3728,28 @@ jobs:
             [ -n "$value" ] || return 1
             printf '%s' "$value"
           }
+          # Review finding N27. The declared known-unmet baseline, read from the
+          # job-level environment rather than restated here so the release gate
+          # below reads the identical list. Returns the reason and succeeds when
+          # $1 is baselined; returns non-zero when it is not, which is how every
+          # call site below tests membership.
+          baseline_reason() {
+            value=$(printf '%s\n' "${KNOWN_UNMET_BASELINE:-}" | sed 's/^[[:space:]]*//' \
+              | awk -F'~' -v k="$1" '$1 == k { sub(/^[^~]*~/, ""); print; exit }')
+            [ -n "$value" ] || return 1
+            printf '%s' "$value"
+          }
+          baseline_ids() {
+            printf '%s\n' "${KNOWN_UNMET_BASELINE:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+              | awk -F'~' 'NF && $1 !~ /^#/ { print $1 }' | sort -u
+          }
+          # Declared before first use: `set -u` above turns a use-before-assignment
+          # into an immediate abort, which for a counter folded into the exit status
+          # would mean a gate that cannot run rather than one that reports.
+          baseline_unmet=0
+          baseline_unmet_ids=''
+          baseline_blocked_ids=''
+          baseline_cleared_ids=''
           # A fault raised in this section cannot use `status` - it is initialised
           # further below and would reset it, silently discarding the finding. It is
           # carried in its own flag, declared here before its first use, and folded
@@ -3677,7 +3932,20 @@ jobs:
                 ;;
             esac
             case "$st" in
-              PASS|PASS-MANUAL) passed=$((passed + 1)) ;;
+              PASS|PASS-MANUAL)
+                passed=$((passed + 1))
+                # Review finding N27, ROT IN THE DIRECTION NOBODY WATCHES FOR. A
+                # baselined row that now passes means the exemption has been earned
+                # out - and an exemption left in place after that is a standing
+                # licence for the row to go red again unnoticed, which is precisely
+                # the fail-open the baseline was granted to avoid. So a cleared
+                # entry is a hard failure until it is removed, in the same way the
+                # project-list assertion refuses an entry that no longer describes
+                # the tree.
+                if baseline_reason "$id" >/dev/null 2>&1; then
+                  baseline_cleared_ids="$baseline_cleared_ids $id"
+                fi
+                ;;
               DEFERRED)
                 deferred=$((deferred + 1))
                 if [ "$(required_for "$id" 2>/dev/null)" = 'REQUIRED' ]; then
@@ -3686,7 +3954,26 @@ jobs:
                   st='DEFERRED-REQ'
                 fi
                 ;;
-              *)                failed=$((failed + 1)); status=1 ;;
+              *)
+                # Review finding N27. An unmet row that is DECLARED known-unmet is
+                # reported rather than fatal on an ordinary run, and stays fatal in
+                # a release context. Its verdict and its reason are published
+                # unchanged either way - only the exit status differs - so nothing
+                # about the record is softened. Every row NOT in the declared list
+                # is fatal on every run, which is what keeps a new regression
+                # instantly visible instead of hiding behind a standing red.
+                if [ "$release_context" != 'yes' ] && baseline_reason "$id" >/dev/null 2>&1; then
+                  baseline_unmet=$((baseline_unmet + 1))
+                  baseline_unmet_ids="$baseline_unmet_ids $id"
+                  st='KNOWN-UNMET'
+                  echo "::warning::Gate 5 - row $id is UNMET and is a declared known-unmet baseline, so it does not fail this run and IS fatal in a release context. $(baseline_reason "$id")"
+                else
+                  if [ "$release_context" = 'yes' ] && baseline_reason "$id" >/dev/null 2>&1; then
+                    baseline_blocked_ids="$baseline_blocked_ids $id"
+                  fi
+                  failed=$((failed + 1)); status=1
+                fi
+                ;;
             esac
             {
               printf '%-4s %-12s %s\n' "$id" "$st" "$(printf '%s' "$scenario" | sed 's/^[[:space:]]*//')"
@@ -3734,6 +4021,29 @@ jobs:
             done < "$attest"
             rm -f .gate5-known-ids
           fi
+          # Review finding N27 - the baseline declaration is asserted in BOTH
+          # directions, so it cannot rot silently either way.
+          #
+          # Direction 1: an entry naming a row that is not in the matrix. That is a
+          # typo or a renamed row, and its effect is an exemption granted to nothing
+          # while the operator believes a row is covered by it.
+          rows | sed 's/^[[:space:]]*//' | cut -d'~' -f1 | grep -v '^$' | sort -u > .gate5-row-ids
+          for bid in $(baseline_ids); do
+            if ! grep -qxF "$bid" .gate5-row-ids; then
+              echo "::error::Gate 5 failed - KNOWN_UNMET_BASELINE declares row '$bid', which is not in the verification matrix. An exemption pointing at no row grants nothing while reading as though it covers something. Correct the identifier or remove the entry."
+              status=1
+            fi
+          done
+          rm -f .gate5-row-ids
+          # Direction 2: an entry whose row now PASSES. The exemption has been earned
+          # out, and leaving it in place would let that row go red again without
+          # failing anything - re-arming the fail-open the entry was granted to
+          # avoid. Removing it is the act that locks the improvement in, exactly as
+          # lowering an analyzer baseline does in Gate 1.
+          if [ -n "$baseline_cleared_ids" ]; then
+            echo "::error::Gate 5 failed - declared known-unmet baseline row(s) now PASS:$baseline_cleared_ids. The exemption has been earned out. Remove the entry from KNOWN_UNMET_BASELINE, and close the matching risk-register acceptance, in the same commit - an exemption left in place after its row passes silently permits that row to regress."
+            status=1
+          fi
           # ---- release readiness, computed and printed on EVERY run --------
           # This verdict is stated unconditionally so that a green run can never be
           # mistaken for release readiness. On an ordinary push or pull request an
@@ -3741,11 +4051,29 @@ jobs:
           # version-tag push, or a dispatch that opted in, the same row is fatal.
           release_ready='yes'
           if [ "$required_deferred" -gt 0 ] || [ "$failed" -gt 0 ]; then release_ready='no'; fi
+          # Review finding N27. A known-unmet row does not fail an ordinary run, but
+          # it is emphatically NOT release-ready: the whole point of the exemption is
+          # that it holds outside a release context and nowhere else. Folding it in
+          # here is what stops "the job is green" from being read as "this can ship".
+          if [ "$baseline_unmet" -gt 0 ]; then release_ready='no'; fi
           {
             echo ''
-            echo "SUMMARY  rows=$total  proven=$passed  deferred=$deferred  failed=$failed"
+            echo "SUMMARY  rows=$total  proven=$passed  deferred=$deferred  failed=$failed  known-unmet=$baseline_unmet"
             echo "         required-but-unproven=$required_deferred  release-context=$release_context  RELEASE-READY=$release_ready"
             echo "         attestation file: $attest_trusted"
+            if [ "$baseline_unmet" -gt 0 ]; then
+              echo ''
+              echo 'KNOWN-UNMET, DECLARED - the following row(s) are unmet and are declared in the'
+              echo 'job-level KNOWN_UNMET_BASELINE because an OWNER DECISION rather than an'
+              echo 'engineering change is what closes them. Their verdicts above are unchanged and'
+              echo 'they do NOT pass; they simply do not fail an ordinary run, so that the first'
+              echo 'UNEXPECTED red row is visible immediately instead of hiding behind a standing'
+              echo 'one. Each is fatal again in a release context, and each requires a recorded'
+              echo 'risk acceptance in docs/security/risk-register.md:'
+              for bid in $baseline_unmet_ids; do
+                printf '  %-4s %s\n' "$bid" "$(baseline_reason "$bid")"
+              done
+            fi
             if [ "$required_deferred" -gt 0 ]; then
               echo ''
               echo 'RELEASE-BLOCKING - the following REQUIRED scenarios verify a Critical or High'
@@ -3781,14 +4109,22 @@ jobs:
             echo "::error::Gate 5 failed - this is a RELEASE context and $required_deferred REQUIRED scenario(s) are unproven:$required_deferred_ids. Each one verifies a Critical or High finding, so releasing now would ship an unverified security fix. Execute the printed procedures against a disposable environment and commit the attestations, or do not tag."
             status=1
           fi
+          # Review finding N27 - the release half of the exemption, stated as its own
+          # error so the reason a tag build stops is unambiguous. These rows were
+          # already counted as failures by the loop; this names them and says why the
+          # ordinary-run exemption does not reach here.
+          if [ -n "$baseline_blocked_ids" ]; then
+            echo "::error::Gate 5 failed - this is a RELEASE context and declared known-unmet baseline row(s) are still unmet:$baseline_blocked_ids. KNOWN_UNMET_BASELINE is an ORDINARY-RUN exemption only, by design: an unmet acceptance criterion may not be carried into a release by an entry in a workflow file. Close the row, or obtain the owner decision it is waiting on, before tagging."
+            status=1
+          fi
           if [ "$status" -ne 0 ]; then
-            echo "::error::Gate 5 failed - see manual-verification-matrix.txt. A row is unproven, an evidence artifact is missing, an attestation is malformed or stale, or a release context has unproven required scenarios."
+            echo "::error::Gate 5 failed - see manual-verification-matrix.txt. A row is unproven, an evidence artifact is missing, an attestation is malformed or stale, a declared known-unmet baseline entry is stale or has been earned out, or a release context has unproven required scenarios or unmet baseline rows."
             exit 1
           fi
           if [ "$required_deferred" -gt 0 ]; then
             echo "::warning::Gate 5 - $required_deferred REQUIRED scenario(s) remain unproven:$required_deferred_ids. This run is not a release context so the job passes, but RELEASE-READY=no. A version-tag push or a release-candidate dispatch will fail until they are executed and attested."
           fi
-          echo "Gate 5 recorded - $passed of $total scenario(s) proven by retained evidence, $deferred deferred with a documented procedure ($required_deferred of them release-blocking), $failed failed. RELEASE-READY=$release_ready."
+          echo "Gate 5 recorded - $passed of $total scenario(s) proven by retained evidence, $deferred deferred with a documented procedure ($required_deferred of them release-blocking), $baseline_unmet declared known-unmet, $failed failed. RELEASE-READY=$release_ready."
 
       # Deliverable evidence. The brief requires scanner-derived before/after results so the
       # audit report and remediation log can cite tool output rather than narrative
@@ -3986,6 +4322,10 @@ jobs:
       # would defeat the entire purpose of the gate.
       - name: Release gate - every mandatory manual scenario must be attested
         if: always()
+        env:
+          # Same reasoning as Gate 5: an input value spliced into shell source is a
+          # command injection seam, and this job runs on pull_request.
+          RELEASE_CANDIDATE: ${{ inputs.release_candidate || false }}
         run: |
           set -uo pipefail
           matrix=manual-verification-matrix.txt
@@ -3995,18 +4335,62 @@ jobs:
             echo "::error::Release gate failed - $matrix is absent, so Gate 5 did not complete and no scenario is proven. An assertion that cannot run is a failure."
             exit 1
           fi
+          # Resolved on exactly the same terms as Gate 5 - a version-tag push, or a
+          # dispatch that opted in - because the two steps must never disagree about
+          # whether this run is a release.
+          release_context='no'
+          case "${GITHUB_REF:-}" in
+            refs/tags/v*) release_context='yes' ;;
+          esac
+          if [ "${RELEASE_CANDIDATE:-false}" = 'true' ]; then release_context='yes'; fi
+          # Review finding N27. The declared baseline is READ from the job-level
+          # environment, never restated, so this step and Gate 5 cannot drift.
+          baseline_ids=$(printf '%s\n' "${KNOWN_UNMET_BASELINE:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | awk -F'~' 'NF && $1 !~ /^#/ { print $1 }' | sort -u)
+          # A KNOWN-UNMET token in the published matrix is only honoured for a row
+          # that is actually declared. The matrix is an artefact this step consumes
+          # rather than computes, and the whole value of consuming it is that it
+          # cannot disagree with what was published - so it is verified rather than
+          # trusted, on the same principle that refuses an untracked attestation
+          # file. A row wearing the token without a declaration is a failure.
+          undeclared=''
+          for row in $(grep -aE '^[AM][0-9]+ +KNOWN-UNMET ' "$matrix" | awk '{ print $1 }'); do
+            if ! printf '%s\n' "$baseline_ids" | grep -qxF "$row"; then
+              undeclared="$undeclared $row"
+            fi
+          done
+          if [ -n "$undeclared" ]; then
+            echo "::error::Release gate failed - the matrix records row(s)$undeclared as KNOWN-UNMET, but they are not declared in KNOWN_UNMET_BASELINE. An exemption must be declared in the workflow, not asserted by the artefact it exempts."
+            exit 1
+          fi
           # Parsed from the matrix rather than recomputed, so this step cannot
           # disagree with the record that was published. Row lines are
           # '<id> <status> <scenario>' in column 1; the continuation line carrying
           # the reason is indented and is skipped by the leading-character anchor.
-          unproven=$(grep -aE '^[AM][0-9]+ +' "$matrix" | grep -avE '^[AM][0-9]+ +(PASS|PASS-MANUAL) ' || true)
+          #
+          # Review finding N27: outside a release context a declared KNOWN-UNMET row
+          # is reported rather than blocking, which is what makes this step usable as
+          # a required check for branch protection instead of permanently red for a
+          # reason no contributor can act on. In a release context the accepted set
+          # narrows back to proven-only, so an unmet acceptance criterion can never be
+          # carried into a release.
+          accepted='(PASS|PASS-MANUAL)'
+          if [ "$release_context" != 'yes' ]; then
+            accepted='(PASS|PASS-MANUAL|KNOWN-UNMET)'
+          fi
+          unproven=$(grep -aE '^[AM][0-9]+ +' "$matrix" | grep -avE "^[AM][0-9]+ +${accepted} " || true)
           proven=$(grep -acE '^[AM][0-9]+ +(PASS|PASS-MANUAL) ' "$matrix" || true)
+          known_unmet=$(grep -acE '^[AM][0-9]+ +KNOWN-UNMET ' "$matrix" || true)
           if [ -n "$unproven" ]; then
-            echo "::error::Release gate failed - $(printf '%s\n' "$unproven" | wc -l | tr -d '[:space:]') mandatory verification row(s) are not proven. A DEFERRED row does not pass this gate. Execute the scenario against the deployment under test and commit a dated, attributed line per row to manual-verification-results.txt."
+            echo "::error::Release gate failed - $(printf '%s\n' "$unproven" | wc -l | tr -d '[:space:]') mandatory verification row(s) are not proven (release context: $release_context). A DEFERRED row does not pass this gate, and in a release context neither does a declared known-unmet row. Execute the scenario against the deployment under test and commit a dated, attributed line per row to manual-verification-results.txt."
             printf '%s\n' "$unproven"
             exit 1
           fi
-          echo "Release gate passed - all $proven mandatory verification row(s) are proven by retained evidence or a dated attestation."
+          if [ "$known_unmet" -gt 0 ]; then
+            echo "::warning::Release gate - $known_unmet row(s) are recorded KNOWN-UNMET and are declared in KNOWN_UNMET_BASELINE, so this ordinary run passes with them outstanding. They are NOT proven, RELEASE-READY is no, and a version-tag push or release-candidate dispatch will fail while they remain. See docs/security/risk-register.md."
+            grep -aE '^[AM][0-9]+ +KNOWN-UNMET ' "$matrix" | sed 's/^/  /'
+          fi
+          echo "Release gate passed - all $proven mandatory verification row(s) are proven by retained evidence or a dated attestation, with $known_unmet declared known-unmet (release context: $release_context)."
 # CI-COVERAGE NOTE - what a green run here does and does not prove, stated precisely
 # because a security artefact that overstates its coverage is worse than one that
 # admits a gap.

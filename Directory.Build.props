@@ -152,6 +152,43 @@
 		<ErrorLog>$(SecurityAnalyzerSarifDirectory)/$(MSBuildProjectName).sarif,version=2.1</ErrorLog>
 	</PropertyGroup>
 
+	<!-- DOC-COMMENT DIAGNOSTICS, OPT-IN. Review finding N1, gate half. THREAT ADDRESSED:
+	     a gate blindness rather than a code weakness. The compiler only PARSES XML
+	     documentation comments when it is asked to emit a documentation file, so
+	     CS1570 (malformed XML in a doc comment), CS1571 (a parameter documented twice)
+	     and CS1573 (a parameter left undocumented while its siblings are documented)
+	     are invisible to every ordinary build and to every step of the workflow.
+	     Eleven CS1570 defects consequently reached the tracked tree and were caught by
+	     human review instead of by CI. Setting this property is what lets the analyzer
+	     build measure those rules alongside the CA families, so the same class of
+	     regression is caught mechanically next time.
+
+	     IT IS OPT-IN RATHER THAN ALWAYS-ON because generating documentation also arms
+	     CS1591, missing comment on a publicly visible member, which this repository
+	     carries in the thousands as a pre-existing backlog. Left to speak it would bury
+	     the security signal in the evidence Gate 1 publishes, and clearing it would be
+	     the mass documentation pass the engagement's minimal-change clause forbids. So
+	     CS1591 is silenced here, under this condition and nowhere else, which keeps
+	     every ordinary restore, build, publish, pack and IDE load compiling exactly as
+	     measured.
+
+	     WHY THE SUPPRESSION IS WRITTEN IN THIS FILE AND MUST NEVER MOVE TO A COMMAND
+	     LINE. A `-p:NoWarn=CS1591` on the invocation becomes a GLOBAL MSBuild property,
+	     and a global property OVERRIDES rather than appends - so the conditioned NoWarn
+	     above stops contributing and the CA3001-CA3012 taint exclusion silently
+	     disarms. Measured, not theorised: a documentation build invoked that way armed
+	     the unbounded interprocedural taint family against WebVella.Erp.Web and had to
+	     be abandoned after 21 minutes. Appending inside a PropertyGroup preserves
+	     $(NoWarn), so the exclusion survives; this group is placed after it for exactly
+	     that reason. No CA identifier is added to NoWarn here, so Gate 1's NoWarn
+	     boundary assertion - which rejects any CA code outside the measured taint
+	     exclusion - is unaffected, and that step evaluates the property without this
+	     opt-in in any case. -->
+	<PropertyGroup Condition="'$(ErpDocumentationDiagnostics)' == 'true'">
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
+	</PropertyGroup>
+
 	<!-- LICENCE GOVERNANCE GATE. THREAT ADDRESSED: a supply-chain integrity one rather
 	     than a code weakness. Four manifests here declare PackageLicenseExpression
 	     Apache-2.0 and are published to nuget.org - WebVella.Erp, WebVella.Erp.Web,
