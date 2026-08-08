@@ -17,16 +17,17 @@
 		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING. The component publishes "label"
 		   as plain text and the avatar path separately, and the avatar element is authored here as literal
 		   Razor markup, so Razor encodes the src attribute and the label text each in its own context. Do NOT
-		   reintroduce Html.Raw; the Design and Display twins must stay identical - change both or neither. *@
+		   reintroduce Html.Raw; the Design and Display twins must stay identical - change both or neither.
+		   REVIEW FINDING N26 - the cell content is emitted on ONE line on purpose. Written across several lines
+		   it also emitted the newlines and indentation between them, which collapse to a leading and a trailing
+		   space inside the cell: visible in the right-aligned "font-weight-bold text-right" total row, where the
+		   figure no longer sat flush right. The three rows that carry no avatar (Billable, Non-Billable, Total)
+		   must emit the label and nothing else, exactly as the builder's own markup did before this encoding
+		   pass, and the separator below reproduces the single space the builder placed after the avatar. *@
 		var labelImagePath = (string)record["label_image"];
+		var labelImageSeparator = labelImagePath != null ? " " : "";
 		<wv-grid-row>
-			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">
-				@if (labelImagePath != null)
-				{
-					<img src="@labelImagePath" class="rounded-circle" width="24" alt="" />
-				}
-				@record["label"]
-			</wv-grid-column>
+			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">@if (labelImagePath != null){<img src="@labelImagePath" class="rounded-circle" width="24" alt="" />}@labelImageSeparator@record["label"]</wv-grid-column>
 			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold" : "") text-right">
 				@((decimal)record["day1"] > 0 ? Math.Round((decimal)record["day1"]/60,2) + "h" : "-")
 			</wv-grid-column>
