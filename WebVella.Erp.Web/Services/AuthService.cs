@@ -129,13 +129,46 @@ namespace WebVella.Erp.Web.Services
 			this.serviceProvider = serviceProvider;
 		}
 
+		/// <summary>
+		/// Normalises the credential IDENTIFIER - and only the identifier - so both entry points judge one
+		/// submission identically.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - review finding N33, and the correction of record for finding CK-09. CK-09's remediation
+		/// stated that both paths "verify the identical byte sequence". That was true of the PASSWORD, which is
+		/// never trimmed anywhere in this file, and false of the identifier: the bearer path trimmed and
+		/// case-folded it while the cookie path passed it through untouched, so " user@example.com " obtained a
+		/// bearer token yet failed interactive sign-in. Direction of the asymmetry was permissive-for-bearer, so
+		/// it was a behavioural-consistency defect rather than a privilege weakness - but a credential path whose
+		/// two entry points disagree about what the submitted identifier IS cannot be reasoned about, so the
+		/// normalisation now lives in exactly one place that both call.
+		/// <para>
+		/// TRIM ONLY, AND THE TWO OMISSIONS ARE DELIBERATE. Case folding is dropped because it is immaterial and
+		/// was lossy: SecurityManager resolves candidates with <c>lower(email) = lower(@email)</c> on a BOUND
+		/// parameter and then decides authoritatively with <c>StringComparison.OrdinalIgnoreCase</c>, so folding
+		/// changed no matched set, while it did defeat the <c>ORDER BY (email = @email) DESC</c> exact-spelling
+		/// preference that keeps a case-fold duplicate set deterministic. Trimming cannot lock any account out,
+		/// because <c>SecurityManager.IsValidEmail</c> accepts an address only when
+		/// <c>new MailAddress(value).Address == value</c>, and MailAddress strips surrounding whitespace - so no
+		/// stored address can carry any. The SECRET is still never normalised: see the comment in
+		/// <see cref="GetTokenAsync(string, string)"/> for why that must not change.
+		/// </para>
+		/// </remarks>
+		/// <param name="email">The caller-supplied identifier, or null.</param>
+		private static string NormalizeCredentialIdentifier(string email)
+		{
+			return email?.Trim();
+		}
+
 		// M-03 (OWASP A07): asynchronous because the sign-in below must be awaited - a fire-and-forget sign-in can
 		// return before the authentication cookie is written. The -Async suffix is load-bearing: the previous release
 		// published "public ErpUser Authenticate(string, string)", so changing that member's return type would be a
 		// source and binary break, and the original signature is preserved by the blocking wrapper below.
 		public async Task<ErpUser> AuthenticateAsync(string email, string password)
 		{
-			var user = new SecurityManager().GetUser(email, password);
+			// Review finding N33 - the SAME normalisation the bearer path applies, through the SAME member, so the
+			// two entry points cannot drift apart again.
+			var user = new SecurityManager().GetUser(NormalizeCredentialIdentifier(email), password);
 			if (user != null && user.Enabled)
 			{
 				var claims = new List<Claim>();
@@ -468,9 +501,12 @@ namespace WebVella.Erp.Web.Services
 			// this path and the cookie path judge the same submission differently, because AuthenticateAsync passes what
 			// the user typed straight to the same GetUser. That cut both ways - a stored password legitimately beginning
 			// or ending with whitespace could sign in interactively but never obtain a token, while the trim ACCEPTED
-			// " secret " against a stored "secret". THE E-MAIL NORMALISATION STAYS: an identifier, not a secret, matched
-			// case-insensitively anyway.
-			var user = new SecurityManager().GetUser(email?.Trim()?.ToLowerInvariant(), password);
+			// " secret " against a stored "secret".
+			// THE IDENTIFIER IS NORMALISED, BY THE SAME MEMBER THE COOKIE PATH CALLS - review finding N33. It used to be
+			// trimmed and case-folded HERE and nowhere else, which reproduced on the identifier exactly the divergence
+			// the paragraph above forbids for the secret; see NormalizeCredentialIdentifier for why the case fold was
+			// dropped rather than copied across.
+			var user = new SecurityManager().GetUser(NormalizeCredentialIdentifier(email), password);
 			if (user != null && user.Enabled)
 			{
 				// SECURITY C-01 (CWE-1392, CWE-798), OWASP A07. A credential the platform chose - generated at provisioning,

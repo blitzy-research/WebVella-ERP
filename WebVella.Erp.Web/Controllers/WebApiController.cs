@@ -5925,20 +5925,23 @@ namespace WebVella.Erp.Web.Controllers
 				// OWASP A05. This route is [AllowAnonymous] and the exception message plus the FULL stack trace were
 				// concatenated into the response body, handing framework versions, internal type and namespace names and the
 				// call path to any unauthenticated caller able to provoke a fault. The site was guarded by NO development-mode
-				// check, so flipping ASPNETCORE_ENVIRONMENT would NOT have closed it. The guard mirrors
-				// ApiControllerBase.DoBadRequestResponse, and e.ToString() renders the type, the message, any inner exceptions
-				// and the stack trace, so the development-mode detail is a superset of what was emitted before.
+				// check, so flipping ASPNETCORE_ENVIRONMENT would NOT have closed it.
 				// An expected rejection keeps the platform's own credential wording so this outcome stays byte-identical to
 				// the throttle rejection above - diverging would turn two different messages into an account-existence oracle.
 				// The rotation-required outcome takes this same branch rather than a distinct one, which REDUCES disclosure:
 				// returning a non-credential message for a CORRECT credential told an anonymous caller that the password they
 				// had just presented was right. The operator's channel is the server-side audit record above, which is
 				// retained, so no diagnostic capability is lost.
-				if (ErpSettings.DevelopmentMode)
-				{
-					response.Message = e.ToString();
-				}
-				else if (credentialWasRejected)
+				// NO DEVELOPMENT-MODE EXCEPTION ON THIS ROUTE - review finding N15. An earlier revision mirrored
+				// ApiControllerBase.DoBadRequestResponse and returned e.ToString() when DevelopmentMode was set. That guard is
+				// right for an authenticated surface and wrong here: this and the refresh route are the only routes on this
+				// controller that both carry an [AllowAnonymous] exemption AND compose a response message from an exception -
+				// the third anonymous route, StylesCss, rethrows into the environment-guarded error middleware - so the guarded
+				// form still disclosed the type, message, inner exceptions and stack trace to an UNAUTHENTICATED caller on any
+				// development deployment. The disclosure is removed outright rather than left conditional, because a control
+				// whose safety depends on a configuration value is weaker than one that does not depend on it, and the audit
+				// record above already carries the exception for the operator.
+				if (credentialWasRejected)
 				{
 					response.Message = AuthService.InvalidCredentialMessage;
 				}
@@ -6090,14 +6093,14 @@ namespace WebVella.Erp.Web.Controllers
 				// like the issue route it was guarded by no development-mode check. Every failure collapses to one generic
 				// message on purpose - reporting WHY a token was refused (expired, wrong signature, malformed) would help an
 				// attacker tune a forgery. The audit record above is retained, so the detail is still captured server-side.
-				if (ErpSettings.DevelopmentMode)
-				{
-					response.Message = e.ToString();
-				}
-				else
-				{
-					response.Message = INTERNAL_ERROR_MESSAGE;
-				}
+				// NO DEVELOPMENT-MODE EXCEPTION ON THIS ROUTE - review finding N15. The guarded form this replaces mirrored
+				// ApiControllerBase, which is right for an authenticated surface; it is not right here, because the two
+				// bearer routes are the only ones that both carry an [AllowAnonymous] exemption AND build a response message
+				// from an exception, so in a development deployment the disclosure was available WITHOUT credentials. The
+				// shipped posture was already safe - DevelopmentMode defaults false and is "false" in all eight configuration
+				// files - but a control whose safety rests on a setting is weaker than one that does not, and an operator
+				// loses nothing: the audit record above carries the exception itself.
+				response.Message = INTERNAL_ERROR_MESSAGE;
 			}
 			finally
 			{
