@@ -2,32 +2,12 @@ apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
   name: blitzy-WebVella-ERP
-  # Corrected: this descriptor previously advertised a "monolith decomposition —
-  # cloud-native microservices, serverless architecture". No such work exists in
-  # this repository and none was performed: there is no container definition, no
-  # orchestration manifest and no service split anywhere in the tree, and the AAP
-  # excludes all of it. What this repository does contain is the OWASP Top 10
-  # audit and its remediation, so that is what the descriptor now says.
-  # 'completed' was removed from this description as part of review finding DOC-02.
-  # It read as a release-readiness claim, and the tree still does not support one -
-  # but the REASONS have changed, and this comment is corrected rather than left
-  # standing (review finding MAJ-06). All 32 mandatory manual verification
-  # scenarios are now executed and attested, so the earlier statement that 24 were
-  # unattested is superseded. What keeps release readiness gated at this revision
-  # is: the mandated Content-Security-Policy ships under its report-only name, so
-  # the seven-header acceptance criterion is UNMET and the verification matrix
-  # records that as a failing row (MAJ-03); the AutoMapper Reciprocal Public
-  # License question is an open owner decision that blocks 'dotnet pack'; and the
-  # engagement's frozen file map was exceeded, which only the repository owner can
-  # resolve (CR-01). The gate-by-gate status is the authority; see the audit report
-  # link below.
+  # Release readiness is gated rather than asserted, and this description must not
+  # claim otherwise: the gate-by-gate status in the audit report linked below is the
+  # authority.
   description: WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, with an
     OWASP Top 10 (2021) security audit and remediation in the tree; release readiness is
     gated, not asserted.
-  # 'infrastructure', 'modernization' and 'refactor' are removed for the same
-  # reason as the description: the AAP forbids architectural change, refactoring
-  # beyond security requirements and any infrastructure work, so those tags
-  # described work that was explicitly out of scope.
   tags:
   - audit
   - csharp
@@ -46,15 +26,9 @@ metadata:
   - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/pull/1
     title: 'PR #1: OWASP Security Audit & Remediation'
     icon: github
-  # The 'PR #2: Serverless Microservices Rewrite' link is removed: it named work
-  # this repository does not contain. The 'blitzy/documentation' link is removed
-  # too - that path does not exist in the tree, so the link resolved to a 404. The
-  # audit report and its companions are linked instead, which is what the AAP
-  # requires this descriptor to reference.
   - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/docs/security/security-audit-report.md
-    # The count is stated as the audit inventory plus the later review inventories
-    # rather than as a single total, because the total has moved four times and a
-    # descriptor that restates it invites exactly the drift DOC-02 recorded.
+    # The finding count is stated as the audit inventory plus the later review
+    # inventories rather than as a single total, because a restated total drifts.
     title: Security Audit Report — the 53-finding audit inventory plus every later review finding, each in the mandated eight-field format
     icon: docs
   - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/docs/security/risk-register.md

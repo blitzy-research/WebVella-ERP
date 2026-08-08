@@ -47,20 +47,9 @@ namespace WebVella.Erp.Database
 					{
 						List<DbParameter> parameters = new List<DbParameter>();
 
-						// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-						// Software and Data Integrity Failures). Entity documents are written with
-						// polymorphic type handling so the DbBaseField hierarchy in DbEntity.Fields
-						// round-trips, which stamps a $type discriminator on every field element.
-						// TypeNameHandling is deliberately RETAINED rather than set to None: every
-						// entity already persisted carries those discriminators - the shipped role
-						// entity stores "WebVella.Erp.Database.DbGuidField, WebVella.Erp" - so
-						// removing type handling would stop existing installations loading their own
-						// schema. The weakness is closed by constraining RESOLUTION instead, to an
-						// enumerated first-party allow-list. Attaching the binder on this serialize
-						// path changes nothing that is stored, because the binder below overrides
-						// BindToType only and leaves BindToName to the base implementation, so the
-						// $type strings written here stay byte-identical to the ones written before
-						// this change.
+						// SECURITY H-10. Serialize side; see the deserialize site below for the retained-type-handling
+						// rationale. Attaching the binder here changes nothing that is stored: it overrides BindToType
+						// only, so the $type strings written stay byte-identical.
 						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 						DbParameter parameterId = new DbParameter();
@@ -75,10 +64,9 @@ namespace WebVella.Erp.Database
 						parameterJson.Type = NpgsqlDbType.Json;
 						parameters.Add(parameterJson);
 
-						// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). This name is
-						// concatenated into CREATE TABLE and the CREATE COLUMN statements below, so it is
-						// validated against the allow-list at construction. Validate returns it unchanged
-						// for conforming names, so the emitted DDL is identical for legitimate entities.
+						// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Concatenated into the CREATE
+						// TABLE and CREATE COLUMN statements below. Validate returns a conforming name unchanged, so the
+						// emitted DDL is identical for legitimate entities.
 						string tableName = DbIdentifier.Validate(RECORD_COLLECTION_PREFIX + entity.Name);
 
 						DbRepository.CreateTable(tableName);
@@ -180,13 +168,10 @@ namespace WebVella.Erp.Database
 				{
 					NpgsqlCommand command = con.CreateCommand("UPDATE entities SET json=@json WHERE id=@id;");
 
-					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-					// Software and Data Integrity Failures). The same constraint as the Create path
-					// above, on the document this method rewrites: TypeNameHandling is retained so
-					// the DbBaseField hierarchy keeps round-tripping, and the binder confines which
-					// types a stored $type token may resolve to. Because the binder overrides
-					// BindToType only, the discriminators written back here are unchanged, so an
-					// entity updated by this build still loads on one running the previous build.
+					// SECURITY H-10. Serialize side; see the deserialize site below for the retained-type-handling
+					// rationale. Attaching the binder here changes nothing that is stored: it overrides BindToType
+					// only, so the $type strings written back stay byte-identical and a document written by this
+					// build still loads on one running the previous build.
 					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 					var parameter = command.CreateParameter() as NpgsqlParameter;
@@ -232,15 +217,14 @@ namespace WebVella.Erp.Database
 				using (NpgsqlDataReader reader = command.ExecuteReader())
 				{
 
-					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-					// Software and Data Integrity Failures). This is the deserialize side, and the
-					// one place in this file where the binder actually fires. Left unconstrained,
-					// automatic type handling resolves whatever $type token the entities table
-					// happens to contain into a CLR type, which is a well-known
-					// remote-code-execution primitive. TypeNameHandling is retained because the
-					// stored documents cannot be read without it, and resolution is constrained
-					// instead to an enumerated first-party allow-list: a token naming anything
-					// outside that list is refused rather than resolved.
+					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). THE DESERIALIZE
+					// SITE - the one place in this file where the binder actually fires. Left unconstrained, automatic
+					// type handling resolves whatever $type token the entities table happens to contain into a CLR
+					// type, a well-known remote-code-execution primitive. TypeNameHandling is RETAINED because the
+					// stored documents cannot be read without it - every already-persisted entity carries
+					// discriminators for the DbBaseField hierarchy in DbEntity.Fields, so removing it would stop
+					// existing installations loading their own schema - and resolution is constrained instead to the
+					// binder's enumerated first-party allow-list, which refuses anything outside it.
 					JsonSerializerSettings settings = new JsonSerializerSettings
 					{
 						TypeNameHandling = TypeNameHandling.Auto,
@@ -307,17 +291,13 @@ namespace WebVella.Erp.Database
 
 						var entity = Read(entityId);
 
-						// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The entity
-						// id is bound as a parameter below, but PostgreSQL cannot parameterise the
-						// identifier in DROP TABLE, so the record table name has to be concatenated
-						// into the statement text. This is the highest-consequence identifier sink in
-						// the platform: the statement is already a multi-statement batch, so a name
-						// carrying a semicolon would append attacker-chosen DDL to a command that is
-						// running inside a transaction with full schema rights.
-						// DbIdentifier.Quote validates the name against the allow-list and emits it
-						// double-quoted, and throws rather than sanitising if it does not conform.
-						// Quoting is behaviour-preserving here: the allow-list admits only lower-case
-						// names, which fold to themselves, so "rec_x" and rec_x address the same table.
+						// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The entity id is bound as a
+						// parameter, but PostgreSQL cannot parameterise the identifier in DROP TABLE. This is the
+						// highest-consequence identifier sink in the platform: the statement is already a multi-statement
+						// batch, so a name carrying a semicolon would append attacker-chosen DDL to a command running
+						// inside a transaction with full schema rights. Quote validates against the allow-list and emits
+						// double-quoted, throwing rather than sanitising; quoting is behaviour-preserving because the
+						// allow-list admits only lower-case names, which fold to themselves.
 						NpgsqlCommand command = con.CreateCommand("DELETE FROM entities WHERE id=@id; DROP TABLE " + DbIdentifier.Quote("rec_" + entity.Name));
 
 						var parameterId = command.CreateParameter() as NpgsqlParameter;

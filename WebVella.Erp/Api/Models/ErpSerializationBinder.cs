@@ -3,49 +3,32 @@ using System.Collections.Generic;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
 
-// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021 Software and
-// Data Integrity Failures): polymorphic type handling (TypeNameHandling.All / .Auto) allows a
-// persisted $type discriminator to instantiate an arbitrary type. This binder constrains TYPE
-// RESOLUTION to an explicit allow-list of the platform's own persisted types rather than
-// disabling polymorphism, precisely so already-persisted payloads continue to deserialise.
-// BindToName is deliberately left to the base implementation: serialisation is not the
-// CWE-502 attack surface, and constraining it would break SDK code generation and
-// entity/relation persistence, whose graphs include open-ended dynamic content.
+// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021): polymorphic type handling
+// (TypeNameHandling.All/.Auto) lets a persisted $type discriminator instantiate an arbitrary type. This
+// binder constrains TYPE RESOLUTION to an explicit allow-list of the platform's own persisted types
+// rather than disabling polymorphism, precisely so already-persisted payloads continue to deserialise.
+// BindToName is left to the base implementation: serialisation is not the CWE-502 attack surface, and
+// constraining it would break SDK code generation and entity/relation persistence.
 
 namespace WebVella.Erp.Api.Models
 {
 	/// <summary>
-	/// Allow-list serialization binder for every deserialization site that enables polymorphic
-	/// type handling. A stored <c>$type</c> discriminator is honoured only when the type it names
-	/// satisfies one of exactly two rules:
-	/// <list type="number">
-	/// <item><description>
-	/// it is one of the explicitly enumerated core library types the platform actually persists -
-	/// see <see cref="PersistedModelTypes"/> - claimed by a first party assembly name. Membership is
-	/// exact full-name matching against that inventory, NOT a namespace or a name prefix; or
-	/// </description></item>
-	/// <item><description>
-	/// it is one of the small, explicitly enumerated framework types that the platform's own
-	/// payloads legitimately carry.
-	/// </description></item>
-	/// </list>
-	/// Everything else is refused with a <see cref="JsonSerializationException"/> naming the
-	/// rejected assembly and type, so a refusal is diagnosable and can never silently degrade
-	/// into permissive behaviour.
+	/// Allow-list serialization binder for every deserialization site that enables polymorphic type
+	/// handling. A stored <c>$type</c> discriminator is honoured only when the type it names is either one of
+	/// the explicitly enumerated core library types the platform persists - see
+	/// <see cref="PersistedModelTypes"/>, matched by EXACT full name and claimed by a first party assembly -
+	/// or one of the small enumerated framework types the platform's own payloads legitimately carry.
+	/// Everything else is refused with a <see cref="JsonSerializationException"/> naming the rejected
+	/// assembly and type, so a refusal is diagnosable and can never silently degrade into permissiveness.
 	/// </summary>
 	/// <remarks>
-	/// Usage - a deserialization site keeps the type handling value it already has and additionally
-	/// attaches the shared <see cref="Instance"/>. This binder configures no serializer option of
-	/// its own; it only constrains resolution, which is why already-persisted discriminators keep
-	/// round-tripping:
-	/// <code>
-	/// settings.SerializationBinder = ErpSerializationBinder.Instance;
-	/// </code>
-	/// The shared instance is NOT stateless: it owns a bounded resolution cache and a replaceable
-	/// resolver, both described on <see cref="ResolveBounded"/> and both guarded by
-	/// <see cref="resolutionLock"/>, which is what makes it safe for concurrent use. The static
-	/// allow-list collections are a separate matter: they are populated once by the type initializer
-	/// and never written to afterwards, and <see cref="HashSet{T}"/> supports concurrent readers.
+	/// A deserialization site keeps the type handling value it already has and additionally attaches the
+	/// shared <see cref="Instance"/>; this binder configures no serializer option of its own, which is why
+	/// already-persisted discriminators keep round-tripping.
+	/// The shared instance is NOT stateless: it owns a bounded resolution cache and a replaceable resolver,
+	/// both described on <see cref="ResolveBounded"/> and guarded by <see cref="resolutionLock"/>. The static
+	/// allow-list collections are a separate matter - populated once by the type initializer and never
+	/// written to afterwards.
 	/// </remarks>
 	public class ErpSerializationBinder : DefaultSerializationBinder
 	{
@@ -69,24 +52,16 @@ namespace WebVella.Erp.Api.Models
 		private const int MaxTypeGraphDepth = 16;
 
 		/// <summary>
-		/// Upper bound on the length of a <c>$type</c> type-name token, applied before any
-		/// resolution is attempted.
+		/// Upper bound on the length of a <c>$type</c> token, applied before any resolution is attempted.
 		/// </summary>
 		/// <remarks>
 		/// SECURITY H-10 hardening (CWE-400 uncontrolled resource consumption). <see cref="MaxTypeGraphDepth"/>
-		/// bounds the walk over an ALREADY RESOLVED type, which is too late to be the only bound.
-		/// The outer-name allow-list inspects only the portion of the discriminator before the first
-		/// bracket, so a token such as
-		/// <c>System.Collections.Generic.List`1[[System.Collections.Generic.List`1[[ ... ]]]]</c>
-		/// nested thousands of levels deep presents a permitted outer name, clears the allow-list,
-		/// and is then handed to the base binder - which parses and resolves the entire nested
-		/// structure, loading assemblies as it goes, before the depth bound is ever consulted. The
-		/// work is done by the time the graph can be rejected.
-		/// These two bounds are therefore enforced on the RAW token first, so a malformed
-		/// discriminator is refused before it can cost anything. Real discriminators in this
-		/// platform are around sixty characters - the longest observed in persisted data is
-		/// <c>WebVella.Erp.Database.DbMultiLineTextField, WebVella.Erp</c> - so the limit leaves
-		/// generous headroom for legitimately nested generics while removing the amplification.
+		/// bounds the walk over an ALREADY RESOLVED type, which is too late to be the only bound: the outer-name
+		/// allow-list inspects only the portion before the first bracket, so a token nesting a permitted generic
+		/// thousands of levels deep clears the allow-list and is then handed to the base binder, which parses and
+		/// resolves the entire structure, loading assemblies as it goes, before the depth bound is consulted.
+		/// These bounds are therefore enforced on the RAW token first. Real discriminators here are around sixty
+		/// characters, so the limit leaves generous headroom while removing the amplification.
 		/// </remarks>
 		private const int MaxTypeNameLength = 1024;
 
@@ -104,44 +79,22 @@ namespace WebVella.Erp.Api.Models
 		private const int MaxAssemblyNameLength = 256;
 
 		/// <summary>
-		/// Upper bound on the number of resolved discriminators memoised at any one time.
+		/// Upper bound on the number of resolved discriminators memoised at any one time (CWE-770, OWASP
+		/// A08:2021). See <see cref="ResolveBounded"/> for why memoisation cannot be left to the base binder.
+		/// 256 comfortably exceeds what a real deployment persists while capping the retained set at a few tens
+		/// of kilobytes of keys plus 256 type references.
 		/// </summary>
-		/// <remarks>
-		/// Threat addressed - CWE-770 (allocation without limits), OWASP A08:2021. See
-		/// <see cref="ResolveBounded"/> for why memoisation cannot be left to the base binder. 256
-		/// comfortably exceeds the number of distinct discriminators a real deployment persists -
-		/// the first party types actually stored are a few dozen - while capping the retained set at
-		/// a few tens of kilobytes of keys plus 256 type references.
-		/// </remarks>
 		private const int MaxCachedResolutions = 256;
 
 		/// <summary>
-		/// The exact, enumerated set of core library types the platform legitimately persists inside
-		/// a polymorphic payload. Used only to BUILD <see cref="AllowedFirstPartyTypes"/> at type
-		/// initialization; it is never consulted while binding.
+		/// Upper bound on the length of a <c>$type</c> token, applied before any resolution is attempted.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY H-10 (CWE-502 deserialization of untrusted data). This inventory is enumerated
-		/// type by type rather than discovered from a namespace, and that distinction IS the control:
-		/// a namespace rule admits whatever later lands in the namespace, and a deserialization gadget
-		/// need not be a plausible DTO - it only needs a reachable constructor or property setter with a
-		/// side effect, so admitting a repository or a service would leave CWE-502 substantially open
-		/// while presenting as closed. The surface is real: a job result is declared <c>dynamic</c>, so
-		/// a discriminator stored in the <c>jobs.result</c> column is resolved through this binder.
-		/// <para>
-		/// Membership is the transitive closure, over DATA MEMBERS only, of the types the
-		/// deserialization sites actually read - entity and relation documents with their whole field
-		/// hierarchy, the job and schedule graph including the job result wrapper, the PostgreSQL
-		/// notification payload and the dynamic record - so it is derived from the sites rather than
-		/// guessed, with ONE deliberate addition on top of that closure - the system settings document,
-		/// annotated at its entry below - retained for generic-argument completeness even though no site
-		/// reads it. Nothing here owns behaviour. Three membership decisions are deliberate:
-		/// <c>WebVella.Erp.Api.CurrencySymbolPlacement</c> is included because a currency field
-		/// genuinely reaches it; the abstract bases are included because a
-		/// <c>List&lt;DbBaseField&gt;</c> discriminator names one as a generic argument; and the
-		/// diagnostics log record is deliberately EXCLUDED, because no deserialization site reads it and
-		/// it carries behaviour.
-		/// </para>
+		/// SECURITY H-10 hardening (CWE-400). <see cref="MaxTypeGraphDepth"/> bounds the walk over an ALREADY
+		/// RESOLVED type, which is too late to be the only bound: the allow-list inspects only the portion before
+		/// the first bracket, so a token nesting a permitted generic thousands of levels deep clears it and is
+		/// then handed to the base binder, which parses and resolves the whole structure, loading assemblies as
+		/// it goes, before the depth bound is consulted. Real discriminators are around sixty characters.
 		/// </remarks>
 		private static readonly Type[] PersistedModelTypes =
 		{
@@ -153,14 +106,9 @@ namespace WebVella.Erp.Api.Models
 			typeof(WebVella.Erp.Database.DbEntity),
 			typeof(WebVella.Erp.Database.DbEntityRelation),
 
-			// The fourth and last DbDocumentBase subclass, retained defensively rather than because a
-			// payload is known to name it. No deserialization site reads it today:
-			// DbSystemSettingsRepository is raw SQL and column reads with no JsonConvert anywhere in it.
-			// It is kept because DbDocumentBase is abstract and appears as a GENERIC ARGUMENT in
-			// collection discriminators such as List`1[[DbDocumentBase, WebVella.Erp]], and holding the
-			// subclass set complete means such a discriminator cannot be refused for naming a sibling
-			// document. The type carries one int property and no behaviour, so it widens nothing a
-			// deserialization gadget could use.
+			// The fourth and last DbDocumentBase subclass, retained defensively: no deserialization site reads it,
+			// but DbDocumentBase is abstract and appears as a GENERIC ARGUMENT in collection discriminators, so
+			// keeping the subclass set complete stops such a discriminator being refused for naming a sibling.
 			typeof(WebVella.Erp.Database.DbSystemSettings),
 
 			typeof(WebVella.Erp.Database.DbEntityRelationOptions),
@@ -190,8 +138,7 @@ namespace WebVella.Erp.Api.Models
 			typeof(WebVella.Erp.Database.DbUrlField),
 
 			// Value holders and enumerations the field hierarchy above reaches by data member.
-			// CurrencySymbolPlacement is in WebVella.Erp rather than WebVella.Erp.Database, which is
-			// precisely why the namespace rule missed it.
+			// CurrencySymbolPlacement sits in WebVella.Erp, not WebVella.Erp.Database.
 			typeof(WebVella.Erp.Database.DbSelectOption),
 			typeof(WebVella.Erp.Database.DbCurrencyType),
 			typeof(WebVella.Erp.Database.DbGeographyFieldFormat),
@@ -223,58 +170,38 @@ namespace WebVella.Erp.Api.Models
 		};
 
 		/// <summary>
-		/// The exact, enumerated set of first party types a discriminator may name, keyed by full
-		/// type name. Built once from <see cref="PersistedModelTypes"/>.
+		/// The exact, enumerated set of first party types a discriminator may name, keyed by full type name.
+		/// Built once from <see cref="PersistedModelTypes"/>.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY H-10 (CWE-502 deserialization of untrusted data). Admission is EXACT full-name
-		/// matching against <see cref="PersistedModelTypes"/>, never a name prefix and never a namespace
-		/// scan: either of those admits whatever the matching namespace or assembly happens to contain
-		/// alongside the data documents, which is an allow-list in name only. The assembly is pinned by
-		/// construction, since every entry is a <c>typeof</c> in this assembly, and
-		/// <see cref="IsAllowedResolvedType"/> confirms the accepted type is that very
-		/// <see cref="Type"/> instance by reference, so a same-named type from anywhere else is refused.
-		/// Delegates and <see cref="IDisposable"/> implementors are excluded as a standing guard on
-		/// future edits to the inventory.
+		/// SECURITY H-10 (CWE-502). Admission is EXACT full-name matching, never a name prefix and never a
+		/// namespace scan: either of those admits whatever the matching namespace or assembly happens to contain,
+		/// which is an allow-list in name only. The assembly is pinned by construction, every entry being a
+		/// <c>typeof</c> in this assembly, and <see cref="IsAllowedResolvedType"/> confirms the accepted type is
+		/// that very <see cref="Type"/> instance BY REFERENCE, so a same-named type from anywhere else is
+		/// refused. Delegates and <see cref="IDisposable"/> implementors are excluded as a standing guard.
 		/// </remarks>
 		private static readonly Dictionary<string, Type> AllowedFirstPartyTypes = BuildFirstPartyTypeMap();
 
 		/// <summary>
-		/// The framework types the platform's own persisted payloads legitimately carry.
-		/// <para>
-		/// This set is required rather than cosmetic: <c>TypeNameHandling.All</c> stamps a
-		/// <c>$type</c> discriminator on every object AND every array in a graph, not only on
-		/// polymorphic members. A job's <c>attributes</c> and <c>result</c> are declared
-		/// <c>dynamic</c>, so their persisted JSON routinely carries discriminators for
-		/// <c>ExpandoObject</c>, <c>List&lt;object&gt;</c>, <c>Dictionary&lt;string, object&gt;</c>
-		/// and <c>object[]</c>. Refusing those would not harden anything - it would break every
-		/// read of an already-persisted job.
-		/// </para>
-		/// <para>
-		/// The set is deliberately kept no larger than the deserialization sites need, is compared
-		/// with <see cref="StringComparer.Ordinal"/> because type names are case sensitive, and is
-		/// never widened into a namespace wildcard. It admits no type that has ever been used as a
-		/// deserialization gadget.
-		/// </para>
-		/// <para>
-		/// THREAT ADDRESSED - review finding CR3-H-06, CWE-502 (deserialization of untrusted data) reached
-		/// by ASSEMBLY CONFUSION, OWASP A08:2021. This used to be a <c>HashSet&lt;string&gt;</c> of names
-		/// with no assembly component, and the omission was defended on the grounds that the framework
-		/// spreads these types across several assemblies so pinning would be "brittle without adding any
-		/// protection". Both halves of that were wrong. Any assembly loaded into the process - a plugin, a
-		/// code-generated assembly, anything the runtime resolves - may declare a public type called
-		/// <c>System.Uri</c> or <c>System.Collections.Generic.List`1</c>, and a discriminator naming that
-		/// assembly then satisfied the name test and was constructed. The only backstop was the
-		/// delegate/disposable shape rejection in <see cref="IsAllowedResolvedType"/>, which an impostor
-		/// simply avoids by being neither. Pinning is also not brittle: a <c>typeof</c> expression resolves
-		/// the type through the COMPILER's reference set, so the entry is correct whichever assembly the
-		/// framework happens to place the type in today and stays correct if it moves tomorrow - which is
-		/// precisely what a hand-written assembly-qualified NAME would not do.
-		/// The map is therefore keyed by full name for the pre-resolution name test and carries the exact
-		/// <see cref="Type"/> for the post-resolution reference-equality test, exactly as
-		/// <see cref="AllowedFirstPartyTypes"/> already did.
-		/// </para>
+		/// The framework types the platform's own persisted payloads legitimately carry, each pinned to the exact
+		/// <see cref="Type"/> a <c>typeof</c> resolves.
 		/// </summary>
+		/// <remarks>
+		/// Required rather than cosmetic: <c>TypeNameHandling.All</c> stamps a <c>$type</c> discriminator on every
+		/// object AND every array in a graph, and a job's <c>attributes</c> and <c>result</c> are declared
+		/// <c>dynamic</c>, so persisted job JSON routinely carries discriminators for <c>ExpandoObject</c>,
+		/// <c>List&lt;object&gt;</c>, <c>Dictionary&lt;string, object&gt;</c> and <c>object[]</c>; refusing those
+		/// would break every read of an already-persisted job rather than harden anything.
+		/// <para>
+		/// THREAT ADDRESSED - CWE-502 reached by ASSEMBLY CONFUSION, OWASP A08:2021. A set of NAMES alone is not
+		/// sufficient: any assembly loaded into the process may declare a public <c>System.Uri</c> or
+		/// <c>System.Collections.Generic.List`1</c>, and a discriminator naming it then satisfies a name test and
+		/// is constructed. The map therefore carries the pinned <see cref="Type"/> for the post-resolution
+		/// reference-equality test as well as the name for the pre-resolution one, and is never widened into a
+		/// namespace wildcard.
+		/// </para>
+		/// </remarks>
 		private static readonly Dictionary<string, Type> AllowedFrameworkTypes = BuildFrameworkTypeMap();
 
 		/// <summary>
@@ -282,13 +209,11 @@ namespace WebVella.Erp.Api.Models
 		/// pre-resolution name test in <see cref="IsAllowedTypeName"/>.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY H-10 / CR3-H-06 (CWE-502). Derived from the pinned map rather than written out a second
-		/// time, so the two cannot disagree - a name present here but absent from the map would pass the
-		/// name test and then be refused by the reference test, which is safe but reports the wrong reason;
-		/// the reverse would be a hole. The two array forms are added because a discriminator spells an
-		/// array as <c>System.Object[]</c> whereas the resolved graph is walked through
-		/// <see cref="Type.GetElementType"/>, so the array name never reaches the reference test and has no
-		/// pinned entry to hold.
+		/// SECURITY H-10 (CWE-502). Derived from the pinned map rather than written out a second time, so the two
+		/// cannot disagree - a name here but absent from the map would pass the name test and then be refused by
+		/// the reference test, which is safe but reports the wrong reason, while the reverse would be a hole. The
+		/// two array forms are added because a discriminator spells an array as <c>System.Object[]</c> whereas the
+		/// resolved graph is walked through <see cref="Type.GetElementType"/>.
 		/// </remarks>
 		private static readonly HashSet<string> AllowedFrameworkTypeNames = BuildFrameworkTypeNameSet();
 
@@ -319,26 +244,21 @@ namespace WebVella.Erp.Api.Models
 		private DefaultSerializationBinder resolver = new DefaultSerializationBinder();
 
 		/// <summary>
-		/// Resolves a stored <c>$type</c> discriminator to a <see cref="Type"/>, refusing anything
-		/// the allow-list does not admit.
+		/// Resolves a stored <c>$type</c> discriminator to a <see cref="Type"/>, refusing anything the allow-list
+		/// does not admit.
 		/// </summary>
 		/// <param name="assemblyName">
-		/// Assembly portion of the discriminator. May be <c>null</c>, a simple name such as
-		/// <c>WebVella.Erp</c>, or a qualified name carrying one or more comma delimited
-		/// attributes after the simple name, as in <c>WebVella.Erp, Version=1.7.7.0</c>. Only the
-		/// portion before the first comma is significant here, so any further attribute the
-		/// runtime appends is tolerated without needing to be enumerated.
+		/// Assembly portion of the discriminator. May be <c>null</c>, a simple name, or a qualified name carrying
+		/// comma-delimited attributes; only the portion before the first comma is significant, so any further
+		/// attribute the runtime appends is tolerated without being enumerated.
 		/// </param>
-		/// <param name="typeName">
-		/// Type portion of the discriminator, which for a generic type embeds its arguments, as in
-		/// <c>System.Collections.Generic.List`1[[WebVella.Erp.Database.DbBaseField, WebVella.Erp]]</c>.
-		/// </param>
+		/// <param name="typeName">Type portion, which for a generic type embeds its arguments.</param>
 		/// <returns>The resolved type, guaranteed to satisfy the allow-list in full.</returns>
 		/// <exception cref="JsonSerializationException">
-		/// The discriminator names a type outside the allow-list, resolves to a type whose graph
-		/// contains one, or cannot be resolved at all. This is the only exception type that leaves
-		/// this method: a malformed stored discriminator must surface as a serialization error and
-		/// never as a type-load or reference failure escaping into a caller that cannot handle it.
+		/// The discriminator names a type outside the allow-list, resolves to a type whose graph contains one, or
+		/// cannot be resolved at all. This is the ONLY exception type that leaves this method: a malformed stored
+		/// discriminator must surface as a serialization error, never as a type-load or reference failure
+		/// escaping into a caller that cannot handle it.
 		/// </exception>
 		public override Type BindToType(string assemblyName, string typeName)
 		{
@@ -347,11 +267,9 @@ namespace WebVella.Erp.Api.Models
 				throw Refused(assemblyName, typeName, "the type name is missing");
 			}
 
-			// SECURITY H-10 hardening (CWE-400). Size and shape bounds come FIRST - before the allow-list,
-			// before any parsing and before any resolution - because the allow-list only inspects
-			// the outer name and would happily pass a permitted outer type carrying an arbitrarily
-			// large nested argument list on to the base binder. These are O(1) and O(n) scans over a
-			// token that is about to be rejected, so nothing expensive happens for a hostile value.
+			// SECURITY H-10 hardening (CWE-400). Size and shape bounds come FIRST - before the allow-list, before
+			// any parsing and before any resolution - because the allow-list inspects only the outer name and would
+			// pass a permitted outer type carrying an arbitrarily large nested argument list on to the base binder.
 			if (typeName.Length > MaxTypeNameLength)
 			{
 				throw Refused(assemblyName, typeName, $"the type name is {typeName.Length} characters long, which exceeds the {MaxTypeNameLength} character limit");
@@ -374,14 +292,10 @@ namespace WebVella.Erp.Api.Models
 				throw Refused(assemblyName, typeName, "it is neither a WebVella.Erp platform type nor an explicitly permitted framework type");
 			}
 
-			// Resolution is delegated to ResolveBounded rather than to base.BindToType. That is not a
-			// stylistic choice: the base binder memoises every discriminator it resolves in a
-			// process-lifetime store with no capacity limit that this class cannot bound, inspect or
-			// clear, so calling it would hand an attacker unbounded memory growth through nested
-			// generic discriminators that all resolve successfully (CWE-770, OWASP A08:2021).
-			// ResolveBounded fronts a replaceable resolver with a capacity-bounded cache and
-			// translates every resolution failure into the bounded refusal this method contracts to
-			// throw. See ResolveBounded for the full rationale.
+			// Resolution is delegated to ResolveBounded rather than to base.BindToType, and that is not stylistic:
+			// the base binder memoises every discriminator it resolves in a process-lifetime store with no capacity
+			// limit that this class cannot bound, inspect or clear, so calling it would hand an attacker unbounded
+			// memory growth through nested generic discriminators that all resolve successfully (CWE-770).
 			Type resolvedType = ResolveBounded(assemblyName, typeName);
 
 			if (resolvedType == null)
@@ -404,32 +318,20 @@ namespace WebVella.Erp.Api.Models
 		/// Resolves a discriminator through a bounded memoisation cache.
 		/// </summary>
 		/// <remarks>
-		/// Threat addressed - CWE-770 (allocation of resources without limits), OWASP A08:2021.
+		/// THREAT ADDRESSED - CWE-770 (allocation of resources without limits), OWASP A08:2021.
+		/// <see cref="DefaultSerializationBinder"/> memoises every discriminator it resolves in a private,
+		/// process-lifetime store with no capacity limit and no eviction, and nesting permitted generics produces
+		/// a combinatorial space of names that all resolve successfully, so a payload stream carrying a fresh
+		/// nesting per row would grow that store without limit.
 		/// <para>
-		/// This method exists because <see cref="DefaultSerializationBinder"/> memoises every
-		/// discriminator it successfully resolves in a private, process-lifetime store that has no
-		/// capacity limit and no eviction. Calling <c>base.BindToType</c> would populate THAT store,
-		/// which this class cannot bound, inspect or clear. The set of distinct discriminators is not
-		/// small: nesting permitted generics over one another produces a combinatorial space of
-		/// names that all resolve successfully, so a payload stream carrying a fresh nesting on every
-		/// row would grow the base store without limit. Bounding the discriminator text does not
-		/// bound that space, only its per-item size - so the cache itself has to be bounded.
-		/// </para>
-		/// <para>
-		/// Resolution is therefore delegated to a REPLACEABLE binder instance fronted by this
-		/// class's own capacity-bounded cache. <c>base.BindToType</c> is never called, so the
-		/// inherited store is provably never populated. When the cache reaches
-		/// <see cref="MaxCachedResolutions"/> both stores are discarded together - the dictionary is
-		/// cleared and the delegate is replaced, which drops the delegate's internal store with it -
-		/// so the worst case degrades to resolving without a cache rather than to unbounded memory.
-		/// Deriving from <see cref="DefaultSerializationBinder"/> is retained deliberately, because
-		/// <c>BindToName</c> must keep the inherited behaviour exactly; only resolution is diverted.
-		/// </para>
-		/// <para>
-		/// The lock covers only the dictionary operations. Resolution runs outside it, so concurrent
-		/// deserialization is never serialised behind assembly loading; the cost of that choice is
-		/// that two threads racing on the same unseen discriminator may both resolve it, which is
-		/// idempotent and yields the same type.
+		/// Resolution is therefore delegated to a REPLACEABLE binder fronted by this class's own capacity-bounded
+		/// cache; <c>base.BindToType</c> is never called, so the inherited store is provably never populated. At
+		/// <see cref="MaxCachedResolutions"/> both stores are discarded together - the dictionary cleared and the
+		/// delegate replaced - so the worst case degrades to resolving without a cache rather than to unbounded
+		/// memory. Deriving from <see cref="DefaultSerializationBinder"/> is retained because <c>BindToName</c>
+		/// must keep the inherited behaviour exactly. The lock covers only the dictionary operations, so
+		/// concurrent deserialization is never serialised behind assembly loading; two threads racing on the same
+		/// unseen discriminator may both resolve it, which is idempotent.
 		/// </para>
 		/// </remarks>
 		private Type ResolveBounded(string assemblyName, string typeName)
@@ -459,33 +361,19 @@ namespace WebVella.Erp.Api.Models
 			}
 			catch (JsonSerializationException exception)
 			{
-				// Translated, NOT rethrown. The base implementation reports an unresolvable
-				// discriminator by embedding the offending name in its message verbatim and
-				// unbounded, so rethrowing it would defeat the diagnostic cap that Describe exists to
-				// enforce - a 900-character type name would reach the log in full even though every
-				// message this class builds itself is bounded. Nothing is lost by translating: the
-				// base message contains only an echo of the assembly and type name, which the
-				// replacement already reports in bounded form.
-				//
-				// The original is deliberately NOT attached as an inner exception, because its
-				// message is the very unbounded text being suppressed and a sink that records the
-				// whole exception chain would reintroduce it. Its type is recorded instead, which is
-				// the part with diagnostic value.
+				// Translated, NOT rethrown. The base implementation embeds the offending name in its message verbatim
+				// and unbounded, so rethrowing would defeat the diagnostic cap Describe exists to enforce. Nothing is
+				// lost: the base message contains only an echo of the assembly and type name, which the replacement
+				// already reports in bounded form. The original is deliberately NOT attached as an inner exception,
+				// because its message is the very unbounded text being suppressed; its type is recorded instead.
 				throw Refused(assemblyName, typeName, $"the type could not be resolved ({exception.GetType().Name})");
 			}
-			// Only the exception types that type resolution can actually raise are translated. This
-			// is deliberately NOT a blanket catch: a genuine platform fault - an OutOfMemoryException
-			// or a cancellation, say - must stay visible rather than be relabelled as a malformed
-			// discriminator, which would turn a real incident into a misleading serialization error.
-			//
-			// These four DO keep their inner exception, unlike the case above, and the distinction is
-			// deliberate. Reaching any of them means the discriminator already passed the allow-list,
-			// so it claims to be a first party or explicitly permitted type - which makes a load
-			// failure a deployment or environment fault rather than a hostile payload, and exactly
-			// the case where an operator needs the runtime's own detail such as a fusion reason or an
-			// architecture mismatch. Their text is bounded in any event, because the names it echoes
-			// were already length-capped by the checks at the top of BindToType. The message THIS class
-			// builds is capped per value by Describe regardless.
+			// Only the exception types type resolution can actually raise are translated - deliberately NOT a
+			// blanket catch, because a genuine platform fault must stay visible rather than be relabelled as a
+			// malformed discriminator. These four DO keep their inner exception, unlike the case above: reaching
+			// one means the discriminator already passed the allow-list, so a load failure is a deployment or
+			// environment fault and exactly the case where an operator needs the runtime's own detail. Their text
+			// is bounded in any event, because the names it echoes were length-capped at the top of BindToType.
 			catch (TypeLoadException exception)
 			{
 				throw Refused(assemblyName, typeName, "the type could not be resolved", exception);
@@ -548,58 +436,35 @@ namespace WebVella.Erp.Api.Models
 				return false;
 			}
 
-			// Rule (a) - first party platform type. The assembly simple name must belong to the
-			// WebVella.Erp family AND the outer type name must be present in the ENUMERATED map
-			// built from PersistedModelTypes. Both halves are required: a foreign assembly may not
-			// vouch for a first party type name, and a first party assembly may not vouch for a type
-			// the inventory does not list.
+			// Rule (a) - first party platform type. The assembly simple name must belong to the WebVella.Erp family
+			// AND the outer type name must be present in the ENUMERATED map built from PersistedModelTypes. Both
+			// halves are required: a foreign assembly may not vouch for a first party type name, and a first party
+			// assembly may not vouch for a type the inventory does not list.
 			//
-			// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). The test is an
-			// EXACT map lookup, deliberately NOT a namespace-prefix test. A prefix test on "WebVella.Erp."
-			// is an allow-list in name only - it admits every repository, manager, page model and hook
-			// implementation across the core library, the web framework and all six plugin assemblies, and
-			// it would make PersistedModelTypes dead code while this file claimed an enumerated inventory.
-			// Types of that kind are reachable in practice: a discriminator in the jobs.result column
-			// resolves through this binder.
-			//
-			// Do NOT relax this to a prefix on the argument that refusing a plugin-authored payload type
-			// would break job reads because JobProfile deserializes job.Attributes without a try/catch.
-			// That does not hold, for three reasons:
-			//   1. The attributes read targets ExpandoObject, and Newtonsoft resolves an ExpandoObject
-			//      target internally WITHOUT consulting a SerializationBinder, so BindToType is never
-			//      reached on that path and no refusal can occur there at all.
-			//   2. The jobs.result read - the one path that does reach this binder - sits inside nested
-			//      try/catch blocks, so a refusal is caught rather than propagated.
-			//   3. EVERY assignment to SchedulePlan.JobAttributes in the entire repository assigns
-			//      null (MailPlugin, ProjectPlugin, SdkPlugin and WebApiController), so no plugin
-			//      places a plugin-defined type into a persisted job payload in the first place.
+			// SECURITY H-10 (CWE-502 / OWASP A08:2021). The test is an EXACT map lookup, deliberately NOT a
+			// namespace-prefix test, and must not be relaxed into one: a prefix test on "WebVella.Erp." admits every
+			// repository, manager, page model and hook implementation across the core library, the web framework and
+			// all six plugin assemblies, and would make PersistedModelTypes dead code. Such types are reachable in
+			// practice, because a discriminator in the jobs.result column resolves here.
 			//
 			// What additionally keeps resolution safe is enforced against the RESOLVED type by
-			// IsAllowedResolvedType: the resolved type's REAL assembly is re-tested, so a type merely
-			// NAMED WebVella.Erp.* but loaded from elsewhere is refused; delegates and IDisposable
-			// implementors are rejected outright, which is the gadget shape this class exists to
-			// exclude; a listed type must match the pinned map by reference equality, so a same-named
-			// impostor cannot stand in for it; and the whole generic and array graph is re-walked
-			// under a depth bound.
+			// IsAllowedResolvedType: the real assembly is re-tested, delegates and IDisposable implementors are
+			// rejected outright, a listed type must match the pinned map by reference equality, and the whole
+			// generic and array graph is re-walked under a depth bound.
 			if (IsFirstPartyAssembly(GetAssemblySimpleName(assemblyName))
 				&& AllowedFirstPartyTypes.ContainsKey(outerTypeName))
 			{
 				return true;
 			}
 
-			// Rule (b) - explicitly permitted framework type. This stage is a NAME test only, and it is
-			// deliberately assembly agnostic HERE because it runs before resolution: the framework spreads
-			// these types across several assemblies - ExpandoObject lives in System.Linq.Expressions and Uri
-			// in System.Private.Uri - and the discriminator's assembly component is attacker-supplied text,
-			// so testing it would reject legitimate payloads while proving nothing about what is loaded.
-			//
+			// Rule (b) - explicitly permitted framework type. This stage is a NAME test only, and it is deliberately
+			// assembly agnostic HERE because it runs before resolution: the framework spreads these types across
+			// several assemblies - ExpandoObject in System.Linq.Expressions, Uri in System.Private.Uri - and the
+			// discriminator's assembly component is attacker-supplied text, so testing it would reject legitimate
+			// payloads while proving nothing about what is loaded.
 			// WHAT ACTUALLY PINS THE ASSEMBLY is IsAllowedResolvedType, which looks the RESOLVED type up in
-			// AllowedFrameworkTypes and requires reference equality with the pinned typeof. Review finding
-			// CR3-H-06 records why that had to be added: the earlier revision of this comment claimed
-			// pinning would be "brittle without adding any protection" and left the framework set as names
-			// alone, so an assembly loaded into the process could declare its own System.Uri, name it in a
-			// discriminator, and be constructed. This stage remains a cheap textual pre-filter; it is no
-			// longer the last word.
+			// AllowedFrameworkTypes and requires reference equality with the pinned typeof. This stage is a cheap
+			// textual pre-filter; it is not the last word.
 			return AllowedFrameworkTypeNames.Contains(outerTypeName);
 		}
 
@@ -641,19 +506,13 @@ namespace WebVella.Erp.Api.Models
 				return true;
 			}
 
-			// SECURITY H-10 (CWE-502). Gadget-shape rejection, applied to EVERY resolved type
-			// rather than only to the entries of the pinned map. A delegate exists to carry an
-			// invocation target and an IDisposable owns a live resource; neither is ever part of a
-			// persisted data document, and both are precisely the shapes a deserialization gadget
-			// is built from.
-			// This check is what makes the first party FAMILY rule in IsAllowedTypeName safe. The
-			// map builder filters these two shapes out of the core map, but a type admitted by the
-			// family rule never passes through that builder, so the filter has to be enforced here
-			// as well - otherwise widening rule (a) would newly admit, for example,
-			// WebVella.Erp.Database.DbConnection, which is first party and sits in a persisted
-			// namespace yet holds a live database connection.
-			// It is a no-op for the permitted framework set: none of those types is a delegate or
-			// an IDisposable, so nothing that legitimately round-trips today is affected.
+			// SECURITY H-10 (CWE-502). Gadget-shape rejection, applied to EVERY resolved type rather than only to
+			// the entries of the pinned map: a delegate exists to carry an invocation target and an IDisposable owns
+			// a live resource, neither is ever part of a persisted data document, and both are precisely the shapes
+			// a deserialization gadget is built from. This is also what makes the first party FAMILY rule in
+			// IsAllowedTypeName safe - the map builder filters these two shapes out of the core map, but a type
+			// admitted by the family rule never passes through that builder. It is a no-op for the permitted
+			// framework set, so nothing that legitimately round-trips today is affected.
 			if (typeof(Delegate).IsAssignableFrom(type) || typeof(IDisposable).IsAssignableFrom(type))
 			{
 				rejectedTypeName = GetDiagnosticName(type);
@@ -666,22 +525,14 @@ namespace WebVella.Erp.Api.Models
 				? type.GetGenericTypeDefinition().FullName
 				: type.FullName;
 
-			// SECURITY H-10 (CWE-502) and review finding CR3-H-06 (assembly confusion). EVERY admitted
-			// constituent must be the EXACT Type held in one of the two pinned maps - reference equality
-			// against the Type object, never a name match - so a same-named type loaded from any other
-			// assembly is refused here whatever the discriminator claimed.
-			//
-			// THE NAME-ONLY FALLBACK THAT USED TO SIT HERE IS GONE, and removing it is the fix. It read
-			// "else if (!IsAllowedTypeName(type.Assembly.GetName().Name, declaredTypeName))", which for a
-			// framework name asked only whether the NAME was on the list - so a type called System.Uri
-			// declared by a plugin, a code-generated assembly or anything else the runtime had loaded was
-			// admitted and constructed. The delegate and disposable shape rejection above was the only
-			// thing standing in its way, and an impostor avoids that simply by being neither.
-			//
-			// There is no legitimate resolved type this refuses that the fallback used to allow: the
-			// fallback admitted exactly (first party assembly AND a name in AllowedFirstPartyTypes) or (a
-			// name in AllowedFrameworkTypeNames), and both maps are consulted below. The two array
-			// spellings in that name set never reach this point, because arrays are unwrapped to their
+			// SECURITY H-10 (CWE-502) reached by assembly confusion. EVERY admitted constituent must be the EXACT
+			// Type held in one of the two pinned maps - reference equality against the Type object, never a name
+			// match - so a same-named type loaded from any other assembly is refused whatever the discriminator
+			// claimed. There is deliberately no name-only fallback: one would ask merely whether the NAME was on the
+			// list, so a type called System.Uri declared by a plugin or a code-generated assembly would be admitted
+			// and constructed, with only the delegate/disposable shape rejection above standing in its way. No
+			// legitimate resolved type is refused by requiring the reference: both maps are consulted below, and the
+			// two array spellings in the name set never reach this point because arrays are unwrapped to their
 			// element type at the top of this method.
 			var candidate = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
 			Type pinnedType = null;
@@ -715,41 +566,26 @@ namespace WebVella.Erp.Api.Models
 		}
 
 		/// <summary>
-		/// Builds the exact first party type map by indexing <see cref="PersistedModelTypes"/> by
-		/// full type name. Runs once, during type initialization; see
-		/// <see cref="AllowedFirstPartyTypes"/> for the rationale.
+		/// Builds the exact first party type map by indexing <see cref="PersistedModelTypes"/> by full type name.
+		/// Runs once, during type initialization.
 		/// </summary>
 		/// <remarks>
-		/// Threat addressed - CWE-502 (deserialization of untrusted data), OWASP A08:2021.
-		/// <para>
-		/// There is deliberately NO reflection here. Enumerating an assembly or a namespace tree is what
-		/// makes services, repositories, managers and ambient contexts instantiable from a persisted
-		/// discriminator; indexing a hand-enumerated list instead means the permitted set cannot grow as
-		/// a side effect of adding a class to a namespace.
-		/// </para>
-		/// <para>
-		/// Assembly pinning is now inherent rather than enforced: every entry is a
-		/// <c>typeof</c> reference resolved by the compiler against this assembly, so no
-		/// discriminator can influence which assembly is consulted.
-		/// </para>
+		/// Threat addressed - CWE-502, OWASP A08:2021. There is deliberately NO reflection here: enumerating an
+		/// assembly or a namespace tree is what makes services, repositories, managers and ambient contexts
+		/// instantiable from a persisted discriminator, whereas indexing a hand-enumerated list means the
+		/// permitted set cannot grow as a side effect of adding a class to a namespace. Assembly pinning is
+		/// inherent rather than enforced, every entry being a <c>typeof</c> resolved by the compiler against this
+		/// assembly.
 		/// </remarks>
 		private static Dictionary<string, Type> BuildFirstPartyTypeMap()
 		{
 			var map = new Dictionary<string, Type>(StringComparer.Ordinal);
 
-			// Every entry is a compile-time typeof over PersistedModelTypes, so the set cannot drift
-			// as the assembly gains types, a misspelling cannot silently admit nothing, and the
-			// assembly is pinned by construction: a Type obtained from typeof in this assembly IS
-			// this assembly's type, so no discriminator can influence which assembly is consulted.
-			// There is deliberately no reflection over the assembly's type list here - that is what
-			// admitted the repositories, managers and object-mapping profiles this map now excludes.
 			foreach (var type in PersistedModelTypes)
 			{
-				// A delegate exists to carry an invocation target and a disposable owns a live
-				// resource. Neither is ever a persisted data document, and both are exactly the
-				// shapes a deserialization gadget is built from. The enumeration above contains
-				// neither; this stays as a standing guard on future edits to that list, so adding a
-				// type of either shape cannot quietly widen the attack surface.
+				// Standing guard on future edits to PersistedModelTypes, which contains neither shape today: a delegate
+				// carries an invocation target and a disposable owns a live resource, and both are exactly the shapes a
+				// deserialization gadget is built from (CWE-502).
 				if (typeof(Delegate).IsAssignableFrom(type) || typeof(IDisposable).IsAssignableFrom(type))
 				{
 					continue;
@@ -769,18 +605,11 @@ namespace WebVella.Erp.Api.Models
 		/// <see cref="AllowedFrameworkTypes"/> for the rationale.
 		/// </summary>
 		/// <remarks>
-		/// THREAT ADDRESSED - review finding CR3-H-06, CWE-502 (deserialization of untrusted data) reached by
-		/// assembly confusion, OWASP A08:2021.
-		/// <para>
-		/// Every entry is a <c>typeof</c> expression, so the assembly is pinned by the compiler rather than
-		/// by a string a discriminator could satisfy. Open generic definitions are used - <c>List&lt;&gt;</c>
-		/// rather than <c>List&lt;object&gt;</c> - because that is the form both the discriminator name and
+		/// THREAT ADDRESSED - CWE-502 reached by assembly confusion, OWASP A08:2021. Every entry is a
+		/// <c>typeof</c> expression, so the assembly is pinned by the compiler rather than by a string a
+		/// discriminator could satisfy. Open generic definitions are used - <c>List&lt;&gt;</c> rather than
+		/// <c>List&lt;object&gt;</c> - because that is the form both the discriminator name and
 		/// <see cref="IsAllowedResolvedType"/> reduce a constructed generic to.
-		/// </para>
-		/// <para>
-		/// The membership is unchanged from the name set it replaces: the same twenty-five types, no
-		/// additions. This change alters HOW a name is admitted, not WHICH names are.
-		/// </para>
 		/// </remarks>
 		private static Dictionary<string, Type> BuildFrameworkTypeMap()
 		{
@@ -945,22 +774,16 @@ namespace WebVella.Erp.Api.Models
 		}
 
 		/// <summary>
-		/// Renders a rejected discriminator fragment for inclusion in a refusal message: truncated,
-		/// with every character outside printable ASCII escaped.
+		/// Renders a rejected discriminator fragment for a refusal message: truncated, with every character
+		/// outside printable ASCII escaped.
 		/// </summary>
 		/// <remarks>
 		/// SECURITY H-10 hardening (CWE-400 uncontrolled resource consumption, CWE-117 improper output
-		/// neutralisation for logs). The refusal message is the one place a rejected discriminator is
-		/// reflected back, and refusals are logged. Echoing the token verbatim meant the two
-		/// oversize bounds added above still produced an oversize RESULT: a 2,000 character type name
-		/// was refused correctly but generated a 2,184 character exception message, and a deeply
-		/// nested generic produced a 3,889 character one - so the amplification the bounds exist to
-		/// prevent simply moved from the resolver into the log. A discriminator is also attacker
-		/// supplied text that may carry newlines or terminal control sequences, which would let a
-		/// refused payload forge additional log lines.
-		/// Truncating and escaping keeps the message diagnostic - an operator can still see what was
-		/// refused and decide whether it is hostile or a legitimate type the allow-list does not yet
-		/// cover - while ensuring the untrusted fragment cannot restructure the record containing it.
+		/// neutralisation for logs). The refusal message is the one place a rejected discriminator is reflected
+		/// back, and refusals are logged, so echoing the token verbatim would let the length and nesting bounds
+		/// above still produce an oversize RESULT, moving the amplification from the resolver into the log. A
+		/// discriminator is also attacker-supplied text that may carry newlines or terminal control sequences,
+		/// which would let a refused payload forge log lines.
 		/// </remarks>
 		private static string Describe(string value)
 		{

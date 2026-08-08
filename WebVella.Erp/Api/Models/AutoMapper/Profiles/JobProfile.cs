@@ -32,14 +32,13 @@ namespace WebVella.Erp.Api.Models.AutoMapper.Profiles
 			job.CompleteClassName = (string)src["complete_class_name"];
 			if (!string.IsNullOrWhiteSpace(src["attributes"].ToString()))
 			{
-				// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021 Software
-				// and Data Integrity Failures). Job attributes and results are declared dynamic and are
-				// persisted with TypeNameHandling.All, so a stored $type discriminator names the type to
-				// instantiate wherever a job payload can be influenced. The binder constrains type
-				// RESOLUTION to an allow-list rather than disabling polymorphism, because payloads already
-				// in the database carry discriminators and would stop deserialising if type handling were
-				// removed: TypeNameHandling is therefore deliberately NOT downgraded here or at the three
-				// sites below, which attach the same shared binder for the same reason.
+				// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). Job attributes and
+				// results are declared dynamic and are persisted with TypeNameHandling.All, so a stored $type
+				// discriminator names the type to instantiate wherever a job payload can be influenced. The binder
+				// constrains type RESOLUTION to an allow-list rather than disabling polymorphism, because payloads
+				// already in the database carry discriminators and would stop deserialising if type handling were
+				// removed - which is why TypeNameHandling is deliberately NOT downgraded here or at the three sites
+				// below, all of which attach the same shared binder.
 				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 				job.Attributes = JsonConvert.DeserializeObject<ExpandoObject>((string)src["attributes"], settings);
 			}
@@ -50,13 +49,13 @@ namespace WebVella.Erp.Api.Models.AutoMapper.Profiles
 				{
 					try
 					{
-						//we need to keep backword compadability - so we attempt to deserialize to Expando
+						//Ordered for persisted-payload compatibility: a result written before JobResultWrapper existed is a
+						//bare Expando, so that shape is attempted first and the wrapper is the fallback.
 						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 						job.Result = JsonConvert.DeserializeObject<ExpandoObject>((string)src["result"], settings);
 					}
 					catch
 					{
-						//if we fail with Expando, try to deserialize to new JobResultWrapper
 						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 						job.Result = JsonConvert.DeserializeObject<JobResultWrapper>((string)src["result"], settings).Result;
 					}
@@ -123,8 +122,6 @@ namespace WebVella.Erp.Api.Models.AutoMapper.Profiles
 			schedulePlan.JobTypeId = (Guid)src["job_type_id"];
 			if (JobManager.JobTypes.Any(t => t.Id == schedulePlan.JobTypeId))
 				schedulePlan.JobType = JobManager.JobTypes.FirstOrDefault(t => t.Id == schedulePlan.JobTypeId);
-			//else
-			//	throw new Exception($"JobType with id='{schedulePlan.JobTypeId}' not found.");
 			if (!string.IsNullOrWhiteSpace(src["job_attributes"].ToString()))
 				schedulePlan.JobAttributes = JsonConvert.DeserializeObject<ExpandoObject>((string)src["job_attributes"], settings);
 			schedulePlan.Enabled = (bool)src["enabled"];

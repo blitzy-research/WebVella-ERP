@@ -1,13 +1,13 @@
 ﻿{
 	"Settings": {
-		// SECURITY - findings H-05 and H-04 (CWE-798 hard-coded credentials, CWE-321 hard-coded key; OWASP A05:2021 and A02:2021): the connection string and the encryption key were committed to source control, so they stay EMPTY here and are supplied out of band as Settings__ConnectionString and Settings__EncryptionKey ("__" separates sections).
-		// DevelopmentMode ships "false" for finding H-12 (CWE-489 active debug code, CWE-209 error-message disclosure; OWASP A05:2021). Every key is deliberately RETAINED with an empty value because the JSON configuration source is non-optional: do NOT delete this file.
+		// SECURITY - findings H-05 and H-04 (CWE-798 hard-coded credentials, CWE-321 hard-coded key), OWASP A02 / A05: the connection string and the encryption key were committed to source control, so they stay EMPTY and are supplied out of band as Settings__ConnectionString and Settings__EncryptionKey ("__" separates sections).
+		// DevelopmentMode ships "false" for H-12 (CWE-489 active debug code). Every key is RETAINED with an empty value because the JSON configuration source is non-optional - do NOT delete this file.
 		"ConnectionString": "",
 		"EncryptionKey": "",
 		"Lang": "en",
 		"Locale": "en-US",
 		"TimeZoneName": "FLE Standard Time",
-		"CacheKey": "", //if empty current date will be used 
+		"CacheKey": "", //if empty current date will be used
 		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "false",
 		"EnableFileSystemStorage": "false",

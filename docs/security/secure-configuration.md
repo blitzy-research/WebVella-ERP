@@ -56,7 +56,7 @@ follow, and they are the whole point of this guide:
 | Data Protection | Per-application discriminator bound to the host's application name, so one host cannot decrypt another's authentication cookie; the key-ring directory is opt-in through `Settings:DataProtectionKeyDirectory` (`RISK-115`) |
 | Rate limiting | `UseRateLimiter()` in all seven hosts — a per-address fixed window of 600 requests per minute — positioned after both static-file middlewares so assets are never throttled |
 | Login throttling | Per-account and per-address counters in a **durable, shared** store — the existing `plugin_data` table under the reserved `wv_sec_` key prefix, mutated by atomic row-locked read-modify-write — consulted at **both** credential entry points: the login page and the anonymous bearer-token route. A lockout therefore survives a restart and spans instances, and the throttle fails closed when the store cannot be reached (`RISK-008`, review finding `H-OPEN-02`) |
-| Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors. .NET analyzers run with `AnalysisLevel=latest-recommended` **and `AnalysisLevelSecurity=latest-all`**, which arms the whole Security category; an earlier revision of this row said no such upgrade was applied, and that is no longer true. **No** global analyzer configuration file is supplied, and the workflow fails if one appears — the category level is delivered through a property the SDK honours rather than through a `.globalconfig`. One family is excluded: `CA3001`–`CA3012` for `WebVella.Erp.Web` alone, on a measured termination bound, and the workflow asserts that exclusion in both directions so it can neither be lost nor widened (`RISK-051`, `RISK-138`). All analyzer diagnostics stay warnings at the project level and are enforced instead by the workflow's Gate 1 allow-list. Inherited by **19 of 19** projects, because the file is directory-scoped rather than solution-scoped |
+| Build gate | `Directory.Build.props` — dependency auditing at `all`/`low` with **six** NuGet audit diagnostics promoted to errors. .NET analyzers run with `AnalysisLevel=latest-recommended` **and `AnalysisLevelSecurity=latest-all`**, which arms the whole Security category. **No** global analyzer configuration file is supplied, and the workflow fails if one appears — the category level is delivered through a property the SDK honours rather than through a `.globalconfig`. One family is excluded: `CA3001`–`CA3012` for `WebVella.Erp.Web` alone, on a measured termination bound, and the workflow asserts that exclusion in both directions so it can neither be lost nor widened (`RISK-051`, `RISK-138`). All analyzer diagnostics stay warnings at the project level and are enforced instead by the workflow's Gate 1 allow-list. Inherited by **19 of 19** projects, because the file is directory-scoped rather than solution-scoped |
 | Toolchain pin | `global.json` pins `10.0.302` with `rollForward: disable`, so only that exact SDK builds the repository and the gate's recorded results are reproducible by construction (review findings `GATE-02` and `CR2-F-13`) |
 | Shipped secrets | **Scrubbed.** All eight `Config.json` files carry empty secret values and `DevelopmentMode: false`, `web.config` sets `Production`, and the seeded administrator password is no longer a literal (`RISK-021`, closed) |
 | Mail transport | **Encrypted on every path, and no path can opt out of encryption.** The five MailKit send paths validate the server certificate by default including revocation, and no setting can turn revocation off (`RISK-060`); since review finding `H-OPEN-03` they additionally **refuse** a cleartext connection outside Development — `None` is rejected and `Auto`/`StartTlsWhenAvailable` are raised to mandatory `StartTls`, so a relay that does not offer the extension is refused rather than downgraded. The separate diagnostic notification client in `WebVella.Erp.Web/Services/MailService.cs` used to negotiate no TLS at all; since review finding `M-OPEN-03` it sets `EnableSsl`, is disposed and carries a 15-second timeout, with no development escape hatch — see *Mail transport* |
@@ -71,9 +71,7 @@ message — never values, prefixes, lengths or digests — so a startup failure 
 into a console, a log file or a crash report (CWE-532).
 
 **Two categories, and the difference is not cosmetic.** A missing value in the first table stops the
-process; a missing value in the second one lets the process start and takes a capability away. Earlier
-revisions of this guide put the token signing key in the *first* table and described its absence as
-"verified startup-fatal". **That was wrong, and it is withdrawn.** Reading the wrong category is
+process; a missing value in the second one lets the process start and takes a capability away. The token signing key does **not** belong in the *first* table: its absence is not startup-fatal. Reading the wrong category is
 operationally expensive in both directions: an operator who believes a keyless host will refuse to
 start will read a *successfully started* host as proof the key was supplied, when in fact bearer
 authentication is silently off; and an operator who believes the connection string is merely degrading
@@ -143,9 +141,7 @@ so that existing deployments keep working and are not recommended for new config
 
 ### The complete inventory of every configuration key the platform reads
 
-The two tables above cover the settings an operator normally has a decision to make about. **This table
-is the exhaustive one**, and it exists because earlier revisions of this guide claimed to be an
-authoritative inventory while naming 23 of the 41 keys the source actually reads — omitting, among
+The two tables above cover the settings an operator normally has a decision to make about. **This table is the exhaustive one.** A guide that claims to be an authoritative inventory while naming 23 of the 41 keys the source actually reads — omitting, among
 others, every SMTP server, port, username, sender and recipient setting, which is precisely the group an
 operator configuring mail delivery needs. Every row below was generated from the source tree, not from
 memory, and the sweep is reproducible:
@@ -243,7 +239,7 @@ default is a literal the code supplies.
 | `Settings:EmailFrom` | none | Only when e-mail is enabled. Default sender address | `ErpSettings.cs` |
 | `Settings:EmailTo` | none | Diagnostic and exception notification recipient (`RISK-030`) | `ErpSettings.cs` |
 | `Settings:EmailSMTPAllowInvalidCertificates` | `false` | Accepts **any** relay certificate. Honoured **only** alongside `Settings:DevelopmentMode`; refused elsewhere and reported once per process. Never set it in production | `SmtpService.cs` |
-| `Settings:EmailSMTPCheckCertificateRevocation` — **DOES NOT EXIST** | n/a | Listed here only so an operator who found it in an earlier revision of this guide stops looking for it. No code reads this key. Certificate revocation checking is **unconditional**: nothing assigns `client.CheckCertificateRevocation`, so MailKit's own default of `true` applies on every send path and no configuration turns it off. A relay whose chain names no reachable CRL distribution point or OCSP responder therefore **cannot be used from a Production deployment** — verified at runtime, where such a relay fails with *unable to get certificate CRL* even though the chain, dates and host name all verify. Use a relay whose chain publishes a reachable revocation endpoint (`RISK-060`) | `SmtpService.cs` |
+| `Settings:EmailSMTPCheckCertificateRevocation` — **DOES NOT EXIST** | n/a | No code reads this key. Certificate revocation checking is **unconditional**: nothing assigns `client.CheckCertificateRevocation`, so MailKit's own default of `true` applies on every send path and no configuration turns it off. A relay whose chain names no reachable CRL distribution point or OCSP responder therefore **cannot be used from a Production deployment** — verified at runtime, where such a relay fails with *unable to get certificate CRL* even though the chain, dates and host name all verify. Use a relay whose chain publishes a reachable revocation endpoint (`RISK-060`) | `SmtpService.cs` |
 | `ApiUrlTemplates:FieldInlineEdit` | `/api/v3/en_US/record/{entityName}/{recordId}` | Every host. Endpoint template the inline field editor posts to | `ErpSettings.cs` |
 | `Development:TestEntityName` | `test` | Development scaffolding only. Not a `Settings:` key and not part of the security posture | `ErpSettings.cs` |
 | `Development:TestRecordId` | a fixed GUID | Development scaffolding only; a non-parsing value is ignored rather than fatal | `ErpSettings.cs` |
@@ -398,9 +394,7 @@ the [risk register](risk-register.md), where the alternative tzdata remedy is de
 
 ### PostgreSQL role privileges
 
-The role in `Settings:ConnectionString` must be a **`SUPERUSER`** on the current codebase. This is a
-correction: an earlier revision of this guide said `SUPERUSER` was unnecessary, and an operator who
-provisioned a least-privilege role on the strength of that sentence would find the application unable
+The role in `Settings:ConnectionString` must be a **`SUPERUSER`** on the current codebase. `SUPERUSER` is necessary, not optional: an operator who provisions a least-privilege role instead will find the application unable
 to start at all.
 
 The requirement comes from one specific pair of statements, not from the schema work in general.
@@ -477,16 +471,15 @@ Three further properties matter operationally:
   a shell with the wrong `WorkingDirectory` would let the launcher decide which `Config.json` supplies
   the connection string, the data-at-rest encryption key and the token signing key — or find none at
   all.
-- **User secrets now work for every executable, and this was corrected rather than left as a caveat.**
-  An earlier revision of this section recorded that the provider "contributes nothing to the console
-  application today" because "the project declares no `UserSecretsId`". That was accurate at the time and
-  was true of **seven** of the eight executables, not one — only `WebVella.Erp.Site` declared an
-  identifier, so for the console application and six of the seven hosts the documented developer channel
-  resolved no store and silently loaded nothing. `AddUserSecrets` is called with `optional: true`, so it
-  could not even fail loudly. **All eight now declare a stable `UserSecretsId`**, so the effective
-  Development chain is the JSON file, then environment variables, then that executable's own store.
-  `optional: true` is retained deliberately: it keeps a developer who has never created a store from
-  hitting a hard failure, and outside Development the provider is not registered at all.
+- **User secrets now work for every executable, and this was corrected rather than left as a
+  caveat.** That was accurate at the time and was true of **seven** of the eight executables, not
+  one — only `WebVella.Erp.Site` declared an identifier, so for the console application and six of
+  the seven hosts the documented developer channel resolved no store and silently loaded nothing.
+  `AddUserSecrets` is called with `optional: true`, so it could not even fail loudly. **All eight
+  now declare a stable `UserSecretsId`**, so the effective Development chain is the JSON file, then
+  environment variables, then that executable's own store. `optional: true` is retained
+  deliberately: it keeps a developer who has never created a store from hitting a hard failure, and
+  outside Development the provider is not registered at all.
 
   A store is keyed by the identifier, so **a value set for one executable is invisible to the others** and
   `--project` is required:
@@ -540,14 +533,12 @@ published with the repository.
 `Config.json` — with a capital `C`, exactly as the repository tracks it and exactly as both the build
 and the publish output copy it. **No renaming or copying step is required, on any platform.**
 
-An earlier revision of the platform asked for the lower-case spelling `config.json` while shipping
-`Config.json`, and this guide documented a `cp Config.json config.json` workaround for case-sensitive
-filesystems. **Both the defect and the workaround are gone; remove that copy from any deployment
-steps that still carry it** (review finding `F30`). The mismatch was a real vulnerability rather than
-an inconvenience — CWE-178, improper handling of case sensitivity, and CWE-706, use of an incorrectly
+**Both the defect and the workaround are gone; remove that copy from any deployment steps that still
+carry it** (review finding `F30`). The mismatch was a real vulnerability rather than an
+inconvenience — CWE-178, improper handling of case sensitivity, and CWE-706, use of an incorrectly
 resolved name: on Linux and in containers the intended file simply did not exist under the requested
-name, so startup either failed or, once a `config.json` was created by hand, silently read a file that
-was not the audited one.
+name, so startup either failed or, once a `config.json` was created by hand, silently read a file
+that was not the audited one.
 
 If you followed the old instruction and left a lower-case `config.json` in a deployment directory,
 **delete it.** It is no longer read, and leaving an unaudited copy of the configuration on disk is
@@ -587,14 +578,13 @@ collapsed: a `FileNotFoundException` fails the step (the casing contract regress
 Anything else fails closed. The step additionally asserts `smoke_count -eq 8`, so a matrix that quietly
 collapsed to fewer artifacts cannot report clean.
 
-**Why eight and not a sample.** An earlier revision of this step launched four — `Site`, `Sdk`,
-`Project` and the console — on the argument that `Sdk` stood for the five hosts that build no
-configuration chain of their own. That argument covers the chain, which is only half of what this
-checks: the exact-casing contract, the presence of `Config.json` in the publish output and the absence
-of a lower-case twin are properties of **each project's own publish**, which no sibling can stand for,
-so `Crm`, `Mail`, `MicrosoftCDM` and `Next` were unverified on both counts. Eight artifacts also give the
-eight audited `Config.json` files a **one-to-one** runtime counterpart, which is what makes this half of
-Gate 4's substitute complete rather than sampled. The evidence is published as `startup-smoke.txt`.
+**Why eight and not a sample.** That argument covers the chain, which is only half of what this
+checks: the exact-casing contract, the presence of `Config.json` in the publish output and the
+absence of a lower-case twin are properties of **each project's own publish**, which no sibling can
+stand for, so `Crm`, `Mail`, `MicrosoftCDM` and `Next` were unverified on both counts. Eight
+artifacts also give the eight audited `Config.json` files a **one-to-one** runtime counterpart,
+which is what makes this half of Gate 4's substitute complete rather than sampled. The evidence is
+published as `startup-smoke.txt`.
 
 ```bash
   # Nothing to do beyond publishing and running:
@@ -626,17 +616,16 @@ pattern. Two ordering constraints follow, and they are constraints rather than p
 
 ### Comments in the configuration files, and two deliberate blanks
 
-~~All eight `Config.json` files and `global.json` carry `//` comments~~ — **corrected under code-review
-finding `MED-07`: they do not, and the distribution matters because an operator was being told to expect
-in-place explanation in files that carry none.** Measured on the tracked tree, `//` comments appear in
-**three** of the eight configuration files plus `global.json`:
+`//` comments do **not** appear in all eight `Config.json` files, and the distribution matters: an
+operator told to expect in-place explanation would look for it in files that carry none. Measured on the
+tracked tree, `//` comments appear in **three** of the eight configuration files plus `global.json`:
 
 | File | Lines carrying `//` | What they say |
 | --- | --- | --- |
-| `WebVella.Erp.Site/Config.json` | 5 — 3 dedicated, 2 trailing | A three-line security note naming findings `H-05` (CWE-798), `H-04` (CWE-321) and `C-04` with OWASP A02/A05, the `Settings__ConnectionString` / `Settings__EncryptionKey` / `Settings__Jwt__Key` supply forms, and why the keys are retained with empty values; a trailing note on `DevelopmentMode` naming `H-12` (CWE-489, CWE-209, A05) and recording that the value is a **string** by design; and the original trailing `CacheKey` note |
+| `WebVella.Erp.Site/Config.json` | 4 — 2 dedicated, 2 trailing | A two-line security note naming findings `H-05` (CWE-798), `H-04` (CWE-321) and `C-04` with OWASP A02/A05, the `Settings__ConnectionString` / `Settings__EncryptionKey` / `Settings__Jwt__Key` supply forms, and why the keys are retained with empty values; a trailing note on `DevelopmentMode` naming `H-12` (CWE-489, CWE-209, A05) and recording that the value is a **string** by design; and the original trailing `CacheKey` note |
 | `WebVella.Erp.ConsoleApp/Config.json` | 3 — 2 dedicated, 1 trailing | A two-line security note naming `H-05`, `H-04` and `H-12` with their CWEs and OWASP categories, the `Settings__ConnectionString` and `Settings__EncryptionKey` supply forms, and why every key is retained with an empty value; plus the original trailing `CacheKey` note. It names no `Jwt` key, because this project has no `Jwt` section and none was added |
 | `WebVella.Erp.Site.Sdk/Config.json` | 1 — trailing | A pointer to the storage library's own documentation on the `CloudBlobStorageConnectionString` line |
-| `global.json` | 18 | Why the SDK version is pinned and `rollForward` disabled |
+| `global.json` | 7 | Why the SDK version is pinned and `rollForward` disabled |
 | `.Crm`, `.Mail`, `.MicrosoftCDM`, `.Next`, `.Project` | **0** | Nothing — these five carry no comment of any kind, so this guide is their only explanation |
 
 Reproduce the counts with `grep -c '//' <file>` for the total and `grep -cE '^[[:space:]]*//' <file>` for the
@@ -695,12 +684,8 @@ public, and both remain recoverable from repository history permanently.
   Its withdrawal is a data migration rather than a rotation an operator performs, and it is covered in
   the [credential migration guide](credential-migration.md).
 
-**The values above are redacted, not abbreviated, and the shape is fixed:**
-`[REDACTED — <n> characters, SHA-256 prefix <16 hexadecimal characters>]`. An earlier revision of this
-section abbreviated them instead — printing the first bytes of the encryption key, and naming the
-signing key's phrase and its repetition count, from which the whole 51-character key could be
-reconstructed. That was a second publication of a compromised secret inside a tracked file, and it is
-withdrawn.
+**The values above are redacted, not abbreviated, and the shape is fixed:** `[REDACTED — <n>
+characters, SHA-256 prefix <16 hexadecimal characters>]`. Abbreviating them is not an option — printing the first bytes of the encryption key, or naming the signing key's phrase and its repetition count, from which the whole 51-character key could be reconstructed.
 
 The redaction keeps what an operator needs and discards what they do not. **To decide whether your own
 deployment still carries a published value, fingerprint it rather than compare it:**
@@ -859,12 +844,9 @@ precede HTTPS redirection. **Verify on both a dynamic page and a static asset**,
 is emitted exactly as written above in both modes — only the header *name* changes.** Report-only is
 not a weaker policy; it is a rollout mode.
 
-Both header names carry the single `ContentSecurityPolicy` constant, which is the mandated directives
-verbatim with nothing appended. It is a compile-time constant, so no host, plugin or configuration
-source can weaken, blank or replace it. An earlier revision of this section described the two modes as
-backed by two separate constants with the report-only value carrying an extra `report-uri` directive;
-that split was removed together with the collector, and the superseded description is corrected here
-rather than quietly dropped.
+Both header names carry the single `ContentSecurityPolicy` constant, which is the mandated
+directives verbatim with nothing appended. It is a compile-time constant, so no host, plugin or
+configuration source can weaken, blank or replace it.
 
 **There is deliberately no violation-report collector endpoint and no `report-uri` directive.** An
 intermediate revision mounted one at `/csp-violation-report`; it was removed for two reasons that each
@@ -1099,9 +1081,7 @@ line, because its antiforgery cookie uses `SameAsRequest`, so local plaintext si
 ### Three port-shaped settings that are not interchangeable
 
 `ASPNETCORE_HTTPS_PORT`, `ASPNETCORE_HTTPS_PORTS` and a `Kestrel:Endpoints` entry look like variations
-on one idea and are three different mechanisms. An earlier revision of this guide prescribed the plural
-one for a job it cannot do here, and a later revision over-corrected by calling it a key that is simply
-"not read" — which is wrong in the other direction, because it *is* read, by a hosting model this
+on one idea and are three different mechanisms. The plural key cannot do that job here, and calling it a key that is simply "not read" is wrong in the other direction — which is wrong in the other direction, because it *is* read, by a hosting model this
 platform does not use. Both are corrected here (review finding **F4**).
 
 | Setting | Configuration key | What it actually does | Binds a listener? |
@@ -1242,7 +1222,7 @@ apart.
 
 | Setting | Value | Reason |
 | --- | --- | --- |
-| `SecurePolicy` | **`Always`, in every environment** — no Development carve-out | The cookie must never traverse plaintext. An earlier revision relaxed this in Development so `http://localhost` kept working; that relaxation *was* the vulnerability (CWE-614), because `ASPNETCORE_ENVIRONMENT` is ambient — a deployment that inherits `Development` from a shell profile, a container image or a stale `web.config` silently stops marking the session cookie `Secure`, and the one signal that something is wrong is the signal that is suppressed. Local development uses the HTTPS profile instead |
+| `SecurePolicy` | **`Always`, in every environment** — no Development carve-out | The cookie must never traverse plaintext. Relaxing this in Development so `http://localhost` keeps working *is* the vulnerability (CWE-614), because `ASPNETCORE_ENVIRONMENT` is ambient — a deployment that inherits `Development` from a shell profile, a container image or a stale `web.config` silently stops marking the session cookie `Secure`, and the one signal that something is wrong is the signal that is suppressed. Local development uses the HTTPS profile instead |
 | `SameSite` | `Lax` | `Strict` breaks the return-URL round trip through the login page. `Lax` is the framework's documented default posture, and it must not be "upgraded" |
 | `HttpOnly` | `true` | Script cannot read the ticket |
 | `ExpireTimeSpan` | **1440 minutes (24 hours)** | The **idle** window: a session that sees no activity for 24 hours ends |
@@ -1296,18 +1276,10 @@ schedule.
 
 ### Session revocation: durable, shared, and fail-closed
 
-~~**What is not implemented, stated plainly:** there is no revocation list and no refresh-token rotation.
-Both require persisting issued or revoked token identifiers — a database schema change, which the
-audit's own constraints forbid. The honest consequences: signing out clears the cookie and revokes the
-cookie session identifier, but it does **not** invalidate an already-issued bearer token; and a stolen
-token stays usable until the earlier of its own expiry and the 7-day horizon.~~
-
-**That paragraph is withdrawn under code-review finding `MAJ-08`, which established that it described a
-tree that no longer exists.** A revocation list *is* implemented, it *is* durable and shared, and it
-covers **both** credential kinds. An operator who read the withdrawn text would have under-stated the
-platform's own protection and — worse — would not have known about the one operational behaviour it
-introduces, which is described at the end of this section. Read from the source rather than from a
-sibling document, the control is as follows.
+A revocation list **is** implemented, it **is** durable and shared, and it covers **both** credential
+kinds — the cookie ticket and the bearer token alike. It introduces one operational behaviour, described
+at the end of this section. Read from the source rather than from a sibling document, the control is as
+follows.
 
 **One identifier, one store, both credential kinds.** Every cookie ticket minted by `AuthService`
 carries a random session-identifier claim, and `BuildTokenAsync` stamps the *same* claim into every
@@ -1454,7 +1426,7 @@ The token refresh route uses the address-only counter because it presents no use
 registration is atomic — attempts are reserved before verification and finalised after — so concurrent
 requests cannot each pass the check before any of them records a failure.
 
-**The counters are durable and shared, and this reverses what an earlier revision of this page said.**
+**The counters are durable and shared.**
 They live in the platform's own `plugin_data` table through
 `WebVella.Erp/Database/DbSecurityStateRepository.cs`, under the reserved key prefix `wv_sec_`, with keys
 `wv_sec_lthr_acct_<username>` and `wv_sec_lthr_addr_<address>`. Every transition is a single atomic,
@@ -1485,8 +1457,11 @@ So the operational consequences that follow from a durable store are the ones to
   itself is never cached — so unlike the previous in-process design, cache pressure cannot hand a
   budget back.
 
-Counters are held in memory, so **restarting the application clears all lockouts** — useful during
-testing, and the fastest way to undo a deliberate lockout you created while verifying a deployment.
+**Lockout state is durable, so restarting the application does NOT clear it.** Counters live in the
+database, shared by every instance and surviving a restart; only the in-memory mirror of an in-force
+refusal is lost, and a miss there re-reads the store. To clear a lockout deliberately, either wait for
+the 15-minute window to lapse or delete the account's `plugin_data` row **and** restart every instance
+still holding it in its mirror.
 
 ## Mail transport
 
@@ -1542,9 +1517,7 @@ actually fetch, sign that CRL with a CA carrying `cRLSign` and a subject key ide
 the leaf works equally well. Every check then stays in force and a revoked relay certificate stays
 refused.
 
-**There is deliberately no configuration key that disables the revocation check.** One existed briefly
-in an earlier revision of this remediation and was **removed**: it was honoured in every posture,
-including Production, which weakened the production transport posture beyond the agreed remediation for
+**There is deliberately no configuration key that disables the revocation check.** Such a key is deliberately absent: honoured in every posture, including Production, it weakened the production transport posture beyond the agreed remediation for
 `H-11` and added an external-service accommodation the plan of record does not authorise. Do not
 reintroduce it, and do not read a CRL-reachability failure as a reason to reach for the
 accept-any-certificate opt-out instead — that removes transport authentication entirely to fix a
@@ -1626,8 +1599,7 @@ Everything above this heading describes the **five MailKit send paths** in
 `Services/SmtpInternalService.cs`. Those are the paths `H-11` closed and `H-OPEN-03` made
 encryption-mandatory.
 
-The platform has a **second, entirely separate** outbound mail client, and review finding `INT-01`
-existed because earlier revisions of this guide and of the audit report generalised across the two as
+The platform has a **second, entirely separate** outbound mail client, which is why this guide and the audit report generalised across the two as
 though `H-11` covered both. It did not, and the distinction still matters — but the conclusion has
 reversed. `WebVella.Erp.Web/Services/MailService.cs` builds a `System.Net.Mail.SmtpClient` and is called
 by `WebVella.Erp.Web/Services/LogService.cs` when a log record is written. **Review finding `M-OPEN-03`
@@ -2031,8 +2003,7 @@ clean" claim unverifiable.
 **`rollForward: disable` is what the tree carries**, and it is the pin: only SDK **10.0.302** builds
 this repository, and every other version, patch or feature band, is refused.
 
-**An earlier revision of this guide carried the opposite policy and defended it; the reversal is
-recorded rather than quietly overwritten.** That revision set `rollForward: latestPatch`, reasoning that
+ That revision set `rollForward: latestPatch`, reasoning that
 the audit-mode default and the analyzer rule set are selected by the SDK *feature band*, so holding the
 pin on the `10.0.3xx` band delivered the reproducibility the finding asks for while still admitting a
 security patch. **That premise is not quite right.** A **patch** can add a rule, change a default
@@ -2091,8 +2062,7 @@ one bounded scan is proved against deliberate defects rather than assumed.
 `-t:Rebuild` of the solution reports **0 errors and 3,055 warnings**. Of those, **641** are distinct
 `(rule, file)` `CA` diagnostics across all categories, and **55** are Security-category diagnostics, from
 exactly five rules — `CA2100` (20), `CA2326` (20), `CA2328` (9), `CA5351` (5) and `CA5362` (1) — which
-collapse to **21** distinct `(rule, file)` pairs. Earlier revisions of this section quoted 3,044, 3,043 and
-3,028; those were measurements of earlier trees and are superseded, not merely restated. None of the 3,055
+collapse to **21** distinct `(rule, file)` pairs. Read any other total in this document set as dated and re-measure it, because the figure moves whenever the analyzer configuration does. None of the 3,055
 is newly introduced by the remediation — they are pre-existing code the gate made *visible*.
 
 **All analyzer diagnostics remain warnings; only the six dependency codes are errors.** Promoting roughly
@@ -2102,8 +2072,7 @@ enforcement is left off.
 
 **Analyzer enforcement therefore lives in the workflow rather than in the compiler.** Gate 1 parses the
 analyzer log, extracts every Security-category diagnostic and fails the job on any that is not on an
-inline allow-list — **21** `(rule, file)` pairs at this revision, not the *two* an earlier revision of this
-sentence recorded. Under review finding `MAJ-01` each of the 21 now carries a `RISK-` reference and a
+inline allow-list — **21** `(rule, file)` pairs at this revision. Each of the 21 carries a `RISK-` reference and a
 one-line disposition, and the step fails on a missing, unresolvable or empty one, so a tolerated diagnostic
 cannot exist without a traceable acceptance behind it; both forms of the list are published, the comparison
 form as `security-allowlist.txt` and the justified form as `security-allowlist-justified.txt`. The pass
@@ -2114,8 +2083,7 @@ must not be "fixed" by weakening the gate: the five `CA5351` sites are the legac
 exists so already-stored credentials keep working, and they are formally accepted with a measurable exit
 condition in `RISK-171`.
 
-Two counting traps are worth knowing, because they made earlier revisions of this section quote every
-figure at twice its true value. **MSBuild emits every diagnostic twice** in a solution build — once
+Two counting traps are worth knowing, because either makes a figure come out at twice its true value. **MSBuild emits every diagnostic twice** in a solution build — once
 inline with a node-number prefix such as `5>`, and once again in the end-of-build summary — so a raw
 `grep -c` doubles every total, and the prefix defeats a naive `sort -u` as well. And an **incremental
 build undercounts**, because it skips unchanged projects; use `-t:Rebuild` for any comparison.
@@ -2232,9 +2200,11 @@ grep -rn 'WebVella\.ERP\\' --include=*.csproj . WebVella.ERP3.sln   # must retur
   #    appears here as a WARNING and is enforced by the workflow's Gate 1 instead.
 dotnet build WebVella.ERP3.sln -c Debug -t:Rebuild -v n
 
-  # 5. The gate's two deliberate absences.
+  # 5. The Security category is armed, and no config file from this tree carries a rule severity.
+  #    Expect 'latest-all' from the first, and from the second only the SDK's own
+  #    analysislevel_<n>_recommended and analysislevelsecurity_<n>_all - never a path in this tree.
 dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo -getProperty:AnalysisLevelSecurity
-dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo -getItem:EditorConfigFiles | grep -i globalconfig
+dotnet msbuild WebVella.Erp/WebVella.Erp.csproj -nologo -t:CoreCompile -getItem:EditorConfigFiles | grep -i globalconfig
 ```
 
 Then the runtime posture, because a host that answers `/` cannot be assumed usable:
@@ -2301,14 +2271,14 @@ ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' dotnet
   # 11b. Three further transport negative tests, all of which must ABORT outside Development:
   #      no endpoint declared at all; the public HTTPS port supplied with no trusted proxy; and a
   #      trusted proxy supplied with no public HTTPS port. A malformed port must abort naming the key.
-ASPNETCORE_ENVIRONMENT=Production dotnet <Host>.dll
-ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' HTTPS_PORT=443 dotnet <Host>.dll
+ASPNETCORE_ENVIRONMENT=Production dotnet "$HOST_DLL"
+ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' HTTPS_PORT=443 dotnet "$HOST_DLL"
 ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_URLS='http://127.0.0.1:5199' \
-  Settings__ForwardedHeaders__KnownProxies='10.0.0.7' dotnet <Host>.dll
+  Settings__ForwardedHeaders__KnownProxies='10.0.0.7' dotnet "$HOST_DLL"
   #      A malformed port aborts in EVERY environment, Development included, because
   #      ReadPublicHttpsPort throws before the Development exemption is consulted:
 ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS='http://127.0.0.1:5199' \
-  HTTPS_PORT='not-a-port' dotnet <Host>.dll
+  HTTPS_PORT='not-a-port' dotnet "$HOST_DLL"
 
   # 12. Login throttling: a sixth consecutive failure must be refused.
   #     STATE CHANGE - this LOCKS OUT the account it is run against. Throwaway accounts only.
@@ -2373,12 +2343,11 @@ Stated plainly, so the confidence attached to each claim is visible.
   code in your own deployment, which is why that step is written as a conditional.
 - **Line numbers are used only where a value was disclosed at a specific line.** Elsewhere the enclosing
   file and member name are the durable locator, because line numbers drift as files are edited.
-- **This page was consolidated from four separately written angles.** Each was accurate when written and
-  the overlap between them had begun to contradict itself — one passage described the configuration
-  files as still carrying live values, another described the content policy as carrying a `report-uri`
-  directive that had been removed. Both are corrected above rather than left standing beside the current
-  text. Where this page records a reversal, the superseded position is stated with it, so an operator who
-  followed an earlier revision can tell which way it finally landed.
+- **This page was consolidated from four separately written angles.** Each was accurate when written
+  and the overlap between them had begun to contradict itself — one passage described the
+  configuration files as still carrying live values, another described the content policy as
+  carrying a `report-uri` directive that had been removed. Both are corrected above rather than left
+  standing beside the current text.
 
 ## Related documents
 

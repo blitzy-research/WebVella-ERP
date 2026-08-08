@@ -14,13 +14,10 @@
 <wv-grid small="true" columns="@gridColumns" has-tfoot="false">
 	@foreach (var record in records)
 	{
-		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING. PcProjectWidgetTimesheet.cs
-		   builds no markup: "label" is always plain text and the avatar path travels separately in
-		   "label_image", null on the summary rows. The avatar element is authored here as literal Razor
-		   markup, so Razor encodes the src attribute value and the label text independently and in the right
-		   context for each. The avatar is decorative and the username sits beside it, so alt is intentionally
-		   empty. Do NOT reintroduce Html.Raw and do NOT move the markup back into the component; the Design
-		   and Display twins must stay identical - change both or neither. *@
+		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING. The component publishes "label"
+		   as plain text and the avatar path separately, and the avatar element is authored here as literal
+		   Razor markup, so Razor encodes the src attribute and the label text each in its own context. Do NOT
+		   reintroduce Html.Raw; the Design and Display twins must stay identical - change both or neither. *@
 		var labelImagePath = (string)record["label_image"];
 		<wv-grid-row>
 			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">

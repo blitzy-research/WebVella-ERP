@@ -37,13 +37,10 @@
 <wv-grid bordered="true" small="true" columns="@gridColumn" has-tfoot="false">
 	@foreach (var record in records)
 	{
-		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING.
-		   PcProjectWidgetTaskDistribution.cs builds no markup: it publishes the two values as the data
-		   fields user_image and user_name, and the avatar element is authored here as literal Razor markup,
-		   so Razor encodes the src attribute value and the name text each in its own context. The avatar is
-		   decorative and the owner name is adjacent, so alt is intentionally empty. Do NOT reintroduce
-		   Html.Raw and do NOT move the markup back into the component; the Design and Display twins must
-		   stay identical - change both or neither. *@
+		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING. The component publishes
+		   user_image and user_name as data fields and the avatar element is authored here as literal Razor
+		   markup, so Razor encodes the src attribute and the name text each in its own context. Do NOT
+		   reintroduce Html.Raw; the Design and Display twins must stay identical - change both or neither. *@
 		<wv-grid-row>
 			<wv-grid-column><img src="@((string)record["user_image"])" class="rounded-circle" width="24" alt="" /> @record["user_name"]</wv-grid-column>
 			<wv-grid-column class="@((int)record["overdue"] > 0 ? "go-bkg-red-light" : "")">@record["overdue"]</wv-grid-column>

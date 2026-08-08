@@ -44,17 +44,9 @@ namespace WebVella.Erp.Database
 
 				List<DbParameter> parameters = new List<DbParameter>();
 
-				// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-				// Software and Data Integrity Failures). Create path - the relation document is
-				// SERIALIZED here and read back by Read() below, which is where a stored $type
-				// discriminator would be resolved into a CLR type. TypeNameHandling is deliberately
-				// RETAINED rather than removed: relation documents already persisted in existing
-				// installations carry discriminators, so dropping type handling would stop those
-				// rows loading at all. The weakness is closed by constraining type RESOLUTION
-				// instead, to the enumerated first-party allow-list in the binder attached below.
-				// Attaching it on this serialize path changes nothing that is stored, because it
-				// overrides BindToType only and leaves BindToName to the base implementation, so
-				// the $type strings written here stay byte-identical to those written before.
+				// SECURITY H-10. Create path - serialize side; see the deserialize site below for the
+				// retained-type-handling rationale. The binder overrides BindToType only, so the $type strings
+				// written here stay byte-identical to those written before.
 				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 				DbParameter parameterId = new DbParameter();
@@ -136,14 +128,9 @@ namespace WebVella.Erp.Database
 
 					NpgsqlCommand command = con.CreateCommand("UPDATE entity_relations SET json=@json WHERE id=@id;");
 
-					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-					// Software and Data Integrity Failures). Update path - the same constraint as
-					// the Create path above, applied to the document this method rewrites.
-					// TypeNameHandling is retained so already-persisted relation documents keep
-					// round-tripping, and the binder confines which types a stored $type token may
-					// resolve to. Because the binder overrides BindToType only, the discriminators
-					// written back here are unchanged, so a relation updated by this build still
-					// loads on one running the previous build.
+					// SECURITY H-10. Update path - serialize side; see the deserialize site below for the
+					// retained-type-handling rationale. The binder overrides BindToType only, so the discriminators
+					// written back are unchanged and a relation updated by this build still loads on the previous one.
 					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 					var parameter = command.CreateParameter() as NpgsqlParameter;
@@ -189,15 +176,13 @@ namespace WebVella.Erp.Database
 
 				using (NpgsqlDataReader reader = command.ExecuteReader())
 				{
-					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-					// Software and Data Integrity Failures). Read path - this is the DESERIALIZE
-					// site, where polymorphic type handling turns a $type discriminator found in
-					// the stored entity_relations row into a CLR type. Unconstrained, that is a
-					// well-known remote-code-execution primitive: anything able to write that
-					// column chooses which type gets instantiated. TypeNameHandling is retained
-					// because the stored documents cannot be read without it, and resolution is
-					// constrained instead to the enumerated first-party allow-list in the binder
-					// attached below - a token naming anything outside it is refused, not resolved.
+					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). THE DESERIALIZE
+					// SITE, where polymorphic type handling turns a $type discriminator found in the stored
+					// entity_relations row into a CLR type. Unconstrained, that is a well-known remote-code-execution
+					// primitive: anything able to write that column chooses which type gets instantiated.
+					// TypeNameHandling is RETAINED because already-persisted relation documents carry discriminators
+					// and could not be read without it, and resolution is constrained instead to the binder's
+					// enumerated first-party allow-list, which refuses anything outside it.
 					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 					List<DbEntityRelation> relations = new List<DbEntityRelation>();
 					while (reader.Read())
@@ -286,11 +271,10 @@ namespace WebVella.Erp.Database
 		public void CreateManyToManyRecord(Guid relationId, Guid originId, Guid targetId)
 		{
 			var relation = Read(relationId);
-			// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The origin and target
-			// ids below are bound as parameters, but the relation table name is an identifier and is
-			// concatenated into the INSERT, so it is validated against the allow-list here. Validate
-			// returns the name unchanged for every conforming value, so the emitted SQL is identical
-			// to before for all legitimate relations.
+			// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The ids below are bound as
+			// parameters, but the relation table name is an identifier and is concatenated into the INSERT.
+			// Validate returns a conforming name unchanged, so the emitted SQL is identical for all
+			// legitimate relations.
 			string tableName = DbIdentifier.Validate($"rel_{relation.Name}");
 
 			using (var connection = DbContext.Current.CreateConnection())
@@ -307,8 +291,8 @@ namespace WebVella.Erp.Database
 			if(!originId.HasValue && !targetId.HasValue)
 				throw new Exception("Both origin id and target id cannot be null when delete many to many relation!");
 
-			// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Identifier
-			// concatenated into the DELETE statements below; ids are parameterised, this is not.
+			// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Identifier concatenated into
+			// the DELETE statements below; the ids are parameterised, this is not.
 			string tableName = DbIdentifier.Validate($"rel_{relationName}");
 
 			using (var connection = DbContext.Current.CreateConnection())

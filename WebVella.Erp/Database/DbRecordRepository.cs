@@ -38,8 +38,6 @@ namespace WebVella.Erp.Database
         const string END_OUTER_SELECT = @") X";
         const string FROM = @"FROM {0}";
 
-        //const string GROUPBY = @"GROUP BY {0}";
-
         const string OTM_RELATION_TEMPLATE = @"	(SELECT  COALESCE( array_to_json( array_agg( row_to_json(d) )), '[]') FROM ( 
 					SELECT {1} 
 					FROM {2} {3}
@@ -103,13 +101,13 @@ namespace WebVella.Erp.Database
 					// this is set as text because later
 					// the generated SQL will be something like
 
-					// INSERT INTO places 
-					//  (id, 
-					//  border) 
-					// VALUES 
-					//  (@id, 
+					// INSERT INTO places
+					//  (id,
+					//  border)
+					// VALUES
+					//  (@id,
 					//  ST_Transform(ST_GeomFromGeoJSON(@border),4326)::geography)
-					// 
+					//
 					param.Type = NpgsqlDbType.Text;
 					GeographyField geo = (field as GeographyField);
 
@@ -160,13 +158,13 @@ namespace WebVella.Erp.Database
 					// this is set as text because later
 					// the generated SQL will be something like
 
-					// INSERT INTO places 
-					//  (id, 
-					//  border) 
-					// VALUES 
-					//  (@id, 
+					// INSERT INTO places
+					//  (id,
+					//  border)
+					// VALUES
+					//  (@id,
 					//  ST_Transform(ST_GeomFromGeoJSON(@border),4326)::geography)
-					// 
+					//
 					param.Type = NpgsqlDbType.Text;
 					GeographyField geo = (field as GeographyField);
 					param.Value = record.Value;
@@ -245,24 +243,21 @@ namespace WebVella.Erp.Database
             }
         }
 
-        // Finding F-03. Command timeout applied to any query carrying a regex predicate. Deliberately
-        // a client-side timeout rather than a server-side "SET statement_timeout": DbContext's
-        // CreateConnection returns a TRANSACTION-BOUND SHARED connection when a transaction is
-        // active, so a session-level setting applied here could outlive this query and silently
-        // truncate an unrelated long-running statement on the same connection, while "SET LOCAL"
-        // only takes effect inside a transaction and so would do nothing on the common path. The
-        // client cancel was verified to interrupt a running regex scan, cancelling at 2000 ms
-        // against a two-second bound, so the simpler mechanism is also the effective one.
+        // Command timeout applied to any query carrying a regex predicate (CWE-400). Deliberately a
+        // client-side timeout rather than a server-side "SET statement_timeout": DbContext's CreateConnection
+        // returns a TRANSACTION-BOUND SHARED connection when a transaction is active, so a session-level
+        // setting applied here could outlive this query and silently truncate an unrelated long-running
+        // statement on the same connection, while "SET LOCAL" only takes effect inside a transaction and so
+        // would do nothing on the common path. The client cancel does interrupt a running regex scan.
         private const int REGEX_QUERY_COMMAND_TIMEOUT_SECONDS = 60;
 
-        // Preserves this method's original ten-minute ceiling verbatim for every non-regex query, so
-        // the F-03 change narrows one case rather than re-tuning the data layer.
+        // Every non-regex query keeps this repository's original ten-minute ceiling, so the regex bound
+        // narrows one case rather than re-tuning the data layer.
         private const int DEFAULT_QUERY_COMMAND_TIMEOUT_SECONDS = 600;
 
-        // Finding F-03. Walks the whole query tree, because a regex predicate can sit at any depth
-        // inside nested AND/OR groups and a top-level-only test would miss it. Modelled directly on
-        // ContainsRelationalQuery below, which already does this walk for a different property, so
-        // the traversal shape is the one this file established rather than a new idiom.
+        // Walks the whole query tree, because a regex predicate can sit at any depth inside nested AND/OR
+        // groups and a top-level-only test would miss it. Modelled on ContainsRelationalQuery below, which
+        // already does this walk for a different property.
         private static bool ContainsRegexQuery(QueryObject query)
         {
             if (query == null)
@@ -335,12 +330,10 @@ namespace WebVella.Erp.Database
 
                 NpgsqlCommand command = con.CreateCommand(sql);
 
-                // THREAT ADDRESSED - finding F-03, CWE-400. This method evaluates the SAME
-                // caller-supplied predicate as Find, and set no timeout at all, so a regex count
-                // inherited the connection string's two-minute default. Every paged list issues a
-                // count beside its page, so leaving this unbounded would have left half the request
-                // unprotected. Narrowed only when a regex predicate is actually present, so
-                // ordinary counts keep the connection default untouched.
+                // CWE-400. This method evaluates the SAME caller-supplied predicate as Find, and every paged list
+                // issues a count beside its page, so leaving the count unbounded would leave half the request
+                // unprotected. Narrowed only when a regex predicate is actually present, so ordinary counts keep the
+                // connection default untouched.
                 if (query != null && ContainsRegexQuery(query.Query))
                     command.CommandTimeout = REGEX_QUERY_COMMAND_TIMEOUT_SECONDS;
 
@@ -375,8 +368,8 @@ namespace WebVella.Erp.Database
 			DbRepository.SetColumnDefaultValue(GetTableNameForEntity(entityName), field, overrideNulls);
 
 			DbRepository.SetColumnNullable(GetTableNameForEntity(entityName), field.Name, !field.Required);
-			
-           
+
+
 
 
             if (field.Searchable)
@@ -405,16 +398,11 @@ namespace WebVella.Erp.Database
             {
                 if (!(field is RelationFieldMeta))
                 {
-                    //SECURITY C-02 (CWE-200 / CWE-522, OWASP A01:2021 + A02:2021): relational read
-                    //projection seam. See RedactEncryptedFieldValue for the full rationale. This
-                    //private helper is reached only from within this class - the recursion just
-                    //below and Find(EntityQuery) - so the redaction here is UNCONDITIONAL and is
-                    //deliberately not subject to the credential-read scope that ExtractFieldValue's
-                    //own read gate honours. Neither of this class's two Find seams is ever the
-                    //credential path: SecurityManager's credential-resolution queries reach the
-                    //separate private ConvertJObjectToEntityRecord in Eql/EqlCommand.cs, and the one
-                    //single-column read of a stored hash is SecurityManager.ReadStoredPasswordHash,
-                    //which issues its own parameterized query and never passes through a projection.
+                    //SECURITY C-02 (CWE-200 / CWE-522, OWASP A01:2021 + A02:2021): relational read projection seam.
+                    //See RedactEncryptedFieldValue for the full rationale. This private helper is reached only from
+                    //within this class - the recursion just below and Find(EntityQuery) - so the redaction is
+                    //UNCONDITIONAL and deliberately not subject to the credential-read scope that ExtractFieldValue's
+                    //own read gate honours. Neither Find seam is ever the credential path.
                     record[field.Name] = RedactEncryptedFieldValue(ExtractFieldValue(jObj[field.Name], field), field);
                 }
                 else
@@ -434,92 +422,77 @@ namespace WebVella.Erp.Database
         /// <summary>
         /// Replaces the value of an encrypted <see cref="PasswordField"/> with
         /// <see cref="RecordManager.EncryptedFieldRedactedValue"/> on the way out of a record query
-        /// projection, so a stored credential hash never leaves the server. Every other field type,
-        /// and a password field that is not flagged as encrypted, passes through untouched.
+        /// projection, so a stored credential hash never leaves the server. Every other field type, and a
+        /// password field not flagged as encrypted, passes through untouched.
         /// </summary>
         /// <param name="value">The already-extracted projection value.</param>
         /// <param name="field">The field the value was projected from.</param>
         /// <returns>
-        /// <see cref="RecordManager.EncryptedFieldRedactedValue"/> when <paramref name="field"/> is
-        /// an encrypted <see cref="PasswordField"/> and a value is actually present; otherwise
-        /// <paramref name="value"/> unchanged. A null value stays null: inventing a marker where
-        /// there was no value would change observable behaviour, and the write-side guard keys on
-        /// the marker rather than on null.
+        /// <see cref="RecordManager.EncryptedFieldRedactedValue"/> when <paramref name="field"/> is an
+        /// encrypted <see cref="PasswordField"/> and a value is actually present; otherwise
+        /// <paramref name="value"/> unchanged. A NULL VALUE STAYS NULL: inventing a marker where there was no
+        /// value would change observable behaviour, and the write-side guard keys on the marker, not on null.
         /// </returns>
         /// <remarks>
-        /// SECURITY C-02 (CWE-200 exposure of sensitive information to an unauthorized actor,
-        /// CWE-522 insufficiently protected credentials / OWASP A01:2021 Broken Access Control +
-        /// A02:2021 Cryptographic Failures).
-        ///
-        /// THREAT ADDRESSED: a stored password hash was returned verbatim by every record query
-        /// projection, to callers of any role. Field permissions are enforced ONLY in the
-        /// presentation layer - WebVella.Erp.Web/Components/PcFieldBase/PcFieldBase.cs gates the
-        /// whole field-permission evaluation behind "if (entityField.EnableSecurity)", and
-        /// EnableSecurity is a plain bool defaulting to false in
-        /// WebVella.Erp/Api/Models/FieldTypes/BaseField.cs - and there is no data-layer equivalent
-        /// anywhere. The mandated Authorization Enforcement standard requires authorization to be
-        /// validated "on every request, not just in the UI", so the value is replaced here, in the
-        /// repository's own query projection, and a hash never leaves the server.
-        ///
-        /// Redaction is UNCONDITIONAL with respect to role, including administrators: the
-        /// acceptance criterion is "no API response and no query projection returns a password
-        /// hash, for any role". It is deliberately NOT conditional on SecurityContext, on an
-        /// ignoreSecurity flag or on role membership - a role-conditional projection would both
-        /// leave the hash reachable and add exactly the complexity the Minimal Change Clause
-        /// forbids.
-        ///
-        /// WHY THIS HELPER STILL EXISTS ALONGSIDE THE GATE INSIDE
-        /// <see cref="ExtractFieldValue(object, Field, bool)"/> - this is the part that must not be
-        /// "simplified". That method is public static and serves BOTH directions: called with
-        /// encryptPasswordFields: true it is the plaintext-to-hash WRITE conversion, so redacting
-        /// inside it would store the marker as a credential and destroy every password it converted.
-        /// Redaction therefore has to sit at the read-projection seams, which is what this helper is.
-        /// 
-        /// CALL SITES - it is deliberately internal rather than private, because there are three
-        /// projection seams in this assembly and they must not drift apart:
-        ///   the non-relational reader loop and the private ConvertJObjectToEntityRecord of
-        ///   Find(EntityQuery), both in this file, which this helper covers UNCONDITIONALLY;
-        ///   the private ConvertJObjectToEntityRecord of WebVella.Erp/Eql/EqlCommand.cs, which is a
-        ///   separate method reached by every EQL query including the api/v3/en_US/eql, eql-ds and
-        ///   eql-ds-select2 routes (finding C-02). Leaving that seam out was a Critical gap,
-        ///   because all three routes serialise an EqlCommand result straight into a response and
-        ///   stored data sources shipped by the Project plugin select the user entity's password
-        ///   column outright. It redacts DENY-BY-DEFAULT and can only be opted out of through the
-        ///   internal EqlCommand.IncludeEncryptedFieldValues flag (the opt-in lives on the COMMAND,
-        ///   never on the public EqlSettings, which is built from stored data-source definitions).
-        /// 
-        /// TWO INDEPENDENT GATES PROTECT THE EQL SEAM, and both must be satisfied before a real
-        /// hash is projected. ExtractFieldValue carries the deeper one on its read fall-through,
-        /// because that method is public static and any present or future caller can reach it
-        /// without passing through this class or RecordManager; that gate is CONDITIONAL, suppressed
-        /// only while SecurityManager's credential-read scope (RecordManager.OpenCredentialReadScope)
-        /// is open. EqlCommand then applies the second gate, keyed on its own
-        /// IncludeEncryptedFieldValues flag. The two Find seams in this file stay redacted even for
-        /// the internal credential path, because this helper ignores the scope, so the exemption is
-        /// as narrow as it can be; redaction is idempotent, so a double application is harmless.
-        /// 
-        /// CREDENTIAL RESOLUTION IS THE ONLY EXEMPTION. SecurityManager.GetUser(Guid) - the overload
-        /// SaveUser and the schema-version-4 migration in WebVella.Erp/ERPService.cs read through -
-        /// and SecurityManager.GetUser(email, password) each open the scope AND set the command flag,
-        /// and nothing else in the platform does either. The stored hash a login verifies against is
-        /// read by SecurityManager.ReadStoredPasswordHash, an internal, parameterized, single-column,
-        /// single-row query that bypasses every projection.
-        /// Do NOT "restore" a projection-based hash read here or in EqlCommand to make some other
-        /// code path convenient - route it through ReadStoredPasswordHash instead, and do NOT open
-        /// the credential-read scope around a controller, hook, job, import or bulk user listing.
-        ///
-        /// Keyed on the EXISTING Encrypted flag only. Blanket field-permission enforcement across
-        /// every field type and every projection is explicitly out of scope: an empty read
-        /// permission is treated as denial by the presentation layer, so a blanket port would hide
-        /// fields wholesale. The residual general gap is recorded in
-        /// docs/security/risk-register.md rather than fixed here.
+        /// SECURITY C-02 (CWE-200 exposure of sensitive information to an unauthorized actor, CWE-522
+        /// insufficiently protected credentials / OWASP A01:2021 + A02:2021).
         /// <para>
-        /// Widened from private to internal for finding F16: EqlCommand carries its own private
-        /// ConvertJObjectToEntityRecord and so has its own projection seam, which was calling
-        /// ExtractFieldValue directly and returning stored hashes. internal keeps the member inside
-        /// this assembly - every consumer, EqlCommand included, is in WebVella.Erp - so no public
-        /// API surface changes, and there is still exactly ONE redaction implementation rather than a
-        /// copy per projection.
+        /// THREAT ADDRESSED: a stored password hash was returned verbatim by every record query projection, to
+        /// callers of any role, because field permissions are enforced ONLY in the presentation layer -
+        /// PcFieldBase gates the whole evaluation behind <c>entityField.EnableSecurity</c>, a plain bool
+        /// defaulting to false - and there is no data-layer equivalent. Authorization must hold on every
+        /// request rather than in the UI alone, so the value is replaced here, in the repository's own
+        /// projection.
+        /// </para>
+        /// <para>
+        /// Redaction is UNCONDITIONAL with respect to role, administrators included: no projection returns a
+        /// hash for any role. It is deliberately NOT conditional on <c>SecurityContext</c>, on an
+        /// ignoreSecurity flag or on role membership - a role-conditional projection would leave the hash
+        /// reachable and add complexity the minimal-change constraint forbids.
+        /// </para>
+        /// <para>
+        /// WHY THIS HELPER EXISTS ALONGSIDE THE GATE INSIDE
+        /// <see cref="ExtractFieldValue(object, Field, bool)"/>, and must not be folded into it: that method
+        /// is public static and serves BOTH directions - called with <c>encryptPasswordFields: true</c> it is
+        /// the plaintext-to-hash WRITE conversion, so redacting inside it would store the marker as a
+        /// credential and destroy every password it converted. Redaction therefore sits at the read-projection
+        /// seams, which is what this helper is.
+        /// </para>
+        /// <para>
+        /// CALL SITES - internal rather than private because the projection seams in this assembly must not
+        /// drift apart: the non-relational reader loop and the private ConvertJObjectToEntityRecord of
+        /// <see cref="Find(EntityQuery)"/>, both in this file, which this helper covers UNCONDITIONALLY; and
+        /// the separate private ConvertJObjectToEntityRecord of WebVella.Erp/Eql/EqlCommand.cs, reached by
+        /// every EQL query - including the eql, eql-ds and eql-ds-select2 routes, which serialise an
+        /// EqlCommand result straight into a response, and the stored data sources that select the user
+        /// entity's password column outright. That seam redacts DENY-BY-DEFAULT and can only be opted out of
+        /// through the internal <c>EqlCommand.IncludeEncryptedFieldValues</c> flag, which lives on the COMMAND
+        /// and never on the public EqlSettings built from stored data-source definitions.
+        /// </para>
+        /// <para>
+        /// TWO INDEPENDENT GATES PROTECT THE EQL SEAM, and both must be satisfied before a real hash is
+        /// projected. <c>ExtractFieldValue</c> carries the deeper one on its read fall-through, because it is
+        /// public static and any caller can reach it without passing through this class or RecordManager; that
+        /// gate is CONDITIONAL, suppressed only while <c>RecordManager.OpenCredentialReadScope</c> is open.
+        /// EqlCommand then applies the second, keyed on its own flag. The two Find seams here stay redacted
+        /// even for the internal credential path, so the exemption is as narrow as possible; redaction is
+        /// idempotent, so a double application is harmless.
+        /// </para>
+        /// <para>
+        /// CREDENTIAL RESOLUTION IS THE ONLY EXEMPTION. <c>SecurityManager.GetUser(Guid)</c> - which SaveUser
+        /// and the schema-version-4 migration read through - and <c>SecurityManager.GetUser(email, password)</c>
+        /// each open the scope AND set the command flag, and nothing else in the platform does either. The
+        /// stored hash a login verifies against is read by <c>SecurityManager.ReadStoredPasswordHash</c>, an
+        /// internal, parameterized, single-column, single-row query that bypasses every projection. Do NOT
+        /// introduce a projection-based hash read here or in EqlCommand to make another code path convenient -
+        /// route it through ReadStoredPasswordHash - and do NOT open the credential-read scope around a
+        /// controller, hook, job, import or bulk user listing.
+        /// </para>
+        /// <para>
+        /// Keyed on the EXISTING Encrypted flag only. Blanket field-permission enforcement across every field
+        /// type and every projection is out of scope: an empty read permission is treated as denial by the
+        /// presentation layer, so a blanket port would hide fields wholesale. The residual general gap is
+        /// recorded in docs/security/risk-register.md rather than fixed here.
         /// </para>
         /// </remarks>
         internal static object RedactEncryptedFieldValue(object value, Field field)
@@ -542,7 +515,7 @@ namespace WebVella.Erp.Database
 
 			if (value is JToken)
 			{
-				//we convert JToken to string for specified types, because when date formated string 
+				//we convert JToken to string for specified types, because when date formated string
 				//is saved in JToken value, it get converted to DateTime. It may happen with other specific texts also.
 				if( field is EmailField || field is FileField || field is ImageField ||
 					field is HtmlField || field is MultiLineTextField || field is PasswordField ||
@@ -626,10 +599,6 @@ namespace WebVella.Erp.Database
 					if (string.IsNullOrWhiteSpace(value as string))
 						return null;
 					date = DateTime.Parse(value as string);
-					////date can be local, utc and unspecified
-					////if local convert to utc, unspecified is used as is
-					//if (date.HasValue && date.Value.Kind == DateTimeKind.Local)
-					//	date = date.Value.ToUniversalTime();
 
 					switch (date.Value.Kind)
 					{
@@ -647,10 +616,6 @@ namespace WebVella.Erp.Database
 				else
 				{
 					date = value as DateTime?;
-					////date can be local, utc and unspecified
-					////if local convert to utc, unspecified is used as is
-					//if (date.HasValue && date.Value.Kind == DateTimeKind.Local)
-					//	date = date.Value.ToUniversalTime();
 
 					switch (date.Value.Kind)
 					{
@@ -666,18 +631,16 @@ namespace WebVella.Erp.Database
 					}
 				}
 
-				//if (date != null)
-				//	return new DateTime(date.Value.Year, date.Value.Month, date.Value.Day, 0, 0, 0, DateTimeKind.Utc);
 				return date;
 			}
 
 			else if (field is EmailField)
 				return value as string;
 			else if (field is FileField)
-				//TODO convert file path to url path
+				//Projects the stored relative path verbatim; composing a URL from it is the caller's concern.
 				return value as string;
 			else if (field is ImageField)
-				//TODO convert image path to url path
+				//Projects the stored relative path verbatim; composing a URL from it is the caller's concern.
 				return value as string;
 			else if (field is HtmlField)
 				return value as string;
@@ -716,83 +679,64 @@ namespace WebVella.Erp.Database
 						if (string.IsNullOrWhiteSpace(value as string))
 							return null;
 
-						//SECURITY C-02 guard - DATA-INTEGRITY CRITICAL. A caller that read this
-						//record through a query projection receives
-						//RecordManager.EncryptedFieldRedactedValue in place of the stored hash (see
-						//RedactEncryptedFieldValue above). If that marker is round-tripped back into
-						//a write it must NEVER be hashed: doing so would replace the account's real
-						//credential with a hash of the marker and PERMANENTLY DESTROY it, because
-						//both MD5 and PBKDF2 are one-way. On a multi-record round-trip that would
-						//destroy every affected account's password at once - a data-destroying
-						//outcome from a fix whose whole purpose is to prevent disclosure.
+						//SECURITY C-02 guard - DATA-INTEGRITY CRITICAL. A caller that read this record through a query
+						//projection receives RecordManager.EncryptedFieldRedactedValue in place of the stored hash (see
+						//RedactEncryptedFieldValue above). If that marker is round-tripped back into a write it must NEVER
+						//be hashed: doing so would replace the account's real credential with a hash of the marker and
+						//PERMANENTLY DESTROY it, because both MD5 and PBKDF2 are one-way - on a multi-record round-trip,
+						//every affected account at once.
 						//
-						//null is returned rather than the marker, an empty string, or a hash. It is
-						//this branch's own established "do not write a real value here" signal - the
-						//IsNullOrWhiteSpace guard immediately above already returns null - and it is
-						//the value the record-write collectors in WebVella.Erp/Api/RecordManager.cs
-						//already treat as "omit this field", leaving the persisted column
-						//byte-identical. That omission in RecordManager is the primary (Layer 1)
-						//control; this check is defence in depth (Layer 2) so no present or future
-						//caller of this method can reintroduce the defect.
-						//
-						//StringComparison.Ordinal is mandatory: a culture-sensitive or
-						//case-insensitive comparison could either miss the marker (destroying a
-						//credential) or match a value that is not the marker.
+						//null is returned rather than the marker, an empty string or a hash: it is this branch's own
+						//established "do not write a real value here" signal - the IsNullOrWhiteSpace guard immediately
+						//above already returns null - and it is what the record-write collectors in RecordManager treat as
+						//"omit this field", leaving the persisted column byte-identical. That omission is the primary
+						//control; this check is defence in depth so no future caller of this method can reintroduce the
+						//defect. StringComparison.Ordinal is mandatory: a culture-sensitive or case-insensitive comparison
+						//could either miss the marker (destroying a credential) or match a value that is not the marker.
 						if (string.Equals(value as string, RecordManager.EncryptedFieldRedactedValue, StringComparison.Ordinal))
 							return null;
 
-						//THREAT ADDRESSED - finding M-13, CWE-521, OWASP A07:2021. Defence in depth
-						//behind the identical check in RecordManager.ExtractFieldValue, which is the
-						//primary control because it is the seam the record write path actually uses.
-						//This copy exists because this method is PUBLIC and STATIC: any present or
-						//future caller can reach the hashing branch directly without passing through
-						//RecordManager, and a policy enforced at only one of two equivalent seams is a
-						//policy that a single new call site silently removes. The reason text carries no
-						//plaintext and no length, for the same CWE-532 reason documented there.
+						//SECURITY M-13 (CWE-521, OWASP A07:2021). Defence in depth behind the identical check in
+						//RecordManager.ExtractFieldValue, which is the primary control because it is the seam the record
+						//write path actually uses. This copy exists because this method is PUBLIC and STATIC: any caller can
+						//reach the hashing branch without passing through RecordManager, and a policy enforced at only one of
+						//two equivalent seams is one a single new call site silently removes. The reason text carries no
+						//plaintext and no length (CWE-532).
 						string passwordPolicyFailure = PasswordUtil.ValidatePasswordPolicy(value as string);
 						if (passwordPolicyFailure != null)
 							throw new ArgumentException("The supplied password does not meet the password policy: "
 								+ passwordPolicyFailure + ".");
 
-						//THREAT ADDRESSED - finding C-03, CWE-916 / CWE-759, OWASP A02:2021. Was an
-						//unsalted single-pass MD5 digest; now a salted, work-factored
-						//PBKDF2-HMAC-SHA-256 value. See WebVella.Erp/Utilities/PasswordUtil.cs.
+						//SECURITY C-03 (CWE-916 / CWE-759, OWASP A02:2021): salted, work-factored PBKDF2-HMAC-SHA-256.
+						//See WebVella.Erp/Utilities/PasswordUtil.cs.
 						return PasswordUtil.HashPassword(value as string);
 					}
 				}
 
-				//THREAT ADDRESSED - finding C-02, CWE-200 (exposure of sensitive information to an
-				//unauthorized actor) and CWE-522 (insufficiently protected credentials), OWASP
-				//A01:2021 Broken Access Control + A02:2021 Cryptographic Failures. This is the READ
-				//fall-through of the password branch, and it is the one projection seam the two
-				//companion redactions in this class could not cover: this method is public static
-				//and is also called from WebVella.Erp/Eql/EqlCommand.cs, whose own private
-				//ConvertJObjectToEntityRecord bypasses both RecordManager.Find and this class's
-				//record-projection seams. The generic EQL surface therefore returned the stored
-				//credential hash verbatim - it authorises the ENTITY only, the Regular role retains
-				//read access to the user entity, and the surface is reachable over HTTP - so an
-				//authenticated regular user could project user.password.
+				//SECURITY C-02 (CWE-200 exposure of sensitive information to an unauthorized actor, CWE-522
+				//insufficiently protected credentials / OWASP A01:2021 + A02:2021). This is the READ fall-through of
+				//the password branch, and the one projection seam the companion redactions in this class cannot
+				//cover: this method is public static and is also called from WebVella.Erp/Eql/EqlCommand.cs, whose
+				//own private ConvertJObjectToEntityRecord bypasses both RecordManager.Find and this class's
+				//record-projection seams. The generic EQL surface authorises the ENTITY only, the Regular role
+				//retains read access to the user entity and the surface is reachable over HTTP, so without this gate
+				//an authenticated regular user could project user.password.
 				//
-				//The reason this redaction could not simply be placed here before is that
-				//WebVella.Erp/Api/SecurityManager.cs resolves credentials through that same EQL path
-				//and needs the REAL stored hash in order to verify a login. The ambient opt-in
-				//resolves the conflict: SecurityManager opens RecordManager's credential-read scope
-				//around its own credential-resolution queries and nothing else, so verification
-				//still sees the hash while every other caller - EQL included - sees the marker. The
-				//gate is deny-by-default, so a read path added in future is redacted without having
-				//to opt in. Do NOT widen the scope to a controller, hook, job, bulk user listing or
+				//The gate is CONDITIONAL because SecurityManager resolves credentials through that same EQL path and
+				//needs the REAL stored hash to verify a login: it opens RecordManager's credential-read scope around
+				//its own credential-resolution queries and nothing else, so verification sees the hash while every
+				//other caller - EQL included - sees the marker. Deny-by-default, so a read path added in future is
+				//redacted without opting in. Do NOT widen the scope to a controller, hook, job, bulk user listing or
 				//import: that would reopen exactly the surface this closes.
 				//
-				//Encrypted is bool?, so the comparison is written "== true" on purpose: it treats
-				//null as "not encrypted", which is the semantics every other PasswordField test in
-				//this file already has. Never write a bare truthiness test or "!= false" here. A
-				//null value stays null, matching RedactEncryptedFieldValue above, so no marker is
-				//invented where there was no value.
+				//Encrypted is bool?, so the comparison is written "== true" on purpose: it treats null as "not
+				//encrypted", which is the semantics every other PasswordField test in this file already has. Never
+				//write a bare truthiness test or "!= false" here. A null value stays null, matching
+				//RedactEncryptedFieldValue above, so no marker is invented where there was no value.
 				//
-				//This gate cannot affect a WRITE. Every write caller passes encryptPasswordFields
-				//true, and when that flag is set on an encrypted field the branch above returns on
-				//all three of its paths, so execution can only reach this line for a read or for a
-				//field that is not flagged encrypted.
+				//This gate cannot affect a WRITE. Every write caller passes encryptPasswordFields true, and when that
+				//flag is set on an encrypted field the branch above returns on all three of its paths, so execution
+				//reaches this line only for a read or for a field that is not flagged encrypted.
 				if (!RecordManager.IsCredentialReadScopeOpen && value != null && ((PasswordField)field).Encrypted == true)
 				{
 					return RecordManager.EncryptedFieldRedactedValue;
@@ -852,7 +796,6 @@ namespace WebVella.Erp.Database
             var fields = ExtractQueryFieldsMeta(query);
             StringBuilder sql = new StringBuilder();
             StringBuilder sqlJoins = new StringBuilder();
-            //StringBuilder sqlGroupBy = new StringBuilder();
             List<NpgsqlParameter> parameters = new List<NpgsqlParameter>();
             bool containsRelationalQuery = ContainsRelationalQuery(query.Query);
 
@@ -872,7 +815,7 @@ namespace WebVella.Erp.Database
                             var sortField = entity.Fields.SingleOrDefault(x => x.Name == parametrizedSort.Field );
                             if (sortField == null) //we skip sorf fields not found in entity
                                 continue;
-                          
+
                             if(!fields.Any(f=>f.Id == sortField.Id))
                             {
                                 fields.Add(sortField);
@@ -899,11 +842,11 @@ namespace WebVella.Erp.Database
             bool noSelectRelations = !fields.Any(field => field is RelationFieldMeta);
             if (noSelectRelations)
             {
-                #region no relations 
+                #region no relations
 
                 var tableName = GetTableNameForEntity(entity);
 				string columnNames = String.Join(",", fields.Select(x => x.GetFieldType() == FieldType.GeographyField ? "ST_As" + (x as GeographyField).Format + "(" + tableName + ".\"" + x.Name + "\") AS \"" + x.Name + "\"" : tableName + ".\"" + x.Name + "\""));
-								
+
                 if(!containsRelationalQuery)
                     sql.AppendLine("SELECT " + columnNames + " FROM " + tableName);
                 else
@@ -939,10 +882,9 @@ namespace WebVella.Erp.Database
                                 var sortField = parametrizedSort.Field;
                                 var sortOrder = parametrizedSort.Order;
 
-                                //SECURITY C-REV-08 (CWE-89 / OWASP A03:2021). The sort identifier
-                                //here originates in the caller's URL arguments, so it is resolved
-                                //against this entity's own field metadata and only the stored name is
-                                //emitted, quoted. Field not found - skip, exactly as before.
+                                //SECURITY H-09 residual (CWE-89 / OWASP A03:2021). The sort identifier here originates in the
+                                //caller's URL arguments, so it is resolved against this entity's own field metadata and only the
+                                //stored name is emitted, quoted. Field not found - skip, exactly as before.
                                 string sortColumn = BuildSortColumnReference(entity, (string)sortField);
                                 if (sortColumn == null)
                                     continue;
@@ -967,16 +909,11 @@ namespace WebVella.Erp.Database
                         }
                         else
                         {
-                            //SECURITY C-REV-08 (CWE-89 improper neutralization of special elements in
-                            //an SQL command, OWASP A03:2021 Injection). s.FieldName arrives unresolved
-                            //from the network - see RelatedFieldMultiSelect and GetQuickSearch in
-                            //WebVella.Erp.Web/Controllers/WebApiController.cs - and was previously
-                            //interpolated raw between hand-written double quotes, so a single embedded
-                            //double quote terminated the quoting and injected arbitrary SQL into a
-                            //fully expression-capable ORDER BY position. It is now resolved against
-                            //entity metadata and emitted quoted; an unresolvable name is skipped,
-                            //matching the JSON branch above and the distinct-select pre-pass earlier
-                            //in this method.
+                            //SECURITY H-09 residual (CWE-89 improper neutralization of special elements in an SQL command,
+                            //OWASP A03:2021 Injection). s.FieldName arrives unresolved from the network - see
+                            //RelatedFieldMultiSelect and GetQuickSearch in WebApiController - and ORDER BY is a fully
+                            //expression-capable position, so it is resolved against entity metadata and emitted quoted. An
+                            //unresolvable name is skipped, matching the JSON branch above and the distinct-select pre-pass.
                             string sortColumn = BuildSortColumnReference(entity, s.FieldName);
                             if (sortColumn == null)
                                 continue;
@@ -994,7 +931,7 @@ namespace WebVella.Erp.Database
                         sql.AppendLine(sortSql);
                 }
 
-				//paging 
+				//paging
 				if (query.Limit != null || query.Skip != null)
 				{
 					string pagingSql = "LIMIT ";
@@ -1036,15 +973,11 @@ namespace WebVella.Erp.Database
                                 {
                                     string fieldName = reader.GetName(index);
                                     Field field = fields.Single(x => x.Name == fieldName);
-                                    //SECURITY C-02 (CWE-200 / CWE-522, OWASP A01:2021 + A02:2021):
-                                    //non-relational read projection seam. See
-                                    //RedactEncryptedFieldValue for the full rationale. The redaction
-                                    //here is UNCONDITIONAL and is deliberately not subject to the
-                                    //credential-read scope that ExtractFieldValue's own gate
-                                    //honours, so this seam stays redacted even for the internal
-                                    //credential path. The existing DBNull.Value-to-null
-                                    //normalisation is preserved and still runs first, so an absent
-                                    //value stays null rather than becoming a marker.
+                                    //SECURITY C-02 (CWE-200 / CWE-522, OWASP A01:2021 + A02:2021): non-relational read projection
+                                    //seam. See RedactEncryptedFieldValue for the full rationale. The redaction here is UNCONDITIONAL
+                                    //and deliberately not subject to the credential-read scope that ExtractFieldValue's own gate
+                                    //honours. The existing DBNull.Value-to-null normalisation still runs first, so an absent value
+                                    //stays null rather than becoming a marker.
                                     record[fieldName] = RedactEncryptedFieldValue(reader[index] == DBNull.Value ? null : ExtractFieldValue(reader[index], field), field); ;
                                 }
 
@@ -1064,7 +997,7 @@ namespace WebVella.Erp.Database
             }
             else
             {
-                #region relational 
+                #region relational
 
                 sql.AppendLine(BEGIN_OUTER_SELECT);
 
@@ -1078,7 +1011,6 @@ namespace WebVella.Erp.Database
                     if (!(field is RelationFieldMeta))
                     {
                         sql.AppendLine(string.Format(REGULAR_FIELD_SELECT, field.Name, GetTableNameForEntity(entity.Name)));
-                        //sqlGroupBy.Append(GetTableNameForEntity(entity) + "." + field.Name + ",");
                     }
                     else
                     {
@@ -1092,16 +1024,11 @@ namespace WebVella.Erp.Database
 
                         sbRelatedFields.Remove(sbRelatedFields.Length - 1, 1);
 
-                        //sql.AppendLine(string.Format(JOIN_FIELD_SELECT, field.Name, sbRelatedFields));
-
                         if (relationField.Relation.RelationType == EntityRelationType.OneToOne)
                         {
                             //when the relation is origin -> target entity
                             if (relationField.Relation.OriginEntityId == entity.Id)
                             {
-                                //join target entity
-                                //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.TargetEntity), relationName, relationName,
-                                //	relationField.TargetField.Name, GetTableNameForEntity(relationField.OriginEntity), relationField.OriginField.Name));
 
                                 sql.AppendLine(string.Format(OTM_RELATION_TEMPLATE,
                                     relationField.Name,
@@ -1114,9 +1041,6 @@ namespace WebVella.Erp.Database
                             }
                             else //when the relation is target -> origin, we have to query origin entity
                             {
-                                //join origin entity
-                                //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.OriginEntity), relationName, relationName,
-                                //	relationField.OriginField.Name, GetTableNameForEntity(relationField.TargetEntity), relationField.TargetField.Name));
 
                                 sql.AppendLine(string.Format(OTM_RELATION_TEMPLATE,
                                     relationField.Name,
@@ -1136,9 +1060,6 @@ namespace WebVella.Erp.Database
                                 //when the relation is origin -> target entity
                                 if (relationField.Relation.OriginEntityId == entity.Id)
                                 {
-                                    //join target entity
-                                    //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.TargetEntity), relationName, relationName,
-                                    //	relationField.TargetField.Name, GetTableNameForEntity(relationField.OriginEntity), relationField.OriginField.Name));
 
                                     sql.AppendLine(string.Format(OTM_RELATION_TEMPLATE,
                                         relationField.Name,
@@ -1151,9 +1072,6 @@ namespace WebVella.Erp.Database
                                 }
                                 else //when the relation is target -> origin, we have to query origin entity
                                 {
-                                    //join origin entity
-                                    //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.OriginEntity), relationName, relationName,
-                                    //	relationField.OriginField.Name, GetTableNameForEntity(relationField.TargetEntity), relationField.TargetField.Name));
                                     sql.AppendLine(string.Format(OTM_RELATION_TEMPLATE,
                                         relationField.Name,
                                         sbRelatedFields.ToString(),
@@ -1168,9 +1086,6 @@ namespace WebVella.Erp.Database
                             {
                                 if (relationField.Direction == "target-origin")
                                 {
-                                    //join origin entity
-                                    //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.OriginEntity), relationName, relationName,
-                                    //	relationField.OriginField.Name, GetTableNameForEntity(relationField.TargetEntity), relationField.TargetField.Name));
 
                                     sql.AppendLine(string.Format(OTM_RELATION_TEMPLATE,
                                         relationField.Name,
@@ -1183,9 +1098,6 @@ namespace WebVella.Erp.Database
                                 }
                                 else
                                 {
-                                    //join target entity
-                                    //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.TargetEntity), relationName, relationName,
-                                    //	relationField.TargetField.Name, GetTableNameForEntity(relationField.OriginEntity), relationField.OriginField.Name));
                                     sql.AppendLine(string.Format(OTM_RELATION_TEMPLATE,
                                         relationField.Name,
                                         sbRelatedFields.ToString(),
@@ -1208,11 +1120,6 @@ namespace WebVella.Erp.Database
                             {
                                 if (relationField.Direction == "target-origin")
                                 {
-                                    //sqlJoins.AppendLine(string.Format(JOIN, relationTable, targetJoinAlias,
-                                    //	 targetJoinAlias, "target_id", GetTableNameForEntity(entity), relationField.TargetField.Name));
-
-                                    //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.OriginEntity), relationName,
-                                    //			 relationName, relationField.OriginField.Name, targetJoinAlias, "origin_id"));
 
                                     sql.AppendLine(string.Format(MTM_RELATION_TEMPLATE,
                                         relationField.Name,
@@ -1232,11 +1139,6 @@ namespace WebVella.Erp.Database
                                 }
                                 else
                                 {
-                                    //sqlJoins.AppendLine(string.Format(JOIN, relationTable, originJoinAlias,
-                                    //	originJoinAlias, "origin_id", GetTableNameForEntity(entity), relationField.OriginField.Name));
-
-                                    //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.TargetEntity), relationName,
-                                    //	 originJoinAlias, "target_id", relationName, relationField.TargetField.Name));
 
                                     sql.AppendLine(string.Format(MTM_RELATION_TEMPLATE,
                                         relationField.Name,
@@ -1257,18 +1159,6 @@ namespace WebVella.Erp.Database
                             }
                             else if (relationField.Relation.OriginEntityId == entity.Id)
                             {
-                                //sqlJoins.AppendLine(string.Format(JOIN, relationTable, originJoinAlias,
-                                //	 originJoinAlias, "origin_id", GetTableNameForEntity(entity), relationField.OriginField.Name));
-
-                                //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.TargetEntity), relationName,
-                                //				 originJoinAlias, "target_id", relationName, relationField.TargetField.Name));
-
-                                //		const string MTM_RELATION_TEMPLATE = @"'{0}', ( SELECT  COALESCE(  array_to_json(array_agg( row_to_json(d))), '[]') FROM ( 
-                                //			SELECT {1}
-                                //			FROM {2} {3}
-                                //			LEFT JOIN  {4} {5} ON {6}.{7} = {8}.{9}
-                                //			WHERE {10}.{11} = {12}.{13} )d  ),";
-
 
                                 sql.AppendLine(string.Format(MTM_RELATION_TEMPLATE,
                                         relationField.Name,
@@ -1288,11 +1178,6 @@ namespace WebVella.Erp.Database
                             }
                             else //when the relation is target -> origin, we have to query origin entity
                             {
-                                //sqlJoins.AppendLine(string.Format(JOIN, relationTable, targetJoinAlias,
-                                //		 targetJoinAlias, "target_id", GetTableNameForEntity(entity), relationField.TargetField.Name));
-
-                                //sqlJoins.AppendLine(string.Format(JOIN, GetTableNameForEntity(relationField.OriginEntity), relationName,
-                                //			targetJoinAlias, "origin_id", relationName, relationField.OriginField.Name));
 
                                 sql.AppendLine(string.Format(MTM_RELATION_TEMPLATE,
                                         relationField.Name,
@@ -1313,12 +1198,11 @@ namespace WebVella.Erp.Database
                         }
                     }
                 }
-                // The trailing "," and the newline StringBuilder.AppendLine added must both go so FROM can follow
-                // the projection list, and the newline is removed by INSPECTING it rather than assuming its width:
-                // AppendLine emits Environment.NewLine, which is one character on Linux and two on Windows, so a
-                // fixed count of 3 would remove the closing double quote of the last projected column's alias on
-                // Linux and PostgreSQL would refuse the statement with 42601 "unterminated quoted identifier".
-                // Inspecting also cannot over-trim an empty builder.
+                // The trailing "," and the newline AppendLine added must both go so FROM can follow the projection
+                // list. The newline is removed by INSPECTING it rather than assuming its width: AppendLine emits
+                // Environment.NewLine, one character on Linux and two on Windows, so a fixed count of 3 would remove
+                // the closing double quote of the last alias on Linux and PostgreSQL would refuse the statement with
+                // 42601. Inspecting also cannot over-trim an empty builder.
                 while (sql.Length > 0 && (sql[sql.Length - 1] == '\n' || sql[sql.Length - 1] == '\r'))
                     sql.Remove(sql.Length - 1, 1);
 
@@ -1360,10 +1244,9 @@ namespace WebVella.Erp.Database
                                 var sortField = parametrizedSort.Field;
                                 var sortOrder = parametrizedSort.Order;
 
-                                //SECURITY C-REV-08 (CWE-89 / OWASP A03:2021). As in the sibling sort
-                                //construction earlier in this file: resolve the caller-supplied
-                                //identifier against entity metadata and emit only the stored name,
-                                //quoted. Field not found - skip, exactly as before.
+                                //SECURITY H-09 residual (CWE-89 / OWASP A03:2021). As in the sibling sort construction earlier in
+                                //this file: resolve the caller-supplied identifier against entity metadata and emit only the stored
+                                //name, quoted. Field not found - skip, exactly as before.
                                 string sortColumn = BuildSortColumnReference(entity, (string)sortField);
                                 if (sortColumn == null)
                                     continue;
@@ -1388,14 +1271,11 @@ namespace WebVella.Erp.Database
                         }
                         else
                         {
-                            //SECURITY C-REV-08 (CWE-89 improper neutralization of special elements in
-                            //an SQL command, OWASP A03:2021 Injection). THE PRIMARY REPORTED SITE.
-                            //s.FieldName arrives unresolved from the network and was concatenated here
-                            //with no metadata check and no quoting whatsoever, so a value such as
-                            //  id ASC, (SELECT ...) --
-                            //executed verbatim inside ORDER BY under the application's database role.
-                            //It is now resolved against entity metadata and emitted quoted; an
-                            //unresolvable name is skipped, matching the JSON branch above.
+                            //SECURITY H-09 residual (CWE-89, OWASP A03:2021 Injection). THE PRIMARY REPORTED SITE. s.FieldName
+                            //arrives unresolved from the network and was concatenated here with no metadata check and no
+                            //quoting whatsoever, so a value such as "id ASC, (SELECT ...) --" executed verbatim inside ORDER BY
+                            //under the application's database role. It is now resolved against entity metadata and emitted
+                            //quoted; an unresolvable name is skipped, matching the JSON branch above.
                             string sortColumn = BuildSortColumnReference(entity, s.FieldName);
                             if (sortColumn == null)
                                 continue;
@@ -1413,7 +1293,7 @@ namespace WebVella.Erp.Database
                         sql.AppendLine(sortSql);
                 }
 
-                //paging 
+                //paging
                 if ((query.Limit != 0 && query.Limit != null) || query.Skip != null)
                 {
                     string pagingSql = "LIMIT ";
@@ -1434,16 +1314,11 @@ namespace WebVella.Erp.Database
                 using (var conn = DbContext.Current.CreateConnection())
                 {
                     NpgsqlCommand command = conn.CreateCommand(sql.ToString());
-                    // THREAT ADDRESSED - finding F-03, CWE-400. Defence in depth behind the
-                    // complexity bound enforced in GenerateWhereClause: an ADMISSIBLE pattern is
-                    // still evaluated once per row, so on a large enough table a legitimate one can
-                    // run for a long time, and the ten-minute ceiling meant a single request could
-                    // hold a pooled connection and a CPU core for ten minutes. Measured worst case
-                    // for a pattern this platform now admits is 97 ms per 20,000 rows, so the
-                    // shorter ceiling below still leaves ample room for a genuine filter over
-                    // millions of rows while cutting the abuse window by an order of magnitude.
-                    // Non-regex queries keep the original ten minutes exactly, so no existing
-                    // report or export changes behaviour.
+                    // CWE-400. Defence in depth behind the complexity bound enforced in GenerateWhereClause: an
+                    // ADMISSIBLE pattern is still evaluated once per row, so on a large enough table a legitimate one can
+                    // run for a long time. The regex ceiling still leaves ample room for a genuine filter over millions of
+                    // rows; non-regex queries keep the ten-minute default exactly, so no existing report or export changes
+                    // behaviour.
                     command.CommandTimeout = ContainsRegexQuery(query.Query) ? REGEX_QUERY_COMMAND_TIMEOUT_SECONDS : DEFAULT_QUERY_COMMAND_TIMEOUT_SECONDS;
                     command.Parameters.AddRange(parameters.ToArray());
                     new NpgsqlDataAdapter(command).Fill(dt);
@@ -1496,14 +1371,12 @@ namespace WebVella.Erp.Database
                     completeFieldName = entityTablePrefix + query.FieldName;
                     paramName = "@" + query.FieldName + "_" + Guid.NewGuid().ToString().Replace("-", "");
 
-                    //SECURITY CONTRACT - finding F-01. skipClause drops this predicate entirely, so it
-                    //must only ever be set for a clause whose ABSENCE is the caller's intent. Exactly
-                    //one path sets it: ExtractQueryFieldJsonValue, when an optional query parameter is
-                    //absent and its declared default is null. A security-sensitive operand must NEVER
-                    //reach it - ExtractQueryFieldValue therefore refuses an encrypted credential filter
-                    //rather than signalling skipClause, because omitting such a predicate broadens the
-                    //result set instead of narrowing it. The relation branch below carries the same
-                    //contract; both paths must be kept in step.
+                    //SECURITY CONTRACT. skipClause drops this predicate entirely, so it must only ever be set for a
+                    //clause whose ABSENCE is the caller's intent. Exactly one path sets it: ExtractQueryFieldJsonValue,
+                    //when an optional query parameter is absent and its declared default is null. A security-sensitive
+                    //operand must NEVER reach it - ExtractQueryFieldValue therefore refuses an encrypted credential
+                    //filter rather than signalling skipClause, because omitting such a predicate broadens the result set
+                    //instead of narrowing it. The relation branch below carries the same contract; keep both in step.
                     bool skipClause;
                     var value = ExtractQueryFieldValue(query.FieldValue, field, overwriteArgs, out skipClause) ?? DBNull.Value;
                     if (skipClause)
@@ -1590,10 +1463,9 @@ namespace WebVella.Erp.Database
                     fieldType = relatedField.GetFieldType();
                     paramName = "@" + relationFieldName + "_" + Guid.NewGuid().ToString().Replace("-", "");
 
-                    //SECURITY CONTRACT - finding F-01, the relation-predicate half of the same contract
-                    //documented at the direct-field branch above. A related entity's encrypted
-                    //credential field is refused by ExtractQueryFieldValue rather than dropped here, so
-                    //a filter across a relation cannot silently widen the join either.
+                    //SECURITY CONTRACT - the relation-predicate half of the contract documented at the direct-field
+                    //branch above. A related entity's encrypted credential field is refused by ExtractQueryFieldValue
+                    //rather than dropped here, so a filter across a relation cannot silently widen the join either.
                     bool skipClause;
                     var value = ExtractQueryFieldValue(query.FieldValue, relatedField, overwriteArgs, out skipClause) ?? DBNull.Value;
                     if (skipClause)
@@ -1705,7 +1577,7 @@ namespace WebVella.Erp.Database
 
                 }
 
-                if (fieldType == FieldType.MultiSelectField &&	
+                if (fieldType == FieldType.MultiSelectField &&
 						!(query.QueryType == QueryType.EQ || query.QueryType == QueryType.NOT || query.QueryType == QueryType.CONTAINS ))
                     throw new Exception("The query operator is not supported on field '" + fieldType.ToString() + "'");
 			}
@@ -1780,17 +1652,14 @@ namespace WebVella.Erp.Database
                     }
                 case QueryType.REGEX:
                     {
-                        // THREAT ADDRESSED - finding F-03 (CWE-1333 inefficient regular expression
-                        // complexity, CWE-400 uncontrolled resource consumption), OWASP A03/A05. The
-                        // pattern is bound to a parameter below, so this is NOT an injection seam -
-                        // it is a COST seam: PostgreSQL evaluates the pattern once per row, so a
-                        // pattern whose own match cost is milliseconds becomes minutes across a
-                        // table scan. Enforced here, at the point the predicate is generated, rather
-                        // than in the calling controller, because there are two entry points and
-                        // only one is an API action: the SDK administrative record filter passes a
-                        // submitted value straight to EntityQuery.QueryRegex. A caller-side check
-                        // alone would leave that path unbounded. Fails hard by design; the callers'
-                        // own catch turns it into a generic, non-disclosing failure.
+                        // CWE-1333 inefficient regular expression complexity / CWE-400 uncontrolled resource consumption,
+                        // OWASP A03/A05. The pattern is bound to a parameter below, so this is NOT an injection seam - it is
+                        // a COST seam: PostgreSQL evaluates the pattern once per row, so a pattern whose own match cost is
+                        // milliseconds becomes minutes across a table scan. Enforced here, where the predicate is generated,
+                        // rather than in the calling controller, because there are two entry points and only one is an API
+                        // action - the SDK administrative record filter passes a submitted value straight to
+                        // EntityQuery.QueryRegex, so a caller-side check alone would leave that path unbounded. Fails hard by
+                        // design; the callers' own catch turns it into a generic, non-disclosing failure.
                         DbRegexPattern.Validate(query.FieldValue);
 
                         var regexOperator = "~";
@@ -1827,24 +1696,19 @@ namespace WebVella.Erp.Database
 							singleWord = analizedText.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Count() == 1;
 						}
 
-						//THREAT ADDRESSED - finding H-09 residual, CWE-89 (improper neutralization of special
-						//elements used in an SQL command), OWASP A03:2021 Injection. The text-search
-						//configuration used to be written into the statement as SQL TEXT, inside hand-written
-						//single quotes, at both of the positions below. QueryObject.FtsLanguage is
-						//caller-supplied - EntityQuery.QueryFTS accepts it as a public string parameter - so a
-						//value carrying a quote closed that literal and continued the statement. Every
-						//first-party caller passes null today, which is why nothing exercised it, but the
-						//public query surface accepts any value and this was the last unparameterised operand
-						//left in this file.
-						//The value is now BOUND ONCE and cast at each use. A text-search configuration is a
-						//first-class type in PostgreSQL, so a bound parameter cast to regconfig reaches exactly
-						//the same overloads the quoted literal reached - to_tsvector(regconfig, text) and
-						//to_tsquery/plainto_tsquery(regconfig, text) - and returns identical rows for every
-						//legitimate configuration name. A value that names no configuration is now refused by
-						//the database instead of being able to alter the statement.
-						//The parameter is created ONLY when the statement will reference it, because Npgsql
-						//rejects a command carrying a parameter its text never uses. The 'simple' branches are
-						//unchanged and still emit a compile-time literal, so the default path is untouched.
+						//SECURITY H-09 residual (CWE-89 improper neutralization of special elements used in an SQL command,
+						//OWASP A03:2021 Injection). The text-search configuration was written into the statement as SQL
+						//TEXT inside hand-written single quotes at both positions below, and QueryObject.FtsLanguage is
+						//caller-supplied - EntityQuery.QueryFTS accepts it as a public string parameter - so a value
+						//carrying a quote closed that literal and continued the statement.
+						//The value is now BOUND ONCE and cast at each use. A text-search configuration is a first-class type
+						//in PostgreSQL, so a bound parameter cast to regconfig reaches exactly the same overloads the quoted
+						//literal reached - to_tsvector(regconfig, text) and to_tsquery/plainto_tsquery(regconfig, text) -
+						//and returns identical rows for every legitimate configuration name; a value naming no configuration
+						//is refused by the database instead of being able to alter the statement. The parameter is created
+						//ONLY when the statement will reference it, because Npgsql rejects a command carrying a parameter
+						//its text never uses. The 'simple' branches still emit a compile-time literal, so the default path
+						//is untouched.
 						string ftsLanguageCast = null;
 						if (!string.IsNullOrWhiteSpace(query.FtsLanguage))
 						{
@@ -1855,7 +1719,7 @@ namespace WebVella.Erp.Database
 
 						if (singleWord)
 						{
-							parameter.Value = parameter.Value + ":*"; //search for all lexemes starting with this word 
+							parameter.Value = parameter.Value + ":*"; //search for all lexemes starting with this word
 							if (ftsLanguageCast == null)
 								sql = sql + " to_tsvector( 'simple', " + completeFieldName + ") @@ to_tsquery( 'simple', " + paramName + ") ";
 							else
@@ -1873,12 +1737,14 @@ namespace WebVella.Erp.Database
 					}
 				case QueryType.RELATED:
                     {
-                        //TODO
+                        //Not supported by this generator. The throw is deliberate: an unsupported predicate must fail
+                        //loudly rather than be omitted, because omitting it would BROADEN the result set (see the
+                        //skipClause contract above).
                         throw new NotImplementedException();
                     }
                 case QueryType.NOTRELATED:
                     {
-                        //TODO
+                        //Not supported by this generator, for the reason given on the RELATED case above.
                         throw new NotImplementedException();
                     }
                 case QueryType.AND:
@@ -1935,109 +1801,83 @@ namespace WebVella.Erp.Database
             return GetTableNameForEntity(entity.Name);
         }
 
-        // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Every value in this
-        // repository is already bound as a parameter, but PostgreSQL cannot parameterise an
-        // IDENTIFIER, so the record table name is necessarily concatenated into SQL text. This
-        // method is the single chokepoint through which that name is built for the whole class -
-        // roughly sixty call sites reach SQL through it - so validating here closes the identifier
-        // injection exposure for all of them at once instead of patching each construction.
+        // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Every value in this repository is
+        // already bound as a parameter, but PostgreSQL cannot parameterise an IDENTIFIER, so the record table
+        // name is necessarily concatenated into SQL text. This method is the single chokepoint through which
+        // that name is built for the whole class - roughly sixty call sites reach SQL through it - so
+        // validating here closes the identifier injection exposure for all of them at once.
         //
-        // DbIdentifier.Validate is used rather than DbIdentifier.Quote deliberately. Validate
-        // returns the identifier BYTE-FOR-BYTE unchanged once it is proven to match the allow-list,
-        // so every caller receives exactly the string it received before this change: the bare
-        // "rec_<name>". That matters because the returned value is not only dropped into FROM and
-        // JOIN positions but is also used to build a textual column prefix - see the
-        // entityTablePrefix concatenation in GenerateWhereClause - and is embedded in the
-        // REGULAR_FIELD_SELECT format. Quoting would alter every one of those strings, and the
-        // security benefit would be nil: the allow-list already rejects the double quote, upper
-        // case, whitespace, semicolons, comment markers and every other character injection
-        // depends on, which makes injection impossible by construction. Quoting would only add
-        // behavioural risk to a fix that is otherwise byte-identical for all legitimate input.
+        // DbIdentifier.Validate is used rather than Quote deliberately. Validate returns the identifier
+        // BYTE-FOR-BYTE unchanged once it matches the allow-list, and the returned value is not only dropped
+        // into FROM and JOIN positions but also builds a textual column prefix (see entityTablePrefix in
+        // GenerateWhereClause) and is embedded in REGULAR_FIELD_SELECT. Quoting would alter every one of
+        // those strings for no security gain: the allow-list already rejects the double quote, upper case,
+        // whitespace, semicolons and comment markers, so injection is impossible by construction.
         //
-        // A rejected name throws DbException rather than being sanitised: silently repairing a
-        // hostile identifier would leave the vulnerability open while making the finding read as
-        // closed.
+        // A rejected name throws DbException rather than being sanitised: silently repairing a hostile
+        // identifier would leave the vulnerability open while making the finding read as closed.
         private string GetTableNameForEntity(string entityName)
         {
             return DbIdentifier.Validate(RECORD_COLLECTION_PREFIX + entityName);
         }
 
         /// <summary>
-        /// Resolves one caller-supplied sort identifier against the queried entity's own field
-        /// metadata and renders it as a qualified, quoted column reference fit for an ORDER BY
-        /// position. Returns null when the identifier names no field of this entity, which the
-        /// callers treat as "skip this sort term".
+        /// Resolves one caller-supplied sort identifier against the queried entity's own field metadata and
+        /// renders it as a qualified, quoted column reference fit for an ORDER BY position. Returns null when
+        /// the identifier names no field of this entity, which the callers treat as "skip this sort term".
         /// </summary>
         /// <remarks>
-        /// THREAT ADDRESSED - finding C-REV-08 (Critical), CWE-89 (improper neutralization of
-        /// special elements used in an SQL command) and CWE-20 (improper input validation), OWASP
-        /// A03:2021 Injection.
-        ///
-        /// Every VALUE in this repository is already bound as a parameter, and both the FROM target
-        /// and the SELECT list are already safe - the table name passes through the
-        /// <see cref="GetTableNameForEntity(string)"/> allow-list chokepoint, and
-        /// <see cref="ExtractQueryFieldsMeta(EntityQuery)"/> resolves every projected column against
-        /// entity.Fields and THROWS on an unknown token. ORDER BY was the one construction that did
-        /// neither: the sort identifier was concatenated into the statement exactly as the caller
-        /// supplied it, with no metadata resolution and, at one of the two sites, no quoting at all.
-        ///
-        /// That identifier is reachable from the network as a bare query-string parameter. Two
-        /// examples, both on the authenticated API surface:
-        /// WebVella.Erp.Web/Controllers/WebApiController.cs RelatedFieldMultiSelect takes
-        /// "fieldName" and passes it straight into a QuerySortObject, and GetQuickSearch does the
-        /// same with "sortField". A value such as
-        ///   id ASC, (SELECT ...) --
-        /// therefore landed verbatim inside ORDER BY, and at the site that wrapped the name in
-        /// hand-written double quotes a single embedded double quote terminated that quoting and
-        /// reopened the same hole. ORDER BY is a fully expression-capable position in PostgreSQL, so
-        /// this was arbitrary sub-SELECT execution under the application's own database role, not a
-        /// mere sort-order nuisance.
-        ///
-        /// WHY RESOLUTION RATHER THAN ESCAPING, and why a shared helper: the identifier is compared
-        /// for equality against the entity's declared field names and what reaches SQL is the NAME
-        /// TAKEN FROM METADATA, never the caller's text. Escaping the caller's text would still emit
-        /// caller-controlled bytes; resolution emits only bytes the platform itself stored. The same
-        /// defect occurred at four sites across two methods, so one reviewable helper is used for
-        /// all four rather than four independent patches that are free to drift apart - the same
-        /// reasoning that produced Database/DbIdentifier.cs.
-        ///
-        /// WHY SKIP RATHER THAN THROW on an unresolved name: it is the semantics this method's own
-        /// callers already have. The JSON sort branch at both sites, and the distinct-select
-        /// pre-pass in <see cref="Find(EntityQuery)"/>, already resolve against entity.Fields and
-        /// "continue" when the lookup fails - the comment there reads "we skip sorf fields not found
-        /// in entity". Throwing would turn a request that previously returned unsorted rows into a
-        /// server error, which the preservation requirement forbids. Nothing legitimate is lost: a
-        /// relation-qualified sort name never resolved here before this change either, and at the
-        /// unquoted site it produced invalid SQL and a hard failure, so resolve-and-skip strictly
-        /// improves on the previous behaviour. Both callers already handle every term being skipped:
-        /// the "ORDER BY" clause is only appended when at least one term survived.
-        ///
-        /// The emitted shape is bare validated table plus double-quoted column -
-        /// rec_user."created_on" - which is byte-identical to what the SELECT list construction in
-        /// <see cref="Find(EntityQuery)"/> already writes by hand, and byte-identical to what the
-        /// quoted sort site already emitted for a legitimate field. The table is deliberately left
-        /// bare rather than quoted, for the reason set out on
-        /// <see cref="GetTableNameForEntity(string)"/>: the allow-list makes quoting security-neutral
-        /// there while changing strings that are reused elsewhere. Quoting is behaviour-preserving
-        /// for the column because DbIdentifier's allow-list rejects upper case, so every accepted
-        /// name is already lower case and folds to itself.
+        /// SECURITY H-09 residual (CWE-89 improper neutralization of special elements used in an SQL command,
+        /// CWE-20 improper input validation / OWASP A03:2021 Injection).
+        /// <para>
+        /// Every VALUE here is already bound as a parameter, and both the FROM target and the SELECT list are
+        /// already safe - the table name passes through the <see cref="GetTableNameForEntity(string)"/>
+        /// allow-list chokepoint, and <see cref="ExtractQueryFieldsMeta(EntityQuery)"/> resolves every
+        /// projected column against entity.Fields and THROWS on an unknown token. ORDER BY did neither: the
+        /// sort identifier was concatenated exactly as supplied, with no metadata resolution and, at one of
+        /// the two sites, no quoting at all - and it is reachable from the network as a bare query-string
+        /// parameter (WebApiController's RelatedFieldMultiSelect takes "fieldName", GetQuickSearch takes
+        /// "sortField"). ORDER BY is fully expression-capable in PostgreSQL, so this was arbitrary
+        /// sub-SELECT execution under the application's own database role, not a sort-order nuisance.
+        /// </para>
+        /// <para>
+        /// WHY RESOLUTION RATHER THAN ESCAPING, and why a shared helper: the identifier is compared for
+        /// equality against the entity's declared field names and what reaches SQL is the NAME TAKEN FROM
+        /// METADATA, never the caller's text. Escaping would still emit caller-controlled bytes. The same
+        /// defect occurred at four sites across two methods, so one reviewable helper serves all four rather
+        /// than four patches free to drift apart - the reasoning that also produced Database/DbIdentifier.cs.
+        /// </para>
+        /// <para>
+        /// WHY SKIP RATHER THAN THROW on an unresolved name: it is the semantics this method's own callers
+        /// already have - the JSON sort branch at both sites, and the distinct-select pre-pass in
+        /// <see cref="Find(EntityQuery)"/>, already resolve against entity.Fields and "continue" when the
+        /// lookup fails. Throwing would turn a request that previously returned unsorted rows into a server
+        /// error, which the preservation requirement forbids, and nothing legitimate is lost: a
+        /// relation-qualified sort name never resolved here either. Both callers already handle every term
+        /// being skipped, appending "ORDER BY" only when at least one term survived.
+        /// </para>
+        /// <para>
+        /// The emitted shape is bare validated table plus double-quoted column - rec_user."created_on" -
+        /// byte-identical to what the SELECT list construction in <see cref="Find(EntityQuery)"/> writes by
+        /// hand and to what the quoted sort site already emitted for a legitimate field. The table is left
+        /// bare rather than quoted for the reason set out on <see cref="GetTableNameForEntity(string)"/>.
+        /// Quoting is behaviour-preserving for the column because DbIdentifier's allow-list rejects upper
+        /// case, so every accepted name is already lower case and folds to itself.
+        /// </para>
         /// </remarks>
         /// <param name="entity">The entity being queried, and the sole authority on which names are valid.</param>
         /// <param name="fieldName">The caller-supplied sort identifier. Never trusted.</param>
         /// <returns>A qualified quoted column reference, or null when the name resolves to no field.</returns>
         /// <exception cref="DbException">
-        /// Thrown only when a name that IS present in entity metadata fails the identifier
-        /// allow-list, which would mean the stored metadata itself is unusable in SQL. That is a
-        /// hard fault by design and is never sanitised away.
+        /// Thrown only when a name that IS present in entity metadata fails the identifier allow-list, which
+        /// would mean the stored metadata itself is unusable in SQL. A hard fault by design, never sanitised.
         /// </exception>
         private string BuildSortColumnReference(Entity entity, string fieldName)
         {
-            // A null, empty or whitespace-only identifier names no field, so it is refused before any
-            // lookup or concatenation. Defence in depth rather than the primary guard: the two
-            // network-reachable callers in WebVella.Erp.Web/Controllers/WebApiController.cs both
-            // reject a blank identifier before constructing a QuerySortObject, and the branch
-            // selector in the loops above dereferences FieldName ahead of this call. Refusing it here
-            // means no future caller can reach the resolution below with nothing to resolve.
+            // A null, empty or whitespace-only identifier names no field, so it is refused before any lookup or
+            // concatenation. Defence in depth: both network-reachable callers reject a blank identifier before
+            // constructing a QuerySortObject, and the branch selector in the loops above dereferences FieldName
+            // ahead of this call.
             if (string.IsNullOrWhiteSpace(fieldName))
                 return null;
 
@@ -2071,24 +1911,20 @@ namespace WebVella.Erp.Database
             //split field string into tokens speparated by FIELDS_SEPARATOR
             List<string> tokens = query.Fields.Split(FIELDS_SEPARATOR).Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
 
-            //check the query tokens for widcard symbol and validate it is only that symbol - //UPDATE: allow Wildcard and field names mix. WILL NOT BE DUPLICATED
-            //if (tokens.Count > 1 && tokens.Any(x => x == WILDCARD_SYMBOL))
-            //	throw new Exception("Invalid query syntax. Wildcard symbol can be used only with no other fields.");
-
             Entity entity = entMan.ReadEntity(query.EntityName).Object;
             if (entity == null)
                 throw new Exception(string.Format("The entity '{0}' does not exists.", query.EntityName));
 
-            //We check for wildcard symbol and if present include all fields of the queried entity 
+            //We check for wildcard symbol and if present include all fields of the queried entity. The wildcard
+            //and explicit field names may be mixed, so more than one token is not an error.
             bool wildcardSelectionEnabled = tokens.Any(x => x == WILDCARD_SYMBOL);
             if (wildcardSelectionEnabled)
             {
                 result.AddRange(entity.Fields);
-                //return result; //UPDATE: allow Wildcard and field names mix. WILL NOT BE DUPLICATED
                 tokens.Remove(WILDCARD_SYMBOL); //UPDATE: NULL Exception is triggered if not removed.
             }
 
-            //process only tokens do not contain RELATION_SEPARATOR 
+            //process only tokens do not contain RELATION_SEPARATOR
             foreach (var token in tokens)
             {
                 if (!token.Contains(RELATION_SEPARATOR))
@@ -2335,53 +2171,35 @@ namespace WebVella.Erp.Database
                     if (string.IsNullOrWhiteSpace(value as string))
                         return null;
 
-                    //THREAT ADDRESSED - finding C-03, CWE-916 / CWE-759, OWASP A02:2021, and the
-                    //structural consequence of closing it. This branch is NOT a write path: its
-                    //return value becomes the NpgsqlParameter of a SQL WHERE-clause predicate,
-                    //consumed by the two GenerateWhereClause call sites above. Hashing here
-                    //therefore produced "WHERE <table>.password = @param", and an unsalted MD5
-                    //digest is deterministic, so that comparison used to work - which is precisely
-                    //what made it a password confirmation ORACLE: any caller able to build a filter
-                    //on the password field could confirm a guess by observing whether a row came
-                    //back. A salted, work-factored hash differs on every invocation, so the same
-                    //predicate can never match anything, and the value must not be bound.
+                    //SECURITY C-03 (CWE-916 / CWE-759, OWASP A02:2021) and the structural consequence of closing it.
+                    //This branch is NOT a write path: its return value becomes the NpgsqlParameter of a SQL WHERE-clause
+                    //predicate, so hashing here produced "WHERE <table>.password = @param". An unsalted MD5 digest is
+                    //deterministic, so that comparison used to work - which is precisely what made it a password
+                    //confirmation ORACLE: any caller able to build a filter on the password field could confirm a guess
+                    //by observing whether a row came back. A salted, work-factored hash differs on every invocation, so
+                    //the predicate can never match and the value must not be bound.
                     //
-                    //THREAT ADDRESSED - finding F-01, CWE-1284 (improper validation of a specified
-                    //quantity) reached through OWASP A01:2021 Broken Access Control. This branch
-                    //previously set skipClause and returned null, and BOTH GenerateWhereClause call
-                    //sites honour skipClause by returning without emitting anything - so the entire
-                    //predicate silently disappeared from the WHERE clause. A caller that intended
-                    //"return the single row whose password matches" therefore received EVERY row the
-                    //remaining predicates allowed. Dropping a security-sensitive filter is strictly
-                    //worse than refusing the query: refusal is visible and returns no data, whereas
-                    //omission is invisible and BROADENS the result set. Silently omitting it is
-                    //never correct, so the query is REJECTED here instead.
+                    //CWE-1284 (improper validation of a specified quantity) reached through OWASP A01:2021 Broken Access
+                    //Control. Signalling skipClause here would be worse than refusing: BOTH GenerateWhereClause call
+                    //sites honour skipClause by returning without emitting anything, so the entire predicate silently
+                    //disappears and a caller that intended "return the single row whose password matches" receives EVERY
+                    //row the remaining predicates allow. Omission is invisible and BROADENS the result set, so the query
+                    //is REJECTED instead.
                     //
-                    //Rejection rather than an always-false predicate: an always-false predicate
-                    //would still answer, with an empty set that is indistinguishable from "no such
-                    //credential", which is the same confirmation oracle in a quieter form and also
-                    //hides the caller's mistake. A thrown exception is the shape every other invalid
-                    //query in this method already takes (see the guards above), so the failure is
-                    //reported through the platform's existing error path with no new mechanism:
-                    //RecordManager.Find catches it, returns Success = false with "The query is
-                    //incorrect and cannot be executed" and no data, and records the reason - a
-                    //BOUNDED refusal, not a 500 and not a widened result set.
-                    //ValidationException is used rather than a bare Exception because this IS a
-                    //validation failure of the submitted query, and because the platform's own
-                    //validation type keeps the refusal inside its existing error taxonomy.
+                    //Rejection rather than an always-false predicate: an always-false predicate would still answer, with
+                    //an empty set indistinguishable from "no such credential" - the same confirmation oracle in a
+                    //quieter form - and would hide the caller's mistake. A thrown exception is the shape every other
+                    //invalid query in this method already takes, so the failure travels the platform's existing error
+                    //path: RecordManager.Find catches it and returns Success = false with a generic message and no data.
+                    //ValidationException rather than a bare Exception because this IS a validation failure of the
+                    //submitted query.
                     //
-                    //No functionality is lost. Nothing in this repository queries by password value:
-                    //WebVella.Erp/Api/SecurityManager.cs.GetUser(email, password) - the only such
-                    //query that ever existed - resolves by e-mail and verifies the credential in
-                    //application code via PasswordUtil.VerifyPassword. A caller reaching this line
-                    //is therefore asking for something that cannot be answered correctly.
-                    //
-                    //It also means the redaction marker can never reach a predicate: the query is
-                    //refused before any value of any shape is bound.
-                    //
-                    //The IsNullOrWhiteSpace guard above is deliberately left as it was, so its
-                    //pre-existing behaviour - a blank operand contributes a NULL parameter rather
-                    //than an error - is preserved exactly.
+                    //No functionality is lost: nothing in this repository queries by password value. SecurityManager's
+                    //GetUser(email, password) - the only such query that ever existed - resolves by e-mail and verifies
+                    //in application code through PasswordUtil.VerifyPassword. It also means the redaction marker can
+                    //never reach a predicate, because the query is refused before any value is bound. The
+                    //IsNullOrWhiteSpace guard above is deliberately left as it was, so a blank operand still contributes
+                    //a NULL parameter rather than an error.
                     throw new ValidationException("Queried field '" + field.Name + "' stores an encrypted credential and cannot be used as a query filter. " +
                         "Credential verification is performed in application code; remove this filter from the query.");
                 }
@@ -2426,7 +2244,6 @@ namespace WebVella.Erp.Database
             else if (field is UrlField)
                 return value as string;
 
-
             throw new Exception("System Error. A field type is not supported in field value extraction process.");
         }
 
@@ -2463,7 +2280,7 @@ namespace WebVella.Erp.Database
 
             if (nameToken.ToString().ToLowerInvariant() == "current_user")
             {
-                //currently we have only id option so ignore options check for now
+                //current_user exposes only the id, so the settings object carries no option to inspect.
                 ErpUser currentUser = SecurityContext.CurrentUser;
                 if (currentUser != null)
                     return currentUser.Id;

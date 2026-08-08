@@ -20,71 +20,36 @@ namespace WebVella.Erp.Api
 		private const char RELATION_SEPARATOR = '.';
 		private const char RELATION_NAME_RESULT_SEPARATOR = '$';
 
-		// SECURITY C-02 (CWE-200 exposure of sensitive information to an unauthorized actor,
-		// CWE-522 insufficiently protected credentials / OWASP A01:2021 Broken Access Control +
-		// A02:2021 Cryptographic Failures): single source of truth for the value substituted for
-		// encrypted-field content in read projections. WebVella.Erp.Database.DbRecordRepository
-		// MUST reference this constant rather than repeat a literal, so the read-side marker and
-		// the write-side guard cannot drift apart - a drift would let a round-tripped marker be
-		// mistaken for a real password and hashed over the stored credential.
-		//
-		// The value is deliberately fixed rather than random (a per-request marker could not be
-		// recognised by the write-side guard), is deliberately NOT 32 lower-case hexadecimal
-		// characters (that shape is the legacy-MD5 discriminator in
-		// WebVella.Erp/Utilities/PasswordUtil.cs and a collision would make the marker look like a
-		// real stored hash), and is deliberately not a plausible password or a plausible modern
-		// hash (a modern value is 84 Base64 characters beginning with "AQAAAAEA").
-		//
-		// internal, not public: WebVella.Erp.Database.DbRecordRepository is in this same assembly,
-		// so no public API surface is added.
-		//
-		// Deliberately PascalCase per WebVella.Erp/.editorconfig lines 52-59; the two char consts
-		// above predate that convention and are left untouched. Do not "correct" this to
-		// SCREAMING_SNAKE to match them.
+		// SECURITY C-02 (CWE-200 exposure of sensitive information, CWE-522 insufficiently protected
+		// credentials / OWASP A01:2021 + A02:2021): single source of truth for the value substituted for
+		// encrypted-field content in read projections. DbRecordRepository MUST reference this constant rather
+		// than repeat a literal, because a drift between the read-side marker and the write-side guard would
+		// let a round-tripped marker be mistaken for a real password and hashed over the stored credential.
+		// Fixed rather than random, because a per-request marker could not be recognised by that guard; and
+		// deliberately neither 32 lower-case hexadecimal characters (the legacy-MD5 discriminator in
+		// PasswordUtil) nor a plausible modern hash (84 Base64 characters beginning "AQAAAAEA"), so it can
+		// never be mistaken for a stored value. internal, so no public API surface is added; PascalCase per
+		// the .editorconfig convention, unlike the two char consts above, which predate it.
 		internal const string EncryptedFieldRedactedValue = "__WV_REDACTED_a7f3c1e9__";
 
-		// SECURITY C-02 (CWE-200 exposure of sensitive information to an unauthorized actor,
-		// CWE-522 insufficiently protected credentials / OWASP A01:2021 Broken Access Control +
-		// A02:2021 Cryptographic Failures): the ambient opt-in that separates the platform's one
-		// internal credential-resolution path from every other record projection.
+		// SECURITY C-02 (CWE-200, CWE-522 / OWASP A01:2021 + A02:2021): the ambient opt-in that separates the
+		// platform's one internal credential-resolution path from every other record projection.
 		//
-		// THREAT ADDRESSED: redaction was applied at the manager and repository projection seams
-		// only, because WebVella.Erp.Database.DbRecordRepository.ExtractFieldValue is ALSO reached
-		// from WebVella.Erp/Eql/EqlCommand.cs, which WebVella.Erp/Api/SecurityManager.cs uses to
-		// resolve a credential - and that path needs the REAL stored hash in order to verify a
-		// login. The generic EQL surface was therefore left projecting the hash verbatim: it gates
-		// on the ENTITY read permission only, the Regular role retains read access to the user
-		// entity, and the surface is reachable over HTTP. An authenticated regular user could
-		// consequently project user.password.
+		// THREAT ADDRESSED: redaction applied at the manager and repository seams only left the generic EQL
+		// surface projecting the hash verbatim, because DbRecordRepository.ExtractFieldValue is ALSO reached
+		// from EqlCommand, which SecurityManager uses to verify a login. That surface gates on the ENTITY read
+		// permission alone, the Regular role retains read access to the user entity, and it is reachable over
+		// HTTP - so an authenticated regular user could project user.password. Gating the repository's read
+		// fall-through on this scope closes it while leaving verification working: it is the enabling change,
+		// because redaction inside the shared ExtractFieldValue would otherwise hand SecurityManager the marker.
 		//
-		// Gating the repository's own read fall-through on this scope closes that surface while
-		// leaving credential verification working, which is exactly what the acceptance criterion
-		// "no API response and no query projection returns a password hash, for any role"
-		// requires. It is the enabling change: without it, redaction inside the shared
-		// ExtractFieldValue would hand SecurityManager the marker instead of the hash and every
-		// login would fail.
-		//
-		// DELIBERATE DESIGN DECISIONS, each of which must survive future edits:
-		//
-		// 1. DENY BY DEFAULT. The flag is false unless a caller has explicitly opened the scope, so
-		//    a read path added in future is redacted automatically instead of having to opt in.
-		//    Never invert this.
-		//
-		// 2. AsyncLocal, not [ThreadStatic] and not an instance field. The value must flow across
-		//    the awaits of one request without leaking into an unrelated request, and the consumer
-		//    (ExtractFieldValue) is static so it has no instance to read from. The same primitive
-		//    is already used for ambient security state in WebVella.Erp/Api/SecurityContext.cs, so
-		//    no new pattern is introduced.
-		//
-		// 3. The scope is opened at the CREDENTIAL-RESOLUTION call sites in
-		//    WebVella.Erp/Api/SecurityManager.cs and nowhere else. It must never be opened around
-		//    a controller action, a hook, a job, a bulk user listing or an import: doing so would
-		//    reopen exactly the surface this closes.
-		//
-		// 4. internal, not public. The only consumers are
-		//    WebVella.Erp.Database.DbRecordRepository and WebVella.Erp.Api.SecurityManager, both in
-		//    this assembly, so no public API surface is added and the "API contracts and interfaces
-		//    are unchanged" preservation requirement holds.
+		// FOUR DECISIONS THAT MUST SURVIVE FUTURE EDITS. It is DENY BY DEFAULT, false unless a caller opens the
+		// scope, so a read path added later is redacted automatically - never invert this. It is AsyncLocal, not
+		// [ThreadStatic] and not an instance field, because the value must flow across one request's awaits
+		// without leaking into another and the consumer is static; SecurityContext already uses the same
+		// primitive. It is opened at the credential-resolution call sites in SecurityManager AND NOWHERE ELSE:
+		// opening it around a controller action, hook, job, bulk listing or import would reopen the surface it
+		// closes. And it is internal, because both consumers are in this assembly.
 		private static readonly AsyncLocal<bool> credentialReadScope = new AsyncLocal<bool>();
 
 		/// <summary>
@@ -173,43 +138,24 @@ namespace WebVella.Erp.Api
 
 		#region << Protected relation authorization >>
 
-		//THREAT ADDRESSED - review finding CR-01 (Critical), privilege escalation to administrator.
-		//CWE-269 improper privilege management, with CWE-862 missing authorization and CWE-639
-		//authorization bypass through a user-controlled key; OWASP A01:2021 Broken Access Control.
-		//
-		//THE ATTACK. Role membership is a row in the many-to-many relation user_role, and NOTHING in
-		//this class asked who was attaching it. An authenticated Regular user could read both the
-		//user entity and the role entity - the seed grants Regular CanRead on both, deliberately, so
-		//that screens can render an author's name - which hands them the administrator role's
-		//identifier and their own user identifier. Posting those two identifiers at the generic
-		//relation endpoint attached their own account to the administrator role, and because
-		//Api/SecurityManager.cs reloads a principal's roles from rel_user_role on the next request,
-		//the escalation took effect immediately and permanently. No vulnerability in the
-		//authentication layer was needed: the authorization was simply absent.
-		//
-		//WHY THE INVARIANT LIVES HERE AND NOT ONLY AT THE ENDPOINT. These two methods are the ONLY
-		//route to a relation row in the entire platform - DbRelationRepository.CreateManyToManyRecord
-		//and DeleteManyToManyRecord are called from nowhere else, and the $relation.field branches of
-		//CreateRecord and UpdateRecord funnel back through here too. A check placed only in
-		//Web/Controllers/WebApiController.cs would guard the two endpoints the review found and leave
-		//every present and future caller - a page model, a hook, a plugin, generated code - able to
-		//reach the same row. One guard at the choke point cannot be forgotten by a later caller.
-		//
-		//WHY ONLY user_role, AND NOT EVERY RELATION. The engagement's Minimal Change Clause requires
-		//the least invasive control that closes the vulnerability, and the vulnerability that was
-		//confirmed is escalation to administrator. Requiring administrator rights for EVERY relation
-		//would refuse the platform's own working flows - task watchers, project membership, comment
-		//subscriptions - which are ordinary users attaching ordinary records by design. The residual,
-		//general gap in relation-level authorization is documented in docs/security/risk-register.md
-		//rather than closed by a change that would break working functionality.
-		//
-		//WHY ignoreSecurity IS THE ONLY BYPASS. It is this platform's own marker for a trusted system
-		//operation and it is constructed at exactly ONE site in the repository - Api/ERPService.cs
-		//line 89, which owns both the first-run seed that creates these very rows and the version-gated
-		//security migration. It cannot be reached from a request. The system principal is honoured as
-		//well, because background jobs and internal hooks run under SecurityContext.OpenSystemScope.
-		//An anonymous caller - CurrentUser null - is refused, which is deny-by-default at the one edge
-		//where a missing context would otherwise read as "no restriction applies".
+		//THREAT ADDRESSED - privilege escalation to administrator: CWE-269 improper privilege management, with
+		//CWE-862 missing authorization and CWE-639 authorization bypass through a user-controlled key; OWASP
+		//A01:2021 Broken Access Control.
+		//THE ATTACK. Role membership is a row in the many-to-many relation user_role, and nothing in this class
+		//asked who was attaching it. The seed grants Regular CanRead on both the user and role entities, so an
+		//authenticated regular user could read the administrator role's identifier and their own, post both at
+		//the generic relation endpoint, and attach their own account to the administrator role - taking effect
+		//on the next request, because SecurityManager reloads a principal's roles from rel_user_role.
+		//WHY THE INVARIANT LIVES HERE. These two methods are the ONLY route to a relation row in the platform:
+		//DbRelationRepository's many-to-many create and delete are called from nowhere else, and the
+		//$relation.field branches of CreateRecord and UpdateRecord funnel back through here. A check at the
+		//endpoint would leave every other present and future caller able to reach the same row.
+		//WHY ONLY user_role. Requiring administrator rights for EVERY relation would refuse the platform's own
+		//working flows - task watchers, project membership, comment subscriptions - so the residual general gap
+		//in relation-level authorization is recorded in docs/security/risk-register.md instead. ignoreSecurity
+		//is the only bypass because it is constructed at exactly one site, which owns the seed and the migration
+		//and cannot be reached from a request; an anonymous caller is refused, which is deny-by-default at the
+		//one edge where a missing context would otherwise read as "no restriction applies".
 		private static readonly Guid[] AdministratorOnlyRelationIds = new Guid[] { SystemIds.UserRoleRelationId };
 
 		//Source name for the refusal records below. A single const so the audit trail can be queried
@@ -225,8 +171,8 @@ namespace WebVella.Erp.Api
 		/// and records the refusal when it must.
 		/// </summary>
 		/// <remarks>
-		/// SECURITY - review finding CR-01. See the block comment above for the threat and for why the
-		/// invariant is enforced at this choke point. Returns true when the caller may NOT proceed.
+		/// SECURITY - privilege escalation to administrator. See the block comment above for the threat and
+		/// for why the invariant is enforced at this choke point. Returns true when the caller may NOT proceed.
 		/// </remarks>
 		private bool IsProtectedRelationMutationRefused(Guid relationId, string operation, Guid? originValue, Guid? targetValue)
 		{
@@ -255,16 +201,12 @@ namespace WebVella.Erp.Api
 		/// Records an authorization refusal for an administrator-only relation.
 		/// </summary>
 		/// <remarks>
-		/// THREAT ADDRESSED - CWE-778 insufficient logging, and the requirement that authorization
-		/// failures be logged. This method CANNOT throw and CANNOT change the outcome it records: the
-		/// caller has already decided to refuse, and an audit fault must never convert a clean refusal
-		/// into a server error - nor, more dangerously, unwind a refusal. It follows the shape
-		/// Api/SecurityManager.cs already established for a report that must not fail its caller, and
-		/// writes through the core WebVella.Erp.Diagnostics.Log deliberately: that writer opens a
-		/// connection and executes one parameterised INSERT into system_log with no mail branch, so a
-		/// caller who can repeat this refusal at will cannot drive it into an outbound mail flood.
-		/// Every interpolated value is either a platform identifier or a GUID, so no caller-authored
-		/// text reaches the record and CWE-117 log forging has no operand to work with.
+		/// THREAT ADDRESSED - CWE-778 insufficient logging, and the requirement that authorization failures be
+		/// logged. This method CANNOT throw and CANNOT change the outcome it records: an audit fault must never
+		/// turn a clean refusal into a server error, nor unwind the refusal. It writes through the core
+		/// <c>Diagnostics.Log</c> deliberately, because that writer executes one parameterised INSERT with no
+		/// mail branch, so a caller who can repeat this refusal cannot drive it into an outbound mail flood.
+		/// Every interpolated value is a platform identifier or a GUID, so CWE-117 log forging has no operand.
 		/// </remarks>
 		private static void ReportProtectedRelationRefusal(Guid relationId, string operation, ErpUser currentUser, Guid? originValue, Guid? targetValue)
 		{
@@ -317,13 +259,10 @@ namespace WebVella.Erp.Api
 		}
 
 		/// <summary>
-		/// Message returned to a caller whose relation mutation was refused.
+		/// Message returned to a caller whose relation mutation was refused. Deliberately generic and identical
+		/// for every reason: naming the relation, the role required or the identifiers involved would let an
+		/// unprivileged caller map the platform's privilege model by probing.
 		/// </summary>
-		/// <remarks>
-		/// Deliberately generic and identical for every refusal reason. It states that the operation is
-		/// not permitted and nothing else: naming the relation, the role required or the identifiers
-		/// involved would let an unprivileged caller map the platform's privilege model by probing.
-		/// </remarks>
 		internal const string ProtectedRelationRefusalMessage = "This relation cannot be modified by the current user.";
 
 		#endregion
@@ -350,7 +289,7 @@ namespace WebVella.Erp.Api
 					return response;
 				}
 
-				//SECURITY - review finding CR-01. Checked AFTER the relation is known to exist so a
+				//SECURITY - privilege escalation to administrator. Checked AFTER the relation is known to exist so a
 				//refusal cannot be told apart from a bad relation identifier by response shape, and
 				//BEFORE any hook runs or any row is written, so no side effect of an unauthorized
 				//mutation is observable.
@@ -442,7 +381,7 @@ namespace WebVella.Erp.Api
 					return response;
 				}
 
-				//SECURITY - review finding CR-01. The REMOVE half matters as much as the create half:
+				//SECURITY - privilege escalation to administrator. The REMOVE half matters as much as the create half:
 				//without it an unprivileged caller could strip the administrator role from every
 				//administrator and lock the installation out of its own administration, which is a
 				//denial of service reached through the same missing authorization.
@@ -512,39 +451,23 @@ namespace WebVella.Erp.Api
 			}
 		}
 
-		// THREAT ADDRESSED - insecure direct object reference on a file, OWASP A01:2021 Broken Access Control,
-		// CWE-639 (authorization bypass through a user-controlled key) with CWE-367 (time-of-check to
-		// time-of-use) on the mutation that follows. Both the create and the update paths take the value of a
-		// file or image field STRAIGHT FROM THE REQUEST and, when it points into the temporary staging
-		// namespace, MOVE the file named by it into the record's folder - the update path with overwrite
-		// enabled. Nothing established that the staged file belonged to the caller, so an authenticated caller
-		// could name another user's pending upload and have it relocated under a record of their own: the
-		// victim's file leaves the path their own client is waiting on, and its bytes become readable through
-		// the attacker's record.
-		//
-		// Both halves of the required control live here so the two call sites cannot drift apart:
-		//   NAMESPACE. The source must be inside the staging namespace, tested with the trailing separator.
-		//   The previous test omitted it, so "/tmpfoo/..." satisfied a check meant to mean "/tmp/...".
-		//   OWNERSHIP. The staged file must be the caller's own. Deny-by-default at every uncertain edge: a
-		//   missing file, an unresolvable principal and a staged file with no recorded owner all refuse for a
-		//   non-administrator, matching the rule the file move, delete and publication paths apply.
-		//
-		// The DESTINATION needs no ownership test of its own, and that is a structural guarantee rather than an
-		// omission: the caller never supplies it. It is composed here from the entity name and the record's own
-		// identifier, and the only caller-influenced part is the trailing file name, which is the LAST segment
-		// of the source path and therefore cannot contain a separator or a relative segment. The destination is
-		// consequently always inside the folder of the record whose create or update permission has already
-		// been checked, so it can never name another record's - or another user's - file.
-		//
-		// The returned identifier is what makes the authorization atomic with the write: the caller passes it to
-		// DbFileRepository.Move as the expected source row, and the repository applies the move only while that
-		// row is still the one at that path. A concurrent request that substitutes a different file behind the
-		// authorized path is refused by the database rather than moved under an authorization never granted for
-		// it.
-		//
-		// ignoreSecurity is honoured because it is this platform's own marker for a trusted system operation -
-		// background jobs, provisioning and internal hooks construct RecordManager with it - so an internal
-		// write is not made to fail an ownership test that has no meaning outside a request.
+		// THREAT ADDRESSED - insecure direct object reference on a file, OWASP A01:2021, CWE-639 (authorization
+		// bypass through a user-controlled key) with CWE-367 (time-of-check to time-of-use) on the mutation that
+		// follows. Both the create and the update paths take a file or image field value STRAIGHT FROM THE
+		// REQUEST and, when it points into the temporary staging namespace, MOVE the named file into the
+		// record's folder - the update path with overwrite enabled - without establishing that the staged file
+		// belonged to the caller.
+		// Both halves of the control live here so the two call sites cannot drift apart. NAMESPACE: the source
+		// must be inside the staging namespace, tested WITH the trailing separator, which the previous test
+		// omitted so that "/tmpfoo/..." satisfied a check meant to mean "/tmp/...". OWNERSHIP: the staged file
+		// must be the caller's own, and a missing file, an unresolvable principal or a staged file with no
+		// recorded owner all refuse for a non-administrator.
+		// The DESTINATION needs no ownership test, structurally: the caller never supplies it, it is composed
+		// from the entity name and the record's own identifier, and the only caller-influenced part is the last
+		// path segment, which cannot contain a separator. The returned identifier is what makes authorization
+		// atomic with the write - DbFileRepository.Move applies the move only while that row is still at that
+		// path, so a concurrent substitution is refused by the database. ignoreSecurity is honoured because it
+		// marks a trusted system operation, which has no meaning outside a request.
 		private Guid AuthorizeStagedFilePromotion(Field field, string sourcePath, DbFileRepository fsRepository)
 		{
 			var stagedFile = fsRepository.Find(sourcePath);
@@ -655,7 +578,7 @@ namespace WebVella.Erp.Api
 					if (record == null)
 						response.Errors.Add(new ErrorModel { Message = "Invalid record. Cannot be null." });
 
-					//SECURITY - finding F25, CWE-521. First of the two write boundaries at which a
+					//SECURITY - M-13, CWE-521. First of the two write boundaries at which a
 					//password can be CHOSEN; see ValidatePasswordFieldPolicy. Placed here so the existing
 					//early-return below reports it, before any permission check, hook or connection work.
 					ValidatePasswordFieldPolicy(entity, record, response);
@@ -711,7 +634,7 @@ namespace WebVella.Erp.Api
 						recordId = Guid.NewGuid();
 					else
 					{
-						//fixes issue with ID coming from webapi request 
+						//fixes issue with ID coming from webapi request
 						if (record["id"] is string)
 							recordId = new Guid(record["id"] as string);
 						else if (record["id"] is Guid)
@@ -1070,24 +993,14 @@ namespace WebVella.Erp.Api
 								//locate the field
 								var field = entity.Fields.SingleOrDefault(x => x.Name == pair.Key);
 
-								//THREAT ADDRESSED - finding C-02 guard (DATA-INTEGRITY CRITICAL), CWE-200
-								//(exposure of sensitive information to an unauthorized actor) and CWE-522
-								//(insufficiently protected credentials), OWASP A01:2021 Broken Access
-								//Control + A02:2021 Cryptographic Failures. Companion of the identical
-								//guard in the update collector below. A client that read a record through
-								//Find(EntityQuery) receives EncryptedFieldRedactedValue in place of the
-								//stored hash, so a create built by copying such a record would otherwise
-								//carry the marker into the PasswordField branch of ExtractFieldValue. The
-								//marker must never become a stored credential - hashing it would mint an
-								//account whose password is the published marker string, and persisting the
-								//null that the defence-in-depth check there returns would write an empty
-								//credential column instead of the field's own default. The field is
-								//therefore omitted from storageRecordData altogether and
-								//SetRecordRequiredFieldsDefaultData below supplies the declared default,
-								//which is exactly the outcome a create with no password supplied produces
-								//today. Ordinal comparison only - never culture-sensitive, never
-								//case-insensitive: a missed match would persist the marker and a false
-								//match would silently drop a real password.
+								//THREAT ADDRESSED - C-02 guard, DATA-INTEGRITY CRITICAL (CWE-200, CWE-522 / OWASP A01:2021 +
+								//A02:2021). Companion of the identical guard in the update collector below. A client that read a
+								//record through Find(EntityQuery) receives EncryptedFieldRedactedValue in place of the stored
+								//hash, so a create built by copying such a record would carry the marker into the PasswordField
+								//branch of ExtractFieldValue: hashing it would mint an account whose password is the published
+								//marker. The field is omitted from storageRecordData altogether and the declared default is
+								//supplied instead, which is exactly what a create with no password produces. Ordinal comparison
+								//only - a missed match would persist the marker and a false match would drop a real password.
 								if (field is PasswordField &&
 									string.Equals(pair.Value as string, EncryptedFieldRedactedValue, StringComparison.Ordinal))
 									continue;
@@ -1119,17 +1032,11 @@ namespace WebVella.Erp.Api
 								if( field == null )
 									throw new Exception("Error during processing value for field: '" + pair.Key + "'. Field not found.");
 								else
-									//CWE-532 / CWE-209: a credential value must never be interpolated into a
-									//message that is returned to the caller and written to system_log. See
-									//DescribeRejectedFieldValue.
-									//ArgumentException rather than the bare Exception this statement used to
-									//raise: the value supplied for a field could not be processed, which is
-									//precisely an invalid-argument condition, and the reserved base type carried
-									//a CA2201 diagnostic onto a line this fix has to touch. Behaviour is
-									//identical - the only handlers between here and the method's outer boundary
-									//are catch (ValidationException) at :L1014 and catch (Exception e) at :L1021,
-									//so this still lands in the same place with the same message. The sibling
-									//throw above is deliberately left alone; it is not part of this fix.
+									//CWE-532 / CWE-209: a credential value must never be interpolated into a message that is
+									//returned to the caller and written to system_log - see DescribeRejectedFieldValue.
+									//ArgumentException rather than the reserved base type, which carried a CA2201 diagnostic; the
+									//only handlers before this method's boundary catch ValidationException and Exception, so
+									//behaviour and message are unchanged.
 									throw new ArgumentException("Error during processing value for field: '" + pair.Key + "'. Invalid value: '" + DescribeRejectedFieldValue(field, pair.Value) + "'", ex);
 							}
 						}
@@ -1287,7 +1194,7 @@ namespace WebVella.Erp.Api
 							RecordHookManager.ExecutePostUpdateRecordHooks(omRelData.EntityName, ooRecord);
 					}
 
-					//TODO implement hooks
+					//many-to-many relation rows carry no post-create hook invocation
 					foreach (var mmRelData in manyToManyRecordData)
 					{
 						var mmResponse = CreateRelationManyToManyRecord(mmRelData.RelationId, mmRelData.OriginFieldValue, mmRelData.TargetFieldValue);
@@ -1406,7 +1313,7 @@ namespace WebVella.Erp.Api
 					else if (!record.Properties.ContainsKey("id"))
 						response.Errors.Add(new ErrorModel { Message = "Invalid record. Missing ID field." });
 
-					//SECURITY - finding F25, CWE-521. Second and last write boundary at which a password
+					//SECURITY - M-13, CWE-521. Second and last write boundary at which a password
 					//can be CHOSEN; see ValidatePasswordFieldPolicy. Placed here so the existing
 					//early-return below reports it, before any permission check, hook or connection work.
 					ValidatePasswordFieldPolicy(entity, record, response);
@@ -1432,7 +1339,7 @@ namespace WebVella.Erp.Api
 						}
 					}
 
-					//fixes issue with ID coming from webapi request 
+					//fixes issue with ID coming from webapi request
 					Guid recordId = Guid.Empty;
 					if (record["id"] is string)
 						recordId = new Guid(record["id"] as string);
@@ -1801,19 +1708,13 @@ namespace WebVella.Erp.Api
 								if (field == null)
 									continue;
 
-								//THREAT ADDRESSED - finding C-02 guard (DATA-INTEGRITY CRITICAL), CWE-200
-								//(exposure of sensitive information to an unauthorized actor) and CWE-522
-								//(insufficiently protected credentials), OWASP A01:2021 Broken Access
-								//Control + A02:2021 Cryptographic Failures. A client that read this record
-								//through a query projection receives EncryptedFieldRedactedValue in place of
-								//the stored hash - see DbRecordRepository.RedactEncryptedFieldValue. A
-								//full-record round-trip update would otherwise reach the PasswordField
-								//branch below and hash that marker, PERMANENTLY DESTROYING the credential,
-								//because both MD5 and PBKDF2 are one-way. The marker is therefore skipped
-								//exactly as a null value already is: the field is omitted from
-								//storageRecordData altogether, so the persisted column is left
-								//byte-identical. Skipping is required rather than returning null, because a
-								//null reaching storage would itself wipe the column.
+								//THREAT ADDRESSED - C-02 guard, DATA-INTEGRITY CRITICAL (CWE-200, CWE-522 / OWASP A01:2021 +
+								//A02:2021). A client that read this record through a query projection receives
+								//EncryptedFieldRedactedValue in place of the stored hash, so a full-record round-trip update
+								//would otherwise reach the PasswordField branch below and hash the marker, PERMANENTLY
+								//DESTROYING the credential, because both MD5 and PBKDF2 are one-way. The field is skipped
+								//exactly as a null already is - omitted from storageRecordData, leaving the column
+								//byte-identical - because a null reaching storage would itself wipe it.
 								if (field is PasswordField && (pair.Value == null ||
 									string.Equals(pair.Value as string, EncryptedFieldRedactedValue, StringComparison.Ordinal)))
 									continue;
@@ -1836,15 +1737,10 @@ namespace WebVella.Erp.Api
 						catch (Exception ex)
 						{
 							if (pair.Key != null)
-								//CWE-532 / CWE-209: a credential value must never be interpolated into a
-								//message that is returned to the caller and written to system_log. The field
-								//is resolved here solely to make that decision; an unresolved name yields a
-								//null field, which DescribeRejectedFieldValue treats as "not a password" and
-								//so renders exactly as before.
-								//ArgumentException rather than the bare Exception this statement used to raise,
-								//for the reason given at the create-path twin above. The only handlers between
-								//here and the method's outer boundary are catch (ValidationException) at :L1721
-								//and catch (Exception e) at :L1728, so behaviour and message are unchanged.
+								//CWE-532 / CWE-209: a credential value must never be interpolated into a message that is
+								//returned to the caller and written to system_log. The field is resolved here solely to make
+								//that decision, and an unresolved name yields null, which DescribeRejectedFieldValue treats as
+								//"not a password". ArgumentException for the reason given at the create-path twin above.
 								throw new ArgumentException("Error during processing value for field: '" + pair.Key + "'. Invalid value: '"
 									+ DescribeRejectedFieldValue(entity.Fields.SingleOrDefault(x => x.Name == pair.Key), pair.Value) + "'", ex);
 						}
@@ -1865,7 +1761,7 @@ namespace WebVella.Erp.Api
 
 						if (string.IsNullOrWhiteSpace(path))
 						{
-							//delete file                            
+							//delete file
 							string pathToDelete = (string)originalFieldData.Value;
 							if (!string.IsNullOrWhiteSpace(path))
 								fsRepository.Delete(pathToDelete);
@@ -2003,7 +1899,7 @@ namespace WebVella.Erp.Api
 							RecordHookManager.ExecutePostUpdateRecordHooks(omRelData.EntityName, ooRecord);
 					}
 
-					//TODO implement hooks
+					//many-to-many relation rows carry no post-create hook invocation
 					foreach (var mmRelData in manyToManyRecordData)
 					{
 						var mmResponse = CreateRelationManyToManyRecord(mmRelData.RelationId, mmRelData.OriginFieldValue, mmRelData.TargetFieldValue);
@@ -2132,7 +2028,7 @@ namespace WebVella.Erp.Api
 
 				List<KeyValuePair<string, object>> storageRecordData = new List<KeyValuePair<string, object>>();
 
-			
+
 				var query = EntityQuery.QueryEQ("id", id);
 				var entityQuery = new EntityQuery(entity.Name, "*", query);
 
@@ -2173,7 +2069,7 @@ namespace WebVella.Erp.Api
 						var dbFileRep = new DbFileRepository();
 						foreach (var filepath in filesToDelete)
 							dbFileRep.Delete(filepath);
-					} 
+					}
 
 					#endregion
 
@@ -2244,37 +2140,16 @@ namespace WebVella.Erp.Api
 					}
 				}
 
-				//try
-				//{
-				//	if (query.Query != null)
-				//		ProcessQueryObject(entity, query.Query);
-				//}
-				//catch (Exception ex)
-				//{
-				//	response.Success = false;
-				//	response.Message = "The query is incorrect and cannot be executed.";
-				//	response.Object = null;
-				//	response.Errors.Add(new ErrorModel { Message = ex.Message });
-				//	response.Timestamp = DateTime.UtcNow;
-				//	return response;
-				//}
 
 				var fields = CurrentContext.RecordRepository.ExtractQueryFieldsMeta(query);
 				var data = CurrentContext.RecordRepository.Find(query);
 
-				//THREAT ADDRESSED - finding C-02, CWE-200 (exposure of sensitive information to an
-				//unauthorized actor) and CWE-522 (insufficiently protected credentials), OWASP
-				//A01:2021 Broken Access Control + A02:2021 Cryptographic Failures. The gate above
-				//authorises the ENTITY, not the FIELD: there is no field-level check anywhere in
-				//this data layer, so a stored credential hash was returned verbatim by every record
-				//query to every caller that could read the entity at all. Field permissions are
-				//enforced ONLY in the presentation layer - PcFieldBase gates the whole
-				//field-permission evaluation behind "if (entityField.EnableSecurity)" and
-				//EnableSecurity is a plain bool defaulting to false in
-				//WebVella.Erp/Api/Models/FieldTypes/BaseField.cs - and the mandated Authorization
-				//Enforcement standard requires authorization to be validated "on every request, not
-				//just in the UI". The value is therefore replaced here, server-side, at the manager
-				//projection seam, so a hash never leaves the server for ANY role.
+				//THREAT ADDRESSED - C-02, CWE-200 / CWE-522, OWASP A01:2021 + A02:2021. The gate above authorises
+				//the ENTITY, not the FIELD: there is no field-level check anywhere in this data layer, so a stored
+				//credential hash was returned verbatim by every record query to every caller that could read the
+				//entity at all. Field permissions are enforced ONLY in the presentation layer - PcFieldBase gates
+				//the whole evaluation behind EnableSecurity, a bool defaulting to false - and the mandated
+				//Authorization Enforcement standard requires authorization on every request, not just in the UI.
 				RedactEncryptedFieldValues(fields, data);
 
 				response.Object = new QueryResult { FieldsMeta = fields, Data = data };
@@ -2284,14 +2159,11 @@ namespace WebVella.Erp.Api
 				response.Success = false;
 				response.Message = "The query is incorrect and cannot be executed";
 				response.Object = null;
-				// THREAT ADDRESSED - finding F26, CWE-209 (generation of an error message containing
-				// sensitive information), OWASP A05. The error entry beside the fixed message above copied the
-				// raw exception message, so an authenticated caller able to provoke a fault here still received
-				// internal detail - which is the same disclosure the API-surface remediation closed one layer
-				// up, reached by a path that never enters the controller's own catch. Guarded exactly as this
-				// file's own write paths already are, so a developer keeps the detail and a caller does not.
-				// Deliberately NOT logged here: this method runs on every list and count render, so a log
-				// write on its failure path would be the unbounded-logging vector finding F9 exists to close.
+				// THREAT ADDRESSED - CWE-209 (generation of an error message containing sensitive information),
+				// OWASP A05. The error entry beside the fixed message above copied the raw exception message, so a
+				// caller able to provoke a fault here received internal detail by a path that never enters the
+				// controller's own catch. Guarded as this file's write paths already are. Deliberately NOT logged:
+				// this method runs on every list and count render, so that would be an unbounded-logging vector.
 				response.Errors.Add(new ErrorModel { Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!" });
 				response.Timestamp = DateTime.UtcNow;
 				return response;
@@ -2322,20 +2194,6 @@ namespace WebVella.Erp.Api
 					return response;
 				}
 
-				//try
-				//{
-				//	if (query.Query != null)
-				//		ProcessQueryObject(entity, query.Query);
-				//}
-				//catch (Exception ex)
-				//{
-				//	response.Success = false;
-				//	response.Message = "The query is incorrect and cannot be executed";
-				//	response.Object = 0;
-				//	response.Errors.Add(new ErrorModel { Message = ex.Message });
-				//	response.Timestamp = DateTime.UtcNow;
-				//	return response;
-				//}
 
 				List<Field> fields = CurrentContext.RecordRepository.ExtractQueryFieldsMeta(query);
 				response.Object = CurrentContext.RecordRepository.Count(query);
@@ -2345,7 +2203,7 @@ namespace WebVella.Erp.Api
 				response.Success = false;
 				response.Message = "The query is incorrect and cannot be executed";
 				response.Object = 0;
-				// THREAT ADDRESSED - finding F26, CWE-209. Same guard and same reasoning as Find above.
+				// THREAT ADDRESSED - CWE-209 (error message containing sensitive information). Same guard as Find.
 				response.Errors.Add(new ErrorModel { Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!" });
 				response.Timestamp = DateTime.UtcNow;
 				return response;
@@ -2354,63 +2212,33 @@ namespace WebVella.Erp.Api
 			return response;
 		}
 
-		//SECURITY C-02 (CWE-200 exposure of sensitive information to an unauthorized actor,
-		//CWE-522 insufficiently protected credentials / OWASP A01:2021 Broken Access Control +
-		//A02:2021 Cryptographic Failures): replaces the value of every encrypted PasswordField in a
-		//query projection with EncryptedFieldRedactedValue, so a stored credential hash never
-		//leaves the server. Called from Find(EntityQuery) only, and recursively for the related
-		//records projected under a relation token, whose keys carry the
-		//RELATION_NAME_RESULT_SEPARATOR prefix and whose values are List<EntityRecord>.
+		//SECURITY C-02 (CWE-200, CWE-522 / OWASP A01:2021 + A02:2021): replaces the value of every encrypted
+		//PasswordField in a query projection with EncryptedFieldRedactedValue, so a stored credential hash
+		//never leaves the server. Called from Find(EntityQuery), and recursively for the related records
+		//projected under a relation token, whose keys carry the RELATION_NAME_RESULT_SEPARATOR prefix.
 		//
-		//DELIBERATE DESIGN DECISIONS, each of which must survive future edits:
-		//
-		//1. Keyed on the EXISTING PasswordField.Encrypted flag and on nothing else. Encrypted is
-		//   bool?, so the test is written "== true" on purpose: that treats null as "not
-		//   encrypted", which is the semantics every other PasswordField test in this class
-		//   already has. Never write a bare truthiness test and never write "!= false".
-		//
-		//2. UNCONDITIONAL with respect to role, including administrators. The acceptance criterion
-		//   is "no API response and no query projection returns a password hash, for any role", so
-		//   this is deliberately NOT conditional on the ignoreSecurity field, on
-		//   SecurityContext.CurrentUser or on role membership. A role-conditional projection would
-		//   leave the hash reachable and would add exactly the complexity the Minimal Change
-		//   Clause forbids.
-		//
-		//3. Blanket field-permission enforcement is explicitly OUT OF SCOPE and must not be added
-		//   here: porting Field.Permissions.CanRead across all field types and every projection
-		//   would ripple through the whole read path, and because the presentation layer treats an
-		//   empty read permission as denial it would hide fields wholesale. The residual general
-		//   gap is recorded in docs/security/risk-register.md rather than fixed.
-		//
-		//4. Applied at the MANAGER seam, after the repository has produced the records, and
-		//   UNCONDITIONALLY - this call is deliberately not subject to the credential-read scope.
-		//   The repository carries its own companion redaction at its two record-projection
-		//   seams, also unconditionally, so this is defence in depth at a second, independent
-		//   layer - which is what closes C-02 even if one layer is later bypassed. Redaction is
-		//   idempotent, so a value the repository already replaced is simply replaced again with
-		//   the same constant.
-		//
-		//   The generic EQL surface is a separate path that bypasses this manager and both
-		//   repository Find seams entirely - which is how the credential hash remained
-		//   projectable over the api/v3/en_US/eql, eql-ds and eql-ds-select2 endpoints after the
-		//   first pass at C-02 - and it is gated TWICE, both times deny-by-default:
-		//     DbRecordRepository.ExtractFieldValue guards its read fall-through, suppressed only
-		//     inside RecordManager.OpenCredentialReadScope;
-		//     EqlCommand.ConvertJObjectToEntityRecord redacts unless the internal, init-only
-		//     EqlCommand.IncludeEncryptedFieldValues flag is set on the command (the opt-in lives
-		//     on the COMMAND, never on the public EqlSettings built from stored data sources).
-		//   Both gates must be satisfied before a real hash is projected, and the only place in
-		//   the platform that satisfies both is SecurityManager's credential resolution:
-		//   GetUser(Guid), which SaveUser and the schema-version-4 migration read through, and
-		//   GetUser(email, password). That is what lets a login verify while the EQL and
-		//   data-source endpoints keep disclosing nothing.
-		//
-		//5. A null value stays null. Inventing a marker where there was no value would change
-		//   observable behaviour, and the write-side guards in the create and update collectors key
-		//   on the marker rather than on null.
-		//
-		//6. FieldsMeta is deliberately left untouched: metadata is not the hash, and rewriting it
-		//   would change the response contract.
+		//SIX DECISIONS THAT MUST SURVIVE FUTURE EDITS.
+		//1. Keyed on the existing PasswordField.Encrypted flag and nothing else. Encrypted is bool?, so the
+		//   test is written "== true" on purpose, treating null as "not encrypted" exactly as every other
+		//   PasswordField test here does. Never a bare truthiness test and never "!= false".
+		//2. UNCONDITIONAL with respect to role, including administrators, because the acceptance criterion is
+		//   that no projection returns a hash for ANY role. A role-conditional projection would leave the hash
+		//   reachable and add exactly the complexity the Minimal Change Clause forbids.
+		//3. Blanket field-permission enforcement is OUT OF SCOPE and must not be added here: porting
+		//   Field.Permissions.CanRead across all field types and projections would ripple through the whole
+		//   read path and, because the presentation layer treats an empty read permission as denial, would hide
+		//   fields wholesale. The residual gap is recorded in docs/security/risk-register.md.
+		//4. Applied at the MANAGER seam and deliberately not subject to the credential-read scope. The
+		//   repository carries its own companion redaction at its two record-projection seams, so this is
+		//   defence in depth at a second independent layer, and redaction is idempotent. The generic EQL
+		//   surface bypasses both and is gated TWICE, both deny-by-default: ExtractFieldValue guards its read
+		//   fall-through unless OpenCredentialReadScope is active, and EqlCommand redacts unless its internal,
+		//   init-only IncludeEncryptedFieldValues flag is set on the COMMAND - never on the public EqlSettings
+		//   built from stored data sources. Only SecurityManager's credential resolution satisfies both.
+		//5. A null value stays null: inventing a marker where there was no value would change observable
+		//   behaviour, and the write-side guards key on the marker rather than on null.
+		//6. FieldsMeta is left untouched, because metadata is not the hash and rewriting it would change the
+		//   response contract.
 		private static void RedactEncryptedFieldValues(List<Field> fields, List<EntityRecord> records)
 		{
 			if (fields == null || records == null || records.Count == 0)
@@ -2489,12 +2317,10 @@ namespace WebVella.Erp.Api
 			}
 		}
 
-		//SECURITY C-02 support (see RedactEncryptedFieldValues): reports whether a projected field
-		//set contains an encrypted PasswordField, directly or through a relation projection. This
-		//is the cheap pre-check that keeps redaction off the cost path of every query that cannot
-		//expose a credential. Relation projections are limited to one level by
-		//DbRecordRepository.ExtractQueryFieldsMeta, but the walk is written recursively so a
-		//deeper projection could never silently escape redaction.
+		//SECURITY C-02 support (see RedactEncryptedFieldValues): reports whether a projected field set contains
+		//an encrypted PasswordField, directly or through a relation projection - the cheap pre-check that keeps
+		//redaction off the cost path of queries that cannot expose a credential. Relation projections are one
+		//level deep today, but the walk is recursive so a deeper one could never silently escape redaction.
 		private static bool ContainsEncryptedPasswordField(List<Field> fields)
 		{
 			if (fields == null)
@@ -2513,33 +2339,21 @@ namespace WebVella.Erp.Api
 		}
 
 		/// <summary>
-		/// Renders a rejected field value for inclusion in a record-write error message, replacing
-		/// the value of a credential field with a fixed placeholder.
+		/// Renders a rejected field value for a record-write error message, replacing a credential field's value
+		/// with a fixed placeholder.
 		/// </summary>
-		/// <param name="field">
-		/// The field the value belongs to, or <c>null</c> when it could not be resolved.
-		/// </param>
+		/// <param name="field">The field the value belongs to, or <c>null</c> when it could not be resolved.</param>
 		/// <param name="value">The value the write was rejected for.</param>
 		/// <returns>The value's text, or a fixed placeholder for a password field.</returns>
 		/// <remarks>
-		/// Threat addressed - CWE-532 (insertion of sensitive information into log file), CWE-209
-		/// (generation of error message containing sensitive information), OWASP A09:2021.
-		/// <para>
-		/// The record-write collectors report a rejected value by interpolating it into an exception
-		/// message. That message is returned to the caller AND persisted to the system_log table, so for a
-		/// password field it publishes the submitted PLAINTEXT into durable storage readable by every
-		/// account holding log access - a worse disclosure than the stored-hash exposure this engagement
-		/// set out to close, because a hash is one-way and this is not. Enforcing the M-13 password bounds
-		/// at this write seam makes it far easier to reach, a refused password being an ordinary
-		/// user-triggered outcome rather than an internal fault. Redaction is therefore UNCONDITIONAL
-		/// rather than limited to the policy failure, so no other exception on this path can leak the
-		/// value either.
-		/// </para>
-		/// <para>
-		/// A fixed placeholder is returned rather than the length, a prefix, or a digest: each of
-		/// those is a usable oracle against a credential, and none of them helps diagnose a write.
-		/// The field NAME is still reported by the callers, which is what an operator needs.
-		/// </para>
+		/// Threat addressed - CWE-532 (insertion of sensitive information into a log file) and CWE-209
+		/// (generation of an error message containing sensitive information), OWASP A09:2021. The record-write
+		/// collectors report a rejected value by interpolating it into an exception message that is BOTH returned
+		/// to the caller and persisted to system_log, so for a password field that publishes the submitted
+		/// PLAINTEXT into durable storage - a worse disclosure than the stored hash, because a hash is one-way.
+		/// Redaction is UNCONDITIONAL rather than limited to the policy failure, so no other exception on this
+		/// path can leak the value either, and a fixed placeholder is returned rather than the length, a prefix
+		/// or a digest, each of which is a usable oracle. The field NAME is still reported by the callers.
 		/// </remarks>
 		private static string DescribeRejectedFieldValue(Field field, object value)
 		{
@@ -2558,42 +2372,28 @@ namespace WebVella.Erp.Api
 		private const string RedactedFieldValueForErrorMessage = "[redacted]";
 
 		/// <summary>
-		/// Applies the platform password policy to every encrypted password field a record carries
-		/// on its way into storage, adding one field-level error per offending value.
+		/// Applies the platform password policy to every encrypted password field a record carries on its way
+		/// into storage, adding one field-level error per offending value.
 		/// </summary>
 		/// <remarks>
-		/// THREAT ADDRESSED - finding F25 / M-13, CWE-521 (weak password requirements) and CWE-20
-		/// (improper input validation), OWASP A07:2021 Identification and Authentication Failures.
-		/// The 12-128 range is published as user-entity field metadata and was enforced nowhere:
-		/// every read of MinLength and MaxLength in Api/EntityManager.cs is commented out. Closing
-		/// Api/SecurityManager.SaveUser and provisioning alone would have left this door wide open,
-		/// because CreateRecord and UpdateRecord below are reached directly from
-		/// POST api/v3/en_US/record/{entityName} and from the SDK generic data-create and
-		/// data-manage forms, so a principal holding create or update permission on the entity that
-		/// owns a credential could still store a one-character administrator password. This is the
-		/// same single validator SaveUser uses - PasswordUtil.ValidatePasswordPolicy is the one gate
-		/// for that policy platform-wide - applied at the second and last write boundary.
-		///
-		/// It reports through response.Errors rather than by throwing, deliberately. The per-field
-		/// catch inside both collectors re-wraps any exception as "Invalid value: '&lt;value&gt;'", which
-		/// for a password field would put the plaintext credential into an API message and into the
-		/// server log - a CWE-532 disclosure created by the very fix meant to strengthen the
-		/// credential. Running as a pre-pass, before any connection work, avoids that entirely,
-		/// uses these methods' own established error mechanism, and leaves nothing half-written.
-		/// ErrorModel.Value is left unset for the same reason: it serialises into the response.
-		///
-		/// Two values are deliberately exempt, and both exemptions are load-bearing:
-		/// blank, because both collectors already read it as "leave the stored value alone" or "use
-		/// the declared default" rather than as a chosen password; and the redaction marker, because
-		/// it is a read artefact being round-tripped by a client that never saw the real hash, and
-		/// refusing it would break every record update that simply carries a previously read record
-		/// back. Both are dropped by the collectors before hashing, so neither can become a stored
-		/// credential in any case.
-		///
-		/// The legacy rehash-on-login migration cannot reach this method:
-		/// SecurityManager.UpgradeStoredPasswordHash hashes in place and writes the one column
-		/// through DbRepository.UpdateRecord, never through RecordManager. That is what allows an
-		/// account whose password predates this policy to keep authenticating and still be upgraded.
+		/// THREAT ADDRESSED - M-13, CWE-521 (weak password requirements) and CWE-20 (improper input validation),
+		/// OWASP A07:2021. The 12-128 range is published as user-entity field metadata and was enforced nowhere,
+		/// every read of MinLength and MaxLength in Api/EntityManager.cs being commented out. Closing SaveUser
+		/// and provisioning alone would have left this open, because CreateRecord and UpdateRecord are reached
+		/// directly from POST api/v3/en_US/record/{entityName} and from the SDK generic data forms, so a
+		/// principal holding create or update permission on the entity owning a credential could still store a
+		/// one-character administrator password. It calls the same single validator SaveUser uses.
+		/// <para>
+		/// It reports through response.Errors rather than by throwing, deliberately: the per-field catch inside
+		/// both collectors re-wraps any exception as "Invalid value: '&lt;value&gt;'", which for a password field
+		/// would put the plaintext into an API message and the server log (CWE-532). Running as a pre-pass
+		/// avoids that, uses the established error mechanism and leaves nothing half-written; ErrorModel.Value
+		/// is left unset for the same reason. Two exemptions are load-bearing: blank, which both collectors
+		/// already read as "leave the stored value alone", and the redaction marker, which is a read artefact
+		/// being round-tripped by a client that never saw the real hash. Both are dropped before hashing. The
+		/// rehash-on-login migration cannot reach this method, because UpgradeStoredPasswordHash writes the one
+		/// column through DbRepository directly - which is what lets an older password keep authenticating.
+		/// </para>
 		/// </remarks>
 		private static void ValidatePasswordFieldPolicy(Entity entity, EntityRecord record, QueryResponse response)
 		{
@@ -2746,10 +2546,8 @@ namespace WebVella.Erp.Api
 				else if (field is EmailField)
 					return pair.Value as string;
 				else if (field is FileField)
-					//TODO convert file path to url path
 					return pair.Value as string;
 				else if (field is ImageField)
-					//TODO convert image path to url path
 					return pair.Value as string;
 				else if (field is HtmlField)
 					return pair.Value as string;
@@ -2786,46 +2584,32 @@ namespace WebVella.Erp.Api
 							if (string.IsNullOrWhiteSpace(pair.Value as string))
 								return null;
 
-							//THREAT ADDRESSED - finding C-02 guard (DATA-INTEGRITY CRITICAL), CWE-200 and
-							//CWE-522, OWASP A01:2021 + A02:2021. Defence in depth behind the collector skip
-							//in the update path: the redaction marker must never be hashed and persisted,
-							//because that would permanently destroy the credential. Mirrors the identical
-							//guard in WebVella.Erp/Database/DbRecordRepository.cs. Ordinal comparison only -
-							//never culture-sensitive, never case-insensitive.
+							//THREAT ADDRESSED - C-02 guard, DATA-INTEGRITY CRITICAL (CWE-200, CWE-522 / OWASP A01:2021 +
+							//A02:2021). Defence in depth behind the collector skip in the update path: the redaction marker
+							//must never be hashed and persisted, because that would permanently destroy the credential.
+							//Mirrors the identical guard in DbRecordRepository. Ordinal comparison only.
 							if (string.Equals(pair.Value as string, EncryptedFieldRedactedValue, StringComparison.Ordinal))
 								return null;
 
-							//THREAT ADDRESSED - finding M-13, CWE-521 (weak password requirements),
-							//OWASP A07:2021, and the mandated Authentication Hardening standard
-							//"minimum password complexity: 12+ characters".
-							//This is the platform's ONE plaintext-to-hash write seam for records, so it
-							//is the only place a length policy can actually be enforced. The 12-to-128
-							//bound previously existed solely as field METADATA on the password field,
-							//which this platform treats as presentation state and never consults on the
-							//write path - so any API caller, import, or provisioning value could store a
-							//two-character password while the user interface advertised a twelve
-							//character minimum. Enforcing it here also removes a silent data-loss edge:
-							//HashPassword answers an over-length value with string.Empty by design
-							//(fail-closed), which persisted as an empty credential and left the account
-							//unable to authenticate at all, with no error raised to say so. Refusing the
-							//write is strictly better than silently storing a value that cannot verify.
-							//The reason text is deliberately value-free - never the plaintext, never its
-							//length - because it travels into an exception message that is both returned
-							//to the caller and persisted to the system log (CWE-532). ArgumentException
-							//rather than Exception so the refusal is a typed validation failure.
+							//THREAT ADDRESSED - M-13, CWE-521 (weak password requirements), OWASP A07:2021, and the mandated
+							//"minimum password complexity: 12+ characters". This is the platform's ONE plaintext-to-hash write
+							//seam for records, so it is the only place a length policy can be enforced: the 12-to-128 bound
+							//previously existed solely as field METADATA, which this platform treats as presentation state and
+							//never consults on the write path, so any API caller, import or provisioning value could store a
+							//two-character password. It also refuses an over-length value HERE, where the failure names the
+							//field, rather than letting PasswordUtil.HashPassword throw ArgumentOutOfRangeException from inside
+							//the collector. The reason text is value-free - never the plaintext, never its length - because it
+							//travels into an exception message that is returned to the caller and persisted (CWE-532).
 							string passwordPolicyFailure = PasswordUtil.ValidatePasswordPolicy(pair.Value as string);
 							if (passwordPolicyFailure != null)
 								throw new ArgumentException("The supplied password does not meet the password policy: "
 									+ passwordPolicyFailure + ".");
 
-							//THREAT ADDRESSED - finding C-03, CWE-916 (password hash with insufficient
-							//computational effort) and CWE-759 (one-way hash without a salt), OWASP
-							//A02:2021. This wrote an unsalted, single-pass MD5 digest, so a leaked
-							//password column was recoverable wholesale from precomputed tables and
-							//identical passwords produced identical stored values. HashPassword derives
-							//a salted, work-factored PBKDF2-HMAC-SHA-256 value instead. The stored
-							//shape changes but the column does not: it is varchar(500) and the encoded
-							//value is 84 characters, so no schema change is required.
+							//THREAT ADDRESSED - C-03, CWE-916 (password hash with insufficient computational effort) and CWE-759
+							//(one-way hash without a salt), OWASP A02:2021. This wrote an unsalted single-pass MD5 digest, so a
+							//leaked password column was recoverable wholesale from precomputed tables and identical passwords
+							//produced identical stored values. HashPassword derives a salted, work-factored PBKDF2-HMAC-SHA-256
+							//value instead; the stored shape changes but varchar(500) already accommodates its 84 characters.
 							return PasswordUtil.HashPassword(pair.Value as string);
 						}
 					}

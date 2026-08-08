@@ -4,18 +4,11 @@
 		<OutputType>Exe</OutputType>
 		<TargetFramework>net10.0</TargetFramework>
 		<SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-		<!-- THREAT ADDRESSED - review finding CR3-M-07 (Secret management / OWASP A05:2021 Security
-		     Misconfiguration). The shipped Config.json files are blanked, so a developer needs a supply
-		     channel; the configuration builders this executable uses register a Development-only user-secrets
-		     provider for exactly that purpose. Without a UserSecretsId that provider resolves NO store and
-		     silently loads nothing - AddUserSecrets is called with optional: true so it cannot even fail
-		     loudly - which made the documented developer channel inert for this project and left editing the
-		     tracked, blanked configuration file as the only way to run it. Declaring the id makes the
-		     advertised channel real. It is Development-only by construction: the providers that read it are
-		     registered only when the environment is Development, so this identifier has no production effect.
-		     The value is a stable identifier, not a secret: the store itself lives OUTSIDE the repository, in
-		     the user profile, and nothing secret is added to the tree by naming it. Do not regenerate it -
-		     changing it silently orphans every developer's existing store. -->
+		<!-- Security: the shipped Config.json files are blanked, so this id is what makes
+		     the Development-only user-secrets provider resolve a real store; without it that
+		     provider loads nothing and cannot say so (optional: true), leaving the tracked
+		     configuration file as the only way to run this project. The id is not a secret - the
+		     store lives outside the repository - and regenerating it orphans existing stores. -->
 		<UserSecretsId>9b3e4423-9b40-55c3-9abc-bcd7bcf79685</UserSecretsId>
 	</PropertyGroup>
 
@@ -24,7 +17,11 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<!-- DEFECT ADDRESSED - review finding F30 (Configuration / Availability, CWE-16, OWASP A05:2021 Security Misconfiguration): the file name here is the CONTRACT the code must honour. This item copies the tracked, capital-C Config.json to the output and publish directories, while Program.cs previously asked the configuration builder for a lower-case config.json. The two names are the same file only on a case-insensitive filesystem, so on Linux the mandatory JSON provider threw during startup before environment variables could supply any scrubbed secret. Program.cs now prefers Config.json and accepts config.json only as a fallback for deployments produced by the earlier code path. Do not re-case this item, and do not add a lower-case duplicate: either would reintroduce the divergence. -->
+		<!-- CWE-16 (configuration), OWASP A05:2021: this file name is the CONTRACT Program.cs must ask for.
+		     Capital-C Config.json and lower-case config.json are the same file only on a case-insensitive
+		     filesystem, so a mismatch made the mandatory JSON provider throw at startup on Linux before
+		     environment variables could supply a scrubbed secret. Do not re-case this item and do not add
+		     a lower-case duplicate. -->
 		<Content Include="Config.json">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
@@ -33,7 +30,10 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<!-- SECURITY H-19 (OWASP A06:2021 Vulnerable and Outdated Components / A08:2021, CWE-1104-adjacent): keep this directory segment cased exactly as the folder on disk. An upper-cased "WebVella.ERP" segment broke solution-wide restore on case-sensitive filesystems, silently dropping the core project - and every package advisory it carries - out of the dependency-audit graph, so the vulnerability scan reported falsely clean. -->
+		<!-- Security H-19: keep this directory segment cased exactly as the folder on disk. An
+		     upper-cased "WebVella.ERP" broke solution-wide restore on case-sensitive filesystems,
+		     dropping the core project and every advisory it carries out of the dependency-audit
+		     graph, so the vulnerability scan read falsely clean. -->
 		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 

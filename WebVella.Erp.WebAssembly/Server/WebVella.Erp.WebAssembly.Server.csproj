@@ -1,19 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <!-- H-18 (CWE-1104, OWASP A06:2021 Vulnerable and Outdated Components): .NET 7 left support on 2024-05-14, so any advisory raised against it can never be patched; retargeted to the supported line the other 17 projects already use. -->
+    <!-- Security H-18 (CWE-1104, OWASP A06:2021): .NET 7 left support on 2024-05-14, so an advisory
+         raised against it can never be patched. Kept on the supported line the other 17 projects use. -->
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- H-18 (CWE-1104, OWASP A06:2021): hosting package lifted off the end-of-life 7.0 line to 10.0.1, the version the sibling Client project already pins, so the WebAssembly trio stays on one supported framework line. -->
+    <!-- Security H-18: hosting package kept off the end-of-life 7.0 line and aligned with the version
+         the sibling Client project pins, so the WebAssembly trio stays on one supported line. -->
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="10.0.1" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Build-graph integrity (same rationale class as H-19): the previous filename never existed, so MSBuild silently skipped the Client project (MSB9008) and dropped it from the restore, NuGetAudit and analyzer graph, making any clean scan result unfounded; filename corrected. -->
+    <!-- Build-graph integrity (H-19 class): a reference to a filename that does not exist is skipped
+         silently (MSB9008), dropping that project out of the restore, audit and analyzer graph and
+         making any clean scan unfounded. Keep this path exact. -->
     <ProjectReference Include="..\Client\WebVella.Erp.WebAssembly.csproj" />
     <ProjectReference Include="..\Shared\WebVella.Erp.WebAssembly.Shared.csproj" />
   </ItemGroup>

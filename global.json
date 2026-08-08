@@ -1,22 +1,11 @@
 {
-  // Security: pinned SDK - NuGetAudit defaults and the analyzer rule set are
-  // SDK-version dependent; an unpinned toolchain makes the dependency and SAST
-  // gates non-reproducible (finding L-07). See docs/security/secure-configuration.md
-  // "disable" is the roll-forward policy, and it is the pin: the SDK selected is
-  // exactly 10.0.302 or the command fails. An earlier revision used
-  // "latestPatch", reasoning that holding the 10.0.3xx feature band was enough
-  // because the audit mode default and the analyzer rule set are chosen by the
-  // band. That reasoning does not hold. A patch release can change an analyzer
-  // rule's default severity or its implementation, and it can change the
-  // NuGetAudit defaults within a band, so "latestPatch" leaves the gate's verdict
-  // dependent on whichever patch a machine happens to have - which is precisely
-  // the non-reproducibility finding L-07 records. An EXACT pin is what makes a
-  // green gate mean the same thing on a developer machine and in CI.
-  // The cost is understood and accepted: when this patch is superseded the pin
-  // must be raised deliberately, in a commit, together with a re-measurement of
-  // the analyzer baselines the security workflow enforces. That is the intended
-  // behaviour of a reproducible gate, not a defect - a toolchain change that can
-  // move the gate's verdict must be a reviewed change.
+  // Security (finding L-07): the SDK is pinned EXACTLY, because both the NuGetAudit
+  // defaults and the analyzer rule set are SDK-version dependent - a patch release can
+  // change either, so anything looser leaves the dependency and SAST gates' verdict
+  // dependent on whichever SDK a machine happens to have. "disable" is the pin: the
+  // build uses 10.0.302 or it fails. Raising it is therefore a reviewed commit that also
+  // re-measures the analyzer baselines the security workflow enforces.
+  // See docs/security/secure-configuration.md.
   "sdk": {
     "version": "10.0.302",
     "rollForward": "disable"

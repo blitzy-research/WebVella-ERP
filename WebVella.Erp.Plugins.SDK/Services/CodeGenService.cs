@@ -511,7 +511,7 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     foreach (var node in currentBodyNodes.Where(x => x.ParentId == null))
                         QueuePageBodyNode(node, currentBodyNodes, queue);
 
-                    //nodes in queue are ordered in that way from parent to child, 
+                    //nodes in queue are ordered in that way from parent to child,
                     //so referential problems during create and update should be eliminated
                     while (queue.Count > 0)
                     {
@@ -696,7 +696,7 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     }
 
                     //we load page body nodes again because delete is recursive
-                    //and deleting one node may delete other node which are moved 
+                    //and deleting one node may delete other node which are moved
                     //to another branch of the nodes tree, such nodes will be
                     //created in code for create and update
                     oldBodyNodes = ReadOldPageBodyNodes();
@@ -955,17 +955,15 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     using (NpgsqlDataReader reader = command.ExecuteReader())
                     {
 
-                        // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-                        // Software and Data Integrity Failures): TypeNameHandling resolves a $type
-                        // discriminator carried in the stored payload into a CLR type, which with an
-                        // unconstrained binder is a well documented remote-code-execution primitive.
-                        // TypeNameHandling is deliberately RETAINED - the entity metadata already
-                        // persisted in the legacy database carries discriminators on every element of
-                        // DbEntity.Fields, because the declared element type DbBaseField is abstract
-                        // and the runtime elements are its concrete subclasses, so removing it would
-                        // stop existing installations loading at all - and is constrained instead by
-                        // an explicit type allow-list. ErpSerializationBinder overrides BindToType
-                        // only, so the $type strings written on serialisation are unchanged.
+                        // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). TypeNameHandling
+                        // resolves a $type discriminator carried in the stored payload into a CLR type, which with an
+                        // unconstrained binder is a well documented remote-code-execution primitive. It is deliberately
+                        // RETAINED - the entity metadata already persisted in the legacy database carries discriminators on
+                        // every element of DbEntity.Fields, because the declared element type DbBaseField is abstract and the
+                        // runtime elements are its concrete subclasses, so removing it would stop existing installations
+                        // loading at all - and resolution is constrained instead by an explicit type allow-list.
+                        // ErpSerializationBinder overrides BindToType only, so the $type strings written on serialisation are
+                        // unchanged.
                         JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
                         List<DbEntity> entities = new List<DbEntity>();
                         while (reader.Read())
@@ -998,16 +996,10 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     using (NpgsqlDataReader reader = command.ExecuteReader())
                     {
 
-                        // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-                        // Software and Data Integrity Failures): TypeNameHandling resolves a $type
-                        // discriminator carried in the stored payload into a CLR type, which with an
-                        // unconstrained binder is a well documented remote-code-execution primitive.
-                        // TypeNameHandling is deliberately RETAINED - already-persisted relation
-                        // payloads carry discriminators and would fail to load without it - and is
-                        // constrained instead by an explicit type allow-list. ErpSerializationBinder
-                        // overrides BindToType only, so the $type strings written on serialisation are
-                        // unchanged. The shared singleton is referenced rather than a per-call
-                        // instance because this settings object feeds the reader loop below.
+                        // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). As on the entity read
+                        // above: TypeNameHandling is RETAINED because already-persisted relation payloads carry
+                        // discriminators and would fail to load without it, and resolution is constrained instead by the
+                        // binder's explicit type allow-list.
                         JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
                         List<DbEntityRelation> relations = new List<DbEntityRelation>();
                         while (reader.Read())
@@ -1036,11 +1028,9 @@ namespace WebVella.Erp.Plugins.SDK.Services
                 try
                 {
                     con.Open();
-                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The record
-                    // table name is an identifier, which PostgreSQL cannot bind as a parameter, so
-                    // it is concatenated into the statement. DbIdentifier.Quote validates it against
-                    // the allow-list and emits it double-quoted, throwing rather than sanitising if
-                    // it does not conform.
+                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The record table name is an
+                    // identifier, which PostgreSQL cannot bind as a parameter. Quote validates it against the allow-list
+                    // and emits it double-quoted, throwing rather than sanitising if it does not conform.
                     NpgsqlCommand command = new NpgsqlCommand($"SELECT * FROM {DbIdentifier.Quote("rec_" + entityName)};", con);
                     NpgsqlDataAdapter adapter = new NpgsqlDataAdapter(command);
                     DataTable table = new DataTable();
@@ -1317,16 +1307,13 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     //As relation tables are created after the first relation creation, we need first to check
                     //if the table exists
 
-                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection).
-                    // DbIdentifier.Validate is used here and NOT DbIdentifier.Quote, which is the
-                    // one place in this file where that distinction matters. The name is emitted
-                    // into a single-quoted SQL STRING LITERAL that pg_tables compares against a
-                    // catalogue value, not into an identifier position. A double-quoted form would
-                    // be compared as literal text including the quote characters, would match no
-                    // row, and would make this existence probe silently answer "table does not
-                    // exist" for every relation - turning a security fix into a functional defect.
-                    // Validate returns the name unchanged once proven to match the allow-list, which
-                    // admits no single quote or backslash, so the literal cannot be broken out of.
+                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Validate is used here and NOT
+                    // Quote - the one place in this file where the distinction matters. The name is emitted into a
+                    // single-quoted SQL STRING LITERAL that pg_tables compares against a catalogue value, not into an
+                    // identifier position; a double-quoted form would be compared as literal text including the quotes,
+                    // match no row, and make this existence probe silently answer "table does not exist" for every
+                    // relation. Validate returns the name unchanged once it matches the allow-list, which admits no
+                    // single quote or backslash, so the literal cannot be broken out of.
                     var teCommand = new NpgsqlCommand($"SELECT EXISTS(SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = '{DbIdentifier.Validate("rel_" + relation.Name)}');", con);
                     DataTable dt1 = new DataTable();
                     new NpgsqlDataAdapter(teCommand).Fill(dt1);
@@ -1341,12 +1328,10 @@ namespace WebVella.Erp.Plugins.SDK.Services
 
                     teCommand.Cancel();
 
-                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The "public."
-                    // schema qualifier stays OUTSIDE the validated fragment: DbIdentifier rejects a
-                    // dot, because quoting "public.rel_x" as a single identifier would ask PostgreSQL
-                    // for one table whose name literally contains a dot and would silently address
-                    // the wrong object. Only the unqualified relation table name is validated and
-                    // quoted here.
+                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The "public." schema qualifier
+                    // stays OUTSIDE the validated fragment: DbIdentifier rejects a dot, because quoting "public.rel_x" as
+                    // one identifier would ask PostgreSQL for a table whose name literally contains a dot. Only the
+                    // unqualified relation table name is validated and quoted.
                     var command = new NpgsqlCommand($"SELECT * FROM public.{DbIdentifier.Quote("rel_" + relation.Name)}", con);
                     DataTable dt = new DataTable();
                     new NpgsqlDataAdapter(command).Fill(dt);
@@ -1489,7 +1474,7 @@ $"#region << ***Create entity*** Entity name: {entity.Name} >>\n" +
                 else
                 {
                     //// POSSIBLE UPDATE
-                    /////////////////////////////////////////////////////		
+                    /////////////////////////////////////////////////////
                     var changeCheckResponse = UpdateFieldCode(field, entityOldFieldsDictionary[field.Id], currentEntity);
                     if (changeCheckResponse.HasUpdate)
                     {
@@ -7778,7 +7763,7 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
                 code += $"\tpatchObject[\"name\"] = \"{(string)currentRole["name"]}\";\n";
                 response.ChangeList.Add($"<span class='go-green label-block'>name</span>  from <span class='go-red'>{(string)oldRole["name"]}</span> to <span class='go-red'>{(string)currentRole["name"]}</span>");
             }
-            //label	
+            //label
             if ((string)currentRole["description"] != (string)oldRole["description"])
             {
                 hasUpdate = true;
@@ -9189,7 +9174,7 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
 
             var oldRecordLists = ReadOldEntityRecords(oldEntity.Name);
 
-            //if any, cleanup old records from fields which don't exist in new entity meta 
+            //if any, cleanup old records from fields which don't exist in new entity meta
             if (fieldsToRemoveFromOldEntity.Any())
             {
                 foreach (var rec in oldRecordLists)
@@ -9239,17 +9224,14 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
 
             var response = $"#region << ***Create record*** Id: {rec["id"]} ({currentEntity.Name}) >>\n" +
             "{\n" +
-                // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-                // Software and Data Integrity Failures): TypeNameHandling resolves a $type
-                // discriminator into a CLR type. TypeNameHandling is deliberately RETAINED - the
-                // record snapshots this generator emits carry discriminators and would not round
-                // trip without it - and is constrained instead by an explicit type allow-list.
-                // NOTE: this is a SERIALIZE call emitting generated source text. Attaching the
-                // binder here is safe only because BindToName is left to the base implementation,
-                // so the emitted $type strings stay byte-identical and SDK code generation is
-                // unaffected. The binder is appended inside the existing single-line initializer
-                // because it sits in an interpolation hole of a non-verbatim interpolated string,
-                // which cannot contain a newline; expanding it across lines would not compile.
+                // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). TypeNameHandling is
+                // RETAINED because the record snapshots this generator emits carry discriminators and would not round
+                // trip without it, and resolution is constrained instead by an explicit type allow-list. This is a
+                // SERIALIZE call emitting generated source text: attaching the binder is safe only because BindToName
+                // is left to the base implementation, so the emitted $type strings stay byte-identical and SDK code
+                // generation is unaffected. The binder is appended inside the existing single-line initializer
+                // because it sits in an interpolation hole of a non-verbatim interpolated string, which cannot
+                // contain a newline.
                 $"\tvar json = @\"{JsonConvert.SerializeObject(rec, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance }).EscapeMultiline()}\";\n" +
                 $"\tEntityRecord rec = JsonConvert.DeserializeObject<EntityRecord>(json);\n" +
                 $"\tvar result = recMan.CreateRecord(\"{currentEntity.Name}\", rec);\n" +
@@ -9273,17 +9255,11 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
             {
                 var response = $"#region << ***Update record*** Id: {rec["id"]} ({currentEntity.Name}) >>\n" +
                 "{\n" +
-                    // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
-                    // Software and Data Integrity Failures): TypeNameHandling resolves a $type
-                    // discriminator into a CLR type. TypeNameHandling is deliberately RETAINED - the
-                    // record snapshots this generator emits carry discriminators and would not round
-                    // trip without it - and is constrained instead by an explicit type allow-list.
-                    // NOTE: this is a SERIALIZE call emitting generated source text. Attaching the
-                    // binder here is safe only because BindToName is left to the base implementation,
-                    // so the emitted $type strings stay byte-identical and SDK code generation is
-                    // unaffected. The binder is appended inside the existing single-line initializer
-                    // because it sits in an interpolation hole of a non-verbatim interpolated string,
-                    // which cannot contain a newline; expanding it across lines would not compile.
+                    // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). As on the create-record
+                    // generator above: a SERIALIZE call emitting generated source text, so attaching the binder is safe
+                    // only because BindToName is left to the base implementation and the emitted $type strings stay
+                    // byte-identical. The binder is appended inside the existing single-line initializer because it sits
+                    // in an interpolation hole of a non-verbatim interpolated string, which cannot contain a newline.
                     $"\tvar json = @\"{JsonConvert.SerializeObject(rec, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance }).EscapeMultiline()}\";\n" +
                     $"\tEntityRecord rec = JsonConvert.DeserializeObject<EntityRecord>(json);\n" +
                     $"\tvar result = recMan.UpdateRecord(\"{currentEntity.Name}\", rec);\n" +

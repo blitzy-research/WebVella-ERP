@@ -116,7 +116,10 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<!-- SECURITY H-19 (OWASP A06:2021 Vulnerable and Outdated Components / A08:2021, CWE-1104-adjacent): keep this directory segment cased exactly as the folder on disk. An upper-cased "WebVella.ERP" segment broke solution-wide restore on case-sensitive filesystems, silently dropping the core project - and every package advisory it carries - out of the dependency-audit graph, so the vulnerability scan reported falsely clean. -->
+		<!-- Security H-19: keep this directory segment cased exactly as the folder on disk. An
+		     upper-cased "WebVella.ERP" broke solution-wide restore on case-sensitive filesystems,
+		     dropping the core project and every advisory it carries out of the dependency-audit
+		     graph, so the vulnerability scan read falsely clean. -->
 		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 
@@ -149,7 +152,11 @@
 		<Content Update="Pages\ApplicationHome.cshtml">
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
 		</Content>
-		<!-- SECURITY review finding C-04 (OWASP A06:2021 Vulnerable and Outdated Components, CWE-1104 use of unmaintained third-party components): the two Pages\ckeditor\*.cshtml entries that used to sit here were removed together with the pages themselves. Those pages were an orphaned AngularJS + CKEditor 4 admin shell: nothing in the repository routed to or linked them, /ckeditor/ImageFinder already answered HTTP 500 (RISK-015), and between them they requested about seventy /jsadmin/** scripts and stylesheets that exist nowhere in this repository or in any referenced package. Publishing them shipped a dead surface that advertised an end-of-life editor; restoring the bundle would have meant vendoring unmaintained AngularJS and CKEditor 4, which is a new vulnerability rather than a fix. The LIVE CKEditor integration is unaffected - it is the /ckeditor/drop-upload-url and /ckeditor/image-upload-url controller actions in Controllers\WebApiController.cs, which are untouched. -->
+		<!-- Security C-04 (CWE-1104, OWASP A06:2021): the Pages\ckeditor\*.cshtml entries are absent on
+		     purpose, along with the pages themselves - an unrouted AngularJS + CKEditor 4 shell whose
+		     assets do not exist in this repository. Do not re-add them: restoring the bundle would mean
+		     vendoring an end-of-life editor. The live integration is the /ckeditor/*-upload-url actions in
+		     Controllers\WebApiController.cs and is unaffected. -->
 		<Content Update="Pages\Index.cshtml">
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
 		</Content>

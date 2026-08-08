@@ -26,24 +26,19 @@
 			</wv-grid-column>
 			<wv-grid-column>
 				@* SECURITY H-06 triage (CWE-79 stored XSS, OWASP A03) - record["icon"] is deliberately NOT encoded:
-				   it is server-authored markup, not text. Its only source is PageUtils.GetDataSourceIconBadge, a
-				   switch over the DataSourceType enum returning one of two hardcoded literal badge strings or the
-				   empty string. No return carries an interpolation hole, so no user input and no database text can
-				   reach this sink on any path, and encoding it would render the badge markup as literal visible text
-				   and break the grid. Accepted, documented risk; compensating controls are its server-only
-				   provenance plus the Content-Security-Policy from SecurityHeadersMiddleware. *@
+				   PageUtils.GetDataSourceIconBadge is its only source and returns one of two hardcoded badge
+				   literals or the empty string, with no interpolation hole, so no user input can reach this sink
+				   and encoding would render the badge as literal text. Accepted, documented risk; the residual
+				   control is its server-only provenance, the Content-Security-Policy being REPORT-ONLY and so
+				   blocking nothing. *@
 				@Html.Raw(record["icon"])
 			</wv-grid-column>
 			<wv-grid-column>
-				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - record["name"] is operator-supplied text persisted
-				   in the database, so it carries no raw-output wrapper: Razor's implicit expression HTML-encodes it
-				   automatically. Rendered output is unchanged for ordinary data-source names. *@
+				@* SECURITY H-06 - operator-supplied database text, so no raw-output wrapper: Razor auto-encodes. *@
 				@record["name"]
 			</wv-grid-column>
 			<wv-grid-column>
-				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - auto-encoded by Razor. record["type_description"]
-				   is a compile-time DataSourceType enum label ("database" or "code"), neither of which contains an
-				   HTML-special character, so output is byte-identical. *@
+				@* SECURITY H-06 - auto-encoded by Razor; a compile-time enum label, so output is byte-identical. *@
 				@record["type_description"]
 			</wv-grid-column>
 			<wv-grid-column>
@@ -60,8 +55,7 @@
 				<code>@record["model"]</code>
 			</wv-grid-column>
 			<wv-grid-column>
-				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - auto-encoded by Razor. record["param_count"] is an
-				   int, so it can never contain an HTML-special character and output is byte-identical. *@
+				@* SECURITY H-06 - auto-encoded by Razor; an int, so output is byte-identical. *@
 				@record["param_count"]
 			</wv-grid-column>
 		</wv-grid-row>

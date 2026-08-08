@@ -195,37 +195,37 @@ The lookup therefore had to be restructured so that the **password comparison ha
 code** rather than in the query. Adding a salt without moving that comparison would simply have
 prevented every login.
 
-**What the shipped query actually is**, stated exactly, because an earlier revision of this section
-said the regular-expression predicate had been removed and that is **not** what the code does:
+**What the shipped query actually is**, stated exactly and read from
+`WebVella.Erp/Api/SecurityManager.cs` at this commit:
 
-```text
-SELECT *, $user_role.* FROM user WHERE email ~* @email PAGE 1 PAGESIZE 2
+```sql
+SELECT id, email FROM rec_user WHERE lower(email) = lower(@email)
+  ORDER BY (email = @email) DESC, id LIMIT 2
 ```
 
-The `AND password = @password` term is gone — that is the change the salted format required, and it is
-the whole of it. The `~*` operator is **retained**, and three properties bound it. All three are read
-from `WebVella.Erp/Api/SecurityManager.cs` at this commit:
+Both the `AND password = @password` term **and** the regular-expression operator are gone. Four
+properties bound the replacement:
 
-- **The pattern is anchored and fully escaped.** The parameter is not the submitted address; it is
-  `BuildExactEmailPattern(email)` (`:L408-L435`), which returns `"^" + Regex.Escape(email) + "$"`. Every
-  metacharacter that could open a construct — `\ * + ? | { [ ( ) ^ $ . #` and whitespace — is
-  neutralised, and the anchors make the match exact. A caller therefore cannot supply a *pattern* at
-  all, only a literal, so the pattern's cost is fixed by its length rather than by its structure.
-- **The row count is bounded.** `PAGE 1 PAGESIZE 2` applies `MaxCredentialCandidates` (`:L75`), so the
-  server evaluates the match against at most two candidate rows and at most two key derivations follow.
-  The bound exists so that a single anonymous request cannot amplify either cost.
-- **The authoritative match is still the exact one in application code**, and it always was. The loop
-  at `:L294-L299` collects candidates with
-  `string.Equals(recordEmail, email, StringComparison.OrdinalIgnoreCase)`, so the database predicate is
-  a filter and the ordinal comparison decides. Collecting first, rather than verifying inside the same
-  pass, is what lets a case-fold duplicate be counted and reported rather than silently authenticated
-  against whichever row the database happened to return.
-
-**Why the operator was kept rather than replaced.** An exact SQL comparison would be case-*sensitive*
-against a column that has always matched addresses case-insensitively, so replacing `~*` with `=` would
-have locked out every account whose stored address differs in case from what its owner types. Anchoring
-and escaping the operand closes the weakness without changing which accounts can sign in, which is the
-smaller change and the one the preservation requirement demands.
+- **No regular expression is involved at all.** `lower()` is applied to both sides and the operand is
+  **bound**, never interpolated, so a caller supplies a value rather than a pattern and the cost is
+  fixed by its length. `lower()` folds case through the same collation `~*` did, so no account whose
+  stored address differs in case from what its owner types loses the ability to sign in — which is the
+  behaviour-preserving property that made replacing the operator possible.
+- **The row count is bounded** by `MaxCredentialCandidates` (`:L83`), rendered into the `LIMIT` as a
+  constant written by the file rather than by any caller, so at most two candidate rows are read and at
+  most two key derivations follow. That bound is what stops one anonymous request amplifying either
+  cost.
+- **The ordering is two-key, and the first key is load-bearing.** `(email = @email) DESC` is a boolean,
+  so the row whose STORED spelling matches the SUBMITTED spelling character for character sorts first;
+  `id` then makes the bounded set deterministic. Without the first key a database legitimately holding
+  three or more addresses differing only in case would truncate to whichever two sort lowest, and every
+  other colliding account would silently stop being able to log in.
+- **The authoritative match is the exact one in application code.** `ResolveCredentialCandidates`
+  returns candidates and the caller verifies each with
+  `string.Equals(..., StringComparison.OrdinalIgnoreCase)` and then
+  `PasswordUtil.VerifyPassword`, so the query filters and application code decides. Collecting first,
+  rather than verifying inside the same pass, is what lets a case-fold duplicate be counted and reported
+  rather than silently authenticated against whichever row the database happened to return.
 
 That single restructure closed two further findings at no additional cost:
 
@@ -233,9 +233,8 @@ That single restructure closed two further findings at no additional cost:
   [CWE-625: Permissive Regular Expression](https://cwe.mitre.org/data/definitions/625.html)) — `~*` is
   PostgreSQL's case-insensitive **regular expression** match operator, not a string comparison, and at
   the audit baseline an anonymous caller controlled the pattern by controlling the submitted e-mail
-  address, with the server evaluating it once per row over an unbounded row set. Both halves of that are
-  closed: the operand is escaped and anchored so no caller-supplied pattern exists, and the row set is
-  capped at two. The operator itself remains, deliberately, for the case-folding reason above.
+  address, with the server evaluating it once per row over an unbounded row set. Both halves are closed
+  at the root: there is no regular expression left in the resolver, and the row set is capped at two.
 - **`M-05`** ([CWE-208](https://cwe.mitre.org/data/definitions/208.html)) — verification in
   application code uses `CryptographicOperations.FixedTimeEquals`, so the timing oracle in the old
   character-by-character comparison is gone. An address that matches no row still costs one key
@@ -243,13 +242,14 @@ That single restructure closed two further findings at no additional cost:
   did not open an account-enumeration channel in its place (CWE-203).
 
 One detail records the same defect from the other side: the utility's own legacy verification helper
-at `WebVella.Erp/Utilities/PasswordUtil.cs:L25` had **zero external callers**, precisely *because*
-comparison had been pushed into the SQL predicate. A verification routine nobody calls is the
-structural symptom of verification happening in the wrong place.
+had **zero external callers**, precisely *because* comparison had been pushed into the SQL predicate. A
+verification routine nobody calls is the structural symptom of verification happening in the wrong
+place.
 
-Three write paths were switched to the modern primitive in the same class of change:
-`WebVella.Erp/Api/RecordManager.cs:L2017`, inside the encrypted-password branch spanning
-`:L2008-L2018`; and `WebVella.Erp/Database/DbRecordRepository.cs:L554` and `:L1856`.
+The write paths were switched to the modern primitive in the same class of change:
+`PasswordUtil.HashPassword` is now the only route a plaintext password takes to storage, called from
+the encrypted-password branch of `WebVella.Erp/Api/RecordManager.cs` and from the field-value
+collector in `WebVella.Erp/Database/DbRecordRepository.cs`.
 
 ## What the version 4 migration does to existing installations
 
@@ -351,8 +351,8 @@ observed end to end. It is recorded in the [security audit report](security-audi
 
 Step 2 rewrites the administrator password **if and only if** the stored value is still the one earlier
 releases shipped: it must have the legacy 32-character shape *and* verify against the historic literal,
-which the migration predicate at `WebVella.Erp/ERPService.cs:L2291` supplies to
-`PasswordUtil.VerifyMd5Hash`.
+which the migration predicate in `RevokeSeedAdministratorCredential4`
+(`WebVella.Erp/ERPService.cs`) supplies to `PasswordUtil.VerifyMd5Hash`.
 
 That condition is the point. Retiring the credential unconditionally would overwrite a password an
 operator had already chosen and changed — turning a security fix into an outage. Anything else in the
@@ -418,10 +418,7 @@ That is finding `C-01` ([CWE-798: Use of Hard-coded Credentials](https://cwe.mit
 three-character dictionary word, published in the source of an open repository, on a known e-mail
 address, for an account holding the administrator role, is an authentication bypass in practice.
 
-**It no longer authenticates.** An earlier revision of this section quoted the literal, on the argument
-that an operator cannot check their exposure without knowing what to check for. That argument does not
-survive scrutiny, and it is withdrawn: an operator does not need the value, because **nothing about the
-check requires them to type it.** Two routes settle the question without it:
+**It no longer authenticates.** Two routes settle the question without it:
 
 - **Fingerprint a candidate** rather than compare it: `printf '%s' "$CANDIDATE" | sha256sum | cut -c1-16`
   and compare with the prefix above.
@@ -432,7 +429,8 @@ check requires them to type it.** Two routes settle the question without it:
 > **The historic value remains in this repository's git history and must be assumed known to anyone who
 > has ever seen this repository.** It must never be reinstated as a password on any account, on any
 > installation, for any reason — including temporarily during testing. The one place the literal is
-> still retained in source is the migration predicate at `WebVella.Erp/ERPService.cs:L2291`, which must
+> still retained in source is the migration predicate in `RevokeSeedAdministratorCredential4`
+> (`WebVella.Erp/ERPService.cs`), which must
 > recognise the value in order to withdraw it; that site is a named, justified exception in the secrets
 > gate and is the only one.
 
@@ -445,9 +443,7 @@ is absent, blank or non-compliant, **provisioning fails fast** with a message na
 key — never the value, its length or a digest of it. The account is then marked as requiring a password
 change at first login.
 
-**There is no generated fallback, and this changed.** An earlier revision generated a 20-character
-password when the setting was absent and printed it once to standard error so an operator could read it
-back. That emission was itself a vulnerability (CWE-532, OWASP A09:2021) and was removed under review
+**There is no generated fallback, and this changed.** Generating a 20-character password when the setting is absent, and printing it once to standard error for the operator to read back, is deliberately not what happens. That emission was itself a vulnerability (CWE-532, OWASP A09:2021) and was removed under review
 finding `OBS-01`: standard error is captured and retained wholesale by every substrate this platform
 runs on — systemd's journal, the Docker log driver, IIS stdout redirection, Kubernetes container logs,
 CI transcripts — so a notice described as "one-time" was in fact durable plaintext readable by anyone
@@ -459,7 +455,15 @@ exists, and its absence is not a fault. Supply the setting instead. Every remain
 generated value in this repository's documentation has been removed for the same reason — the code has
 one credential route, and it is yours.
 
-**There is no notice to deliver, because there is no generated value.** `ERPService.ResolveInitialAdministratorPassword` reads `Settings:InitialAdministratorPassword` and throws when it is blank, so provisioning is refused **inside its own transaction**: nothing is persisted, no account is created, the schema version does not advance, and the message names the setting as the remedy without echoing any value. An earlier revision of this document described an additional provisioning route in which it generated a value, probed standard error and standard output to confirm a stream would accept it, and recorded undeliverable notices under a `system_log` source. **None of that exists in the code**, and its removal is the remediation rather than a regression: a notice described as one-time was durable plaintext in every substrate that captures those streams, and a credential the platform invents is one it must disclose. Requiring your own value is the only shape of the code that never holds a credential it has to reveal.
+**There is no notice to deliver, because there is no generated value.**
+`ERPService.ResolveInitialAdministratorPassword` reads `Settings:InitialAdministratorPassword` and
+throws when it is blank, so provisioning is refused **inside its own transaction**: nothing is
+persisted, no account is created, the schema version does not advance, and the message names the
+setting as the remedy without echoing any value. **None of that exists in the code**, and its
+removal is the remediation rather than a regression: a notice described as one-time was durable
+plaintext in every substrate that captures those streams, and a credential the platform invents is
+one it must disclose. Requiring your own value is the only shape of the code that never holds a
+credential it has to reveal.
 
 > The one CSPRNG generator still compiled in serves the local `system@webvella.com` account, which exists > only so background work has an identity and which nobody authenticates as. Its value is hashed on write > and is never printed, stored in plaintext or returned. Anyone auditing the credential surface will find > that generator in the source, so it is named here rather than left to look like an oversight.
 
@@ -477,18 +481,17 @@ The steps are:
 3. Start the application. Provisioning either completes using the password you supplied, or is refused
    with a message naming the setting — there is no third outcome and nothing to capture from any output
    stream. If it was refused, nothing was written, so correct the value and start again.
-4. Sign in as **`erp@webvella.com`** and change the password immediately. **The sign-in identifier is
-   the e-mail address, not the user name.** The account's `username` is `administrator`, and that value
-   authenticates nothing: the login form's field is labelled *Email*
+4. Sign in as **`erp@webvella.com`** and change the password immediately. **The sign-in identifier
+   is the e-mail address, not the user name.** The account's `username` is `administrator`, and that
+   value authenticates nothing: the login form's field is labelled *Email*
    (`WebVella.Erp.Web/Pages/login.cshtml:L18-L20`) and `SecurityManager` resolves the credential by
-   e-mail only. Submitting `administrator` is refused with *Invalid username or password* and consumes
-   one of the five attempts the lockout permits — measured, not assumed: against a published Production
-   host, `administrator` returned HTTP 200 with that message and wrote an `Authentication failed` audit
-   row, while `erp@webvella.com` with the same password returned **302** to `/`. An earlier revision of
-   this step said "Sign in as `administrator`", which would have stranded an operator at the one screen
-   they cannot afford to be stranded at. The change-required marker is enforced, not advisory:
-   interactive login works precisely so the password *can* be changed, but bearer tokens are refused for
-   the account until it has been rotated.
+   e-mail only. Submitting `administrator` is refused with *Invalid username or password* and
+   consumes one of the five attempts the lockout permits — measured, not assumed: against a
+   published Production host, `administrator` returned HTTP 200 with that message and wrote an
+   `Authentication failed` audit row, while `erp@webvella.com` with the same password returned
+   **302** to `/`. The change-required marker is enforced, not advisory: interactive login works
+   precisely so the password *can* be changed, but bearer tokens are refused for the account until
+   it has been rotated.
 
 ### On an upgraded installation
 
@@ -553,10 +556,9 @@ password returned **302** to `/`, the column was re-read as **84 characters begi
 PBKDF2 form — and a second sign-in with the same password returned **302** again with the value
 unchanged. The original stored hash was restored afterwards and verified byte-identical.
 
-> **Two things this section used to say, and both are withdrawn.** It said the situation was
-> "recoverable and does not require a database edit", and it offered, when no other administrator
-> exists, to "set `Settings__InitialAdministratorPassword` and re-provision against an empty database,
-> restoring your data afterwards". Re-provisioning seeds a *new* administrator only into an **empty**
+> **Route 1 is not "recoverable without a database edit", and re-provisioning is not a recovery route.**
+> Setting `Settings__InitialAdministratorPassword` and re-provisioning against an empty database,
+> restoring your data afterwards, does not work: re-provisioning seeds a *new* administrator only into an **empty**
 > database; restoring your backup over it reinstates the very rows — including the inaccessible account
 > — that made you unable to sign in, and there is no supported selective merge that would keep the new
 > account and the old data. Following it would have cost a restore and returned an operator to exactly
@@ -591,9 +593,7 @@ Verification tolerates an over-long submitted password by rejecting it before an
 attempted, so an oversized input cannot be used to force expensive work.
 
 **Account lockout complements this policy: five failed attempts trigger a lockout**, and it is consulted
-at **both** surfaces that verify a password, not one. An earlier revision of this paragraph called the
-Razor page the *single login entry point*; it is the single **interactive** login page, which is a
-different statement. The two surfaces are:
+at **both** surfaces that verify a password, not one. The Razor page is the single **interactive** login page, which is not the same as the single login entry point. The two surfaces are:
 
 | Surface | Route | Consulted at |
 | --- | --- | --- |
@@ -728,7 +728,7 @@ checklist in the [remediation log](remediation-log.md), which records the result
 
 | Document | What it covers |
 | --- | --- |
-| [Security audit report](security-audit-report.md) | **The authoritative record.** Every one of the 53 findings carries its own eight-field record there, including `C-01`, `C-02`, `C-05`, `H-17` and `M-13`. This page **supplements** those records with the operator-facing detail they do not carry — the migration mechanism, the runbook and the rollback guidance — and does not replace them. An earlier revision of this row said those five findings were documented here "rather than there", which was wrong in both directions: it understated the report and it invited a reader to treat a guide as the finding inventory |
+| [Security audit report](security-audit-report.md) | **The authoritative record.** Every one of the 53 findings carries its own eight-field record there, including `C-01`, `C-02`, `C-05`, `H-17` and `M-13`. This page **supplements** those records with the operator-facing detail they do not carry — the migration mechanism, the runbook and the rollback guidance — and does not replace them. |
 | [Remediation log](remediation-log.md) | What changed per vulnerability class, the verification performed, and the recorded latency measurement |
 | [Risk register](risk-register.md) | `RISK-003` the algorithm deviation, `RISK-004` the retained legacy path, `RISK-046` the policy floor, `RISK-047` the redaction marker exemptions, `RISK-050` the residual guest grant |
 | [Secure configuration guide](secure-configuration.md) | The secrets an installation must be supplied before it will start, and the lockout's scope |

@@ -8,20 +8,13 @@
 @if(navItem.Nodes.Count > 0){
 	navItem.Content = navItem.Content.Replace("dropdown-item","dropdown-toggle").Replace("<a","<a data-toggle='dropdown' ");
 	<div class="dropdown-item dropdown dropright" style="overflow:unset">
-		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel. MenuItem.Content
-		   is database-sourced navigation content and this view renders on every page of all seven hosts.
-		   The encoding is applied UPSTREAM in Models/BaseErpPageModel.cs, which encodes or allow-lists
-		   every database-sourced value interpolated into this markup - EncodeMenuText for text and
-		   attribute values, TryEncodeMenuUrl for the href (an allow-list, because encoding does NOT
-		   neutralise a "javascript:" URL) and EncodeMenuIconClass for the class attribute - so what this
-		   line receives is server-authored markup whose data slots are inert. Encoding it HERE is the
-		   wrong control: the value IS markup, and the line above rewrites it AS MARKUP by string-replacing
-		   the "<a" tag to inject data-toggle, so encoding would print literal anchor HTML and stop every
-		   dropdown in the product from toggling. Do NOT remove this Html.Raw while the line above rewrites
-		   the value as markup, and do NOT move the encoding out of BaseErpPageModel.cs. The else branch
-		   stays auto-encoded by Razor for any caller that sets IsHtml to false. Defence in depth: markup
-		   authoring is restricted to privileged roles, plus the report-only Content-Security-Policy from
-		   SecurityHeadersMiddleware. *@
+		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel; this view renders on
+		   every page of all seven hosts. MenuItem.Content arrives as server-authored markup whose
+		   database-sourced slots were encoded or allow-listed in Models/BaseErpPageModel.cs - do NOT move that
+		   encoding out of there - and encoding HERE would print literal anchor HTML and stop every dropdown
+		   toggling, because the line above rewrites the value AS MARKUP. The residual control is that markup
+		   authoring is restricted to privileged roles: the Content-Security-Policy ships REPORT-ONLY, so it
+		   observes violations and blocks nothing, and enforcing it is future owner-governed work. *@
 		@if (navItem.IsHtml)
 		{
 			@Html.Raw(navItem.Content)
@@ -39,15 +32,10 @@
 	</div>
 }
 else{
-	@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel, leaf nodes. Same
-	   database-sourced MenuItem.Content and the same every-page, every-host reach as the branch above.
-	   The leaf anchors reaching this line are built in Models/BaseErpPageModel.cs, which encodes
-	   node.Label with EncodeMenuText, allow-lists node.Url with TryEncodeMenuUrl (a rejected URL
-	   degrades to the inert href="#" onclick="return false" form) and allow-lists node.IconClass with
-	   EncodeMenuIconClass, so the icon span and anchor arrive with inert data slots. Encoding it HERE
-	   would print that markup as visible text in the navigation of every host. Do NOT move the
-	   encoding out of BaseErpPageModel.cs. The else branch stays auto-encoded by Razor for any caller
-	   that sets IsHtml to false. *@
+	@* SECURITY H-06 - INTENTIONAL raw markup channel, leaf nodes: same content, encoding and reach as the
+	   branch above. Leaf anchors are built in Models/BaseErpPageModel.cs with inert data slots (a rejected
+	   URL degrades to href="#" onclick="return false"), so encoding here would print that markup as
+	   visible navigation text. The else branch stays auto-encoded for callers that set IsHtml false. *@
 	@if (navItem.IsHtml)
 	{
 		@Html.Raw(navItem.Content)

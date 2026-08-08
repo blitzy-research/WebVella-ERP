@@ -5,7 +5,6 @@
 	var siteMenu = (List<MenuItem>)ViewBag.SiteMenu;
 }
 
-<!--c:UserNav_Default-->
 @if (siteMenu.Count > 0)
 {
 	<div class="menu-nav-wrapper">
@@ -17,16 +16,13 @@
 		<div class="dropdown-menu level-0">
 			@foreach (var menuItem in siteMenu)
 			{
-				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel. MenuItem.Content
-				   is database-sourced site-menu content and this component renders on every page of all seven
-				   hosts. The encoding is applied UPSTREAM, by the single producer of SiteMenu items in
-				   Models/BaseErpPageModel.cs: EncodeUrlPathSegment on sitePage.Name for the "/s/{name}" path and
-				   EncodeMenuText on sitePage.Label for the link text, so what arrives here is server-authored
-				   markup with inert data slots. Encoding it HERE would print the anchor as literal text in the
-				   dropdown on every page of every host. Do NOT move that encoding out of BaseErpPageModel.cs.
-				   The else branch stays auto-encoded by Razor for any caller that sets IsHtml to false. Defence in
-				   depth: markup authoring is restricted to privileged roles, plus the report-only
-				   Content-Security-Policy from SecurityHeadersMiddleware. *@
+				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel, rendered on every
+				   page of all seven hosts. The single producer of SiteMenu items in Models/BaseErpPageModel.cs
+				   already encodes the path segment and the link text, so what arrives is server-authored markup
+				   with inert data slots and encoding HERE would print the anchor as literal text; do NOT move that
+				   encoding out of there. The residual control is that markup authoring is restricted to privileged
+				   roles: the Content-Security-Policy ships REPORT-ONLY, so it observes violations and blocks
+				   nothing, and enforcing it is future owner-governed work. *@
 				@if (menuItem.IsHtml)
 				{
 					@Html.Raw(menuItem.Content)

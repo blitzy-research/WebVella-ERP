@@ -438,7 +438,7 @@ published encryption key as constants and refuses either one outright, so a read
 redaction here against executable code rather than against prose.
 
 **One literal is deliberately retained in source, and it is named here rather than left to be
-discovered.** `WebVella.Erp/ERPService.cs:L2291` passes the historic seeded administrator password to
+discovered.** `RevokeSeedAdministratorCredential4` in `WebVella.Erp/ERPService.cs` passes the historic seeded administrator password to
 `PasswordUtil.VerifyMd5Hash` because the version-4 migration must *recognise* that credential in order
 to invalidate it; a migration that cannot identify the value it exists to withdraw would silently skip
 every affected installation. That one site is therefore a named, justified exception in the Gate 3
@@ -1113,33 +1113,34 @@ locators above — each verified directly — are given.
 Where each finding identifier cited from source, project, build or workflow files resolves. The census
 below was taken from the tree at this commit rather than from the plan, and it is stated as measured.
 
-**Thirty-one distinct Part 1 identifiers are cited in tracked non-documentation files**, most of them in
+**Forty distinct Part 1 identifiers are cited in tracked non-documentation files**, most of them in
 `THREAT ADDRESSED` comments at the point of fix, which is what makes a record in Part 1 mandatory for
-each of them rather than a cross-reference to a companion document. The most heavily cited are `C-02`
-(46 citations), `C-01` (39), `H-04` (40), `H-06` (38), `C-04` (36), `H-19` (31), `H-05` (25), `H-10` (22),
-`M-13` (22), `C-05` (20) and `H-08` (20). Selected resolutions:
+each of them rather than a cross-reference to a companion document. Re-measured over the tree at this
+commit, after the comment-quality pass compressed those comments, the most heavily cited are `C-02`
+(46 citations), `H-06` (41), `C-01` (34), `H-04` (31), `C-04` (29), `H-19` (27), `H-10` (26), `H-09` (25),
+`H-08` (24), `M-01` (21), `H-05` (19), `M-13` (19) and `H-16` (18). Selected resolutions:
 
 | Identifier | Cited from | Subject |
 | --- | --- | --- |
-| `C-01` | `ERPService.cs`, `PasswordUtil.cs`, `AuthService.cs`, `login.cshtml.cs`, `ErpUserPreferences.cs`, `security-scan.yml` | Hardcoded default administrator password in provisioning |
+| `C-01` | `ERPService.cs`, `AuthService.cs`, `login.cshtml.cs`, `ErpUserPreferences.cs`, three WebAssembly client files, `security-scan.yml` | Hardcoded default administrator password in provisioning |
 | `C-02` | `RecordManager.cs`, `SecurityManager.cs`, `DbRecordRepository.cs`, `SdkPlugin.20201221.cs`, `ProjectPlugin.20211012.cs` | Credential hash readable by non-administrator roles |
 | `C-03` | `PasswordUtil.cs`, `SecurityManager.cs`, `RecordManager.cs`, `DbRecordRepository.cs` | Unsalted single-pass MD5 credential storage |
 | `C-04` | `CryptoUtility.cs`, `ErpSettings.cs` | Hardcoded encryption key with a silent fallback |
 | `C-05` | `ERPService.cs`, `SdkPlugin.20201221.cs`, `ProjectPlugin.20211012.cs` | Guest role granted create permission on user and role entities |
 | `H-04` | `ErpSettings.cs`, `WebVella.Erp.Site/Startup.cs`, `WebVella.Erp.Site.Project/Startup.cs` | Weak default token signing key |
 | `H-05` | `ErpSettings.cs` | Plaintext database credentials in shipped configuration |
-| `H-08` | `WebApiController.cs`, at eighteen sites across the upload, download, move and delete paths | Unrestricted file upload chaining into inline execution |
-| `H-09` | `DbIdentifier.cs`, `DbEntityRepository.cs`, `DbRecordRepository.cs`, `DbRelationRepository.cs`, `DbRepository.cs`, `EqlBuilder.Sql.cs`, `CodeGenService.cs`, `security-scan.yml` | SQL identifier injection through string concatenation |
+| `H-08` | `WebApiController.cs`, at nineteen sites across the upload, download, move and delete paths | Unrestricted file upload chaining into inline execution |
+| `H-09` | `DbIdentifier.cs`, `DbEntityRepository.cs`, `DbRecordRepository.cs`, `DbRelationRepository.cs`, `EqlBuilder.Sql.cs`, `CodeGenService.cs`, `SdkPlugin.20210429.cs`, `security-scan.yml` | SQL identifier injection through string concatenation |
 | `H-10` | `ErpSerializationBinder.cs`, `DbEntityRepository.cs`, `DbRelationRepository.cs`, `JobProfile.cs`, `JobDataService.cs`, `NotificationContext.cs`, `CodeGenService.cs` | Unsafe polymorphic deserialisation |
 | `H-12` | `web.config` and the `Config.json` files | Development mode enabled in every shipped configuration |
-| `H-15` | the seven host `Startup.cs` files | No HTTPS enforcement, no HSTS, insecure cookie attributes |
-| `H-16` | `LoginThrottleService.cs`, `login.cshtml.cs`, `WebApiController.cs`, `ErpMvcExtensions.cs` | No account lockout on repeated failed logins |
+| `H-15` | the seven host `Startup.cs` files, `ErpMvcExtensions.cs`, `SecurityHeadersMiddleware.cs`, `JWT_README.txt`, `security-scan.yml` | No HTTPS enforcement, no HSTS, insecure cookie attributes |
+| `H-16` | `LoginThrottleService.cs`, `login.cshtml.cs`, `WebApiController.cs`, `ErpMvcExtensions.cs`, `AuthService.cs`, the seven host `Startup.cs` files | No account lockout on repeated failed logins |
 | `H-18` | `security-scan.yml` | Two projects targeted an end-of-life framework |
-| `H-19` | `WebVella.ERP3.sln`, all fifteen affected manifests, `security-scan.yml` | Case-mismatched project references broke the dependency scan |
-| `M-01` | the seven host `Startup.cs` files, `ErpMvcExtensions.cs:L98`, `SecurityHeadersMiddleware.cs:L15` and `:L89` | No security response headers |
+| `H-19` | seven of the fifteen corrected manifests - `ConsoleApp`, `Plugins.Mail`, `Site.Mail`, `Site.Next`, `Site.Sdk`, `Web` and `WebAssembly.Server` - and `security-scan.yml`. The remaining eight manifests and `WebVella.ERP3.sln` carry the corrected path but no identifier, because the comment-quality pass removed the in-file banner the no-comment manifest contract prohibits | Case-mismatched project references broke the dependency scan |
+| `M-01` | the seven host `Startup.cs` files, `ErpMvcExtensions.cs:L106`, `SecurityHeadersMiddleware.cs:L14` and `:L67` | No security response headers |
 | `M-04` | `AuthService.cs` | Local time used for token timestamps |
 | `M-13` | `PasswordUtil.cs`, `SecurityManager.cs`, `RecordManager.cs`, `DbRecordRepository.cs`, `ERPService.cs` | Password length bounds of 6 to 24 characters |
-| `L-01` | `login.cshtml.cs:L279` | Dead security code, left in place deliberately |
+| `L-01` | `login.cshtml.cs:L250` | Dead security code, left in place deliberately |
 | `L-07` | `global.json` | No lock file and an unpinned SDK version |
 
 ### Cited identifiers that resolve to Part 2
@@ -1166,7 +1167,7 @@ An earlier revision of this index recorded three zero-padded aliases — source 
 aliases no longer exist.** `H-08` is cited only in `WebApiController.cs`, where it means the Part 1 upload
 finding; `M-01` is cited in the host pipelines and the headers middleware, where it means the Part 1
 header finding, and the deserialisation binder cites `H-10` throughout rather than any `M-0` identifier;
-and `L-01` is cited once, at `login.cshtml.cs:L279`, where it means the Part 1 dead-code finding. The
+and `L-01` is cited once, at `login.cshtml.cs:L250`, where it means the Part 1 dead-code finding. The
 correction is recorded rather than the stale table left standing.
 
 **The remaining hazard is now closed, not merely documented.** Two Part 2 records shared an identifier
@@ -1932,7 +1933,7 @@ no injected element, and legitimate values render identically apart from attribu
 | **FINDING** | Fifteen `PackageReference` entries are commented out in the project manifests. They are not restored, not compiled against and not shipped. |
 | **SEVERITY** | Low — a repository-hygiene issue with no runtime exposure. Documented for a future sprint. |
 | **CWE** | [CWE-1164: Irrelevant Code](https://cwe.mitre.org/data/definitions/1164.html) — the product contains code that is not essential for execution, which raises maintenance cost and can mislead a reader about what the product depends on. That is exactly what a commented-out `PackageReference` is. An earlier revision of this row asserted no identifier on the grounds that "no weakness is present"; CWE-1164 is a maintainability weakness class rather than an exploitable one, so it applies without over-claiming, and the abstention is withdrawn. The entry still records why these references were **excluded** from the dependency findings. |
-| **LOCATION** | `WebVella.Erp/WebVella.Erp.csproj:L51` and `:L52-L58`; `WebVella.Erp.Web/WebVella.Erp.Web.csproj:L136`, `:L137` and `:L139-L140`; `WebVella.Erp.Site/WebVella.Erp.Site.csproj:L51-L52` and `:L56`. |
+| **LOCATION** | `WebVella.Erp/WebVella.Erp.csproj:L76` and `:L77-L83`; `WebVella.Erp.Web/WebVella.Erp.Web.csproj:L140`, `:L141` and `:L143-L144`; `WebVella.Erp.Site/WebVella.Erp.Site.csproj:L51-L52` and `:L56`. Line numbers move whenever a comment above a group changes; the durable locator is the `<!--<PackageReference` construct itself. |
 | **DESCRIPTION** | Recorded because the alternative is worse than the clutter: several of the commented entries name versions that carry genuine published advisories, including an image-processing package with an out-of-bounds-write advisory and four end-of-life framework packages. Because they are not in the build graph, **none of those advisories applies to this build**, and reporting them would have put false High-severity findings into this report. Maps to **OWASP A06:2021** only in the sense of preventing a misclassification. |
 | **IMPACT** | None at runtime. The risk is analytical: a future reader, or a scanner that parses manifests textually rather than resolving them, may mistake these for live references and either raise false findings or, worse, uncomment one. |
 | **EVIDENCE** | All fifteen entries are inside XML comments; the dependency audit reports no advisory for any of them, and the full inventory with versions is recorded in the third-party inventory document. |

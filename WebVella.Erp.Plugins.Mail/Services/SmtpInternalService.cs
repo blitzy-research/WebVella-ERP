@@ -28,12 +28,10 @@ namespace WebVella.Erp.Plugins.Mail.Services
 		private static object lockObject = new object();
 		private static bool queueProcessingInProgress = false;
 
-		//QUEUE RESILIENCE - review finding M-OPEN-06, CWE-703 / CWE-755. Retry policy applied when the
-		//message's OWN smtp_service could not be read, which is the one failure for which the service's
-		//configured max_retries_count and retry_wait_minutes are by definition unavailable. These are the
-		//platform's own seeded defaults for those two fields (MailPlugin.20190215: 3 retries, 60 minutes),
-		//so a message whose service is momentarily unreadable is treated exactly as the service itself
-		//would have treated a momentary send failure, rather than to a policy invented here.
+		//QUEUE RESILIENCE - CWE-703 / CWE-755. Retry policy applied when the message's OWN smtp_service could
+		//not be read, the one failure for which its configured max_retries_count and retry_wait_minutes are by
+		//definition unavailable. These are the platform's own seeded defaults for those fields, so the message
+		//is treated as the service itself would have treated a momentary send failure.
 		private const int ServiceLookupFailureMaxRetriesCount = 3;
 		private const int ServiceLookupFailureRetryWaitMinutes = 60;
 
@@ -85,18 +83,12 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 						}
 						break;
-					//SCHEMA MAPPING - review finding INT-11. This case label named a field that does not exist.
-					//smtp_service carries `default_sender_email` - provisioned in MailPlugin.20190215 as a REQUIRED
-					//InputEmailField and mapped to SmtpService.DefaultSenderEmail - and never carried
-					//`default_from_email`, so the switch could not match and this validation never ran. An invalid
-					//sender address was therefore accepted on save and failed much later inside MailboxAddress
-					//construction, which reports a data-entry mistake as a delivery failure against a relay.
-					//The one other place the old name survives is the stale GENERATED SQL text of the AllSmtpSevices
-					//data source in MailPlugin.20190215, which also names a mis-spelled `connection_secutity` column
-					//and is never executed - DataSourceManager runs the EQL text - so it is evidence of the rename
-					//rather than of a second field.
-					//IsEmail() is null-safe - it constructs a MailAddress inside a try - so a null or blank value
-					//reports the same actionable error instead of throwing, which agrees with the field being required.
+					//SCHEMA MAPPING - this case label named a field that does not exist. smtp_service carries
+					//`default_sender_email`, a REQUIRED InputEmailField, and never carried `default_from_email`, so the
+					//switch could not match and this validation never ran: an invalid sender address was accepted on save
+					//and failed much later inside MailboxAddress construction, reporting a data-entry mistake as a delivery
+					//failure. IsEmail() is null-safe, so a null or blank value reports the same actionable error rather
+					//than throwing, which agrees with the field being required.
 					case "default_sender_email":
 						{
 							if (!((string)rec["default_sender_email"]).IsEmail())
@@ -189,10 +181,9 @@ namespace WebVella.Erp.Plugins.Mail.Services
 								continue;
 							}
 
-							//INPUT VALIDATION - review finding INT-06. A numeric cast to an enum NEVER throws, so the
-							//try/catch this replaces was unreachable and every integer was accepted: an undefined value
-							//passed validation here and failed much later inside SmtpClient.Connect. Enum.IsDefined is the
-							//test that actually rejects it, and the generic overload avoids boxing and analyzer rule CA2263.
+							//INPUT VALIDATION - a numeric cast to an enum NEVER throws, so the try/catch this replaces was
+							//unreachable and every integer was accepted, failing much later inside SmtpClient.Connect. The generic
+							//Enum.IsDefined overload is the test that rejects it, and avoids boxing and analyzer rule CA2263.
 							if (!Enum.IsDefined((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
 							{
 								errors.Add(new ErrorModel
@@ -204,23 +195,13 @@ namespace WebVella.Erp.Plugins.Mail.Services
 								continue;
 							}
 
-							//SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
-							//information, CWE-311 missing encryption of sensitive data, OWASP A02:2021.
-							//THREAT ADDRESSED: this hook used to accept every defined mode, and the comment it replaces said
-							//so deliberately - narrowing was declined then on preservation grounds. That decision is
-							//SUPERSEDED: `None` sends the relay credential and every message in cleartext, and both `Auto`
-							//and `StartTlsWhenAvailable` continue in cleartext whenever the relay does not advertise
-							//STARTTLS, which an active man-in-the-middle arranges by stripping the advertisement. Accepting
-							//them here meant an administrator could reintroduce a cleartext relay at any time through the UI.
-							//THE PRESERVATION CONCERN IS STILL HONOURED, in two ways rather than by permitting cleartext.
-							//First, the check is POSTURE-GATED on ErpSettings.DevelopmentMode - the same gate the transport
-							//policy uses - so a development installation may still select a plaintext local mail catcher.
-							//Second, this validates only what is being WRITTEN NOW: an existing row keeps its stored value
-							//and keeps sending, because SmtpService.ResolveConnectionSecurity hardens Auto and
-							//StartTlsWhenAvailable to a mandatory mode at send time rather than refusing them. Only a row
-							//being saved has to name a mode that is already mandatory.
-							//NO SECRET IS NAMED: the message names modes and the posture setting, never the relay or its
-							//credential.
+							//SECURITY - CWE-319 cleartext transmission, CWE-311 missing encryption, OWASP A02. This hook accepted
+							//every defined mode, so an administrator could reintroduce a cleartext relay through the UI: `None`
+							//sends the credential and every message in clear, and `Auto` and `StartTlsWhenAvailable` do so whenever
+							//the relay does not advertise STARTTLS. Preservation is honoured without permitting cleartext - the
+							//check is POSTURE-GATED on ErpSettings.DevelopmentMode, and it validates only what is being WRITTEN NOW,
+							//because SmtpService.ResolveConnectionSecurity hardens an existing row's mode at send time. The message
+							//names modes and the posture setting, never the relay or its credential.
 							if (!ErpSettings.DevelopmentMode
 								&& !SmtpService.IsMandatoryEncryptedMode((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
 							{
@@ -292,18 +273,10 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 						}
 						break;
-					//SCHEMA MAPPING - review finding INT-11. This case label named a field that does not exist.
-					//smtp_service carries `default_sender_email` - provisioned in MailPlugin.20190215 as a REQUIRED
-					//InputEmailField and mapped to SmtpService.DefaultSenderEmail - and never carried
-					//`default_from_email`, so the switch could not match and this validation never ran. An invalid
-					//sender address was therefore accepted on save and failed much later inside MailboxAddress
-					//construction, which reports a data-entry mistake as a delivery failure against a relay.
-					//The one other place the old name survives is the stale GENERATED SQL text of the AllSmtpSevices
-					//data source in MailPlugin.20190215, which also names a mis-spelled `connection_secutity` column
-					//and is never executed - DataSourceManager runs the EQL text - so it is evidence of the rename
-					//rather than of a second field.
-					//IsEmail() is null-safe - it constructs a MailAddress inside a try - so a null or blank value
-					//reports the same actionable error instead of throwing, which agrees with the field being required.
+					//SCHEMA MAPPING - this case label named a field that does not exist; see the same correction in the
+					//create hook above. smtp_service carries `default_sender_email` and never carried
+					//`default_from_email`, so the switch could not match and the sender address went unvalidated on save.
+					//IsEmail() is null-safe, so a null or blank value reports the same actionable error.
 					case "default_sender_email":
 						{
 							if (!((string)rec["default_sender_email"]).IsEmail())
@@ -396,10 +369,9 @@ namespace WebVella.Erp.Plugins.Mail.Services
 								continue;
 							}
 
-							//INPUT VALIDATION - review finding INT-06. A numeric cast to an enum NEVER throws, so the
-							//try/catch this replaces was unreachable and every integer was accepted: an undefined value
-							//passed validation here and failed much later inside SmtpClient.Connect. Enum.IsDefined is the
-							//test that actually rejects it, and the generic overload avoids boxing and analyzer rule CA2263.
+							//INPUT VALIDATION - a numeric cast to an enum NEVER throws, so the try/catch this replaces was
+							//unreachable and every integer was accepted. The generic Enum.IsDefined overload rejects an undefined
+							//value here rather than leaving it to fail inside SmtpClient.Connect, and avoids CA2263.
 							if (!Enum.IsDefined((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
 							{
 								errors.Add(new ErrorModel
@@ -411,23 +383,10 @@ namespace WebVella.Erp.Plugins.Mail.Services
 								continue;
 							}
 
-							//SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
-							//information, CWE-311 missing encryption of sensitive data, OWASP A02:2021.
-							//THREAT ADDRESSED: this hook used to accept every defined mode, and the comment it replaces said
-							//so deliberately - narrowing was declined then on preservation grounds. That decision is
-							//SUPERSEDED: `None` sends the relay credential and every message in cleartext, and both `Auto`
-							//and `StartTlsWhenAvailable` continue in cleartext whenever the relay does not advertise
-							//STARTTLS, which an active man-in-the-middle arranges by stripping the advertisement. Accepting
-							//them here meant an administrator could reintroduce a cleartext relay at any time through the UI.
-							//THE PRESERVATION CONCERN IS STILL HONOURED, in two ways rather than by permitting cleartext.
-							//First, the check is POSTURE-GATED on ErpSettings.DevelopmentMode - the same gate the transport
-							//policy uses - so a development installation may still select a plaintext local mail catcher.
-							//Second, this validates only what is being WRITTEN NOW: an existing row keeps its stored value
-							//and keeps sending, because SmtpService.ResolveConnectionSecurity hardens Auto and
-							//StartTlsWhenAvailable to a mandatory mode at send time rather than refusing them. Only a row
-							//being saved has to name a mode that is already mandatory.
-							//NO SECRET IS NAMED: the message names modes and the posture setting, never the relay or its
-							//credential.
+							//SECURITY - CWE-319 cleartext transmission, CWE-311 missing encryption, OWASP A02: the same narrowing
+							//as the create hook above, for the same reason and under the same posture gate. Only a row being SAVED
+							//has to name an already-mandatory mode; an existing row keeps sending because
+							//SmtpService.ResolveConnectionSecurity hardens its mode at send time.
 							if (!ErpSettings.DevelopmentMode
 								&& !SmtpService.IsMandatoryEncryptedMode((MailKit.Security.SecureSocketOptions)connectionSecurityNumber))
 							{
@@ -543,7 +502,7 @@ namespace WebVella.Erp.Plugins.Mail.Services
 				}
 			}
 
-			//we set current record to store properties which don't exist in current entity 
+			//we set current record to store properties which don't exist in current entity
 			EntityRecord currentRecord = pageModel.DataModel.GetProperty("Record") as EntityRecord;
 			currentRecord["recipient_email"] = recipientEmail;
 			currentRecord["subject"] = subject;
@@ -600,7 +559,7 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 			if (!response.Success)
 				throw new Exception(response.Message);
-			
+
 		}
 
 
@@ -622,11 +581,10 @@ namespace WebVella.Erp.Plugins.Mail.Services
 				if (htmlDoc.DocumentNode == null)
 					return;
 
-				//CONTENT MAPPING - review finding INT-10. HtmlAgilityPack returns NULL, not an empty collection,
-				//when nothing matches, so every HTML body without an image raised NullReferenceException here. The
-				//broad catch below then swallowed it and skipped BOTH the rewritten body and the plain-text
-				//alternative, so the common case - an image-free HTML message - went out with no text/plain part at
-				//all. Coalescing to an empty sequence makes "no images" the no-op it always should have been.
+				//CONTENT MAPPING - HtmlAgilityPack returns NULL, not an empty collection, when nothing matches, so
+				//every HTML body without an image raised NullReferenceException here; the broad catch below then
+				//skipped BOTH the rewritten body and the plain-text alternative. Coalescing to an empty sequence makes
+				//"no images" the no-op it should always have been.
 				foreach (HtmlNode node in htmlDoc.DocumentNode.SelectNodes("//img[@src]") ?? Enumerable.Empty<HtmlNode>())
 				{
 					var src = node.Attributes["src"].Value.Split('?', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
@@ -652,10 +610,8 @@ namespace WebVella.Erp.Plugins.Mail.Services
 						var bytes = file.GetBytes();
 
 						var extension = Path.GetExtension(src).ToLowerInvariant();
-						//MIME MAPPING - review finding INT-12. TryGetValue leaves mimeType NULL for an extension the
-						//provider does not map, and MimePart(string) throws ArgumentNullException for null, so one
-						//unmapped inline image aborted the whole method. The binary fallback is what MimeKit's own
-						//parameterless constructor uses, so the part stays well formed and delivery continues.
+						//MIME MAPPING - TryGetValue leaves mimeType NULL for an unmapped extension and MimePart(string) throws
+						//for null, so one unmapped inline image aborted the whole method. See SmtpService.BinaryContentType.
 						if (!new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType) || string.IsNullOrWhiteSpace(mimeType))
 							mimeType = SmtpService.BinaryContentType;
 
@@ -676,14 +632,12 @@ namespace WebVella.Erp.Plugins.Mail.Services
 			}
 			catch
 			{
-				//INT-10: inline-image embedding is best-effort - a failure here leaves the original HtmlBody in
-				//place, which is still deliverable - but it must not also cost the plain-text alternative below,
-				//which is computed from whatever body survived. That is why this handler no longer returns.
+				//Inline-image embedding is best-effort: a failure leaves the original HtmlBody in place, which is still
+				//deliverable, but it must not also cost the plain-text alternative below - hence no return here.
 			}
 
-			//INT-10: outside the handler above, deliberately. A message with only an HTML body and no
-			//text/plain alternative is treated as spam by many relays, so this fallback is the one part of the
-			//method that must run even when image embedding failed.
+			//Outside the handler above, deliberately: a message with only an HTML body is treated as spam by many
+			//relays, so this fallback must run even when image embedding failed.
 			if (string.IsNullOrWhiteSpace(builder.TextBody) && !string.IsNullOrWhiteSpace(builder.HtmlBody))
 				builder.TextBody = ConvertToPlainText(builder.HtmlBody);
 		}
@@ -811,11 +765,9 @@ namespace WebVella.Erp.Plugins.Mail.Services
 					return; //save email in finally block will save changes
 				}
 
-				//RESOURCE CLEANUP - review finding INT-09. The queued path is the one that runs unattended and
-				//repeatedly, so an undisposed message here retained every attachment's bytes for one pass of up to
-				//ten messages at a time until a garbage collection. Disposing the message disposes the attachment
-				//and linked-resource streams it owns. The `using` declaration disposes at the end of this try block,
-				//which is after Send and before the catch and finally that record the outcome.
+				//RESOURCE CLEANUP - the queued path runs unattended and repeatedly, so an undisposed message retained
+				//every attachment's bytes for a whole pass. The `using` declaration disposes at the end of this try
+				//block, after Send and before the catch and finally that record the outcome.
 				using var message = new MimeMessage();
 				if (!string.IsNullOrWhiteSpace(email.Sender?.Name))
 					message.From.Add(new MailboxAddress(email.Sender?.Name, email.Sender?.Address));
@@ -878,26 +830,20 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 						DbFileRepository fsRepository = new DbFileRepository();
 						var file = fsRepository.Find(filepath);
-						//SECURITY - companion to finding F24 (High), CWE-269 improper privilege management, CWE-732
-						//incorrect permission assignment. Database/DbFileRepository.Find now REFUSES a staged file that
-						//belongs to another non-administrative principal, so this lookup has one more legitimate way to
-						//answer null than it had before that control existed. Skipping silently would deliver a queued
-						//message as if complete with the refused attachment missing; throwing instead is caught by this
-						//method's own handler, which records the reason in the email's server_error column and retries or
-						//aborts per the service policy - so a refusal is auditable rather than invisible. Note the
-						//deliberate contrast with the inline-image loop earlier in this method, which does continue on a
-						//missing file: a missing inline image degrades rendering, a missing attachment loses content.
+						//SECURITY - CWE-269 improper privilege management, CWE-732 incorrect permission assignment.
+						//Database/DbFileRepository.Find refuses a staged file belonging to another non-administrative
+						//principal, so this lookup has one more legitimate way to answer null. Skipping silently would deliver
+						//a queued message as if complete; throwing is caught by this method's own handler, which records the
+						//reason in server_error and retries or aborts per policy. Deliberate contrast with the inline-image
+						//loop, which does continue: a missing image degrades rendering, a missing attachment loses content.
 						if (file == null)
 							throw new FileNotFoundException($"Attachment file '{filepath}' not found.");
 
 						var bytes = file.GetBytes();
 
 						var extension = Path.GetExtension(filepath).ToLowerInvariant();
-						//MIME MAPPING - review finding INT-12. TryGetValue leaves mimeType NULL for an extension the
-						//provider does not map and MimePart(string) throws ArgumentNullException for null, so on THIS path
-						//one unmapped attachment did not merely fail to attach: the throw was caught by this method's own
-						//handler, which counted a retry and eventually aborted the message. See SmtpService.BinaryContentType
-						//for why that value is the right fallback.
+						//MIME MAPPING - an unmapped extension leaves mimeType NULL and MimePart(string) throws for null, which
+						//on THIS path counted a retry and eventually aborted the message. See SmtpService.BinaryContentType.
 						if (!new FileExtensionContentTypeProvider().Mappings.TryGetValue(extension, out string mimeType) || string.IsNullOrWhiteSpace(mimeType))
 							mimeType = SmtpService.BinaryContentType;
 
@@ -917,35 +863,24 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 				using (var client = new SmtpClient())
 				{
-					// SECURITY H-11 (CWE-295, OWASP A02): validation was unconditionally bypassed here, so this
-					// path - the one the BACKGROUND QUEUE JOB drives - encrypted the session without authenticating
-					// it. It shares the single SmtpService policy member, hence one configuration key across all five
-					// send paths; see that member for the full rationale and the exact gate. Do not inline a literal:
-					// the callback must keep yielding the member so the pattern stays visible to CA5359.
-					// REVOCATION IS LEFT ENTIRELY TO MAILKIT here too, deliberately and unconfigurably: SmtpClient
-					// checks certificate revocation unless told otherwise, so saying nothing IS the secure state. Do
-					// not reintroduce a setting that turns it off - one existed briefly and was removed for weakening
-					// the production transport posture beyond this finding's agreed remediation. QUEUE-SPECIFIC
-					// CONSEQUENCE, worth knowing before diagnosing a stalled queue: on this path a relay whose chain
-					// names no reachable CRL or OCSP responder surfaces not as an exception an operator sees but as
-					// retries ending in an aborted message, with the chain detail recorded in server_error. The
-					// supported remedy is to publish the revocation source; see docs/security/secure-configuration.md.
+					// SECURITY H-11 (CWE-295 improper certificate validation, OWASP A02): validation was unconditionally
+					// bypassed here, so this path - the one the BACKGROUND QUEUE JOB drives - encrypted the session without
+					// authenticating it. It shares the single SmtpService policy member, so one configuration key governs
+					// all five send paths; do not inline a literal, because the callback must keep yielding the member so
+					// the pattern stays visible to CA5359. REVOCATION IS LEFT ENTIRELY TO MAILKIT here too, deliberately
+					// and unconfigurably. QUEUE-SPECIFIC CONSEQUENCE, worth knowing before diagnosing a stalled queue: a
+					// relay whose chain names no reachable CRL or OCSP responder surfaces as retries ending in an aborted
+					// message with the chain detail in server_error, not as an exception an operator sees.
 					if (SmtpService.AllowInvalidRemoteCertificates)
 						client.ServerCertificateValidationCallback = (s, c, h, e) => SmtpService.AllowInvalidRemoteCertificates;
 
-					// SECURITY H-OPEN-03 (CWE-319 cleartext transmission, CWE-311 missing encryption, OWASP A02):
-					// this is the path the BACKGROUND QUEUE JOB drives, and it handed the stored mode to MailKit
-					// unexamined, so a service configured with None, with the shipped Auto default, or with
-					// StartTlsWhenAvailable sent every queued message - and authenticated the relay credential two
-					// lines below - over an unencrypted session on which the certificate validation restored by H-11
-					// never ran. It shares the single SmtpService policy member with the four interactive paths, so
-					// one posture decision governs all five; see ResolveConnectionSecurity for the threat and for why
-					// Auto and StartTlsWhenAvailable are hardened while None is refused.
-					// QUEUE-SPECIFIC CONSEQUENCE, worth knowing before diagnosing a stalled queue: a refusal here
-					// surfaces not as an exception an operator sees but as the message text recorded in
-					// server_error, because the handler below catches it. RequireApprovedTransport then VERIFIES the
-					// resulting session - encrypted, at TLS 1.2 or better - before the credential below is presented
-					// on it, so a downgraded session is abandoned while there is still nothing secret on the wire.
+					// SECURITY - CWE-319 cleartext transmission, CWE-311 missing encryption, OWASP A02: this path handed
+					// the stored mode to MailKit unexamined, so a service configured with None, with the shipped Auto
+					// default or with StartTlsWhenAvailable sent every queued message - and authenticated the credential
+					// two lines below - over an unencrypted session. It shares the single SmtpService policy member, so one
+					// posture decision governs all five paths. QUEUE-SPECIFIC CONSEQUENCE: a refusal here surfaces as the
+					// message text recorded in server_error rather than as an exception, because the handler below catches
+					// it. RequireApprovedTransport then VERIFIES the resulting session before the credential is presented.
 					client.Connect(service.Server, service.Port, SmtpService.ResolveConnectionSecurity(service.ConnectionSecurity, service.Port));
 					SmtpService.RequireApprovedTransport(client);
 
@@ -963,17 +898,12 @@ namespace WebVella.Erp.Plugins.Mail.Services
 			catch (Exception ex)
 			{
 				email.SentOn = null;
-				//SECURITY - review finding INT-14 (Major), CWE-79 stored cross-site scripting, OWASP A03:2021.
-				//TREAT THIS VALUE AS UNTRUSTED EXTERNAL DATA. For a relay failure `ex.Message` is MailKit's report
-				//of the SMTP PEER'S OWN RESPONSE TEXT, so it crosses a trust boundary and a peer can be induced to
-				//echo attacker-influenced content back into it - a rejected recipient address, for instance. It is
-				//stored verbatim ON PURPOSE, because the operator guidance for a stalled queue is to read
-				//server_error first and a sanitised message would defeat that diagnosis; the value is instead
-				//encoded AT THE SINK, which is where the rendering context is known. The one sink that renders it
-				//as markup is the all_emails error-icon node provisioned by MailPlugin.20190215, whose code variable
-				//now HTML-encodes it before interpolating it into a title attribute; Patch20260806 carries that
-				//correction to already-provisioned installations. ANY NEW READER OF THIS COLUMN must encode for its
-				//own context - do not assume it is safe markup.
+				//SECURITY - CWE-79 stored cross-site scripting, OWASP A03. TREAT THIS VALUE AS UNTRUSTED EXTERNAL DATA:
+				//for a relay failure `ex.Message` is MailKit's report of the SMTP PEER'S OWN RESPONSE TEXT, so a peer
+				//can be induced to echo attacker-influenced content into it. It is stored verbatim ON PURPOSE, because
+				//the operator guidance for a stalled queue is to read server_error first, and is encoded AT THE SINK
+				//where the rendering context is known - the all_emails error-icon node HTML-encodes it into a title
+				//attribute. ANY NEW READER OF THIS COLUMN must encode for its own context.
 				email.ServerError = ex.Message;
 				email.RetriesCount++;
 				if (email.RetriesCount >= service.MaxRetriesCount)
@@ -1018,29 +948,21 @@ namespace WebVella.Erp.Plugins.Mail.Services
 
 					foreach (var email in pendingEmails)
 					{
-						//QUEUE RESILIENCE - review finding INT-03, and the reason the abort branch below could never
-						//run. Api/EmailServiceManager.GetSmtpService THROWS when no smtp_service row carries the id,
-						//rather than returning null, so a message whose service row was deleted did not abort - the
-						//exception escaped this loop, the enclosing do/while and this method, leaving the row Pending
-						//with its scheduled time in the past. Every subsequent pass then re-selected that same row
-						//first, threw again, and delivered nothing: one orphaned row STARVED THE WHOLE QUEUE
-						//indefinitely, which is a denial of service on mail delivery reachable by an ordinary
-						//administrative action.
-						//CATCHING PER ROW is what makes the failure local: the row leaves the pending selection either
-						//way - aborted with ScheduledOn cleared, or rescheduled into the future - so the loop always
-						//makes progress and no single row can hold the queue.
+						//QUEUE RESILIENCE - and the reason the abort branch below could never run.
+						//Api/EmailServiceManager.GetSmtpService THROWS when no smtp_service row carries the id rather than
+						//returning null, so a message whose service row was deleted did not abort: the exception escaped this
+						//loop and this method, leaving the row Pending with its scheduled time in the past, and every
+						//subsequent pass re-selected it first and threw again. One orphaned row STARVED THE WHOLE QUEUE
+						//indefinitely - a denial of service on mail delivery reachable by an ordinary administrative action.
+						//Catching PER ROW makes the failure local: the row leaves the pending selection either way, so the
+						//loop always makes progress.
 						//
-						//SECURITY / RESILIENCE - review finding M-OPEN-06, CWE-703 improper check or handling of
-						//exceptional conditions with CWE-755, OWASP A04:2021. THE TWO HANDLERS BELOW ARE THE FIX AND
-						//MUST NOT BE MERGED BACK INTO ONE. A single catch (Exception) here treated EVERY lookup failure
-						//as proof that the service was gone, so a momentary datastore, connection, timeout or query
-						//fault - a condition that clears by itself - permanently aborted every message in the page
-						//being processed and cleared its schedule, which put it beyond the reach of any later pass.
-						//Mail was destroyed by a transient fault, silently, and an operator's only trace was a
-						//server_error string. The distinction is now carried by the exception TYPE thrown at the four
-						//lookup sites in Api/EmailServiceManager: SmtpServiceNotFoundException means the absence is
-						//PROVEN, so aborting is right; anything else is presumed transient and the message keeps its
-						//retry budget.
+						//SECURITY / RESILIENCE - CWE-703 improper handling of exceptional conditions with CWE-755, OWASP A04.
+						//THE TWO HANDLERS BELOW ARE THE FIX AND MUST NOT BE MERGED BACK INTO ONE. A single catch (Exception)
+						//treated every lookup failure as proof the service was gone, so a momentary datastore, timeout or query
+						//fault permanently aborted every message in the page and cleared its schedule, destroying mail
+						//silently. The distinction is carried by the exception TYPE: SmtpServiceNotFoundException means the
+						//absence is PROVEN, so aborting is right; anything else is presumed transient and keeps its budget.
 						SmtpService service;
 						try
 						{
@@ -1058,13 +980,11 @@ namespace WebVella.Erp.Plugins.Mail.Services
 						}
 						catch (Exception ex)
 						{
-							//PRESUMED TRANSIENT: the lookup did not get far enough to establish anything about the
-							//service. The message is kept and retried on the same budget a send failure spends,
-							//using the platform's seeded defaults because the service that carries the configured
-							//ones is exactly what could not be read. Only the exception TYPE is recorded, never its
-							//message: unlike a relay's response text - which finding INT-14 keeps verbatim on purpose
-							//- a datastore fault message can quote query text and connection detail, and server_error
-							//is rendered on the administrative queue screens.
+							//PRESUMED TRANSIENT: the lookup established nothing about the service, so the message is kept and
+							//retried on the budget a send failure spends, using the seeded defaults because the service carrying
+							//the configured ones is exactly what could not be read. Only the exception TYPE is recorded, never its
+							//message: unlike a relay's response text, a datastore fault message can quote query text and connection
+							//detail, and server_error is rendered on the administrative queue screens.
 							email.ServerError = $"The SMTP service for this message could not be read ({ex.GetType().FullName}). Delivery will be retried.";
 							email.RetriesCount++;
 							if (email.RetriesCount >= ServiceLookupFailureMaxRetriesCount)

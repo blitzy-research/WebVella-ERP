@@ -1,5 +1,5 @@
 ﻿=========================================================================
-1. add to web site project 
+1. add to web site project
 <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.1" />
 
 
@@ -17,10 +17,9 @@ add in settings section
 SECURITY - findings H-04 (High, weak bearer-token signing key) and H-05; CWE-798 use of
 hard-coded credentials, CWE-321 use of a hard-coded cryptographic key; OWASP A02:2021
 Cryptographic Failures.
-THREAT: earlier revisions of this note published a literal signing key, and the very same
-literal shipped inside Config.json. Anyone who could read this public repository could mint a
-valid bearer token for any user of any deployment that had not replaced it, and the key could
-be neither rotated nor revoked because it was identical everywhere.
+THREAT: a signing key published in a tracked file - as this note and Config.json both once carried -
+lets anyone who can read the repository mint a valid bearer token for any user of any deployment that
+has not replaced it, and the key can be neither rotated nor revoked because it is identical everywhere.
 INVARIANT: the Key entry stays EMPTY in every tracked file. The value is supplied per deployment,
 out of band, and never through this file or any other tracked file.
 
@@ -39,7 +38,7 @@ dictionary word, or a literal reused across deployments:
 
 	export Settings__Jwt__Key="$(openssl rand -base64 48)"
 
-THE 'export' IS LOAD-BEARING, and an earlier revision of this note omitted it. A bare
+THE 'export' IS LOAD-BEARING. A bare
 NAME=value assignment creates a SHELL variable, not an environment variable: the shell keeps it
 to itself, so a host launched afterwards from that same shell inherits nothing and the
 environment-variables provider finds no key. The symptom is confusing rather than obvious - the
@@ -51,10 +50,11 @@ context:
 	export Settings__Jwt__Key="$(openssl rand -base64 48)"      # persists for this shell
 	Settings__Jwt__Key="$(openssl rand -base64 48)" dotnet run  # one command only
 
-Quote the command substitution. Base64 output contains '+' and '/' and can end in '=', and an
-unquoted expansion is subject to word splitting and pathname expansion - so an unquoted value
-can be silently truncated or mangled, which then fails the 32-byte floor for a reason that
-looks nothing like the cause.
+Quote the command substitution. In an assignment the value is NOT subject to word splitting or
+pathname expansion, so the quotes here are not what protects it - they are a habit worth keeping,
+because the same unquoted expansion IS split the moment the value is used as a command argument or
+passed on, and base64 output contains '+' and '/' and can end in '='. Quote it at the point of
+assignment so it is already quoted everywhere it travels.
 
 HS256 signs with HMAC-SHA-256, so RFC 7518 section 3.2 requires a key at least as long as the
 hash it feeds: 256 bits, i.e. 32 bytes. Anything shorter is refused outright. 48 random bytes is
@@ -66,13 +66,9 @@ Run this from the WebVella.Erp.Site project directory:
 
 	dotnet user-secrets set "Settings:Jwt:Key" "<value generated as above>"
 
-SECURITY - review finding HIGH-02; CWE-1059 insufficient technical documentation. An earlier
-revision of this note claimed WebVella.Erp.Site was "the only project in this solution that
-declares a user secrets identifier". That was false, and the falsehood mattered: a reader
-following it would conclude that user secrets were unavailable to the other executables and
-would put a real secret into a tracked Config.json instead - reopening the very finding this
-note exists to close. ALL EIGHT executables declare a UserSecretsId, each its own store, so a
-secret set for one host is NOT visible to another. Measured from the project files:
+ALL EIGHT executables declare their own UserSecretsId, each resolving a SEPARATE store, so a secret
+set for one host is NOT visible to another - do not assume the other seven inherit anything from this
+one. Read from the project files:
 
 	WebVella.Erp.Site                3d84b9b1-534b-473b-b0d8-f6b47f33297b
 	WebVella.Erp.Site.Crm            7cdbf11d-ae56-5ee3-907d-2a50d47825c9
@@ -86,8 +82,9 @@ secret set for one host is NOT visible to another. Measured from the project fil
 Only WebVella.Erp.Site and WebVella.Erp.Site.Project read a Settings:Jwt section, so those two
 are the only ones for which THIS key is meaningful; the remaining six still need their own
 Settings:ConnectionString and Settings:EncryptionKey, set from each project's own directory.
-User secrets resolve only outside a Production environment, so they are a development channel
-only - a deployed host must use environment variables or another configuration provider.
+User secrets resolve only when ASPNETCORE_ENVIRONMENT is exactly `Development` - every other value,
+Production and Staging alike, leaves the provider unregistered - so they are a development channel
+only and a deployed host must use environment variables or another configuration provider.
 
 ROTATION IS MANDATORY, NOT OPTIONAL. The literal this note used to publish is permanently
 compromised for anyone who has ever had access to this repository or its history, and blanking
@@ -121,7 +118,7 @@ set out above.
 =========================================================================
 3. startup
 
-SECURITY - review finding HIGH-02 (High); CWE-1059 insufficient technical documentation, with
+SECURITY - CWE-1059 insufficient technical documentation, with
 CWE-613 insufficient session expiration, CWE-347 improper verification of a cryptographic
 signature and CWE-178 improper handling of case sensitivity as the concrete consequences.
 
@@ -151,8 +148,8 @@ ways, and a reader who pasted it into a new host would have built a measurably w
     case-insensitively in both places.
 
 A second copy of security-critical wiring is a liability, not a convenience: it cannot be
-compiled, cannot be analyzed, and drifts silently. Review finding MAJ-12 makes the same point
-about duplicated normative content across this document set. So this note now names the ONE
+compiled, cannot be analyzed, and drifts silently. The same holds for duplicated normative
+content anywhere in this document set. So this note now names the ONE
 canonical implementation and stops describing it:
 
   AUTHENTICATION AND BEARER VALIDATION
@@ -183,23 +180,21 @@ set HttpOnly and stopped, leaving the cookie replayable over plain HTTP and neve
   out (finding H-03), so a stolen cookie stayed valid forever.
 
  =========================================================================
- 
+
 
 =========================================================================
 4. the configuration file name
 
-SECURITY - finding CFG-03; CWE-178 improper handling of case sensitivity,
+SECURITY - CWE-178 improper handling of case sensitivity,
 CWE-706 use of an incorrectly resolved name or reference.
-The file is named Config.json, with a capital C. Use that exact spelling. An
-earlier revision of this note wrote it in lower case, and the loader asked for
-the lower-case name too, which worked only because Windows and macOS resolve
-filenames case-insensitively. On Linux and in containers the requested name did
-not exist, so a published host either failed to start or - the worse outcome -
-started against an unaudited file that somebody had created to work around the
-failure. Both halves are fixed: all four builder sites now request Config.json
-by its exact name, resolved from AppContext.BaseDirectory rather than from the
-current working directory, so the file is found next to the assembly no matter
-where the process was launched from.
+The file is named Config.json, with a capital C. Use that exact spelling.
+A lower-case request resolves only because Windows and macOS treat filenames
+case-insensitively; on Linux and in containers the name does not exist, so a
+published host either fails to start or - the worse outcome - starts against an
+unaudited file somebody created to work around the failure. All four builder
+sites therefore request Config.json by its exact name, resolved from
+AppContext.BaseDirectory rather than from the current working directory, so the
+file is found next to the assembly wherever the process was launched from.
 
 Two consequences for anyone following these instructions:
 

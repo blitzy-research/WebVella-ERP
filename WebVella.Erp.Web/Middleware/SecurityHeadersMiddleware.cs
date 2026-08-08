@@ -7,17 +7,13 @@ using Microsoft.Extensions.Options;
 
 namespace WebVella.Erp.Web.Middleware
 {
-	// Emits the platform's mandated security response headers on the responses that reach this
-	// middleware, with two documented qualifications: the Content-Security-Policy ships under the
-	// REPORT-ONLY header name by default (see SecurityHeadersOptions below), and
-	// Strict-Transport-Security is suppressed in the Development environment (see the constructor).
+	// Emits the platform's mandated security response headers, with two documented qualifications: the
+	// Content-Security-Policy ships under the REPORT-ONLY header name by default (see SecurityHeadersOptions
+	// below) and Strict-Transport-Security is suppressed in Development (see the constructor).
 	//
-	// THREAT ADDRESSED - finding M-01 (OWASP A05: Security Misconfiguration): not one of the seven
-	// security headers was emitted by any of the seven host applications before this middleware
-	// existed. Their absence left the application exposed to clickjacking (no X-Frame-Options),
-	// MIME-type sniffing (no X-Content-Type-Options), referrer leakage to third-party origins (no
-	// Referrer-Policy) and unrestricted browser-feature access - geolocation, microphone and camera
-	// (no Permissions-Policy).
+	// SECURITY M-01 (OWASP A05: Security Misconfiguration): not one of the seven headers was emitted by any of the
+	// seven hosts before this middleware existed, leaving the application exposed to clickjacking, MIME-type
+	// sniffing, referrer leakage to third-party origins and unrestricted geolocation, microphone and camera access.
 	public class SecurityHeadersMiddleware
 	{
 		private const string ContentSecurityPolicyHeaderName = "Content-Security-Policy";
@@ -47,67 +43,37 @@ namespace WebVella.Erp.Web.Middleware
 			// or resolves to null, fall back to a defaulted instance carrying the mandated values.
 			this.options = options?.Value ?? new SecurityHeadersOptions();
 
-			// Strict-Transport-Security is the one header of the mandated seven that is deliberately
-			// NOT emitted in the Development environment. This guard mirrors, rather than duplicates,
-			// the one every host already applies to app.UseHsts()/app.UseHttpsRedirection(); without
-			// it this middleware would emit the header unconditionally and thereby silently defeat
-			// that host-level guard.
-			//
-			// Why the header is harmful in Development: HSTS is sticky and browser-persisted. A
-			// developer who loads the app once over https://localhost is pinned to HTTPS for the whole
-			// localhost origin - shared with every other locally served project - for the full
-			// max-age of one year, and clearing that state requires manual browser surgery.
-			//
-			// Why the guard tests the environment rather than Request.IsHttps: production deployments
-			// commonly terminate TLS at a reverse proxy and forward plaintext, so the application sees
-			// IsHttps == false for requests the client actually made over HTTPS. Guarding on IsHttps
-			// would drop a mandated header in exactly that topology; guarding on the environment keeps
-			// it unconditional wherever the application is really deployed.
-			//
-			// Fail-safe direction: if the environment cannot be resolved the header IS emitted. A
-			// spurious HSTS header is inert over plaintext - RFC 6797 section 7.2 requires user agents
-			// to ignore it - whereas a missing one is a real gap in the mandated header set.
+			// Strict-Transport-Security is the one header of the mandated seven deliberately NOT emitted in Development.
+			// The guard mirrors, rather than duplicates, the one every host applies to app.UseHsts() and
+			// app.UseHttpsRedirection(); without it this middleware would emit unconditionally and silently defeat that
+			// host-level guard. HSTS is sticky and browser-persisted: one load over https://localhost pins the whole
+			// localhost origin - shared with every other locally served project - to HTTPS for the full one-year max-age.
+			// It tests the ENVIRONMENT rather than Request.IsHttps because production deployments commonly terminate TLS at
+			// a reverse proxy and forward plaintext. Fail-safe direction: an unresolvable environment still emits, because
+			// a spurious HSTS header is inert over plaintext (RFC 6797 section 7.2) whereas a missing one is a real gap.
 			this.emitStrictTransportSecurity = environment == null
 				|| !string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
 		}
 
 		public async Task Invoke(HttpContext context)
 		{
-			// THREAT ADDRESSED - CWE-693 (protection mechanism failure): there is exactly ONE path
-			// through this method and it attaches the same header set every time. Do not add a
-			// branch that skips or varies that set - per-path variation is the defect this middleware
-			// exists to prevent, not an optimisation. (An earlier violation-report collector branch
-			// returned 204 before the headers were attached; it was removed rather than re-ordered,
-			// which also retired an anonymous POST endpoint reachable ahead of routing.)
-			//
-			// Headers are attached before the response starts, because mutating them once the response
-			// has begun throws InvalidOperationException. Every write below uses indexer assignment
-			// rather than Add(): Add() throws ArgumentException on an already-present key, which would
-			// turn this hardening change into a 500 the moment anything else set the same header.
+			// CWE-693 (protection mechanism failure): there is exactly ONE path through this method and it attaches the
+			// same header set every time. Do not add a branch that skips or varies that set - per-path variation is the
+			// defect this middleware exists to prevent. Headers are attached before the response starts, because mutating
+			// them once it has begun throws InvalidOperationException, and every write uses indexer assignment rather than
+			// Add(), which throws on an already-present key and would turn this hardening change into a 500.
 			AttachSecurityHeaders(context.Response.Headers, onlyWhenMissing: false);
 
-			// THREAT ADDRESSED - finding M-01 again, at the ONE response class the pass above cannot
-			// reach: a response whose headers are DISCARDED after this middleware has written them.
-			// Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware answers an unhandled
-			// fault by calling Response.Clear() - which empties the whole header dictionary - and then
-			// writing its own body WITHOUT re-executing the pipeline, so every one of the seven headers
-			// written above was silently dropped and the Development 500 shipped bare. Verified
-			// empirically on this runtime: a header set by a middleware registered OUTER to the
-			// developer exception page is discarded exactly as one set here is, so re-ordering the
-			// hosts' app.UseSecurityHeaders() call - the obvious first fix - cannot close it. A callback
-			// registered here survives Response.Clear() because it lives on the response feature rather
-			// than in the header dictionary, and it runs at response start, which is still "before the
-			// response begins" for header-mutation purposes.
-			//
-			// Production is NOT affected by that defect and is deliberately left exactly as it was:
-			// UseExceptionHandler("/error") and UseStatusCodePagesWithReExecute("/error") RE-EXECUTE the
-			// downstream pipeline, so the pass above runs a second time and re-attaches the set itself.
-			// This callback is therefore a no-op on every such response - see onlyWhenMissing below.
-			//
-			// THREAT ADDRESSED - CWE-693 again: the re-attach pass fills GAPS only. It cannot vary the
-			// header set (the same seven names and the same constants are used), cannot duplicate a
-			// header (indexer assignment), and cannot overwrite a value another component deliberately
-			// set later, because a present name is left untouched.
+			// SECURITY M-01 again, at the ONE response class the eager pass cannot reach: a response whose headers are
+			// DISCARDED after they were written. DeveloperExceptionPageMiddleware answers an unhandled fault by calling
+			// Response.Clear(), which empties the whole header dictionary, and writes its own body WITHOUT re-executing the
+			// pipeline, so all seven headers were silently dropped and the Development 500 shipped bare. Re-ordering the
+			// hosts' app.UseSecurityHeaders() call cannot close it: a header set by a middleware registered OUTER to the
+			// developer exception page is discarded exactly as one set here is. A callback registered here survives
+			// Response.Clear() because it lives on the response feature rather than in the header dictionary. Production is
+			// unaffected, because UseExceptionHandler and UseStatusCodePagesWithReExecute RE-EXECUTE the downstream
+			// pipeline, making this callback a no-op there. CWE-693: this pass fills GAPS only - same seven names and
+			// constants, indexer assignment so it cannot duplicate, and a present name left untouched.
 			context.Response.OnStarting(() =>
 			{
 				AttachSecurityHeaders(context.Response.Headers, onlyWhenMissing: true);
@@ -117,35 +83,24 @@ namespace WebVella.Erp.Web.Middleware
 			await next(context);
 		}
 
-		// Writes the mandated header set. Called twice per request against the same response: once
-		// eagerly, before the pipeline continues, and once at response start with onlyWhenMissing set,
-		// so a response whose headers were cleared between those two points still carries the set. The
-		// two calls share one implementation deliberately - two copies would be two places for the
-		// values, the Development HSTS suppression or the single-CSP-name invariant to drift.
+		// Writes the mandated header set. Called twice per request against the same response: once eagerly, before the
+		// pipeline continues, and once at response start with onlyWhenMissing set, so a response whose headers were
+		// cleared between those two points still carries the set. One shared implementation deliberately - two copies
+		// would be two places for the values, the Development HSTS suppression or the single-CSP-name invariant to drift.
 		private void AttachSecurityHeaders(IHeaderDictionary headers, bool onlyWhenMissing)
 		{
-			// THREAT ADDRESSED - finding H-15, CWE-319 (cleartext transmission of sensitive
-			// information) and CWE-614 (sensitive cookie without 'Secure' attribute), OWASP A02:
-			// Cryptographic Failures: with no HSTS an attacker can downgrade the connection to
-			// plaintext and intercept session cookies. An indexer write cannot produce a second
-			// header, so this middleware never duplicates the one the hosts add separately.
+			// SECURITY H-15, CWE-319 (cleartext transmission), OWASP A02: with no HSTS an attacker can downgrade the
+			// connection to plaintext and intercept session cookies.
+			// Indexer assignment cannot produce a second header, so this never duplicates the one the hosts add separately.
 			//
-			// CO-EXISTENCE WITH THE FRAMEWORK'S OWN WRITER - load-bearing, and it depends on a
-			// registration outside this file. Every host also calls app.UseHsts(), and HstsMiddleware
-			// assigns this same header by indexer too, so whichever runs LAST decides the wire value.
-			// UseSecurityHeaders() is deliberately ordered early - ahead of response compression and
-			// static files - which means HstsMiddleware always runs after it and always wins. With
-			// HstsOptions left at its framework defaults that made the wire value "max-age=2592000":
-			// thirty days, no includeSubDomains, so the mandated one-year subdomain-inclusive value
-			// never reached a single HTTPS response even though this middleware wrote it correctly.
-			// The agreement between the two writers is created by services.AddHsts() in
-			// ErpMvcExtensions.AddErp, which pins MaxAge to 365 days and IncludeSubDomains to true.
-			// Both writers then emit the identical string and the overwrite is a genuine no-op in
-			// either order. Removing that registration silently reinstates the thirty-day header, so
-			// this comment must not be read as evidence that the two values agree on their own.
-			//
-			// The emission is suppressed in Development only; see the constructor for why that guard
-			// exists, why it tests the environment rather than the scheme, and which way it fails.
+			// CO-EXISTENCE WITH THE FRAMEWORK'S OWN WRITER - load-bearing, and it depends on a registration OUTSIDE this
+			// file. Every host also calls app.UseHsts(), HstsMiddleware assigns the same header by indexer, and
+			// UseSecurityHeaders() is ordered early, so HstsMiddleware always runs last and always wins. At
+			// framework-default HstsOptions its wire value is "max-age=2592000" - thirty days, no includeSubDomains - so
+			// the mandated one-year subdomain-inclusive value would never reach a response even though this middleware
+			// wrote it correctly. The two writers agree only because services.AddHsts() in ErpMvcExtensions.AddErp pins
+			// MaxAge to 365 days and IncludeSubDomains to true; removing it silently reinstates the thirty-day header.
+			// Suppressed in Development only; see the constructor.
 			if (emitStrictTransportSecurity)
 			{
 				SetHeader(headers, StrictTransportSecurityHeaderName, StrictTransportSecurityValue, onlyWhenMissing);
@@ -154,36 +109,25 @@ namespace WebVella.Erp.Web.Middleware
 			SetHeader(headers, XContentTypeOptionsHeaderName, XContentTypeOptionsValue, onlyWhenMissing);
 			SetHeader(headers, XFrameOptionsHeaderName, XFrameOptionsValue, onlyWhenMissing);
 
-			// '0' is intentional and must not be "modernised" to '1; mode=block': it disables the
-			// legacy browser XSS auditors, which are themselves exploitable to selectively suppress
-			// legitimate script.
+			// '0' is intentional and must not be "modernised" to '1; mode=block': it disables the legacy browser
+			// XSS auditors, which are themselves exploitable to selectively suppress legitimate script.
 			SetHeader(headers, XXssProtectionHeaderName, XXssProtectionValue, onlyWhenMissing);
 
 			SetHeader(headers, ReferrerPolicyHeaderName, ReferrerPolicyValue, onlyWhenMissing);
 			SetHeader(headers, PermissionsPolicyHeaderName, PermissionsPolicyValue, onlyWhenMissing);
 
-			// The mandated policy value is emitted verbatim and is never weakened: the value carries
-			// exactly the three mandated fetch directives and no fourth directive of any kind. It ships
-			// under the report-only header name because four components deliberately emit inline script
-			// or markup - Components/PcHtmlBlock/Display.cshtml:L10, Components/PcHtmlBlock/Design.cshtml:L10,
-			// Components/Nav/Nav.Default.cshtml:L48 and, in the SDK plugin,
-			// Components/WvSdkPageSitemap/Form.cshtml:L92 - so enforcing script-src 'self' on the first
-			// deployment would break them and violate the functionality-preservation requirement. An
-			// operator flips ContentSecurityPolicyReportOnly to false - a bound configuration setting,
-			// see ErpMvcExtensions.AddErp - once report-only violations have stopped. This application
-			// hosts no report collector: in report-only mode a browser logs each violation to its own
-			// console, and collection is only possible by adding an external report-to endpoint.
-			//
-			// THREAT ADDRESSED - finding CFG-02, CWE-1032: the emitted value is byte-identical to the
-			// mandated policy, with no reporting directive appended. No blank-value fallback is needed
-			// or present because ContentSecurityPolicy is a compile-time constant: it cannot be null,
-			// blank, weakened or replaced by any host, plugin or configuration source.
+			// The mandated policy value is emitted verbatim: exactly the three mandated fetch directives, no fourth
+			// directive of any kind, and no blank-value fallback needed because the const cannot be null, blank, weakened or
+			// replaced. It ships under the REPORT-ONLY header name because four components deliberately emit inline script
+			// or markup - PcHtmlBlock Display and Design, Nav.Default, and the SDK plugin's WvSdkPageSitemap Form - so
+			// enforcing script-src 'self' on the first deployment would break them. An operator flips
+			// ContentSecurityPolicyReportOnly to false once violations have stopped; this application hosts no report
+			// collector, so in report-only mode a browser logs each violation to its own console.
 			const string contentSecurityPolicy = SecurityHeadersOptions.ContentSecurityPolicy;
 
-			// Exactly one of the two policy header names is emitted, never both. In the re-attach pass
-			// the test spans BOTH names rather than only the one this configuration would write: if the
-			// response already carries the other name, writing this one would put two policy headers on
-			// one response - the precise state the invariant above forbids - so the pass yields instead.
+			// Exactly one of the two policy header names is emitted, never both. In the gap-filling pass the test
+			// spans BOTH names rather than only the one this configuration would write: if the response already
+			// carries the other name, writing this one would put two policy headers on one response.
 			if (onlyWhenMissing
 				&& (headers.ContainsKey(ContentSecurityPolicyReportOnlyHeaderName)
 					|| headers.ContainsKey(ContentSecurityPolicyHeaderName)))
@@ -201,9 +145,8 @@ namespace WebVella.Erp.Web.Middleware
 			}
 		}
 
-		// Assigns one header, yielding to a value that is already present when the caller is filling
-		// gaps. Indexer assignment for the reason stated in Invoke: IHeaderDictionary.Add() throws on
-		// an already-present key, which would turn a hardening change into a 500.
+		// Assigns one header, yielding to a value already present when the caller is filling gaps. Indexer
+		// assignment for the reason stated in Invoke.
 		private static void SetHeader(IHeaderDictionary headers, string name, string value, bool onlyWhenMissing)
 		{
 			if (onlyWhenMissing && headers.ContainsKey(name))
@@ -215,55 +158,35 @@ namespace WebVella.Erp.Web.Middleware
 		}
 	}
 
-	// Configuration for SecurityHeadersMiddleware, carrying the Content-Security-Policy value and its
-	// report-only switch. Deliberately a plain class with a public parameterless constructor and
-	// settable properties so that services.Configure<SecurityHeadersOptions>() and
+	// Configuration for SecurityHeadersMiddleware. Deliberately a plain class with a public parameterless
+	// constructor and settable properties so that services.Configure<SecurityHeadersOptions>() and
 	// IOptions<SecurityHeadersOptions> can materialise it; a positional record could not.
 	public class SecurityHeadersOptions
 	{
-		// The mandated Content-Security-Policy fetch directives, verbatim and single-sourced. This is
-		// the shipping value of the property below and also the fallback the middleware applies when an
-		// operator override is absent or blank, so the mandated directives are the only value that can
-		// ever be emitted unless an operator deliberately supplies a different one.
+		// The mandated Content-Security-Policy fetch directives, verbatim and single-sourced. There is no
+		// override path and no fallback: this value IS the emitted policy - see the const below.
 		public const string DefaultContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'";
 
-		// THREAT ADDRESSED - finding CFG-02 (the mandated Content-Security-Policy value was altered)
-		// and CWE-1032: the emitted value must be byte-identical to the specified policy. It
-		// previously appended "; report-uri /csp-violation-report" to the mandated directives, which
-		// both deviated from the specified value and required an anonymous collector endpoint inside
-		// the middleware. Both the directive and the collector are gone: this const now IS the
-		// mandated policy, with nothing appended, prepended or interpolated.
-		//
-		// Retained as a public const with no setter for the reason it was made one in the first
-		// place: a settable policy is a downgrade primitive - any host, plugin, or stray
-		// services.Configure<SecurityHeadersOptions>() call could assign "default-src *" or append
-		// 'unsafe-inline'/'unsafe-eval' and silently void the entire header, with nothing in the build
-		// or at startup objecting. Immutability is therefore enforced by the compiler at every call
-		// site: there is no setter, no backing field, and no instance to reconfigure. Only the
-		// report-only/enforce switch below is bindable, and that switch cannot weaken the policy.
+		// CWE-1032: the emitted value must be byte-identical to the mandated policy, so nothing is appended, prepended
+		// or interpolated - in particular no report-uri, which would also require an anonymous collector endpoint. A
+		// public const with no setter, and that IS the control: a settable policy is a downgrade primitive, because any
+		// host, plugin or stray services.Configure<SecurityHeadersOptions>() could assign "default-src *" or append
+		// 'unsafe-inline' and silently void the whole header. Immutability is enforced by the compiler.
 		public const string ContentSecurityPolicy = DefaultContentSecurityPolicy;
 
-		// True - the shipping default - emits Content-Security-Policy-Report-Only; false emits the
-		// enforcing Content-Security-Policy. This stays settable because it is the mandated staged
-		// rollout switch, and unlike the policy text it cannot weaken the policy: it selects which of
-		// the two header names carries the identical value. Flipping it to false strengthens the
-		// control by turning reporting into blocking.
-		//
-		// THREAT ADDRESSED - finding CFG-02 (a documented rollout switch that no configuration source
-		// could actually reach): this is the ONLY member bound from configuration, by
-		// ErpMvcExtensions.AddErp, from the key SecurityHeaders:ContentSecurityPolicyReportOnly. An
-		// absent or blank value leaves this report-only default in force; a value that is PRESENT but
-		// not parseable as a boolean ABORTS startup there rather than being guessed, so an ambiguous
-		// security-mode setting can neither be silently ignored nor silently inverted.
+		// True - the shipping default - emits Content-Security-Policy-Report-Only; false emits the enforcing header.
+		// This stays settable because it is the mandated staged-rollout switch and it cannot weaken the policy: it
+		// selects which of two header names carries the identical value. It is the ONLY member bound from configuration
+		// (ErpMvcExtensions.AddErp, key SecurityHeaders:ContentSecurityPolicyReportOnly): an absent or blank value
+		// leaves report-only in force, while a PRESENT but unparseable value ABORTS startup rather than being guessed.
 		public bool ContentSecurityPolicyReportOnly { get; set; } = true;
 	}
 
 	public static class SecurityHeadersMiddlewareExtensions
 	{
-		// Pipeline position is deliberately left to each host rather than fixed inside UseErp, which
-		// runs far too late: UseStaticFiles TERMINATES the pipeline for a matched asset, so anything
-		// registered after it never runs for a static-file response and those responses would ship
-		// bare. Each host therefore inserts this ahead of both UseStaticFiles calls.
+		// Pipeline position is deliberately left to each host rather than fixed inside UseErp, which runs far too late:
+		// UseStaticFiles TERMINATES the pipeline for a matched asset, so anything registered after it never runs for a
+		// static-file response and those responses would ship bare. Each host inserts this ahead of both calls.
 		public static IApplicationBuilder UseSecurityHeaders(this IApplicationBuilder app)
 		{
 			app.UseMiddleware<SecurityHeadersMiddleware>();

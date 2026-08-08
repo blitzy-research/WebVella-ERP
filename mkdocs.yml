@@ -1,7 +1,7 @@
 site_name: 'blitzy-WebVella-ERP'
 nav:
   - Home: index.md
-  # MkDocs publishes only nav-listed pages, so these entries are what keep the security set reachable - see security/security-audit-report.md.
+  # Navigation is what makes the security set discoverable in the published site, so these entries must accompany any page added under docs/security/.
   - Security:
     - Audit Report: security/security-audit-report.md
     - Remediation Log: security/remediation-log.md

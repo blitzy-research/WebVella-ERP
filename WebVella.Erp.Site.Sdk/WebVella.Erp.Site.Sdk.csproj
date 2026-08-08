@@ -6,18 +6,11 @@
 		<TypeScriptToolsVersion>3.1</TypeScriptToolsVersion>
 		<SatelliteResourceLanguages>en</SatelliteResourceLanguages>
 		<ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
-		<!-- THREAT ADDRESSED - review finding CR3-M-07 (Secret management / OWASP A05:2021 Security
-		     Misconfiguration). The shipped Config.json files are blanked, so a developer needs a supply
-		     channel; the configuration builders this executable uses register a Development-only user-secrets
-		     provider for exactly that purpose. Without a UserSecretsId that provider resolves NO store and
-		     silently loads nothing - AddUserSecrets is called with optional: true so it cannot even fail
-		     loudly - which made the documented developer channel inert for this project and left editing the
-		     tracked, blanked configuration file as the only way to run it. Declaring the id makes the
-		     advertised channel real. It is Development-only by construction: the providers that read it are
-		     registered only when the environment is Development, so this identifier has no production effect.
-		     The value is a stable identifier, not a secret: the store itself lives OUTSIDE the repository, in
-		     the user profile, and nothing secret is added to the tree by naming it. Do not regenerate it -
-		     changing it silently orphans every developer's existing store. -->
+		<!-- Security: the shipped Config.json files are blanked, so this id is what makes
+		     the Development-only user-secrets provider resolve a real store; without it that
+		     provider loads nothing and cannot say so (optional: true), leaving the tracked
+		     configuration file as the only way to run this project. The id is not a secret - the
+		     store lives outside the repository - and regenerating it orphans existing stores. -->
 		<UserSecretsId>e902f2c3-b59e-5aef-b217-6501e03e6a44</UserSecretsId>
 	</PropertyGroup>
 
@@ -29,7 +22,10 @@
 		<ProjectReference Include="..\WebVella.Erp.Plugins.Next\WebVella.Erp.Plugins.Next.csproj" />
 		<ProjectReference Include="..\WebVella.Erp.Plugins.SDK\WebVella.Erp.Plugins.SDK.csproj" />
 		<ProjectReference Include="..\WebVella.Erp.Web\WebVella.Erp.Web.csproj" />
-		<!-- SECURITY H-19 (OWASP A06:2021 Vulnerable and Outdated Components / A08:2021, CWE-1104-adjacent): keep this directory segment cased exactly as the folder on disk. An upper-cased "WebVella.ERP" segment broke solution-wide restore on case-sensitive filesystems, silently dropping the core project - and every package advisory it carries - out of the dependency-audit graph, so the vulnerability scan reported falsely clean. -->
+		<!-- Security H-19: keep this directory segment cased exactly as the folder on disk. An
+		     upper-cased "WebVella.ERP" broke solution-wide restore on case-sensitive filesystems,
+		     dropping the core project and every advisory it carries out of the dependency-audit
+		     graph, so the vulnerability scan read falsely clean. -->
 		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 
