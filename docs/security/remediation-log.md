@@ -2207,7 +2207,7 @@ reachable through a catch-all route matching any path.
 | `WebVella.Erp.Web/Controllers/WebApiController.cs` | Upload validation before any stream read: an extension allow-list (`ALLOWED_UPLOAD_EXTENSIONS`), a 25 MiB cap (`MAX_UPLOAD_SIZE_BYTES`), a content-type check, magic-byte verification for the formats that specify leading bytes, and a 200-character file-name bound with sanitisation (`SanitizeUploadFileName`) before the name reaches a storage path. On the download side, anything outside a narrow inline set (`INLINE_DOWNLOAD_EXTENSIONS`) is forced to an **attachment** disposition. The move and delete actions resolve the caller and refuse through `IsFileMutationAuthorized`. |
 | `WebVella.Erp/Database/DbFileRepository.cs` | Where the ownership guard actually lands, as an owner-predicated compare-and-swap rather than a check-then-act. |
 | `WebVella.Erp.Web/Services/UserFileService.cs` | Promotion of a temporary upload to permanent storage, and file enumeration — both object-level authorization boundaries the controller alone cannot enforce. |
-| `WebVella.Erp.Web/wwwroot/js/site.js`, `.../WvFieldUserFileMultiple/inline-edit.js` | The upload constraints answer with HTTP 400; without handling it a rejected file failed **silently**, which discards a security decision in the client (CWE-754). |
+| `WebVella.Erp.Web/wwwroot/js/upload-rejection-feedback.js`, `.../WvFieldUserFileMultiple/inline-edit.js` | The upload constraints answer with HTTP 400; without handling it a rejected file failed **silently**, which discards a security decision in the client (CWE-754). The first file is `defer`-loaded and was carved out of the render-blocking in-head `site.js`; see `RISK-181`. |
 
 #### Design decisions
 
@@ -8326,7 +8326,7 @@ Two paths carry no comment and are mapped mechanically instead; both are noted a
 | --- | --- | --- |
 | `WebVella.Erp.Web/Services/UserFileService.cs` | CWE-639 IDOR | Promotes an uploaded temporary file to permanent storage, and enumerates the file list. Both are object-level authorization boundaries the controller alone cannot enforce. |
 | `WebVella.Erp/Database/DbFileRepository.cs` | `F24`, `F-05` | Where the ownership guard on move and delete actually lands. |
-| `WebVella.Erp.Web/wwwroot/js/site.js` | CWE-754 | The upload constraints return HTTP 400; without handling it, a rejected file failed **silently** — a security decision discarded in the client. |
+| `WebVella.Erp.Web/wwwroot/js/upload-rejection-feedback.js` | CWE-754 | The upload constraints return HTTP 400; without handling it, a rejected file failed **silently** — a security decision discarded in the client. Delivered as its own `defer`-loaded asset rather than appended to the render-blocking in-head `site.js`; see `RISK-181`. |
 | `.../WvFieldUserFileMultiple/inline-edit.js` | CWE-754 | The same defect in the inline-edit path. |
 
 **Class 14 — Error Handling and Audit (3 paths)**
@@ -10422,7 +10422,7 @@ One commit per vulnerability class, as the engagement requires. Seven classes:
 | --- | --- | --- | --- |
 | 1 | Legacy asset retirement | `SR-04` | 4 Razor Page files deleted, 1 project file |
 | 2 | File and image pipeline | `SR-09`, `SR-10`, `SR-12`, `SR-15` | `Helpers.cs`, `WebApiController.cs`, `UserFileService.cs`, `DbFileRepository.cs` |
-| 3 | Upload error feedback | `SR-11`, `SR-16` | `wwwroot/js/site.js` |
+| 3 | Upload error feedback | `SR-11`, `SR-16` | `wwwroot/js/upload-rejection-feedback.js` |
 | 4 | Stored cross-site scripting | `SR-05` | new `Utils/HtmlSanitizer.cs`, 3 services, 3 page components, `EntityRecordUtils.cs` |
 | 5 | SDK workflow correctness | `SR-07` | `page/manage-custom.cshtml.cs` |
 | 6 | Authentication seam | `SR-01`, `SR-02`, `SR-03`, `SR-06`, `SR-08` | 2 host `Startup.cs`, 11 WebAssembly client files |
@@ -10915,8 +10915,9 @@ that `null` still passes through. Fifteen further adversarial round-trip probes 
 #### Class 4 — Upload-refusal feedback: fail-closed control and accessibility (`N18`, `N20`)
 
 `N18` is the finding whose fix is least like its description. The compensating control in
-`WebVella.Erp.Web/wwwroot/js/site.js` overrides a third-party upload error handler that cannot be edited and
-is itself broken (`SR-11`). It decided whether to intervene by matching the handler's **source text** through
+`WebVella.Erp.Web/wwwroot/js/upload-rejection-feedback.js` — which shipped inside `site.js` until the
+performance checkpoint moved it into its own `defer`-loaded asset, `RISK-181` — overrides a third-party upload
+error handler that cannot be edited and is itself broken (`SR-11`). It decided whether to intervene by matching the handler's **source text** through
 `Function.prototype.toString`. Any vendor edit — a version bump, a minifier pass, a re-mangled identifier —
 would have made the strings stop matching, and the control would then have failed **open** with no diagnostic:
 the server still refusing the file, the interface still saying nothing. The brittleness was undisclosed.
@@ -10936,7 +10937,7 @@ cleared — because an `aria-invalid` left behind keeps announcing a refusal tha
 superseded.
 
 **Verification, and a regression this verification caught.** The control was exercised in a real headless
-browser against the actual `site.js` and real jQuery 3.4.1, with a server returning HTTP 400, across both the
+browser against the actual shipped asset and real jQuery 3.4.1, with a server returning HTTP 400, across both the
 recognised and unrecognised paths. Twelve named checks passed. The accessibility tree confirmed the message as
 a live region, the inputs as invalid and described-by, and the decorative icon contributing **no node at all**.
 Three independent channels proved the recognised defective callback was replaced rather than executed.
@@ -11104,3 +11105,295 @@ corrected rather than carried forward.
   pre-existing backlogs, measured at 15, 7 and thousands respectively.
 - **Minimal Change guideline 9 could not be repaired retroactively** for the original remediation, which
   `CK-23` records; it is met for this pass, as the seven class boundaries above show.
+
+## Final frontend verification — the disposition of `Q1` through `Q34`
+
+A dedicated frontend verification pass exercised every rendered screen reachable across all seven hosts under
+Production posture over HTTPS — 118 screen-instances, three identities, four-plus viewports, 36 Lighthouse
+runs — and returned **34** findings: **2 Critical** and **9 Major**, with the remaining **23** divided
+between Minor and Informational. That last split is reported as a range rather than a figure, because the
+pass's own summary tallies those 23 as 17 Minor and 6 Informational while the severity written on each
+numbered record tallies them as 20 and 3. The two agree on the total, on the Criticals and on the Majors,
+which is what the disposition below turns on; the per-record severities are the ones used here. It
+graded twenty-four of its twenty-six frontend compliance rows PASS with runtime evidence, several verified
+more strongly than the plan specifies, and its central regression verdict was **no regression attributable to
+the remediation**.
+
+**Two of the thirty-four were fixed. Thirty-two are documented.** That split is not a judgement call; it
+follows from the engagement's own severity matrix, which remediates the Critical band and dispositions the
+Medium band to *"Document with fix guidance"* and the Low band to *"Document for future sprint"*, and from
+Minimal Change guideline 8 — *document out-of-scope concerns but do not fix unless Critical*. Every one of the
+thirty-two also fails all three of §0.6.1's tests for remediating a Medium, and all but four are in files this
+engagement never touched.
+
+Both Criticals were **cross-site scripting that actually executed** in a real browser on the application's
+own origin, and the report-only content policy observed both and blocked neither — which is the clearest
+demonstration this document set contains of why `RISK-022` insists report-only closes nothing on its own.
+
+### Commit boundaries — one vulnerability class
+
+Minimal Change guideline 9 requires atomic commits per vulnerability class. Both Criticals are the **same**
+class — output encoding at a rendering sink, the class the plan calls Class 7 — so this pass is **two**
+commits: one carrying the code fix for that class, and one carrying this documentation. Splitting the two
+Criticals apart would have produced two commits in one class rather than one commit per class.
+
+| # | Vulnerability class | Findings |
+| --- | --- | --- |
+| 1 | Output encoding at a rendering sink (`CWE-79`, `CWE-116`, OWASP A03:2021) | `Q1`, `Q2` |
+| 2 | Documentation of the residual findings | `Q3`–`Q34` |
+
+As with the preceding checkpoint, this section is committed **in the same commit as the changes it describes**,
+so it cannot contain its own hash; the classes above are the boundaries and `git log` carries the hashes.
+
+### `Q1` — the notification sink, an AAP-introduced regression
+
+**What was wrong, and what an operator experienced.** An earlier commit in this engagement (`L-OPEN-04`)
+correctly stopped HTML-encoding the screen-message values and started **serialising** them for the JavaScript
+string context they are interpolated into. That fixed two real defects — a trailing backslash from a mail
+relay had been terminating the script's string literal and discarding the whole block with a parse-time
+`SyntaxError`, and operators were being shown entity soup such as `&#xA;` instead of a readable multi-line
+diagnostic. Both fixes are confirmed still working. But delivering the value's **true characters** into
+`toastr` exposed a property of the library nobody had checked: toastr 2.1.3 defaults `escapeHtml` to
+**false**, and with that default both `setTitle` and `setMessage` assign their argument with
+`$element.append(value)`, which **parses markup**. Text that had been inert as entities therefore became DOM
+that executed. The verification pass proved it with six independent witnesses, including a `404` on an image
+probe that only a real element could have requested, and it identified the untrusted path as genuine rather
+than synthetic: `SmtpInternalService.EmailSendNowOnPost` puts `email.ServerError` into the message, and that
+column's own in-file comment already declares it to be the SMTP peer's own response text and warns that any
+new reader must encode for its own context. The toast **title** argument was a second raw sink for the same
+reason.
+
+**What changed.** `WebVella.Erp.Web/Components/ScreenMessage/Default.cshtml`, one file: `"escapeHtml": true`
+is now the first member of the per-call options object in **both** emitted statements — the error branch and
+the default branch. toastr merges the per-call object over its defaults, so one option in the one file that
+owns the statement closes the message sink and the title sink together, without editing the vendored library
+(third-party code: version updates only) and without changing any other caller's behaviour. A comment above
+the statements names the threat, records why the values must **stay** serialised, and states that removing
+either half reopens one of the two defects.
+
+**Why not the alternative.** Setting `toastr.options.escapeHtml = true` globally would also have worked and
+would have covered roughly twenty other call sites — but it changes behaviour at call sites no finding
+implicates, which §0.3.2 excludes, and it is a larger change than guideline 7 permits when a smaller one
+closes the confirmed finding.
+
+**How it was verified at runtime.** The Mail host was published and run in Production over HTTPS, a hostile
+SMTP peer was bound to the configured relay port answering `554` with an executing payload, and **Send Now**
+was clicked on the affected e-mail. Measured with the toast on screen: `.toast-message`
+`childElementCount` **0** with exactly one child node of type text; `textContent` carrying the payload's
+**true** characters (`<img src=… onerror="…">`) while `innerHTML` shows `&lt;`/`&gt;`, which is the escaping
+happening on the way *into* the DOM; `.toast-title` also `childElementCount` **0**; **zero** `[onerror]`
+elements anywhere in the document; **zero** images inside the toast container; the window flag `undefined`;
+`document.title` still `Email Details`; **no request was ever made for the probe URL** — the key negative,
+confirmed three ways — and **no** console message containing `SyntaxError` across 258 messages, of which zero
+were errors or warnings. The emitted statement was read back from the DOM and carries `"escapeHtml": true`.
+Two independent trigger cycles produced byte-identical screenshots. The accessibility tree reports the payload
+as a single static-text node, not an image.
+
+**Regression check.** The e-mail list was swept for over-encoding: all 33 visible text nodes contain **zero**
+HTML-entity artefacts, and the row warning indicator's `title` attribute decodes to the true characters. The
+operator still reads the real message.
+
+### `Q2` — the page title sink, a scope gap in `H-06`
+
+**What was wrong, and what a user experienced.** Thirteen page views assign the stored page label to
+`ViewData["Title"]`, and a single component turned that into the document's title tag by **string
+concatenation**, unencoded. A label containing `</title><script>…</script>` therefore ended the title element
+— the title element is RCDATA, so its matching end tag is the one construct that exits it — after which the
+parser built a **real script element as a sibling inside the head** and executed it during parse. The
+verification pass proved execution six ways, including a cryptographic hash match between the payload and the
+browser's own policy report, and established two things that make this worse than a routine sink: it is
+reachable and triggerable by the **lowest-privileged authenticated role**, and it is **visually silent** —
+the rendered page looks entirely normal, so screenshot-only testing cannot catch it.
+
+Its decisive evidence is a contrast this document set should record: on a **single HTTP response** the
+identical stored value was written twice. At the remediated site-menu sink it was served entity-encoded and
+the parser created **zero** elements; at the title sink it was served raw and the browser executed it. Same
+field, same response, opposite outcomes. That is why this is a **scope gap in the `H-06` remediation** rather
+than a new defect — the file itself is pre-existing and appears in no remediation commit.
+
+**What changed.** `WebVella.Erp.Web/Components/HeadTopIncludes/HeadTopIncludes.cs`, one file: the label is
+now passed through the framework HTML encoder where the title tag is **built**, with an explicit `ToString()`
+because the value is an object and the encoder rejects null — a case the previous concatenation handled
+silently by producing an empty title. Encoding at the build site rather than at the emit site matters for a
+reason worth stating: the built tag is cached in `HttpContext.Items`, so encoding it once makes it safe for
+every later reader. The raw-output call in the component's view is deliberately **left alone**, because the
+same call also emits the meta, link and script tags the page-utility builder produces; encoding there would
+break them. A comment records the threat, the RCDATA mechanism and both of those decisions.
+
+**Why this encoder is right for this context.** Character references *do* decode inside RCDATA, so the label's
+true characters still appear in the tab caption — but no element can be created there, so the encoded
+`</title>` can no longer exit the element. The fix is therefore both complete and render-preserving.
+
+**How it was verified at runtime.** The Site host was published and run in Production over HTTPS and the
+seeded payload page was loaded as an administrator. The title is the **complete 91-character stored label
+rendered as text**, in exactly **one** title element whose child nodes are a single text node and whose
+`childElementCount` is 0. **Inline head scripts: 0**, against 13 external — identical to both control pages,
+and 13 + 2 app-owned body scripts equals the whole-document count of 15, so nothing unaccounted exists
+anywhere. The window flag was **never created** (`hasOwnProperty` false, not merely `undefined`). Zero
+`[onerror]` elements; no probe request; no response above 399; **zero** console errors or warnings across 222
+messages. The policy telemetry corroborates non-execution independently: exactly **two** inline-script reports
+per page, matching the two legitimate inline scripts — a third would have meant the payload ran.
+
+**The encoding was confirmed on the wire, not merely in the DOM**, by fetching the document twice by
+independent routes and reading the delivered bytes: they contain the encoded title, one title open tag, one
+close tag and **zero** raw inline head scripts. A second load reproduced every value and the entire console
+profile identically.
+
+**Regression check.** Ordinary titles are unchanged (`Home`, `Login`), one title element per page, full
+navigation chrome and all three launcher cards render, and no dialog appears anywhere — including on the
+control page whose payload contains `alert()` calls, which stays inert.
+
+### `Q3` through `Q34` — documented, and where each now lives
+
+| Findings | Subject | Disposition |
+| --- | --- | --- |
+| `Q4` | The content-policy enforcement path is broader than §0.6.5 documents — six directive families, on every screen of all seven hosts | `RISK-022` extended with the measured directive census; the staging decision is validated, not invalidated |
+| `Q5` | `Cache-Control` absent on authenticated HTML, so a logged-out page restores from the back/forward cache | `RISK-118` extended with the four-behaviour census and the `GET`-versus-`POST` redirect anomaly |
+| `Q6` | Lockout state disclosed by a response-latency side channel | New `RISK-181`, with the measured distributions and a latency-floor fix |
+| `Q7` | An in-force lockout has no administrative release path, and clearing the durable rows alone does not release it | `RISK-008` extended; a step-by-step *Releasing an account lockout* runbook added to the secure configuration guide |
+| `Q27`, `Q28` | Two pre-existing unhandled 500 responses where field validation was expected | New `RISK-183`, including the isolation controls that rule out `C-02` as the cause |
+| `Q3`, `Q8`–`Q26`, `Q29`–`Q34` | Twenty-six residual findings: accessibility (9), responsive and performance (2), interaction and forms (7), routing, rendering and developer pages (6), verification coverage (1), plus `Q8` — the access-denied screen — which `RISK-122` already carries (1) | New `RISK-182`, one row per finding with its measurement and its recommended fix; `Q8`'s new measurements are folded in beside the cross-reference |
+
+### What this pass did not change, and why
+
+- **None of the twenty-six residual frontend findings was fixed.** Every one reproduces on screens this
+  engagement never modified, and the pass's own regression verdict says so. Accessibility and layout defects
+  in unmodified files meet none of the tests that bring work into this scope — the same conclusion, for the
+  same stated reasons, that `RISK-122` reached for the previous frontend pass.
+- **No stylesheet, markup, tag helper or vendored library was touched.** The accessibility group would require
+  all four; §0.5.2 of the plan records that no new markup, stylesheet, class name or component is introduced
+  anywhere in this engagement, and the code editor at the centre of `Q9` is third-party.
+- **The access-denied page was not given a route back.** `RISK-122` already records why the template is
+  layout-free and self-contained, and the new measurements are folded into `RISK-182` rather than reopening
+  the decision.
+- **`Cache-Control` was not added.** It is not among the seven mandated headers, the weakness sits in the
+  Medium band, and `RISK-118` already carries the scoped fix. Adding it unscoped would stop the browser
+  caching static assets, which is a measurable regression against the plan's ten-percent performance bound.
+- **The throttle refusal was not given a latency floor.** `RISK-181` records the fix and the trade it carries;
+  the finding is Medium-band and satisfies none of §0.6.1's three tests.
+- **No new audit-report finding was created.** The 53-finding inventory is cited by count across this document
+  set and asserted by the release gate; `RISK-118` established the convention that post-inventory discoveries
+  are recorded in the register, and these follow it.
+
+### Verification actually performed for this pass
+
+- `dotnet restore WebVella.ERP3.sln` clean; `dotnet build WebVella.ERP3.sln --no-restore --no-incremental`
+  **succeeded with 0 errors**, and **zero** warnings are attributable to either modified file. The two
+  non-member WebAssembly projects build with **0 warnings and 0 errors**. No new `NU19xx` dependency
+  diagnostic appeared, so the dependency gate is unchanged.
+- Both hosts were **published** and run under `ASPNETCORE_ENVIRONMENT=Production` over HTTPS — never from
+  unpublished output, which `RISK-031` records would serve no static assets, and never in Development, which
+  would undo `H-12` and `H-15`.
+- Each Critical was re-verified by re-executing its **original reproduction steps** in a real browser, with
+  the assertions quoted above; each was reproduced a second time to establish determinism.
+- Both fixes were regression-checked on their benign paths: no over-encoding in the e-mail list, unchanged
+  titles and chrome on ordinary screens, and no request above 399 on either host.
+- The register's own identifier-partition script was re-run after the documentation edits and reports
+  agreement at **own heading 124, combined 2, row-only 21, indexed 147**.
+- `markdownlint` at the pinned version and the documentation site build were both re-run over the edited
+  files; results are recorded in the markdown-closure section of this log.
+
+## Performance checkpoint — the disposition of the two boundary breaches
+
+A performance checkpoint measured this build against the scope's *"performance stays within 10% of
+baseline"* preservation requirement, side by side with a build of the pre-engagement commit `c8ea6bd4`
+published under the same SDK against an identically seeded database, with the two interleaved so host
+contention hit both equally. It confirmed the **pre-declared login exception** as verified, correctly bounded
+and honoured, and reported **two non-login breaches**. One is fixed here; the other is measured, isolated and
+accepted as `RISK-184`.
+
+Two commit classes, one each.
+
+### Class A — the CWE-754 upload-refusal control leaves the render-blocking critical path
+
+| File | What changed |
+| --- | --- |
+| `WebVella.Erp.Web/wwwroot/js/site.js` | The 350-line upload-refusal block is **removed**. The file is byte-identical to the pre-engagement version — 17,742 bytes, sha256 verified against the baseline build on the wire. |
+| `WebVella.Erp.Web/wwwroot/js/upload-rejection-feedback.js` | **New.** The same block, verbatim, carrying its own threat comment plus the reason it is a separate `defer`-loaded asset and the warning never to fold it back or to defer `site.js` itself. |
+| `WebVella.Erp.Web/Utils/PageUtils.cs` | `GenerateTagsFromObject(ScriptTagInclude)` now emits `defer` and `async`. `ScriptTagInclude` has **declared** both properties since it was written and neither was ever rendered, so every external script this platform includes was unavoidably render-blocking. Opt-in, external-resource branch only. |
+| `WebVella.Erp.Web/Components/HeadBottomIncludes/HeadBottomIncludes.cs` | Registers the new asset immediately after `site.js`, with `Defer = true`. |
+
+**Why the code moved rather than being minified or left alone.** `HeadBottomIncludes` renders into `<head>`,
+so every script it emits is synchronous and render-blocking; appending 18,151 bytes to `site.js` put them on
+the critical path of every page of every host. `site.js` itself **must not** be deferred — it defines
+page-wide globals (`ApiBaseUrl`, `checkInt`, `checkDecimal`, `checkEmail`, `checkPhone`, `newGuid`,
+`GetPathTypeIcon`, `StartTimer`, `window.goBack`) that inline script emitted into the body may call while the
+document is still parsing. Carving the block out is the only change that removes the cost without risking
+that.
+
+**Nothing in the block needs to run during parsing**, which is what makes deferring it safe: it defines
+functions, records the field id of an in-flight upload, and installs one jQuery ajax prefilter — and an upload
+cannot begin until a user has chosen a file. Deferring is in fact **more reliable** than the original
+placement, because the block returns early when jQuery is absent, and a deferred script is guaranteed to run
+after every synchronous one.
+
+#### Verification
+
+- **Static.** Solution build, 0 errors; no warning in the edited region of `PageUtils.cs` and none for
+  `HeadBottomIncludes.cs`. Emitted markup checked on the wire: the new tag carries `defer`, the `site.js` tag
+  is byte-identical to the baseline's.
+- **The control still works, in a real browser against a published host.** A refused `.svg` returns HTTP 400
+  with the lowercase-`message` envelope, and the refusal appears as `div.invalid-feedback` with
+  `role="alert"`, `aria-live="polite"`, an id derived from the field, `aria-invalid="true"` and
+  `aria-describedby` bound to that id on the file input, plus a toastr error — with the file input **cleared**
+  and **zero** JavaScript exceptions. A subsequent accepted `.png` retracts the message and both ARIA
+  attributes. The "unrecognised handler" diagnostic never fired, so the vendor callback was positively
+  recognised and replaced, which is the measured-against behaviour.
+- **The cost is gone from the critical path.** The browser reports the new asset as `non-blocking` and the
+  **render-blocking resource set is identical to the baseline's at 18 resources**. Render-blocking encoded
+  bytes against the baseline go from **+6,228 to 0**; the 7,170 encoded bytes now travel as a separate,
+  independently cacheable, non-blocking request, taking total page bytes to **+1.01%**.
+- **No visual change.** Login screenshots from the fixed build, the baseline and the CSP-suppressed probe are
+  **byte-identical PNGs — 0 differing pixels**.
+
+**What this did not fix, stated plainly.** It removed the JavaScript contribution, which an isolating probe
+measured at about **1 ms of a 13 ms** difference. The rest is the `Content-Security-Policy-Report-Only`
+header, and after this change it is **100%** of the residual: a build differing only in that header's
+suppression sits at exact parity with the baseline. That is `RISK-184`, an owner decision, not an engineering
+follow-up.
+
+### Class B — one session-revocation lookup per request instead of two
+
+| File | What changed |
+| --- | --- |
+| `WebVella.Erp.Web/Services/SessionRevocationService.cs` | A **negative** revocation answer is memoised in `HttpContext.Items` for the life of the request that asked. The ambient request is reached through an accessor supplied at startup, because the bearer validators are static code with no service provider in reach. |
+| `WebVella.Erp.Web/ErpMvcExtensions.cs` | Supplies that accessor in `UseErp`; and, separately, the rate limiter's `429` now carries `Retry-After`. |
+
+**The measurement that identified it.** A **bearer** request consults the revocation store **twice for the
+same credential** — the token-validated hook the two token-issuing hosts install runs first, then
+`JwtMiddleware` validates the same header again. Counted from `pg_stat_user_tables` over 100 identical bearer
+EQL requests: **1.97 `plugin_data` index probes per request**, against **0.00** on the pre-engagement build.
+Every read shape the checkpoint measured over the boundary was a bearer route; the cookie routes, which
+consult once, were already inside it.
+
+**Why a per-request memo and not a cache.** `SessionRevocationService` forbids caching a negative answer for
+any *interval*, because that recreates the window `H-OPEN-01` closed. A memo scoped to one request is a
+different thing: it answers the second consult of one credential inside the same request the first consult
+already answered, microseconds earlier and before the response begins. A revocation landing between the two
+would at worst let through the single request already in flight — indistinguishable from one landing a
+microsecond after a single consult. Only negatives are memoised: a positive needs none (the positive mirror
+answers without a query), and the **fail-closed** "revoked" returned when the store is unreachable is
+deliberately never memoised, so an outage is re-tested rather than latched.
+
+Two alternatives were rejected. An **index** on `plugin_data.name` is both unnecessary — `idx_u_plugin_data_name`
+already exists — and forbidden, since no schema statement may be emitted. **Overloads** taking an
+`HttpContext` on `AuthService.IsBearerSessionRevoked` and `GetValidSecurityTokenAsync` would have widened a
+`public` surface the scope freezes, and touched six files instead of two.
+
+#### Verification
+
+- **Static.** Solution build, 0 errors; the only warning on either file is a pre-existing `CA2263`.
+- **The cost is halved, measured the same way it was found:** `plugin_data` probes per bearer EQL request
+  **1.97 → 0.96** (N=100). The breaching read shape moved from **+13.1% to +1.8%** against the baseline on the
+  minimum statistic, and every measured shape is now inside the 10% boundary, re-confirmed at N=80 for the two
+  least favourable. Response bodies are byte-identical between the two builds on every shape.
+- **Revocation still works, and the memo provably does not outlive its request.** After `POST
+  /auth/jwt/token/logout`, the **very first** subsequent bearer request is refused and stays refused; and
+  after `GET /logout`, replaying the captured cookie yields `302` to `/login?returnUrl=%2F` on the first
+  replay.
+- **`Retry-After`.** A deliberate flood produced the first `429` at exactly the 600-per-60-seconds boundary,
+  carrying `Retry-After: 60` together with **all seven** security headers. The value comes from the limiter's
+  own lease metadata, with the window length — single-sourced with the limiter's `Window` — as the fallback,
+  rounded up so it can never invite a retry still inside the window.
+- **No header regression.** All seven headers verified present on a dynamic `200` and on a static-file `200`
+  after both classes landed, so ordering ahead of static files and compression is unaffected.

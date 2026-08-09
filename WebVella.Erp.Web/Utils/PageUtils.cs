@@ -2246,6 +2246,31 @@ namespace WebVella.Erp.Web.Utils
 				}
 				#endregion
 
+				#region << defer / async >>
+				//PERFORMANCE - completes a contract this method already advertised but never honoured.
+				//ScriptTagInclude has declared Defer and Async since it was written, yet neither attribute was
+				//ever emitted, so every external script this platform includes was unavoidably synchronous and
+				//render-blocking. That is what forced the CWE-754 upload-refusal feedback to sit inside the
+				//in-head site.js and put its bytes on the critical path of every page of every host; see
+				//wwwroot/js/upload-rejection-feedback.js for the finding it caused. Only the two attributes the
+				//model already declares are emitted, and only when a caller opts in, so every existing include -
+				//all of which leave both flags false - renders byte-identically to before.
+				//Both are ignored by browsers on inline scripts, which is why this sits in the external-resource
+				//branch only. defer is emitted first when both are set, matching the HTML specification's rule
+				//that async wins for a classic script and defer is its no-async fallback.
+				if(scriptTag.Defer)
+				{
+					var attribute = $"defer";
+					resultStringList.Add(attribute);
+				}
+
+				if(scriptTag.Async)
+				{
+					var attribute = $"async";
+					resultStringList.Add(attribute);
+				}
+				#endregion
+
 				return "<script " + String.Join(" ", resultStringList).Trim() + " ></script>";
 			}
 		}

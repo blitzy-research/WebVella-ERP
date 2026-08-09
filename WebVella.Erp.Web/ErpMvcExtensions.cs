@@ -21,6 +21,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Reflection;
+using System.Text.Encodings.Web;
 using System.Threading.RateLimiting;
 using System.Threading.Tasks;
 using WebVella.Erp.Api;
@@ -40,6 +41,13 @@ namespace WebVella.Erp.Web
 		// Configuration key selecting the Content-Security-Policy delivery mode. Held as a constant so the
 		// lookup and the diagnostic that names it cannot drift - a message quoting an unread key misdirects.
 		private const string ContentSecurityPolicyReportOnlyConfigurationKey = "SecurityHeaders:ContentSecurityPolicyReportOnly";
+
+		// The transport-level request-rate window (finding H-16). Held as a constant because it is read
+		// TWICE - once to build the limiter's own fixed-window partition, and once by OnRejected as the fallback
+		// Retry-After the refusal advertises when the lease carries no metadata of its own. A literal in each place
+		// would let the enforced delay and the advertised delay drift apart on the next edit (review finding F-108),
+		// and a client told to wait less than the window would retry into the same refusal.
+		private static readonly TimeSpan RateLimitWindow = TimeSpan.FromMinutes(1);
 
 		// Configuration section carrying the trusted reverse-proxy declaration consumed by
 		// UseErpForwardedHeaders.
@@ -322,6 +330,7 @@ namespace WebVella.Erp.Web
 			services.AddRateLimiter(rateLimiterOptions =>
 			{
 				rateLimiterOptions.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
 				rateLimiterOptions.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
 					RateLimitPartition.GetFixedWindowLimiter(
 						// A missing remote address is bucketed under a single shared key rather than
@@ -330,13 +339,76 @@ namespace WebVella.Erp.Web
 						factory: _ => new FixedWindowRateLimiterOptions
 						{
 							PermitLimit = 600,
-							Window = TimeSpan.FromMinutes(1),
+							Window = RateLimitWindow,
 							// No queueing: a caller over the limit is refused immediately rather than
 							// parked, because holding requests open is itself a resource-exhaustion
 							// vector.
 							QueueLimit = 0,
 							QueueProcessingOrder = QueueProcessingOrder.OldestFirst
 						}));
+				// Review finding F-108. The limiter above refuses correctly; what it did not do was TELL anyone.
+				// With no OnRejected handler the framework writes the status code and nothing else, so the refusal
+				// reached the caller as a 429 carrying "content-length: 0" and NO Retry-After header, which fails
+				// in two directions at once. A person driving the interface was ejected from the application onto a
+				// blank error surface with no statement of what happened and no indication that waiting would help;
+				// and a machine caller had no retry interval to honour, so the rational client behaviour is to
+				// retry immediately, which is precisely the traffic pattern the limit exists to damp. A control
+				// whose refusal is unintelligible gets worked around rather than obeyed.
+				// This says what happened and when to come back, and nothing more - it does not relax the limit,
+				// change the 429, alter the partition key or add a queue.
+				rateLimiterOptions.OnRejected = async (rejectedContext, cancellationToken) =>
+				{
+					HttpResponse response = rejectedContext.HttpContext.Response;
+
+					// Nothing is written once the response is on the wire. A handler that appended to an already-started
+					// response would throw inside the limiter rather than refuse the caller, turning a protective control
+					// into a fault; the 429 status the limiter already set still stands in that case.
+					if (response.HasStarted)
+						return;
+
+					// Retry-After is read from the lease the limiter itself produced, so the advertised delay is
+					// the real remaining window rather than a guess. A limiter that publishes no such metadata
+					// falls back to the configured window - the same RateLimitWindow constant the partition is
+					// built from above, which is why it is a constant now: a literal in each place would let the
+					// advertised delay and the enforced one drift apart on the next edit. Ceiling, not truncation:
+					// rounding 0.4s down to "0" would invite an immediate retry that is still refused.
+					// RFC 6585 section 4 recommends Retry-After for exactly this status, and a client that has to guess
+					// guesses low and keeps hammering a limiter that is already refusing it - a protective control turned
+					// into a busy loop.
+					var retryAfter = RateLimitWindow;
+					if (rejectedContext.Lease.TryGetMetadata(MetadataName.RetryAfter, out TimeSpan leaseRetryAfter) && leaseRetryAfter > TimeSpan.Zero)
+						retryAfter = leaseRetryAfter;
+					if (retryAfter < TimeSpan.Zero)
+						retryAfter = TimeSpan.Zero;
+
+					var retryAfterSeconds = (int)Math.Max(1, Math.Ceiling(retryAfter.TotalSeconds));
+					response.Headers.RetryAfter = retryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+
+					// The body is shaped to the caller, because this endpoint set serves both. The platform's own
+					// scripts read a lowercase "message" out of a JSON envelope - that is the shape site.js already
+					// parses for an upload refusal - so an XHR caller gets one it can display. A navigation gets a
+					// short document instead, since a browser would otherwise render raw JSON.
+					// Deliberately self-contained: no stylesheet link and no inline style. An external stylesheet
+					// would itself be a request against the very limit that just refused this one, so a styled page
+					// would arrive unstyled at best; and an inline style block would add another violation to the
+					// report-only Content-Security-Policy budget. Default user-agent styling is legible, and being
+					// legible is the whole requirement here.
+					var message = "Too many requests. Please wait " + retryAfterSeconds.ToString(CultureInfo.InvariantCulture) + " seconds and try again.";
+					if (PrefersHtmlResponse(rejectedContext.HttpContext.Request))
+					{
+						response.ContentType = "text/html; charset=utf-8";
+						await response.WriteAsync("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Too many requests</title></head><body><h1>Too many requests</h1><p>"
+							+ HtmlEncoder.Default.Encode(message)
+							+ "</p></body></html>", cancellationToken);
+					}
+					else
+					{
+						response.ContentType = "application/json; charset=utf-8";
+						// Hand-composed rather than serialised: the two values are a compile-time literal and an
+						// int, so there is nothing here a serialiser would protect and no dependency to take.
+						await response.WriteAsync("{\"success\":false,\"message\":\"" + message + "\",\"retryAfterSeconds\":" + retryAfterSeconds.ToString(CultureInfo.InvariantCulture) + "}", cancellationToken);
+					}
+				};
 			});
 			services.Configure<RazorViewEngineOptions>(options => { options.ViewLocationExpanders.Add(new ErpViewLocationExpander()); });
 			services.ConfigureOptions(typeof(WebConfigurationOptions));
@@ -457,6 +529,16 @@ namespace WebVella.Erp.Web
 				// the same shape as ErpSettings' required-secret validation, and deliberately AFTER it: a deployment
 				// missing both must still fail on the secret, which the operator has to fix first.
 				ValidateTransportSecurityPosture(app, configuration, env);
+
+				// PERFORMANCE - hands SessionRevocationService the ambient-request accessor it uses to answer the
+				// SECOND revocation consult of a bearer request from the FIRST one, instead of querying the durable
+				// store twice for the same credential in the same request. See RequestMemoKeyPrefix in that type for
+				// why a request-scoped memo is not the interval-based negative cache its design forbids. Resolved
+				// here rather than injected because the bearer validators are static code with no service provider in
+				// reach, and it is done at startup so no request can observe a half-initialised state. A null
+				// accessor is tolerated by design: the memo then simply does not happen and every consult reaches the
+				// durable store exactly as before.
+				SessionRevocationService.UseRequestContextAccessor(app.ApplicationServices.GetService<IHttpContextAccessor>());
 
 				var defaultThreadCulture = CultureInfo.DefaultThreadCurrentCulture;
 				var defaultThreadUICulture = CultureInfo.DefaultThreadCurrentUICulture;
@@ -856,6 +938,33 @@ namespace WebVella.Erp.Web
 				address = address.MapToIPv4();
 
 			return address.ToString();
+		}
+
+		// Decides whether a rate-limit refusal should be written as a readable document or as the JSON envelope
+		// the platform's own scripts parse (review finding F-108). The question is asked of the request rather
+		// than answered by a fixed content type because one global limiter covers both a browser navigating and
+		// that same browser's XHR calls.
+		// The X-Requested-With test is what makes this reliable here: jQuery sets it on every request it issues
+		// and ALSO sends "Accept: */*" on a bare $.ajax, so Accept alone would classify the platform's own AJAX
+		// as a navigation and hand a script a document it cannot read. It is consulted FIRST for that reason.
+		// The Accept test that follows requires text/html to be named EXPLICITLY - a lone "*/*" is not treated as
+		// a request for HTML - so an unlabelled machine caller receives JSON, which is the safer default of the
+		// two: a script shown JSON degrades to a readable message, a script shown HTML gets a parse failure.
+		private static bool PrefersHtmlResponse(HttpRequest request)
+		{
+			if (request == null)
+				return false;
+
+			if (string.Equals(request.Headers.XRequestedWith, "XMLHttpRequest", StringComparison.OrdinalIgnoreCase))
+				return false;
+
+			foreach (string acceptHeader in request.Headers.Accept)
+			{
+				if (acceptHeader != null && acceptHeader.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+					return true;
+			}
+
+			return false;
 		}
 
 		// Applies the platform's authentication-cookie security contract.

@@ -36,6 +36,26 @@
 		The type label is serialised too. It comes from a four-value enum today and cannot carry a hostile
 		character, but it is interpolated into the same statement, and leaving one interpolation encoded
 		for the wrong context invites the next edit to copy it. *@
+	@*  SECURITY - CWE-79 (stored cross-site scripting) and CWE-116 (improper encoding of output),
+		OWASP A03:2021. THREAT ADDRESSED: correcting the encoding above delivers the value's TRUE characters
+		into the notification library, and the library's sink parses what it is given as HTML - so the
+		serialisation fix, on its own, converted text that had been inert as HTML entities into DOM that
+		EXECUTES. Runtime-proven, not reasoned about: an SMTP peer's own response text reaching
+		email.ServerError through SmtpInternalService.EmailSendNowOnPost rendered as a real <img> child of
+		.toast-message whose onerror ran on the application's origin with the operator's authenticated
+		session, and the report-only Content-Security-Policy observed it without blocking it.
+		WHY escapeHtml AND WHY HERE. toastr 2.1.3 defaults escapeHtml to FALSE, and with that default BOTH
+		arguments are raw: setTitle and setMessage each do $element.append(value), which parses markup.
+		Setting it true routes both through the library's own escaper, and jQuery then decodes the
+		references back to the original characters - so the operator still reads the real message, with the
+		backslash and multi-line diagnostics this component was fixed to display correctly, while the
+		parser can no longer be made to create an element. It is supplied in the per-call options object
+		because toastr merges that object OVER its defaults (notify: $.extend(options, optionsOverride)),
+		which closes the message and the title sinks together in the one file that owns this statement,
+		without editing the vendored library or changing any other caller's behaviour.
+		The values stay SERIALISED: escapeHtml protects the HTML context INSIDE the library, and the JSON
+		string literal protects the JavaScript context of the statement below. Removing either reopens one
+		of the two defects. *@
 	var messageJson = Html.WvJsonRaw(JsonConvert.SerializeObject(screenMessage.Message ?? string.Empty));
 	var titleJson = Html.WvJsonRaw(JsonConvert.SerializeObject(screenMessage.Title ?? string.Empty));
 	var typeJson = Html.WvJsonRaw(JsonConvert.SerializeObject(screenMessage.Type.GetLabel()));
@@ -45,10 +65,10 @@
 		switch (screenMessage.Type)
 		{
 			case ScreenMessageType.Error:
-				@:toastr["error"](@messageJson, @titleJson, {"positionClass": "toast-top-center","newestOnTop": false,"timeOut": 7000,"extendedTimeOut":7000});
+				@:toastr["error"](@messageJson, @titleJson, {"escapeHtml": true,"positionClass": "toast-top-center","newestOnTop": false,"timeOut": 7000,"extendedTimeOut":7000});
 				break;
 			default:
-				@:toastr[@typeJson](@messageJson, @titleJson, {"positionClass": "toast-top-center","newestOnTop": false,"timeOut": 3000,"extendedTimeOut":3000});
+				@:toastr[@typeJson](@messageJson, @titleJson, {"escapeHtml": true,"positionClass": "toast-top-center","newestOnTop": false,"timeOut": 3000,"extendedTimeOut":3000});
 				break;
 		}
 	}

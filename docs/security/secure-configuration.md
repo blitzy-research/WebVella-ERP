@@ -1513,6 +1513,60 @@ refusal is lost, and a miss there re-reads the store. To clear a lockout deliber
 the 15-minute window to lapse or delete the account's `plugin_data` row **and** restart every instance
 still holding it in its mirror.
 
+### Releasing an account lockout
+
+This is the runbook for the one operational question the durable design creates: *a user is locked out and
+cannot wait — what do I do?* It is written out because the behaviour was reproduced from the outside and the
+obvious action alone does not work. In a verification pass all thirty rows the control had written were
+deleted and confirmed gone, and login **still** failed with a verified-correct password; it succeeded only
+after the host process was restarted. That is the positive-only mirror described above working as designed,
+and it means the row deletion and the recycle are two halves of one action rather than alternatives.
+
+**Route 1 — wait. This is the supported default and needs no operator action.** The window lapses
+**15 minutes after the most recent failed attempt**, not 15 minutes after the first, so the user must stop
+attempting for the window to age out. Tell them to stop trying and come back in fifteen minutes. Prefer this
+route: it needs no database access and no downtime.
+
+**Route 2 — clear deliberately.** Take all three steps, in order. Stopping after step 1 will appear to do
+nothing.
+
+1. Find the rows. Both counters are in `public.plugin_data` under the reserved `wv_sec_` prefix — the account
+   counter is keyed by username and the address counter by remote address:
+
+   ```sql
+   SELECT key, left(value, 120) AS value
+   FROM   public.plugin_data
+   WHERE  key LIKE 'wv_sec_lthr_%'
+   ORDER  BY key;
+   ```
+
+2. Delete only what you intend to release. Scope the delete to the one account, or to the one address, rather
+   than to the prefix — deleting the whole prefix resets every counter in the installation, including the
+   partial counts that are currently metering an attack in progress:
+
+   ```sql
+   -- release one account
+   DELETE FROM public.plugin_data WHERE key = 'wv_sec_lthr_acct_' || lower('user@example.com');
+   -- release one source address
+   DELETE FROM public.plugin_data WHERE key = 'wv_sec_lthr_addr_' || '198.51.100.7';
+   ```
+
+3. Recycle every instance that may hold the lockout in its positive mirror. Until this happens the deletion
+   has no visible effect on a process that has already learned the refusal, because a mirror hit never
+   consults the database. In a single-instance deployment this is one restart; behind a load balancer it is
+   all of them, since any instance can serve the next attempt.
+
+**Then verify, rather than assuming.** Re-run the query from step 1 and confirm no matching row remains, then
+have the user attempt a login and confirm it is accepted. If it is still refused, an instance was missed in
+step 3 — or the account is locked on the **address** counter as well as its own, which the query in step 1
+will show.
+
+**What is deliberately absent.** There is no administrative unlock action in the application: no screen, no
+endpoint and no command. Adding one would be a feature rather than a remediation, and it would itself need
+authorisation, auditing and rate limiting — so the supported routes are the two above. Note also that a
+first-login password rotation consumes the same account budget (`RISK-136`), so a user working through a
+forced rotation can lock themselves out with five wrong attempts exactly as any other user can.
+
 ## Mail transport
 
 ### SMTP certificate validation

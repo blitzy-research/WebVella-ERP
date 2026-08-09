@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Globalization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Memory;
 using WebVella.Erp.Database;
 
@@ -127,6 +129,59 @@ namespace WebVella.Erp.Web.Services
 			CompactionPercentage = 0.2
 		});
 
+		// PERFORMANCE, and the reason it does not weaken the control. A BEARER request consults this type TWICE for
+		// the SAME credential: the token-validated hook the two token-issuing hosts install runs first
+		// (AuthService.IsBearerSessionRevoked), then JwtMiddleware validates the same header again through
+		// AuthService.GetValidSecurityTokenAsync. Measured on a bearer EQL request, that produced 1.97 plugin_data
+		// index probes per request against 0 before this control existed, and it is what pushed the heaviest read
+		// shapes past the engagement's ten-percent performance boundary.
+		//
+		// The answer is memoised per REQUEST - never for an interval - so this is emphatically NOT the negative cache
+		// the header above forbids. The distinction is the whole point:
+		//   * a TTL cache would accept a credential that was revoked DURING the window, which is the defect
+		//     H-OPEN-01 closed;
+		//   * a memo scoped to one request answers the second consult of ONE credential inside the SAME request that
+		//     the first consult already answered, microseconds earlier and before the response begins. A revocation
+		//     landing between the two consults would, at worst, let through the single request that was already
+		//     mid-flight when it landed - indistinguishable from one landing a microsecond after a single consult.
+		//     The very next request re-reads the durable store.
+		// Only a NEGATIVE answer is memoised. A positive one needs no memo (the mirror above already answers it
+		// without a query), and the FAIL-CLOSED "revoked" returned when the store cannot be reached is deliberately
+		// never memoised, so an unreachable store is re-tested on every consult rather than latched.
+		private const string RequestMemoKeyPrefix = "wv_sec_req_notrevoked_";
+
+		// The ambient request, when there is one. Supplied at startup by ErpMvcExtensions.UseErp rather than
+		// injected, because this type is static by necessity - the bearer validators are static code with no service
+		// provider in reach (see the header). A null accessor, or a call outside a request such as the console host
+		// or a background job, simply means no memo and the durable store is consulted exactly as before; the memo
+		// is an optimisation and must never be a precondition for the control working.
+		private static IHttpContextAccessor httpContextAccessor;
+
+		/// <summary>
+		/// Supplies the accessor used to scope a negative revocation answer to the current request.
+		/// </summary>
+		/// <remarks>
+		/// Called once during application startup. Assembly-internal, so no public surface is widened, and it
+		/// carries no security decision: with or without it, a revocation is still resolved from the durable
+		/// store and still fails closed.
+		/// </remarks>
+		internal static void UseRequestContextAccessor(IHttpContextAccessor accessor)
+		{
+			httpContextAccessor = accessor;
+		}
+
+		// The current request's item bag, or null when there is no request. Reading HttpContext off the accessor
+		// cannot throw; it returns null outside a request scope.
+		private static IDictionary<object, object> CurrentRequestItems()
+		{
+			IHttpContextAccessor accessor = httpContextAccessor;
+			if (accessor == null)
+				return null;
+
+			HttpContext context = accessor.HttpContext;
+			return context == null ? null : context.Items;
+		}
+
 		// Records that a session identifier must no longer be accepted, until <paramref name="absoluteExpiryUtc"/>.
 		// Written by the sign-out path for whichever credential the caller presented - cookie or bearer.
 		//
@@ -198,15 +253,32 @@ namespace WebVella.Erp.Web.Services
 			if (confirmedRevocations.TryGetValue(key, out _))
 				return true;
 
+			// PERFORMANCE: has THIS request already established, from the durable store, that this identifier is not
+			// revoked? See RequestMemoKeyPrefix for why a per-request memo is not the forbidden negative cache. Read
+			// AFTER the positive mirror, so a revocation recorded on this instance still wins over the memo.
+			IDictionary<object, object> requestItems = CurrentRequestItems();
+			string requestMemoKey = requestItems == null ? null : RequestMemoKeyPrefix + key;
+			if (requestItems != null && requestItems.ContainsKey(requestMemoKey))
+				return false;
+
 			if (!DbSecurityStateRepository.TryRead(key, out string payload))
 			{
-				// Fail closed. Deliberately NOT mirrored locally: a transient outage must not pin a
-				// legitimate session as revoked for the rest of the retention window.
+				// Fail closed. Deliberately NOT mirrored locally, and NOT memoised on the request either: a transient
+				// outage must not pin a legitimate session as revoked for the rest of the retention window, nor latch
+				// a refusal that the very next consult might have resolved.
 				return true;
 			}
 
 			if (payload == null)
+			{
+				// The durable store answered "no revocation" for this identifier. Record that answer for the
+				// remainder of this request only, so the second validator on a bearer request does not repeat the
+				// query. Presence of the key IS the answer - only negatives are ever written here.
+				if (requestItems != null)
+					requestItems[requestMemoKey] = false;
+
 				return false;
+			}
 
 			// Mirrored for exactly as long as the DURABLE entry has left to live, so the mirror can never
 			// outlast the fact it mirrors. The payload is the durable expiry in round-trip form; an

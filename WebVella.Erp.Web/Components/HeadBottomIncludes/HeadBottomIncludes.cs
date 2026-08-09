@@ -74,6 +74,24 @@ namespace WebVella.Erp.Web.Components
 				}
 				#endregion
 
+				#region << upload-rejection-feedback.js >>
+				{
+					//Always include, and always DEFERRED. This carries the CWE-754 compensating control that
+					//makes a server-side upload refusal visible in the interface; it lived at the end of site.js
+					//until performance verification measured its bytes as a constant per-page cost, because this
+					//hook renders into <head> and so every script it emits here is render-blocking. Nothing in
+					//that file needs to run during parsing - it installs a jQuery ajax prefilter and cannot be
+					//reached until a user has chosen a file to upload - so deferring it removes the cost without
+					//weakening the control, and guarantees jQuery is already loaded when it runs. Ordered after
+					//site.js so the two keep their original relative order in the document.
+					scriptTagsToInclude.Add(new ScriptTagInclude()
+					{
+						Src = "/_content/WebVella.Erp.Web/js/upload-rejection-feedback.js?cb=" + cacheKey,
+						Defer = true
+					});
+				}
+				#endregion
+
 				#region << js-cookie >>
 				{
 					if (!includedScriptTags.Any(x => x.Src.Contains("/js-cookie")))

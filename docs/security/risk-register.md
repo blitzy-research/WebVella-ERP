@@ -49,14 +49,16 @@ echo "own heading $(wc -l < /tmp/c_head), combined $(wc -l < /tmp/c_comb), row-o
 comm -23 /tmp/c_headall /tmp/c_index | grep -q . || echo 'every declared identifier is indexed'
 ```
 
-Measured at this revision: **own heading 121, combined 2, row-only 21, indexed 144** — the routes
-partition the index and every declared identifier is indexed. Two corrections are folded into those
-numbers rather than presented as one: nine identifiers, `RISK-172`–`RISK-180`, were added by the checkpoint
-documentation and gate review, each with its own declaring heading and its own index row; and the previous
-figures read `own heading 111 … indexed 134` while the script already returned **112** and **135**, an
-off-by-one that pre-dated this pass and is corrected here rather than carried forward. A stated count that
-disagrees with the script beside it teaches a reader to stop running the script, which is the one outcome a
-reproducible contract cannot afford.
+Measured at this revision: **own heading 128, combined 2, row-only 21, indexed 151** — the
+routes partition the index and every declared identifier is indexed. Four additions and one correction are
+folded into those numbers rather than presented separately: nine identifiers, `RISK-172`–`RISK-180`, were
+added by the checkpoint documentation and gate review; three more, `RISK-181`–`RISK-183`, were added by the
+final frontend verification; four more, `RISK-184`–`RISK-187`, were added by the performance checkpoint;
+each of the sixteen with its own declaring heading and its own index row. An earlier revision's figures read
+`own heading 111 … indexed 134` while the script already returned **112** and **135**, an off-by-one that
+pre-dated those passes and was corrected rather than carried forward. A stated count that disagrees with the
+script beside it teaches a reader to stop running the script, which is the one outcome a reproducible
+contract cannot afford.
 
 **What was wrong before, recorded rather than quietly replaced.** The previous version of this contract
 claimed a declaring heading was the *only* route apart from **seven** row-declared identifiers
@@ -216,6 +218,13 @@ fourteen are declared by their index row alone.
 | `RISK-178` | **The sanitizer no longer permits `class` on user-authored content** (`N23`). Arbitrary class names are a user-interface redressing primitive (**CWE-1021**) against the platform's own stylesheets, and a token allow-list is unverifiable because any list admitting typography utilities must be proved not to admit a positioning one for every future stylesheet. **User-visible consequence:** user-authored comment, timelog and feed bodies now render without `class`; administrator-authored HTML-block markup is unaffected because it never passes through this sanitizer | Accepted — a deliberate, measured narrowing of rendered output | Platform team |
 | `RISK-179` | **Compiled script text still sees every loaded domain assembly.** `CodeEvalService.cs:L74` sets `ReferenceDomainAssemblies = true`, so author-supplied page-component script can reference any assembly in the process. This is the STILL-OPEN half of `M-07`; the resource half is closed under `CK-08` (a `MemoryCache` with `SizeLimit` 1000, `Size` 1, one-day sliding expiration, read under the write lock). Bounding the cache reduces retention without narrowing reach, and narrowing the reference set would change what existing scripts compile against. Gated on the privileged authoring role already recorded in `RISK-164` | Accepted — the open half of a Medium; the control is who may author script | Platform team |
 | `RISK-180` | **Credentialed cross-origin state-changing requests are refused by the fetch-metadata control** (`N9`). Five hosts — `Crm`, `Mail`, `MicrosoftCDM`, `Next`, `Sdk` — keep `WithOrigins("http://localhost:3000", "http://localhost").AllowAnyMethod().AllowCredentials()`, while `RequireSameOriginRequestAttribute` refuses a cookie-authenticated unsafe cross-site method with `403`. The control wins because it runs in the pipeline, so the CORS allowance is what is stale. **The remedy is on the client:** authenticate cross-origin callers with `Authorization: Bearer`, which the attribute exempts by design — or drop `AllowCredentials()` from those five hosts. The control is NOT relaxed | Accepted — the interaction is intended and now disclosed | Platform team |
+| `RISK-181` | **Lockout state is disclosed by a response-latency side channel** (`Q6`). Measured over 36 timed attempts: not locked **n=24, 132.1–227.8 ms**; locked **n=12, 4.2–11.7 ms** — non-overlapping, so any threshold between 12 ms and 130 ms classifies lockout state exactly. Cause is the interaction of two controls this engagement added: the throttle refuses *before* the deliberately-slow key derivation runs. It does **not** enable user enumeration — an unknown username still costs 153.8 ms. **Fix:** apply a latency floor or a randomised 130–230 ms delay to short-circuited refusals, in the login handler rather than in the service | Accepted — Medium band, documented with fix guidance | Platform team |
+| `RISK-182` | **The remaining 26 findings of the final frontend verification, each with its recommended fix** (`Q3`, `Q8`–`Q26`, `Q29`–`Q34`): the accessibility group (keyboard trap, clipped and destructive focus indicators, no landmarks or skip link or `h1`, orphaned textarea labels, ~51 contrast failures, unnamed icon controls, sub-44 px targets, table and menu semantics), the responsive group (three mobile overflow instances with no scroll container, mobile first-paint), the interaction group (no loading indicator, no double-submit guard, five form-validation gaps), and the routing group (launcher tiles a host cannot serve, an unescaped compiler diagnostic, a stale relation-tab pager, two shell-less developer pages, a dead diagnostics page, the login logo on error renders). Every one reproduces on untouched screens; the pass's own verdict was **no regression attributable to the remediation** | Documented for a future sprint | Platform team and frontend maintainer |
+| `RISK-183` | **Two pre-existing unhandled 500 responses where field validation was expected** (`Q27`, `Q28`). Saving a duplicate e-mail *with an empty password* throws `KeyNotFoundException` during Razor rendering, because the handler's protective removal of the empty password leaves the view's field loop indexing an absent key; and clearing a numeric field on a create form throws during conversion. Both are byte-identical to the pre-engagement tree, both are bounded by the delivered error handling (263-character body, zero of sixteen disclosure terms, all seven headers), and the isolation controls rule out `C-02` as a cause. **Fix:** guard the view's indexer, and `TryParse` the numeric field | Accepted — functional defects, documented with fix guidance | Platform team |
+| `RISK-184` | **The report-only content policy costs ~15–18 ms of main-thread work per page load.** The performance checkpoint found the longest main-thread task higher on every page of every host. Its other named cause — the CWE-754 upload-refusal control appended to the render-blocking in-head `site.js` — is **fixed**: that block now ships as the `defer`-loaded `wwwroot/js/upload-rejection-feedback.js`, `site.js` is byte-identical to the pre-remediation file, and the render-blocking resource set matches the baseline's exactly. What remains was isolated by publishing a third build differing **only** in that header: with it suppressed the remediated build is at **exact parity** with the pre-remediation baseline (paired median +0.0 ms), so **100% of the residual is the header**, from 66–68 violation reports per load of which 64 are inline styles injected mostly by vendor code. Not reducible: the value is a frozen requirement, nonces do not govern style attributes, and removing the inline styles means editing vendor code and 395 views | Accepted — measured, bounded, zero visual or functional effect; owner decision | Repository owner |
+| `RISK-185` | **The credential write path derives a hash before the uniqueness rejection.** `RecordManager` hashes inside the field-value collector, which runs ahead of the uniqueness check, so *N* concurrent duplicate user-create submissions cost *N* PBKDF2 derivations. Measured: exactly **one** row created every time (no race defect) at 147–211 ms against a baseline's 23–78 ms. Requires an **authenticated administrator** and is bounded by the 600-per-minute limiter. Reordering the platform's only plaintext-to-hash write seam for a performance reason is refused under the minimal-change clause | Accepted — an authenticated-only, limiter-bounded asymmetry | Platform team |
+| `RISK-186` | **A throttled request is refused before authentication**, so a routed page answers `429` rather than its usual `302` to `/login`. Verified: the same anonymous `GET /` gave `302` before throttling, `429` with `Retry-After: 60` while throttled, and `302` after the window rolled over; a real static file stayed `200` throughout. **The ordering is the control** — `H-16` is about unlimited requests to the login page and the anonymous token endpoints, which a limiter running after authentication could not protect. The refusal now also carries `Retry-After`, which it previously omitted | Accepted — reversing the ordering would reopen `H-16` | Platform team |
+| `RISK-187` | **Steady-state memory footprint changed by the added controls; it plateaus.** The middleware, the lockout mirror and the security-state store change the resident set; the reporting checkpoint measured about **+17%** under sustained load and **+4%** at rest, and was explicit that **both** builds plateau. Re-measured over four load rounds, per-round growth decayed 9,680 → 140 → 88 → 48 kB and then went **negative** during the settle, with threads returning to idle ⇒ **no leak**. On this host the remediated plateau was in fact *lower* than the baseline's, so the sign is workload-dependent; the plateau is what generalises. Both in-process caches are size-capped and lazily populated | Accepted — a footprint change, not a leak | Platform team |
 
 ### Identifiers renumbered while consolidating this register
 
@@ -1434,6 +1443,20 @@ than a remediation. Separately, a database outage now refuses logins that the ea
 allowed — a deliberate availability-for-security trade, bounded by the observation above that logins could
 not have succeeded during such an outage anyway.
 
+**Both halves of that residual were reproduced from the outside, and the result is now written down as a
+procedure.** Finding `Q7` of the final frontend verification deliberately locked an account, then deleted
+**all thirty** `plugin_data` rows the control had written (twenty-nine `wv_sec_lthr_acct_*` plus one
+`wv_sec_lthr_addr_127.0.0.1`) and confirmed zero remained — and login still failed with a
+verified-correct password and a valid antiforgery token. It succeeded only after the host process was
+restarted. That is the positive-only in-process mirror described above behaving exactly as documented: the
+mirror can only refuse, it re-learns from the database on a miss, and its entries expire when the lockout
+they mirror lapses — but deleting the durable rows does not evict it, so **clearing the rows alone does not
+release an in-force lockout**. The consequence for an operator is that recovery has two supported routes and
+no third: wait out the window, or clear the rows *and* recycle the process. Because that is a runbook rather
+than a code change, it is now written out step by step under *Releasing an account lockout* in
+[the secure configuration guide](secure-configuration.md), which is where an operator will look for it. The
+finding was graded Informational and is consistent with this entry rather than contrary to it.
+
 **Complementary control.** Transport-level rate limiting is a separate layer that belongs in each host
 pipeline and is not provided by this service. It is recorded in the
 [secure configuration guide](secure-configuration.md) as host wiring; a per-address fixed-window limiter
@@ -1603,6 +1626,45 @@ useful part: inline *style* dominates by an order of magnitude, so the practical
 `style-src` first, then the far smaller `script-src` and `eval` sets — and to add the two missing
 directives above, which are prerequisites regardless of progress on the inline work.
 
+#### The enforcement path is broader than the plan's four components — the measured directive census
+
+Raised by the final frontend verification as finding `Q4`, graded Major, and it is a **planning-accuracy**
+finding rather than a runtime defect: the staged rollout is not invalidated by it, it is *validated* by it,
+and the only thing that changes is the length of the documented path. Section 0.6.5 of the plan names
+**four** inline-script components as the reason the mandated policy must ship report-only. A directive
+census taken at runtime, across a full pass of all seven hosts, shows the enforcing form of
+`script-src 'self'; style-src 'self'` would additionally refuse **six directive families**, on **every
+screen of every host** rather than on the four components' screens:
+
+| Directive family | Measured per page | What it comes from |
+| --- | --- | --- |
+| `style-src-elem` — inline `style` **elements** | **63–67** | The tag-helper and component libraries emit their own style elements on every render |
+| `style-src-attr` — inline `style` **attributes** | **9–31** | Per-element styling across grids, widgets and the page header |
+| `script-src-elem` — inline `script` **elements** | **12–17** | Component service scripts and the generated per-page bootstrap |
+| `img-src` — `data:` images | **3** | The code editor's own inline image assets, plus the framework spacer already recorded above |
+| `worker-src` — `blob:` worker | 1 per editor instance | The code editor's syntax worker, already recorded above |
+| `script-src` — `eval` | 1 per page | The vendored lazy-load chunk `wv-lazyload/p-7e344a40.js`, already recorded above |
+
+Two of the six are therefore **new** to this entry — the split of inline style into *elements* and
+*attributes*, which matters because the two are governed by different directives and by different remedies
+(the element class is refactorable to external stylesheets; the attribute class needs `'unsafe-hashes'` or a
+markup change) — and the honest reading of the other four is that they were recorded here already but not in
+the plan. The measured scope is what makes the difference practical: the four components the plan names are
+reachable on a minority of screens, whereas these families appear on **every** screen, so stage 2 and stage 3
+above are product-wide work rather than component-local work.
+
+**What this does not change.** The staging decision, the stage exit conditions and the promotion threshold
+all stand. **What it does change** is that a reader planning the transition should budget against this census
+rather than against a four-component list, and should expect `style-src-attr` and the `eval` subset to be the
+two that cannot be cleared by refactoring alone.
+
+**And the measurement that matters most for the two Criticals the same pass found.** Across three
+directive-stressing screens the pass recorded **298** violation events and **298 of 298** carried
+`disposition: "report"` — **zero** enforcing. Both executing cross-site-scripting defects it found were
+*observed* by this policy and *blocked* by neither. That is the report-only contract working exactly as
+documented, and it is the concrete demonstration of the warning at the top of this entry: report-only closes
+nothing on its own.
+
 ### RISK-005 — RETIRED: the CSP report endpoint no longer exists
 
 | Field | Value |
@@ -1737,7 +1799,7 @@ path, and encoding it would render the badge markup as literal visible text.
 | --- | --- |
 | **Status** | Accepted — inventory published; every channel carries its own disposition below. |
 | **Related findings** | H-06 (CWE-79), M-01 (CWE-1021), M-18 (CWE-116), OWASP A03:2021 |
-| **Raised by** | Code-review finding `MAJ-09` |
+| **Raised by** | Code-review finding `MAJ-09`; corrected by runtime finding `F-129`, which found class B's `metaTitle` half exploitable rather than accepted |
 | **Canonical for** | The channel inventory that RISK-022 and RISK-023 both rely on. |
 | **Owner** | Engineering — no owner decision is pending on this entry. |
 
@@ -1808,7 +1870,7 @@ boundary" names who must be compromised or mistaken for attacker-controlled byte
 | # | Class | Sinks | Writer | Trust boundary | Disposition | CSP directive it forces |
 | --- | --- | --- | --- | --- | --- | --- |
 | A | Server-composed row-action markup — `action`, `record["action"]` | 55 | Each page's own `*.cshtml.cs` list builder, e.g. `data_source/list.cshtml.cs:L70` | None reachable — interpolates only GUIDs, enum-derived literals and `ReturnUrlEncoded` | **Not a sink for untrusted data.** Left as-is per AAP §0.2.1, which proves all seven builders interpolate identifiers only | none |
-| B | Include-tag emitters — `tag`, `metaTitle` | 10 | `PageUtils.GenerateTagsFromObject` over typed `ScriptTagInclude`/`LinkTagInclude`/`MetaTagInclude`; `metaTitle` from `ViewBag.Title` | Developer at compile time; plus `ErpSettings.Lang` from operator configuration; `ViewBag.Title` from an administrator-authored page label | Left as-is — the emitters exist to build tags. Observation on `ErpSettings.Lang` recorded below | `script-src 'unsafe-inline'`, `style-src 'unsafe-inline'` |
+| B | Include-tag emitters — `tag`, `metaTitle` | 10 | `PageUtils.GenerateTagsFromObject` over typed `ScriptTagInclude`/`LinkTagInclude`/`MetaTagInclude`; `metaTitle` from `ViewBag.Title` | Developer at compile time; plus `ErpSettings.Lang` from operator configuration; `ViewBag.Title` from an administrator-authored page label | **Split, and the `metaTitle` half is now CLOSED rather than left as-is — see the correction below.** The `tag` emitters remain left as-is because they exist to build tags. `metaTitle` was a live stored cross-site-scripting sink (`F-129`) and is now encoded at composition. Observation on `ErpSettings.Lang` recorded below | `script-src 'unsafe-inline'`, `style-src 'unsafe-inline'` |
 | C | Compile-time literal instruction text — `ViewBag.GeneralHelpSection`, the `empty guid` anchor | 8 | `PageComponent.HelpJsApiGeneralSection` = the `HELP_JSAPI_GENERAL_SECTION` constant (`Models/PageComponent.cs:L23`); two view-local string literals | None — no interpolation hole exists | **Not a sink.** Constant markup | none |
 | D | Pre-encoded URLs — `Model.ReturnUrlEncoded`, `HttpUtility.UrlEncode(Model.CurrentUrl)` | 4 | The page model's encoded property; `HttpUtility.UrlEncode` at the sink | None — encoded before the sink | **Closed.** These are the *correct* pattern the three reflected H-06 fixes were changed to match | none |
 | E | SDK web-api documentation samples — `meta*Request*`, `field*Request`, `record*Request` | 11 | `entity/web-api.cshtml` itself, e.g. `L46`, interpolating `Model.ErpEntity.Id` and `.Name` | Administrator-gated schema write; values are identifier-constrained | Left as-is — server-composed markup, identifier-bounded | none |
@@ -1820,6 +1882,48 @@ boundary" names who must be compromised or mistaken for attacker-controlled byte
 | K | SDK code-generation preview — `record.Element`, `record.Name`, `change` | 3 | `tools/cogegen.cshtml.cs` diff/preview builder | Administrator — code generation is administrator-gated | Left as-is — server-composed preview markup | none |
 | L | SDK server-built nav fragments — `item`, `Model.CreateFieldUrl + fieldCard["type"]` | 2 | `AdminPageUtils.GetAppAdminSubNav`; `create-field-select.cshtml.cs:L31` literal path | None reachable — server-built paths and enum type names | **Not a sink** | none |
 | M | SDK relation metadata — `record["name"]`, `record["origin"]`, `record["target"]` | 3 | `entity/relations.cshtml.cs:L154-L177`, interpolating relation, entity and field names into badge markup | Administrator-gated schema write; every interpolated value is an identifier constrained by the platform's identifier grammar | Left as-is — identifier-bounded interpolation | `style-src 'unsafe-inline'` (badge `style=` attributes) |
+
+#### Correction to class B — `metaTitle` was a live sink, not an accepted one (`F-129`)
+
+Runtime testing of the delivered tree found that class B's `metaTitle` half was **exploitable**, and this
+entry recorded it as *"left as-is"*. The correction is written here rather than silently overwritten,
+because how the mistake was made is more useful than the count.
+
+**The trust-boundary column was already right and the disposition column was wrong.** Class B states
+plainly that `ViewBag.Title` comes *"from an administrator-authored page label"* — an untrusted-writer
+channel by this register's own standard — and then dispositions the whole class as *"the emitters exist to
+build tags"*, which is true of `tag` and false of `metaTitle`. The two arguments were counted together
+because they are emitted by the same view, and a shared disposition was applied to a channel that did not
+share the reasoning. Nothing new had to be discovered to catch this; the two columns of the same row
+contradicted each other.
+
+**What was exploitable.** `WebVella.Erp.Web/Components/HeadTopIncludes/HeadTopIncludes.cs:L29` composed
+`"<title>" + ViewData["Title"] + "</title>"` and `HeadTopIncludes/Default.cshtml:L12` emitted it through
+`@Html.Raw`. Twelve page models set `ViewData["Title"]` from `ErpRequestContext.Page.Label`, one of them
+`Pages/Site.cshtml:L8` for the public `/s/{name}` route. `<title>` is RCDATA, so a bare `<script>` inside it
+is inert — but a literal `</title>` closes the element and returns the tokenizer to markup state, so a label
+of `</title><script>…</script>` executed. Measured before the fix: `</title>` ×2 against `<title>` ×1, and
+16 script elements against 15 on a control page.
+
+**Why the class-by-class method did not surface it, and what to do differently.** The classes partition
+sinks by their *argument at the emission site*. `metaTitle` presents as a server-composed markup string, and
+the interpolation that makes it dangerous happens in a **different file, in C#**. A census that reads
+`.cshtml` and judges the argument it sees cannot distinguish "server-composed from identifiers" from
+"server-composed from a database value". **A future re-run of this inventory must classify each argument by
+its writer, not by its call site** — for class B that means following `ViewBag.Title` back to
+`HeadTopIncludes.cs`, and for class A it means the builder-site check AAP §0.2.1 already performed.
+
+**Disposition now.** Closed at the point of composition with `HtmlEncoder.Default.Encode`, which covers all
+twelve routes from one line and matches the encoder `BaseErpPageModel.EncodeMenuText` already applies to the
+menu half of the same value. Verified in a browser on the hostile fixture: `</title>` ×1, script count 15,
+`title.childElementCount` 0, no script element carrying the payload, and the payload's global `undefined`
+both with an `alert` tripwire installed and on a pristine load with the native `alert` in place. Behaviour is
+preserved — because RCDATA decodes character references, a Unicode label still yields the genuine `测试`,
+`مهمة` and `🚀` in `document.title` with zero U+FFFD and no literal entity text.
+
+**The counts in this entry are unchanged.** The sink total is still **111 across 61 views**, class B still
+holds **10**, and *"Sinks in `.cs` or `.razor` files: 0"* remains correct — the `Html.Raw` call really is in
+a `.cshtml`. Only the disposition moved, from accepted to closed.
 
 **Enumerating every occurrence, so this inventory is checkable rather than merely asserted.** The
 thirteen classes above partition the sinks; the command below prints all 111 individually as
@@ -5479,6 +5583,23 @@ at the login page.
 verified against the browsers actually in use rather than assumed to be sufficient. The re-request is the
 observable pass condition; the header is the means, not the proof.
 
+**Confirmed again by the final frontend verification, with the cache directives now enumerated.** Finding
+`Q5` reproduced this entry independently on a different host and a different screen — log in, load a task
+list, log out, press Back twice, and the page is restored with **all five rows of real business data**, the
+navigation bar and the logout link, issuing **zero** network requests. It also did what this entry could not:
+it enumerated what the other response classes send, and found **four distinct behaviours** on one host. The
+sharpest of them is that the login **`POST` 302** sets `cache-control: no-cache, no-store` together with
+`pragma: no-cache` while the **`GET` 302** sets *nothing at all*, though both are authentication redirects on
+the same host in the same session. So the inconsistency is not simply "framework pages have directives and
+platform pages do not" — it varies by HTTP method on the same route. That is worth knowing before the fix is
+written, because it means the fix cannot be expressed as "match what the sibling response does": there is no
+single sibling behaviour to match, and the scoped rule in the paragraph above is the whole specification.
+
+The pass also confirmed the bound that keeps this Medium rather than High, from the other direction: the
+restored rendering carries the logout link, and the session behind it is gone, so every action from that page
+lands on the login screen. And it confirmed the seven mandated headers are present on the response that
+lacks the caching directive, so the gap is specifically `Cache-Control` and nothing else.
+
 **Why this is recorded here rather than as a new audit-report finding.** The audit inventory of 53 findings
 is cited by count across this documentation set and in the remediation log's own arithmetic. This weakness
 was found after that inventory was frozen, during verification rather than during the audit sweep.
@@ -7277,6 +7398,12 @@ Two things follow. The staged report-then-enforce rollout is justified by eviden
 and the volume tells an operator how much work enforcement actually represents — it is not a switch, it is a
 backlog. The rollout guidance is in [the secure configuration guide](secure-configuration.md).
 
+**A third thing follows, and it is now measured: those violations cost time.** The performance checkpoint
+priced them at **+15 ms on the least-contaminated statistic and +18.5 ms on the paired median** of the longest
+main-thread task per page load, by publishing a build differing only in the suppression of this header and
+finding it at exact parity with the pre-engagement baseline. That residual, and why no available lever
+reduces it, is `RISK-181`.
+
 ### RISK-161 — The Markdown lint gate does not reach the clean exit its own configuration claims
 
 **A second, related documentation-toolchain note, recorded here rather than as its own identifier so the
@@ -7590,8 +7717,8 @@ disclosed here and in the audit report's `MAJ-10` table rather than treated as a
 | **Related finding** | Review finding `N18`; `SR-11` (`seam/M-07`). |
 | **Owner** | Platform team |
 
-`site.js` overrides the third-party tag-helper package's upload error handler because that handler cannot be
-edited — vendor code, version updates only — and is itself broken. Review finding `N18` found the override
+`wwwroot/js/upload-rejection-feedback.js` overrides the third-party tag-helper package's upload error handler
+because that handler cannot be edited — vendor code, version updates only — and is itself broken. Review finding `N18` found the override
 gated on `Function.prototype.toString` source matching, which meant **any** vendor edit (a version bump, a
 minifier pass, a re-mangled identifier) would silently stop the strings matching and the compensating
 control would fail **open**: the server would still refuse the file and the interface would still say
@@ -7694,3 +7821,371 @@ development-time CORS allowance work would trade a real protection for a conveni
 origin other than the host, send a credentialed `POST` to any `/api/**` route with cookie authentication and
 assert `403` with that exact message; then repeat with `Authorization: Bearer <token>` and no cookie and
 assert the request is processed. Both outcomes are correct.
+
+## Detailed entries — residuals recorded by the final frontend verification (`Q1`–`Q34`)
+
+A dedicated frontend verification pass exercised every rendered screen reachable across all seven hosts
+under Production posture over HTTPS, with three identities and four-plus viewports, and returned **34**
+findings: two Critical, and thirty-two that are not.
+
+**The two Criticals were fixed, and both are closed by measurement rather than by assertion.** `Q1` was a
+regression this engagement itself introduced at `WebVella.Erp.Web/Components/ScreenMessage/Default.cshtml`
+and `Q2` was a scope gap in the `H-06` remediation at
+`WebVella.Erp.Web/Components/HeadTopIncludes/HeadTopIncludes.cs`. Both are recorded in
+[the remediation log](remediation-log.md), not here, because a fixed defect is not a risk.
+
+**The other thirty-two are dispositioned as documentation, and the reason is the governing plan rather than
+convenience.** The engagement's severity matrix assigns *"Document with fix guidance"* to the Medium band and
+*"Document for future sprint"* to the Low band; section 0.6.1's governing rule remediates a Medium only when
+it is a compensating control for a confirmed Critical or High, is explicitly mandated by a Fix Implementation
+Standard, or is an unavoidable by-product of a Critical or High fix in the same method; section 0.3.2 forbids
+feature additions, enhancements and refactoring beyond a security fix, and permits version updates only in
+third-party code; and Minimal Change guideline 8 is the final word — *document out-of-scope concerns but do
+not fix unless Critical*. Every one of the thirty-two fails all three of 0.6.1's tests, and all but four are
+in files this engagement never touched. This is the same disposition `RISK-122` applied to the previous
+frontend pass, and it is applied here for the same stated reasons.
+
+**Four of the thirty-two are already carried by existing entries and are extended there rather than
+duplicated**, so that one subject keeps one home:
+
+| Finding | Subject | Where it now lives |
+| --- | --- | --- |
+| `Q4` | The Content-Security-Policy enforcement path is broader than the plan documents | `RISK-022`, *Governance of the promotion to enforcement* — extended with the measured directive-family census |
+| `Q5` | `Cache-Control` is absent on authenticated HTML, so a logged-out page is restorable from the back/forward cache | `RISK-118` — extended with the four-behaviour census and the `GET`-versus-`POST` redirect anomaly |
+| `Q7` | An in-force lockout has no administrative release path | `RISK-008`, plus a new operator recovery procedure in [the secure configuration guide](secure-configuration.md) |
+| `Q3` | The upload size cap could not be isolated through the browser path | `RISK-182` below, in the *verification coverage* row — the cap itself is confirmed at the API layer |
+
+### RISK-181 — Lockout state is disclosed by a response-latency side channel
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — documented with fix guidance. Not remediated in this pass. |
+| **Related finding** | `Q6`, arising from the interaction of `C-03` (high-iteration key derivation) and `H-16` (the login throttle) |
+| **CWE** | [CWE-208: Observable Timing Discrepancy](https://cwe.mitre.org/data/definitions/208.html) |
+| **Location** | `WebVella.Erp.Web/Services/LoginThrottleService.cs` interacting with `WebVella.Erp/Utilities/PasswordUtil.cs` |
+| **Owner** | Platform team |
+
+**What was measured.** Thirty-six timed login attempts against a running host, separated by whether the
+throttle was in force. **Not locked: n=24, 132.1–227.8 ms. Locked: n=12, 4.2–11.7 ms.** The ranges do not
+overlap — the slowest locked response is **11.3 times faster** than the fastest unlocked one — so any
+threshold between 12 ms and 130 ms classifies lockout state with complete accuracy over that sample.
+
+**Why it happens, stated as the interaction it is.** `TryBeginAttempt` is consulted *before* credential
+verification, and refuses without ever reaching the key-derivation function. That ordering is deliberate and
+correct — the point of a throttle is not to spend the work — but the work is exactly what makes an
+un-throttled attempt slow, so declining to do it is observable. Neither change is at fault alone: before
+this engagement there was no throttle at all, so there was no lockout state to leak.
+
+**What it does and does not enable.** It lets an attacker detect the moment a lockout begins and the moment
+the fifteen-minute window lapses, which is enough to pace credential stuffing so that no attempt is wasted,
+and to tell which accounts are currently locked. It does **not** enable user enumeration: a login for a
+username that does not exist still cost **153.8 ms**, because unknown users are hashed at full cost — a
+property `RISK-046` records deliberately.
+
+**Why it is documented rather than fixed.** Information disclosure sits in the Medium band, whose stated
+disposition is *"Document with fix guidance"*. It is not a compensating control for any confirmed Critical or
+High; no Fix Implementation Standard mandates it — the Authentication Hardening standard's constant-time
+clause governs the *credential comparison*, which is satisfied by the framework verifier's own fixed-time
+comparison, not the throttle's admission decision; and it is not a by-product of any Critical or High fix in
+the same method. Guideline 8 therefore applies.
+
+**The recommended minimal fix, for whoever takes it.** Give a short-circuited refusal a latency floor drawn
+from the same distribution as a real verification — either a fixed minimum wall-clock duration for the whole
+handler, or a randomised delay in the observed 130–230 ms band — applied in `login.cshtml.cs` around the
+throttle consultation rather than inside `LoginThrottleService`, so the service stays a pure decision and the
+delay stays a property of the HTTP response. Verify by re-running the timing measurement and asserting the
+locked and unlocked distributions overlap. Note the trade-off honestly: a latency floor holds a request
+thread for the duration, which is a small denial-of-service surface of its own, so the floor should be
+bounded and the per-address rate limiter left in place ahead of it.
+
+**Relationship to `RISK-009`.** That entry records a *response-length* discrepancy on the bearer-token route
+and closes when `H-13` removes exception text. This is a *latency* discrepancy on the interactive login page,
+which that fix does not touch. The two are siblings, not duplicates. The login page's rendered output remains
+invariant: across roughly forty attempts the message, status, response length, markup and headers did not
+vary, and three screenshots representing three different backend outcomes on two hosts are the same file by
+digest — so the leak is out-of-band only.
+
+### RISK-182 — The remaining findings of the final frontend verification, and the recommended fix for each
+
+| Field | Value |
+| --- | --- |
+| **Status** | Documented for a future sprint. |
+| **Related findings** | `Q3`, `Q8`–`Q26`, `Q29`–`Q34` — twenty-six findings: seven Major, seventeen Minor, two Informational, by the severity each carries on its own record |
+| **Owner** | Platform team, jointly with the frontend maintainer for the accessibility and responsive groups |
+
+Every finding below reproduces on screens this engagement never modified, and the pass that raised them said
+so itself: its central verdict was **no regression attributable to the remediation**, reached across
+thirty-six Lighthouse runs, a full keyboard sweep, a one-hundred-and-forty-seven-cell interactive-state
+matrix and a thirteen-screen visual-language comparison in which thirty of thirty-one dimensions were
+consistent and **none** divergent. The accessibility defects are measurably *worse* on the untouched
+baselines than on the changed screens. They are recorded here because the plan's fourth objective requires
+every documented finding to carry an actionable fix rather than a generic caution.
+
+**Accessibility — the largest group, and the one worth scheduling first.** No page on any host reaches an
+accessibility score of 80 (measured range 64–77). One methodological point governs how to read those scores:
+several rules run as *informative*, so they report a passing score while their findings list genuine
+failures — `bypass` (impact serious) reports verbatim that no valid skip link was found, the page has no
+heading and the page has no landmark region. A score-only reading misses all of them.
+
+| Finding | Measured | Recommended fix |
+| --- | --- | --- |
+| `Q9` — the code editor is a hard bidirectional keyboard trap (WCAG 2.1.2, Level A) | Tab indents, Shift+Tab outdents, Escape does nothing, Ctrl+M and F6 inert; six escape routes exhausted; only a mouse click escapes. Present on `page/manage-custom`, `data_source/c/create` and fifteen hidden instances each on the log and job lists | Bind Escape to blur in the editor's own command table where it is instantiated (`editor.commands.bindKey`), or enable the library's keyboard-accessibility option where the vendored version supports it. The library itself is third-party and must not be edited — version updates only |
+| `Q10` — the navigation focus ring is clipped to 12 painted pixels (WCAG 2.4.11) | Ring paints exactly 12 px for anchors measured at 34, 73, 71, 65 and 30 px wide, because `div.menu-nav` sets `overflow: hidden` and is sized to its child; the one unclipped element paints 528 px from the same declaration. 12 of 15 navigation stops degraded | One declaration in `WebVella.Erp.Web/Theme/styles.css`: `overflow: visible` on `div.menu-nav`, or move the ring to the wrapper. Re-measure the ring width per anchor afterwards |
+| `Q11` — focus indicators are invisible or actively destructive (WCAG 1.4.11) | `.btn-outline-secondary` focus changes **0** pixels (its ring is `rgba(255,255,255,.5)` on white, 1.00:1). `.btn-white` focus is *subtractive*: 533/1131/1095 pixels change and every one is lighter, because the drop shadow is replaced by a white halo and the button's only boundary vanishes. The stylesheet also deletes rings outright with `.form-control:focus{box-shadow:none}` and `.page-header-toolbar a{box-shadow:none}`, while select2 and `.btn-blue` keep theirs | Add one `:focus-visible` rule with a 2 px outline and offset in `button-colors.css`, and remove the two `box-shadow:none` focus overrides. The buttons are already class-driven, so a single declaration reaches the product |
+| `Q12` — zero landmarks, zero skip link and zero `h1` on every page of every host (WCAG 1.3.1, 2.4.1) | A census of all first-party views and components found **0** files containing `main`, `nav`, `header`, `footer`, `aside`, `section`, `role="main"`, `role="navigation"`, `role="banner"` or `skip` as markup. Navigation is `div#nav`, content is `div#content`. `landmark-one-main` fails in all thirty-six Lighthouse runs; `h1` count is 0 on all eighteen page-instances, invisible to automation because heading-order passes. Total first-party ARIA attributes: **2**, both `aria-hidden`. No live region anywhere, including the login failure alert | Promote the page-header title to `h1` inside the page-header tag helper, wrap the body region of `_AppMaster.cshtml` in a `main` element, add a skip link as the first focusable element of that master, and give the login alert `role="alert"`. Four edits, all in shared files |
+| `Q13` — every textarea in the product has an orphaned label (WCAG 1.3.1, 3.3.2) | The label emits `for="input-{guid}"` while the multiline renderer emits `id="textarea-{guid}"` — same identifier, wrong prefix. The browser independently raises both *no label associated with a form field* and *incorrect use of a label `for` attribute*. Root-caused independently three times | Derive the `for` value from the element actually rendered, in the multiline field renderer that emits both shapes. One edit fixes every textarea |
+| `Q14` — approximately 51 colour-contrast failures across six of seven page types (WCAG 1.4.3) | Worst is `#8bc34a` on `#f5f5f5` at **1.92**. Others: `#ffffff` on `#2196f3` 3.12; `#9e9e9e` on white 2.67; `#e83e8c` on white 3.81; `#777777` on white 4.47; `#999999` on white 2.84; `#f44336` on white 3.68; `#4caf50` on white 2.77. One page passes entirely (`#155724` on `#d4edda` = 6.99) | Darken roughly six palette tokens until each reaches 4.5:1 against its actual background; the pass estimated that clears all fifty-one. Treat the accent-as-text uses first, since they are the worst |
+| `Q15` — icon-only controls reach assistive technology unnamed | 3–11 unnamed interactive elements per authenticated page. Root cause proven: the glyphs are CSS pseudo-elements with no child element, so `alt` is impossible and only `aria-label` can name them. The home icon, hamburger and settings gear are unnamed on every shell page; the three launcher tiles are unnamed because their child is an absolutely-positioned empty element with the visible label outside the anchor; both dashboard canvases have no `aria-label`, no `role` and no fallback content; the navigation logo has **no `alt` attribute at all** on every screen measured | Add `aria-label` alongside the existing `title` in the tag helpers that emit icon-only controls — the logout link already carries `title="Logout"` and passes, so the pattern exists and was simply not applied. Add `alt` to the logo image and an `aria-label` plus fallback text to both canvases |
+| `Q16` — touch targets below 44 × 44 | `target-size` **passes** in Lighthouse because the audit uses a 24 × 24 threshold; against 44 × 44 every page fails. Worst: a sort link at **16 × 14**, the brand link 16 px tall, navigation icons 33.5 × 40 with a **0 px** gap — and one of the abutting targets is Logout. Sizes are byte-identical at 1440 px and 390 px, so there is no responsive adaptation | Increase padding in the shared button and icon-button classes and introduce a minimum gap between adjacent navigation targets. Measure against 44 × 44 rather than against the audit, and re-check the navigation band at 390 px |
+| `Q17` — table and menu semantics are deficient in three distinct ways | Dashboard timesheets carry nine `th` each with **0** bearing `scope`, and their row labels are `td`, so `td-has-header` fails. The tasks-queue tables have **zero** `th`, no `thead` and no `role="presentation"`, so they are announced as data tables with no headers. The three real grids are structurally correct but carry `scope` on **0** of their `th`, no caption, no accessible name, an empty first action `th` and `aria-sort` null. Navigation dropdowns have no `aria-expanded`, `aria-haspopup` or menu role and stay open after focus leaves; Escape is non-functional product-wide except on select2; the filter drawer has no focus containment, `role` null, `aria-modal` null, dumps focus to the body on close, and its close control is unnamed | Add `scope="col"`/`scope="row"` and a caption or accessible name in the grid renderer; mark the layout-only widget tables `role="presentation"`; add `aria-expanded`/`aria-haspopup` and a keydown handler to the navigation script; and give the drawer a dialog role, `aria-modal`, focus containment, focus restoration and a named close control. The grid is first-party here, so these are reachable |
+
+**Responsive and layout.**
+
+| Finding | Measured | Recommended fix |
+| --- | --- | --- |
+| `Q18` — three mobile horizontal-overflow instances with no scroll container | At 390 px: the SDK page-manage screen overflows **100 px**, the Project dashboard and task list overflow **451 px** — clipping the timesheet total column *and the navigation itself* — and the Mail list overflows **371 px**, hiding four columns. **No ancestor establishes a scroll container**: `div.erp-list`, `.card-body`, `.card` and `.lnc` are all `overflow-x: visible` with no scrollable extent, so the content is unreachable rather than merely off-screen. Minimum content width is 808 px and there is deliberately no mobile navigation collapse. The nine-column timesheet escapes its card below about 532 px, measured at +133.3 px at 390 px | Wrap the grid holder in `.table-responsive`, or set `overflow-x: auto` on it. This is the same fix `RISK-122` already recommends for the same product-wide gap, and `grep -c table-responsive` still returns 0 across the tree. Add the navigation collapse markup the theme already ships CSS for |
+| `Q19` — mobile first-contentful-paint degraded by about eighteen serialised render-blocking resources | Mobile FCP 4.4–6.4 s; the render-blocking insight reports 610 ms desktop against **3,590 ms** mobile. The rich-text editor bundle (241 KiB) is loaded render-blocking **on the login page, where no editor exists**; the un-minified `bootstrap.css` (26,480 bytes) ships instead of the minified build; `button-colors.css` is loaded twice. Desktop performance is 95–98, so this is mobile-specific | Load the editor bundle only on the pages that instantiate it, switch to the minified stylesheet, and de-duplicate the stylesheet include. All three are include-list edits in the head-includes components, not architecture |
+
+**Interaction and forms.**
+
+| Finding | Measured | Recommended fix |
+| --- | --- | --- |
+| `Q20` — no loading indicator exists anywhere in the product | A DOM census on five screens returned **0**, and filtering for a running animation returned an empty set. A 225-frame instrumented recording of a real submit measured about **3.9 s of completely unindicated wait**, during which the form stays fully interactive. The capability is bundled and unused: five keyframe sets including the application's own spin animation, and twenty-one selectors including an application-authored loading pane | On submit, show the already-bundled loading pane and disable the submit control. One shared handler in `site.js` reaches every form and closes `Q21` at the same time |
+| `Q21` — no double-submit guard on any form | Two clicks produce two un-prevented submit events; three forced activations inside one JavaScript task produce three — yet exactly **one** POST reaches the server each time, so only the browser's own navigation coalescing protects it. The guard genuinely does not exist: the control is not disabled immediately after the first click (sampled synchronously, in a microtask and in the next macrotask), the class attribute is byte-identical to its pre-click value, `aria-busy` and `aria-disabled` are null, there are no spinner elements, and no submit handler calls `preventDefault`. Under a throttled connection the live window measured **2.07 s** | The same shared submit handler as `Q20`: disable the control and set `aria-busy` on first submit. On a form that can succeed this is a real duplicate-submission window, so it is worth scheduling with `Q20` rather than after it |
+| `Q22` — validation errors are not programmatically associated | `aria-invalid`, `aria-describedby` and `aria-errormessage` are **null** on every field, and the feedback element has **no `id`**, so it could not be referenced even if the attribute were added. The `label for` association is correct, so it is specifically the *errors* that are invisible to assistive technology (WCAG 3.3.1, 1.3.1) | In the validation renderer, emit an `id` on each feedback element and point `aria-describedby` and `aria-invalid` at it from the field. The rendering itself is already precise — exactly one invalid element, feedback 4 px beneath the field, left edges aligned — so this is attribute plumbing only |
+| `Q23` — no focus management after validation | `document.activeElement` remains the body after a failed submit on both hosts measured | Move focus to the first invalid field, or to the page-level alert, in the same renderer. Pairs naturally with `Q22` |
+| `Q24` — validation messages are inconsistent across hosts | One host renders the bare word *Required*, naming no field; another renders *Page name is not specified.* for the same class of failure. One host's banner duplicates its first message as a bold title; the other has no title at all | Give the validation collector one message template that names the field, and one banner shape. A wording change, but it is the difference between a usable and an unusable refusal |
+| `Q25` — no maximum length client- or server-side | A 5,000-character single token round-tripped with no error; `maxLength` is −1 and no `maxlength` attribute is emitted. Layout nevertheless holds: the field scrolls internally (47,302 px content in a 442 px box) and the container, panel and document widths are unchanged, so there is no overflow | Add `maxlength` in the field renderer **and** a server-side length bound in the page models. `RISK-122` records the security-relevant edge for the same finding: some of these values reach a URL segment, so the server-side bound is the one that matters |
+| `Q26` — the submit control precedes every field in tab order on create forms | A real thirty-press keyboard walk produced a twenty-four-stop cycle with submit at stop **14** and the seven fields at 16–23; reproduced on four create forms. Cause: the action buttons live in the page-header component, which precedes the form in DOM order; there is no positive `tabindex` anywhere. The rich-text editor correctly collapses to a single stop, with all fifty-eight toolbar buttons at `tabindex="-1"` | Move the action buttons after the form in DOM order and keep their visual position with CSS, or give the form a wrapping landmark and order the header actions last. Do not reach for positive `tabindex` values — they would make the rest of the page's order worse |
+
+**Routing, rendering and state.**
+
+| Finding | Measured | Recommended fix |
+| --- | --- | --- |
+| `Q29` — the launcher offers applications the host cannot serve, and the failure page is a dead end | The launcher enumerates the shared three-application table, so every host renders all three tiles, but each host process loads only the plugins its project references. Clicking through returns **500** on two hosts (documents byte-identical at 263 characters) and **404** for the SDK tile on another. The result page is eight elements with **0** anchors, buttons, forms, scripts, stylesheets and landmarks, no navigation shell, no correlation identifier, quirks mode and no `lang`; the only recovery is the browser Back button, which does work. Security posture is correct — zero of sixteen disclosure terms, all seven headers present | Either add the missing project references to the hosts that expose the routes, or filter the launcher to the applications the running host actually loaded. This is a product packaging decision, not a security one, and it is the same root cause `RISK-122` records for a dashboard route. Newly *exposed* rather than caused by this engagement: the `H-12` Production flip replaced a developer exception page with the generic one |
+| `Q30` — a compiler diagnostic destroys the Mail list data region on hosts lacking the plugin | The script compiler names its source `script`, so the unescaped diagnostic (*error CS0234: … does not exist in the namespace*) opens a real script start tag and the parser swallows the remaining cells, the second row and the pager: four rows and four alert blocks on the wire become one row, no footer and no pager in the parsed document, with six script elements re-parented inside an alert that renders as an empty 260.56 × 16 pink bar. **Not attacker-controlled** — the value is compiler output — so it is a rendering defect of the `CWE-116` class rather than an exploitable one. Renders correctly on the owning host | HTML-encode the diagnostic before emitting it into the alert, at the cell-render error path. Note that the screen is already failing on those hosts for the reason in `Q29`; encoding makes the failure legible instead of destructive, and the two are best fixed together |
+| `Q31` — a stale header count and pager on one relation tab | The entity-detail pages tab reports the *global* totals — *30 records* and *1-15 of 30* — regardless of the entity's own page count, including on zero-row screens where the body correctly reads *no pages found*, and it renders an active first-page control. Reproduced on three of three entities, data-independent (two zero-row captures byte-identical by digest). **A single-screen defect, not a template-family one**: the sibling relation tabs of the same template are all correct. Localised: the pages tab is the only one of the four rendering a description block, and its header is byte-identical to the standalone global list, so it reuses the *global* page-list definition while only the table body is relation-filtered | Give the pages tab its own entity-scoped list definition, as the fields tab already has. Body data is always correct, so this is misleading rather than wrong |
+| `Q32` — two developer pages sit outside the product shell and disclose internals | The query and search test pages render with no navigation, no page header and **0** stylesheets, in the browser default font, with `lang` absent. The query page shows its error in unstyled monospace and discloses query syntax, relation and field names and the privileged account names to any authenticated user. The search field is completely unlabelled — no `id`, label, `aria-label` or placeholder — and its form uses no post-redirect-get, so history *forward* onto a result yields the browser's form-resubmission prompt. Hostile input is correctly escaped: the reflected value renders entity-encoded, zero script elements in the whole response, no dialog | Either remove both pages from the shipped hosts or place them behind the administrator role and inside the product master layout. They are test scaffolding that predates this engagement; the disclosure is bounded to authenticated users, which is why it is Minor rather than High |
+| `Q33` — the developer diagnostics page renders nothing | The body text is fourteen characters, because five of the platform's own tag helpers are emitted **untransformed** as unknown custom elements — the submit form is not a form element, there are zero real forms and zero visible interactive controls. It is authentication-gated on all four hosts probed and leaks none of the sixteen disclosure terms, but it exposes an internal API path and two hardcoded non-English strings | Delete the page, or fix its view imports so the tag helpers are registered. It is functionally dead either way, so removal is the smaller change — but removal is a deletion, which this engagement's modification boundary does not permit |
+| `Q34` — the login logo vanishes on every error render | The post handler never assigns the brand logo, so a re-rendered login page carries an image element with a null source and a natural width of 0. **Pre-existing**: the pre-engagement handler has the same omission on its own failure path. This engagement added a **third** such path — the throttle refusal — extending an existing defect to a new render rather than creating it | Assign the brand logo once at the top of the post handler so every re-render path inherits it. One statement; it covers the pre-existing paths and the added one together. Recorded here because the pass found it absent from this register |
+| `Q3` — verification coverage: the upload size cap is not isolable through the browser path | A `.bin` body trips the extension allow-list before any size check, and a supplementary 12 MB probe declared as an image tripped the content-type check. Both 12,582,912-byte bodies were accepted and parsed — an application-level 400, never a transport 413 — and no client-side limit exists in any of the fourteen loaded scripts. The one probe that would isolate it was deliberately declined because it would have created a stored artefact if the cap were higher than the probe. The cap **is** confirmed at the API layer, where a 27 MB upload is refused by a message naming the 25 MB limit | No product change required. To close the coverage gap, add a transport-level request-body limit as `RISK-146` already recommends, which makes the bound observable as a 413 before model binding and removes the need for a stored-artefact probe |
+
+**One finding is deliberately not renumbered into this entry.** `Q8` — that the access-denied page is the
+primary screen for every non-administrator and offers no route back — is already recorded in `RISK-122`,
+which states the reason the template is layout-free and self-contained: so that it cannot itself fail. The
+new pass adds measurements worth carrying: the page is 292 bytes with **0** anchors, landmarks and live
+regions, in quirks mode with no `lang`, and only the unauthorised and not-found query values are
+special-cased while every other value falls through to a generic 200. The recommendation is unchanged — a
+future sprint adds a doctype, a `lang` attribute and a single home anchor, keeping the page self-contained.
+
+### RISK-183 — Two pre-existing unhandled 500 responses where field validation was expected
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — documented with fix guidance. Not remediated in this pass. |
+| **Related findings** | `Q27` (Major), `Q28` (Minor) |
+| **CWE** | [CWE-755: Improper Handling of Exceptional Conditions](https://cwe.mitre.org/data/definitions/755.html) |
+| **Location** | `WebVella.Erp.Plugins.SDK/Pages/entity/data-manage.cshtml:L33` with `WebVella.Erp/Utilities/Dynamic/Expando.cs:L340`; and the SDK page-create post handler |
+| **Owner** | Platform team |
+
+**`Q27`, and why it is not a consequence of the credential work.** Saving a generic user record whose
+e-mail duplicates an existing one *while the password field is left empty* returns **HTTP 500** and the
+validation message is lost. The mechanism is precise: the post handler deliberately **removes** the empty
+password property — that removal is what protects the stored hash, and its correctness was separately
+confirmed when a full-record round trip left the hash byte-identical — and if the update then fails, the
+catch path re-renders the page, whose field loop indexes the record by name and throws
+`KeyNotFoundException: The given key 'password' was not present in the dictionary` **during Razor
+rendering**, after the response has already begun.
+
+The isolation control matters, because it is what rules this engagement out as the cause: the same duplicate
+e-mail *with* a non-empty password returns **200** with the application's own alert, and four further
+negative controls — no-change save, cleared e-mail, invalid e-mail format and duplicate username — all
+redirect normally. So the fault requires an empty password **and** a failing save together. All three files
+involved are byte-identical to the pre-engagement tree, and the removal is keyed on the field *type* rather
+than on the security flag this engagement introduced, so `C-02` neither created nor widened it.
+
+**`Q28`.** Submitting the SDK page-create form with the numeric weight field cleared returns an unhandled
+**500** where field validation was expected, isolated by controlled comparison: restoring a value and
+re-submitting returns 200 with correct validation, so it is specifically an empty value in the *numeric*
+field rather than the empty text fields. It was the only 500 in an entire adversarial session, and the
+changed view on that screen carries a one-token return-URL substitution that cannot reach a numeric
+conversion.
+
+**Both are bounded by the error handling this engagement did deliver**, which is why they are Minor-class
+security-wise and Major-class only in usability terms: the response body is **263 characters** — *An
+unexpected system error occurred.* — a sixteen-term disclosure scan returns **zero** hits, and the response
+still carries all seven mandated headers plus `cache-control: no-cache, no-store`. Nothing leaks; a
+validation message is simply replaced by a generic failure.
+
+**Why they are documented rather than fixed.** Neither is a vulnerability: both are functional defects on
+paths whose *security* behaviour was verified correct. Section 0.3.2 excludes changes not motivated by a
+confirmed vulnerability, and guideline 8 permits fixing only Criticals outside the confirmed set. Neither
+file is in the transformation map.
+
+**The recommended minimal fixes.** For `Q27`, make the view's field loop tolerate an absent key —
+`Model.Record.ContainsKey(field.Name) ? Model.Record[field.Name] : null` — which is a one-expression change
+at the throwing line and leaves the protective removal untouched. For `Q28`, convert the numeric field with
+a `TryParse` in the page model and add a validation error on failure rather than letting the conversion
+throw. Verify each by re-running its exact reproduction and asserting a 200 with a rendered validation
+message instead of a 500.
+
+## Detailed entries — residuals measured by the performance checkpoint
+
+These four entries come from the checkpoint that measured this remediation against the scope's *"performance
+stays within 10% of baseline"* preservation requirement. Every number below was taken side by side against a
+build of the pre-remediation merge-base commit `c8ea6bd4`, published under the same SDK, against an
+identically seeded database, on the same machine, with the two builds **interleaved** so host contention hit
+both equally.
+
+Two regressions were reported. **One was fixed** — the second revocation lookup on a bearer request, closed
+by scoping a negative answer to the request that asked (`plugin_data` probes per bearer request measured
+`1.97 → 0.96`, and the read shape that had breached the boundary moved from `+13.1%` to `+1.8%`). It leaves no
+residual and therefore has no entry here. **One could not be**, and it is `RISK-184`.
+
+### RISK-184 — The report-only content policy costs ~15–18 ms of main-thread work per page load
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — the header set is a frozen requirement; the cost is measured, bounded, invisible to users, and disappears on the documented enforcement path. |
+| **Related finding** | Performance checkpoint issue 1 (Major); extends `RISK-155`, which recorded the violation volume but not its cost. |
+| **Owner** | Repository owner — this is the same category of decision as `RISK-001`: only the owner can trade a mandated control against a stated performance boundary. |
+
+The performance checkpoint found the longest main-thread task per page load **higher on every page of every
+host**, and named two causes: the `Content-Security-Policy-Report-Only` header, and the fact that the CWE-754
+upload-refusal control had been appended to `wwwroot/js/site.js`, which the platform emits as a
+**synchronous, render-blocking `<script>` inside `<head>`** — so its 18,151 bytes sat on the critical path of
+every page.
+
+**The second cause is fixed and needs no acceptance.** That block now ships as its own `defer`-loaded asset,
+`wwwroot/js/upload-rejection-feedback.js`; `site.js` is byte-identical to the pre-remediation file
+(17,742 bytes, sha256-matched), and the browser now reports the moved asset as `non-blocking` with the
+**render-blocking resource set identical to the baseline's at 18 resources**. The control was re-verified end
+to end afterwards: a refused `.svg` still produces a visible `role="alert"` message carrying the server's own
+words, the input is still cleared, and a subsequent accepted upload still retracts it. Deferring it is in fact
+*more* reliable than the original placement, because a deferred script is guaranteed to run after every
+synchronous script, so the jQuery guard inside it can no longer be defeated by an include-order change.
+
+**The first cause is the entire remainder, and it was isolated rather than inferred.** A third build was
+published from a scratch copy of the source with only the policy header suppressed — its `/login` HTML is
+byte-identical to the shipped build's — and measured in the same interleaved rounds:
+
+| Build | Longest task, min | Paired per-round median vs baseline | Rounds slower than baseline |
+| --- | --- | --- | --- |
+| Pre-remediation baseline | 83 ms | — | — |
+| Shipped build, policy header **suppressed** | **83 ms** | **+0.0 ms** | 4 of 10 (4 faster, 2 tied) |
+| Shipped build as it ships | 98 ms | **+18.5 ms** | **10 of 10** (sign test p = 0.00098) |
+
+So with that one header removed the remediated build is at **exact parity** with the pre-remediation build,
+and **100% of the residual is the header**. The mechanism is counted, not guessed: the policy raises **66–68
+violation reports per page load**, of which **64 are inline styles**, each with a distinct hash, and most are
+injected at runtime by the vendor tag-helper library and the bundled web component rather than authored in
+this repository.
+
+**Why it is not reduced.** Every available lever is closed:
+
+- **Weakening the policy value is forbidden.** The scope specifies the seven headers with exact values and
+  calls the list prescriptive rather than advisory; only the *delivery mode* is staged. The value is a
+  compile-time constant with no override path precisely so that no host or plugin can weaken it.
+- **Nonces and hashes do not reach the dominant class.** A CSP nonce does not govern a `style` **attribute**
+  or a `<style>` element injected at runtime, so the only expressions that would silence those 64 violations
+  are `'unsafe-inline'` or `'unsafe-hashes'` — i.e. weakening, by another name.
+- **Removing the inline styles at source is out of scope and mostly not ours to remove.** It would mean
+  editing vendor code, which takes version updates only, and refactoring inline style attributes across 395
+  Razor views — the mass refactor the scope's modification boundaries forbid.
+- **The reporting checkpoint that raised this said the same**: *"Do not weaken or remove the header set."*
+
+**What the cost actually is, stated plainly.** +15 ms on the least-contaminated statistic and +18.5 ms on the
+paired median, per page load, on a shared four-vCPU host. Every Core Web Vital stays inside the "good" band on
+both builds, page transfer rises about 1%, request counts are unchanged, there are **zero** console errors and
+**zero** responses of 400 or worse, and the rendered pages are **byte-identical PNGs — zero differing
+pixels**. Nothing is blocked, because the policy is report-only; the cost is the browser building reports
+nobody collects.
+
+**When it goes away.** On the documented report-then-enforce rollout in
+[the secure configuration guide](secure-configuration.md): as the platform's own inline styles, inline
+scripts and single `eval` are eliminated, the violation count falls and this cost falls with it, until the
+policy can be promoted to enforcing — at which point there are no violations left to report. **Owner
+decision required:** accept the measured cost as recorded here, or fund that inline-style elimination as its
+own piece of work. **QA probe:** publish the build twice, once with the policy header suppressed, and compare
+the longest main-thread task per page load in interleaved rounds; the suppressed build should sit at
+pre-remediation parity and the shipped one about 15–18 ms above it.
+
+### RISK-185 — The credential write path derives a hash before the uniqueness rejection
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — an authenticated-administrator-only, limiter-bounded asymmetry; reordering the platform's single plaintext-to-hash write seam is refused as a performance-motivated refactor. |
+| **Related finding** | Performance checkpoint informational observation 5. |
+| **Owner** | Platform team |
+
+The login path is provably bounded at **one** key derivation per attempt, and no input can amplify it — see
+`RISK-186`'s sibling measurements and the checkpoint's own probes. The **write** path is not symmetrical with
+it. `RecordManager` derives the PBKDF2 hash inside the field-value collector, which runs **before** the
+uniqueness rejection, so *N* concurrent submissions of the same new user cost *N* derivations even though
+*N − 1* of them are about to be refused.
+
+Measured, three repetitions of two simultaneous identical user-create submissions: **exactly one row created
+every time** (one redirect, one rejection — there is no race defect), at a wall time of **147–211 ms** against
+a baseline's 23–78 ms, the difference being the derivations.
+
+**Why it is not reordered.** It requires an **authenticated administrator** to reach at all, and it is bounded
+by the 600-per-minute transport limiter, so the exposure is a slower response for the administrator doing the
+duplicating. Against that, the change would restructure the platform's *only* plaintext-to-hash write seam —
+the seam that closes `C-03` — for a performance reason, which the scope's minimal-change clause refuses on two
+counts: *"do not enhance or optimize beyond remediation"* and *"document out-of-scope concerns but do not fix
+unless Critical"*. **QA probe:** fire two identical user-create submissions simultaneously and assert exactly
+one row exists afterwards; the wall time is expected to carry two derivations.
+
+### RISK-186 — A throttled request is refused before authentication, so a routed page answers 429 rather than 302
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — the ordering is the control. Moving the limiter after authentication would reopen `H-16`. |
+| **Related finding** | Performance checkpoint informational observation 7. |
+| **Owner** | Platform team |
+
+While a client is over the transport limit, a routed page that would normally answer `302` to `/login`
+answers **`429`** instead, because the rate limiter short-circuits the pipeline **ahead of** authentication.
+Verified directly: the same anonymous `GET /` returned `302` to `/login?returnUrl=%2F` before throttling,
+`429` with `Retry-After: 60` while throttled, and `302` again after the window rolled over. A genuine static
+file returned `200` throughout, confirming static assets consume no budget.
+
+**This ordering is deliberate and must not be reversed.** `H-16` is specifically about unlimited requests to
+*the login page and the anonymous token endpoints*; a limiter that ran after authentication could not protect
+the authentication path itself, which is the one it exists to protect. The consequence is cosmetic — an
+unauthenticated caller sees a throttling status instead of a redirect, while already being throttled.
+
+**One thing did change here.** The refusal previously carried no `Retry-After`, so a well-behaved client had
+nothing to obey and could only guess — and a client guessing low keeps hammering a limiter that is already
+refusing it. The `429` now carries `Retry-After`, taken from the limiter's own lease metadata with the window
+length as a fallback and rounded up to whole seconds, alongside all seven security headers. **QA probe:**
+exceed 600 requests in 60 seconds and assert the `429` carries a sane `Retry-After` and the full header set.
+
+### RISK-187 — Steady-state memory footprint changed by the added controls; it plateaus
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — a footprint change, not a leak. Worth sizing for on small hosts. |
+| **Related finding** | Performance checkpoint informational observation 8. |
+| **Owner** | Platform team |
+
+The added middleware, the lockout mirror and the security-state store change the resident set. The checkpoint
+that raised it measured the remediated build's sustained-load plateau about **17% higher** (349 MB against
+297 MB) and about **4% higher at rest**, and was explicit that **both builds plateau**.
+
+Re-measured here over four rounds of six-worker load with a settle, per-round resident-set growth in kB:
+
+| Build | Growth per round | Change during settle | Threads |
+| --- | --- | --- | --- |
+| Remediated | 9,680 → 140 → 88 → 48 | **−164** | 17 → 23 → 17 |
+| Pre-remediation baseline | 7,544 → −12 → 8 → −8 | **−224** | 16 → 24 → 16 |
+
+Growth decays by two orders of magnitude and then goes **negative** during the settle, and the thread count
+returns to its idle level, on **both** builds ⇒ **no leak and no thread leak**. On this host the remediated
+build's plateau was in fact *lower* than the baseline's (268 MB against 298 MB), so the direction of the
+footprint difference is workload- and data-dependent; what generalises is the plateau, not the sign. The
+bound is structural rather than incidental: both in-process caches are size-capped and lazily populated, and
+the durable security-state store is reclaimed by expiry.
+
+**QA probe:** run sustained load in rounds, sampling resident set after each, and assert the per-round growth
+decays and the count returns toward its idle level after a settle.

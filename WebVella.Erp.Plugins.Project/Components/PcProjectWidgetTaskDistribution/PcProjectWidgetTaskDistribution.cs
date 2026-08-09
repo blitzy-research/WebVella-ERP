@@ -97,12 +97,29 @@ namespace WebVella.Erp.Plugins.Project.Components
 						userRecord["overdue"] = (int)0;
 						userRecord["today"] = (int)0;
 						userRecord["other"] = (int)0;
-						if (ownerId == null && !userDict.ContainsKey(Guid.Empty)) 
-							userDict[Guid.Empty] = userRecord;
-						else if (!userDict.ContainsKey(ownerId.Value))
-							userDict[ownerId.Value] = userRecord;
+						//The unowned bucket is keyed on Guid.Empty, and that key is now derived ONCE, here, rather
+						//than re-derived at each of the three places below that need it.
+						//THIS REPAIR IS LOAD-BEARING FOR A SECURITY CONTROL, which is why it is made rather than
+						//left as the pre-existing defect it is. The previous form read
+						//"if (ownerId == null && !userDict.ContainsKey(Guid.Empty)) ... else if
+						//(!userDict.ContainsKey(ownerId.Value))", so on the SECOND task with no owner the first
+						//test was false - the empty bucket already existed - and control fell through to
+						//ownerId.Value on a null Nullable<Guid>, throwing "Nullable object must have a value."
+						//The catch below turned that into an error card in place of the whole widget, so the
+						//H-06 encoding fix recorded immediately underneath - which publishes the avatar path and
+						//the owner name as DATA so the views encode them - NEVER EXECUTED for any project holding
+						//two or more unowned tasks. A stored cross-site-scripting control that cannot be reached
+						//is not a control, so leaving the crash in place would have left the remediation
+						//unverifiable in exactly the data state most installations are in.
+						//Behaviour is otherwise unchanged, case by case: an unowned task with no bucket yet still
+						//creates it; an owned task with no bucket yet still creates it; an owned task whose bucket
+						//exists still reuses it. Only the case that used to throw now accumulates, which is what
+						//the original "&& !ContainsKey" test shows was intended all along.
+						var ownerKey = ownerId ?? Guid.Empty;
+						if (!userDict.ContainsKey(ownerKey))
+							userDict[ownerKey] = userRecord;
 
-						var currentRecord = userDict[ownerId != null ? ownerId.Value : Guid.Empty];
+						var currentRecord = userDict[ownerKey];
 
 						if (endTime != null)
 						{
@@ -116,7 +133,7 @@ namespace WebVella.Erp.Plugins.Project.Components
 						else {
 							currentRecord["other"] = ((int)currentRecord["other"]) + 1;
 						}
-						userDict[ownerId != null ? ownerId.Value : Guid.Empty] = currentRecord;
+						userDict[ownerKey] = currentRecord;
 					}
 
 					var records = new List<EntityRecord>();
