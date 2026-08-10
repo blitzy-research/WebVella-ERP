@@ -1521,6 +1521,11 @@ obvious action alone does not work. In a verification pass all thirty rows the c
 deleted and confirmed gone, and login **still** failed with a verified-correct password; it succeeded only
 after the host process was restarted. That is the positive-only mirror described above working as designed,
 and it means the row deletion and the recycle are two halves of one action rather than alternatives.
+*(The statements below are the ones that pass was performed with. An earlier revision of this runbook
+printed them against columns named `key` and `value`, which do not exist on this table, and lower-cased
+the e-mail, which matches no stored key — so the published SQL could not have produced the result
+described here. Both defects are corrected at this revision and each statement was re-executed against a
+live installation.)*
 
 **Route 1 — wait. This is the supported default and needs no operator action.** The window lapses
 **15 minutes after the most recent failed attempt**, not 15 minutes after the first, so the user must stop
@@ -1534,11 +1539,20 @@ nothing.
    counter is keyed by username and the address counter by remote address:
 
    ```sql
-   SELECT key, left(value, 120) AS value
+   SELECT name, left(data, 120) AS data
    FROM   public.plugin_data
-   WHERE  key LIKE 'wv_sec_lthr_%'
-   ORDER  BY key;
+   WHERE  name LIKE 'wv_sec_lthr_%'
+   ORDER  BY name;
    ```
+
+   **Two things about that table and those keys, because getting either wrong fails silently.** The
+   columns are `name` and `data`, not `key` and `value`: `public.plugin_data` is
+   `(id uuid, name text, data text)` with a unique index on `name`, and `DbSecurityStateRepository`
+   writes it as `INSERT INTO plugin_data (id, name, data)`. And the key component is normalised by
+   `LoginThrottleService.Normalize` — `Trim().ToUpperInvariant()`, truncated at 128 characters —
+   so a stored account key reads `wv_sec_lthr_acct_USER@EXAMPLE.COM`. A predicate that lower-cases the
+   e-mail matches nothing and reports `DELETE 0`, which looks like "already released" rather than like a
+   mistake. Both dimensions go through the same normalisation, so upper-case the address too.
 
 2. Delete only what you intend to release. Scope the delete to the one account, or to the one address, rather
    than to the prefix — deleting the whole prefix resets every counter in the installation, including the
@@ -1546,10 +1560,18 @@ nothing.
 
    ```sql
    -- release one account
-   DELETE FROM public.plugin_data WHERE key = 'wv_sec_lthr_acct_' || lower('user@example.com');
+   DELETE FROM public.plugin_data
+   WHERE  name = 'wv_sec_lthr_acct_' || upper('user@example.com');
+
    -- release one source address
-   DELETE FROM public.plugin_data WHERE key = 'wv_sec_lthr_addr_' || '198.51.100.7';
+   DELETE FROM public.plugin_data
+   WHERE  name = 'wv_sec_lthr_addr_' || upper('198.51.100.7');
    ```
+
+   Each statement is split across two lines deliberately: a single-line form runs past the width of a
+   rendered code block, and a half-copied `DELETE` is worse than none. Expect `DELETE 1` from each. A
+   `DELETE 0` means the key does not exist in the shape you asked for — re-run the query in step 1 and
+   copy the `name` value from it rather than reconstructing it.
 
 3. Recycle every instance that may hold the lockout in its positive mirror. Until this happens the deletion
    has no visible effect on a process that has already learned the refusal, because a mirror hit never

@@ -161,17 +161,21 @@ export Kestrel__Certificates__Default__Password='...'
 #   export Settings__ForwardedHeaders__KnownProxies=<ip>  # and have the proxy send X-Forwarded-Proto
 ```
 
-Outside Development the startup check reports this in **two different ways**, and the difference matters
-because only one of them stops a deployment:
+Outside Development the startup check **refuses to start the host** in both of the cases it recognises.
+Development is the only exemption:
 
 | What configuration declares | Outside Development | Why |
 | --- | --- | --- |
 | Endpoints **are** declared — through `ASPNETCORE_URLS`, `UseUrls` or a host binding — and **every one** is plaintext | **Startup is refused**, naming every setting that would satisfy the check | The posture is known to be wrong, so failing once is better than failing every form-bearing page |
-| **Nothing** is declared | A `warn:` line with the identical diagnosis, and **the host starts** | The addresses will come from the server's defaults or from host code the check cannot inspect, and refusing a deployment that would have worked is worse than the failure it prevents |
+| **Nothing** is declared | **Startup is refused**, with the identical diagnosis | The server then binds its own defaults, and those are plaintext, so no sign-in would be possible; "not declared" is not an unknown posture in practice |
 
-The second row carries real risk, so it is stated rather than implied: with nothing declared, this
-application was measured binding `http://localhost:5000` alone, and `/login` answered **HTTP 500**. The
-warning is the notice, not a clean bill — verify the deployed topology.
+In Development the same diagnosis is reported as a `warn:` line on standard error and the host starts, so
+local plaintext sign-in keeps working. Everywhere else the process exits without ever logging
+`Now listening on`. *(An earlier revision of this table said the nothing-declared case emitted a `warn:`
+line and that the host started, and added that the process had been measured binding
+`http://localhost:5000` with `/login` answering HTTP 500. That behaviour was replaced by a refusal and
+both statements are withdrawn — see the transport section of
+[docs/security/secure-configuration.md](docs/security/secure-configuration.md).)*
 
 Note the difference between two similarly named variables, because it is not a spelling detail:
 

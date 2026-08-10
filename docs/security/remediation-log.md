@@ -274,7 +274,7 @@ The substitute regime, applied to every class:
 
 | Gate | Mechanism | Pass criterion |
 | --- | --- | --- |
-| Static analysis | .NET analyzers enabled repository-wide via `Directory.Build.props` — `EnableNETAnalyzers` plus `AnalysisLevel=latest-recommended`, and **nothing further**. No `AnalysisLevelSecurity` upgrade and no global analyzer configuration file is supplied; the workflow asserts the absence of both on every run. Enforcement lives in the CI workflow's Gate 1, not in the compiler: **no analyzer rule is promoted to `error`** | Zero *unreviewed* Security-category diagnostics. Four Security-category rules execute at this level, measured: `CA5350` 0, `CA5351` **5**, `CA5359` 0, `CA5364` 0. The five `CA5351` sites are the two `(rule, file)` entries in Gate 1's allow-list, and Gate 1 fails if that count moves off 5 or if any other Security diagnostic appears. Every other Security rule — including `CA2100`, `CA2326`, `CA2328`, `CA5362`, `CA5390`, `CA5401` and the whole `CA3001`-`CA3012` taint family — does **not** execute, so a zero from any of them carries no signal; the nineteen previously-reviewed `(rule, file)` pairs they covered are inventoried by hand in the risk register under `RISK-052` |
+| Static analysis | .NET analyzers enabled repository-wide via `Directory.Build.props` — `EnableNETAnalyzers`, `AnalysisLevel=latest-recommended` **and `AnalysisLevelSecurity=latest-all`** (`:L96-L97`), so the **whole** Security category is armed rather than the four rules the general level reaches on its own. The workflow asserts the **presence** of both levels on every run, asserts that the SDK's `analysislevelsecurity_*_all.globalconfig` is genuinely loaded into the compilation, and asserts that **no** `*.globalconfig` exists in the tree — a repository-supplied one is the single mechanism that could re-suppress a rule everywhere at once. Enforcement lives in the CI workflow's Gate 1, not in the compiler: **no analyzer rule is promoted to `error`** | Zero *unreviewed* Security-category diagnostics. Measured across all 19 compilations: `CA2100` 20, `CA2326` 20, `CA2328` 9, `CA5351` **5**, `CA5362` 1 — **55** diagnostics over **21** `(rule, file)` pairs — with `CA2327`, `CA5350`, `CA5359`, `CA5364`, `CA5390`, `CA5401`, `CA5404` and the whole `CA3001`-`CA3012` taint family all at **0**, and those zeros carry signal because the rules that produced them are armed. Every one of the 21 pairs is an entry in Gate 1's allow-list carrying a resolvable `RISK-nnn` reference and a written disposition, and Gate 1 fails if a per-rule count moves off its baseline, if an entry loses its disposition or its register entry, or if a Security diagnostic appears outside the list. `CA3001`-`CA3012` is armed everywhere except the `WebVella.Erp.Web` build, which a dedicated workflow step scans with a cost bound instead, so coverage is 19 of 19 compilations and the residual is *depth*, not coverage — `RISK-051`. *(An earlier revision of this row said `AnalysisLevel=latest-recommended` was set "and nothing further", that no `AnalysisLevelSecurity` upgrade was supplied, that the workflow asserted the absence of both, and that only four Security rules execute so a zero from any other carries no signal. Every one of those statements is superseded: the category level is set, the workflow asserts its presence, and `CA2100`, `CA2326`, `CA2328` and `CA5362` demonstrably fire.)* |
 | Dependency scan | Solution-wide restore with `NuGetAudit`, plus `dotnet list package --vulnerable --include-transitive` | No unaccepted advisory; the one accepted advisory is recorded in the risk register |
 | Compilation | `dotnet build WebVella.ERP3.sln --no-incremental` | **0 errors**, and no new warning attributable to a changed line |
 | Behavioural | Purpose-built ad-hoc harnesses per class, plus interactive browser verification | All assertions pass |
@@ -494,7 +494,15 @@ not.
 #### Commit-to-class traceability
 
 Every commit between the pre-remediation base `c8ea6bd4` and the head of this remediation is listed.
-Nothing is omitted, including the three commits that are not single-class.
+Nothing is omitted, including the commits that are not single-class.
+
+**Superseded counts, retained for traceability rather than as current fact.** The figures in this
+section — "three commits that are not single-class" and "ten of the thirteen are single-purpose" — were
+**wrong in both halves**. The corrected accounting is **6 single-class or documentation-only and
+7 multi-class**, derived twice by two independent methods, and it is the authority:
+[Guideline 9 was not met, the corrected accounting](#guideline-9-was-not-met-the-corrected-accounting).
+`SECURITY.md` and the audit report both quote the corrected figure. This section is kept because the
+per-commit class, finding and file attribution below is still the durable traceability record.
 
 > **On the identifiers in this table, stated so a reader does not mistake a failed `git show` for a
 > missing commit.** These are *development-history* identifiers. The published history is consolidated
@@ -523,6 +531,9 @@ Nothing is omitted, including the three commits that are not single-class.
 | 13 | this commit | add the row above and finalise the remediation record | Documentation deliverable | — | Yes |
 
 Commits 1 and 5 through 13 — ten of the thirteen — are single-purpose. Commits 2, 3 and 4 are not.
+*(Superseded: the corrected accounting is **6 single-class or documentation-only and 7 multi-class** —
+see [Guideline 9 was not met, the corrected accounting](#guideline-9-was-not-met-the-corrected-accounting).
+This sentence is retained as the figure this section originally published.)*
 
 A note on the last row, because it is the one place this table cannot describe itself: a commit cannot
 contain its own hash, so a row can only ever be added by a later commit. Rather than leave the final
@@ -532,6 +543,12 @@ adding the preceding row and finalising this record. Its hash is recoverable in 
 commit whose parent is the one named in row 12. Nothing else is in it.
 
 #### The three commits that mix classes, and why they were not rewritten
+
+*(Superseded count, heading retained so existing citations keep resolving: **seven** commits mix
+classes, not three — the corrected accounting is at
+[Guideline 9 was not met, the corrected accounting](#guideline-9-was-not-met-the-corrected-accounting).
+The three examined below are the three that were known when this section was written, and the reasoning
+about them still holds.)*
 
 Commits `df9cf2d2`, `4e7b66fb` and `44c705b6` each carry work from more than one class. That is a
 genuine departure from the one-commit-per-class rule, and the correct disposition is to record it
@@ -1088,8 +1105,13 @@ deliberately **not** done — see the finding record in the [audit report](secur
   follow-up in the [risk register](risk-register.md) rather than done here, because adding a second
   MSBuild customisation file is outside this change's authorised file set.
 - **Why a `NuGetAuditSuppress` seam exists but is empty.** Nothing is suppressed at this commit:
-  `Directory.Build.props` declares no `NuGetAuditSuppress` element, and the only `NoWarn` in the file
-  sits inside an XML comment as a documented, deliberately inert example. The gate is green because
+  `Directory.Build.props` declares no `NuGetAuditSuppress` element, and **no `NoWarn` anywhere in it
+  names a dependency-audit diagnostic** — no `NU` code appears in any of them. *(An earlier revision of
+  this line said the only `NoWarn` in the file sat inside an XML comment as an inert example; that is
+  superseded.)* Two `NoWarn` elements are live, each conditioned and each deliberate: the
+  `CA3001`-`CA3012` taint family at `:L123`, scoped by condition to the one measured compilation and
+  carrying its residual *depth* as `RISK-051`, and `CS1591` at `:L189`, which applies only under the
+  `ErpDocumentationDiagnostics` opt-in that review finding `N1` introduced. The gate is green because
   the graph is clean, not because a check was silenced — the `AutoMapper` advisory was closed by
   moving the pin to `[15.1.3]`, not by suppressing it. The seam is documented for one reason: if
   `RISK-001`'s reversal path is ever taken, the suppression must be a per-advisory
@@ -1762,11 +1784,12 @@ effective escaping standard.
 - **The navigation and menu sinks are `IsHtml`-guarded, and the triage outcome is recorded as it is
   rather than as it would be convenient.** They were never unconditional raw output: each site sits
   inside an `IsHtml` test whose `else` branch already renders the same value through a plain
-  auto-encoded expression — `WebVella.Erp.Web/Pages/Shared/NavItem.cshtml` at `:L25`/`:L27` with the
-  safe branch at `:L31`, repeating at `:L51`/`:L53`/`:L57`;
-  `WebVella.Erp.Web/Pages/Shared/NavMenu.cshtml` at `:L25`/`:L27` with `:L31`, repeating at
-  `:L57`/`:L59`/`:L63`; and `WebVella.Erp.Web/Components/SiteMenu/SiteMenu.cshtml` at `:L30`/`:L32`
-  with `:L36`. They therefore resolve to a **by-design opt-in markup channel with the safe path already
+  auto-encoded expression — `WebVella.Erp.Web/Pages/Shared/NavItem.cshtml` at `:L18`/`:L20` with the
+  safe branch at `:L24`, repeating at `:L39`/`:L41`/`:L45`;
+  `WebVella.Erp.Web/Pages/Shared/NavMenu.cshtml` at `:L19`/`:L21` with `:L25`, repeating at
+  `:L45`/`:L47`/`:L51`; and `WebVella.Erp.Web/Components/SiteMenu/SiteMenu.cshtml` at `:L27`/`:L29`
+  with `:L33` — every one re-measured against the shipped files at this revision, replacing an earlier
+  set that resolved in none of the three. They therefore resolve to a **by-design opt-in markup channel with the safe path already
   present**, and the residual is a privileged-author channel carried by compensating control in the
   [risk register](risk-register.md). They were **not** encoded, and saying they were would be a false
   claim about a sink that renders on every page of every host. What *was* changed is the load-bearing
@@ -5272,6 +5295,11 @@ above the steps it applies to.
 > the solution are covered by explicit steps.` The re-verification is recorded against the current file
 > under finding `GATE-01`, not here — restating it in this historical entry would be the same duplication
 > the merge removed.
+
+**The remaining rows of the same verification, resumed after that note.**
+
+| Step | Command / method | Result |
+| --- | --- | --- |
 | Coverage assertion fails closed | three injected faults against a sandboxed harness | **4 / 4** as expected, each with a distinct message |
 | `TargetFramework` assertion fires | six values against a fake toolchain | **6 / 6** as expected |
 | Both non-members are actually gated | the three extracted steps, run under the worst-case unterminated input | exit 0 each; **both** projects restored, built (`0 Error(s)`; Server **48** warnings, Shared 0) and audited; both assert `net10.0`; both report `has no vulnerable packages` |
@@ -6510,8 +6538,8 @@ removing polymorphic type handling would have been destructive.
 - **Observed, not a finding.** One `Html.Raw` call in `NavMenu.cshtml` renders a value the platform
   itself composes from a fixed literal, and the review explicitly excluded it. It is unchanged.
 - **Recorded for completeness.** The remaining `Html.Raw` occurrences elsewhere in the repository that
-  render server-constructed markup are unaffected by this change, and the four by-design channels
-  remain untouched and remain accepted under `RISK-023`.
+  render server-constructed markup are unaffected by this change, and the by-design channels
+  remain untouched and remain accepted under `RISK-023` — five of them, as that entry now records.
 
 ## Stored cross-site scripting: closing the SDK code-generation preview (`F-130`)
 
@@ -6709,7 +6737,7 @@ stays a constant with no setter, so no configuration source can inject `'unsafe-
 - **present but unparseable** — startup **aborts**. Silently ignoring a bad value is the exact defect
   this finding describes, and here the silent direction is the dangerous one: the operator believes
   the policy is enforcing while the platform is only reporting. Guessing `enforcing` instead would
-  break the four by-design inline-script components. The exception names the key and its
+  break the by-design inline-script components. The exception names the key and its
   `SecurityHeaders__ContentSecurityPolicyReportOnly` environment form, cites
   `docs/security/secure-configuration.md`, and does not echo the supplied value.
 
@@ -7206,7 +7234,7 @@ this change, and it grants no identity and no authorisation.
 | The logging ceiling still holds independently | 300 reports across 6 sources | every one accepted, exactly 120 written to the log, every entry a report event and none a refusal |
 | Body cap still holds | a 40,000-byte report | accepted, and the recorded body truncated to exactly 8,192 characters with control characters neutralised |
 | Headers on every response class, browser-observed | Chrome over HTTPS against the live host: dynamic document, static CSS, static JS from the second embedded provider, an image, an API-generated stylesheet, an authenticated in-app page, a `404`, and all three collector outcomes | **all seven present on every one**, with the enforcing header absent in all of them. The static CSS and JS arrived `content-encoding: gzip` and still carried the full set — the strongest available proof that the middleware is ordered ahead of both response compression and static-file serving |
-| Report-only does not break the by-design inline-script components | Chrome walk-through: log in, open three separate navigation dropdowns, visit four in-app pages across two plugins | every dropdown opened, every page rendered fully styled. Decisive because the dropdowns are not Bootstrap-driven — they are bound by a *generated inline `<script>`*, exactly one of the four channels enforcement would break |
+| Report-only does not break the by-design inline-script components | Chrome walk-through: log in, open three separate navigation dropdowns, visit four in-app pages across two plugins | every dropdown opened, every page rendered fully styled. Decisive because the dropdowns are not Bootstrap-driven — they are bound by a *generated inline `<script>`*, exactly one of the five channels enforcement would break |
 | Report-only is observing, not blocking | 236 console entries read in full, plus a `securitypolicyviolation` listener with an inline `<script>` and an inline `<style>` deliberately injected into the live page | **zero** `error`, `warn`, `assert` or `trace` entries; every violation record carried `isReportOnly: true`; the injected script **executed** and the injected style **applied**; the only captured disposition was `report`, never `enforce` |
 | Chrome actually posts to the collector | the `report-uri` directive exercised by a real browser rather than by curl | 53 observed `POST /csp-violation-report`, every one `204`, `content-type: application/csp-report`, `sec-fetch-dest: report`, bodies 449–523 bytes. **Zero** `429` — the per-source ceiling was never tripped by a real browser, because Chrome de-duplicates identical violations |
 | Regression | the four preceding classes' verification harnesses re-run unchanged | all green — no interaction with credential redaction, the deserialisation binder, file ownership, the SMTP class or session revocation |
@@ -7215,7 +7243,7 @@ this change, and it grants no identity and no authorisation.
 
 - **The default posture is unchanged and deliberately so.** `F12` asked for the rollout to be
   *performable*, not for it to be *performed*. Enforcing the policy as written would still break the
-  four by-design inline channels, so report-only remains the shipping default; what changed is that an
+  by-design inline channels, so report-only remains the shipping default; what changed is that an
   operator can now complete the rollout with a configuration value. `RISK-022` is narrowed rather than
   closed, and the register says so.
 - **The per-source counters are per process.** A multi-instance deployment enforces 60 reports per
@@ -10352,8 +10380,11 @@ Nine `####` entries were promoted to `###` in the register's two remaining outli
 of its nineteen *Detailed entries* sections already opened at `###` — and one `###` band heading was
 added to Part 5 of the audit report, which was the only one of its five parts lacking the band heading
 its siblings all carry. Again no heading text moved, so all nine slugs are byte-identical; the check was
-run rather than assumed — **147 in-document anchor links re-resolved with zero breakages**, and the audit
-report's census is unchanged at **138** records and **53** Part 1 entries. Two anchors that *were* broken,
+run rather than assumed — **140 anchor-bearing links re-resolved with zero breakages**, counted as
+markdown links whose target carries a `#` fragment (99 same-file, 41 cross-file) — and the audit
+report's census is unchanged at **138** records and **53** Part 1 entries. *(This figure was previously
+published as 147, which does not reproduce under that rule; 140 is the measured count at this
+revision.)* Two anchors that *were* broken,
 both written by this remediation pass itself while recording supersessions, were found by that same check
 and repaired in the same change.
 
@@ -10854,7 +10885,7 @@ on a non-authentication path showing no regression.
 administrator password is generated or printed is removed and replaced with the fail-closed behaviour the code
 actually has, and every authoritative status, count and control statement is reconciled to the tree — the
 analyzer scope, the matrix size, the workflow shape, a settings key that does not exist in the code, and the
-compensating control for the four by-design raw channels, which is now stated precisely as *a privileged role
+compensating control for the by-design raw channels, which is now stated precisely as *a privileged role
 decides what is rendered raw, not who supplies it*.
 
 **How a prose-only class was verified, since a build cannot verify prose.** Each cited claim was re-derived
@@ -11196,8 +11227,10 @@ whose numbers change without explanation teaches its reader to stop checking the
 **Verification.** The audit report still carries **138** finding records with **138** distinct identifiers and
 exactly **53** in the Part 1 inventory, so the workflow's `>= 138` and `== 53` assertions both hold. The real
 identifier step, extracted from the parsed YAML and run under `bash -e`, **exits 0**. `markdownlint` is clean
-across the whole security document set. **138 internal anchor links were resolved against anchors generated by
-the documentation toolchain itself, with none broken** — which also caught an incorrect anchor in this pass's
+across the whole security document set. **140 anchor-bearing links were resolved against anchors generated by
+the documentation toolchain itself, with none broken** — the same 140 the register's counting rule derives,
+99 same-file and 41 cross-file; the figure was published here as 138, which collided with the record
+census and does not reproduce — which also caught an incorrect anchor in this pass's
 own text before it shipped. The register's self-asserted identifier contract was re-run and re-stated:
 **own heading 121, combined 2, row-only 21, indexed 144**, the routes partitioning the index and every declared
 identifier indexed; the index remains one ascending, duplicate-free row per identifier. The previous figures

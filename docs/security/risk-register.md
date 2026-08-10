@@ -198,7 +198,7 @@ fourteen are declared by their index row alone.
 | `RISK-158` | The WebAssembly client ships no `favicon.ico`, so every load records one 404 | Accepted — cosmetic | Platform team |
 | `RISK-159` | A **cleartext HTTP listener was live** on the API port during verification and answered a control probe, which is what made `SR-03`'s cleartext exposure reachable rather than theoretical. Removing the insecure default closed the client's half; nothing in the application prevents an operator binding a cleartext listener | Accepted — operator responsibility, now documented in [the secure configuration guide](secure-configuration.md) | Operator |
 | `RISK-160` | `HttpExt.cs` retains pre-existing analyzer findings in the helpers `SR-08` did **not** touch — one unused exception variable and two `throw new Exception` statements | Accepted — pre-existing, outside the finding's scope | Platform team |
-| `RISK-161` | **CLOSED at this revision.** ~~`markdownlint` does **not** reach a clean exit on the nine documentation files.~~ It now does: measured at the pinned 0.45.0 on this tree, the command exits **0** with **zero** diagnostics. The path was 19 → 3 → 0. Review finding `MIN-01` took 19 → 3 by fixing 11 `MD012`, 4 `MD022` and 1 `MD058`; code-review finding `LOW-02` took the last 3 `MD001` → 0, and in doing so found the reasoning that had declined them to be false on its facts — the change was **nine** headings, not 32, and it made both documents *consistent with their own conventions* rather than restructuring them: seventeen of the register's nineteen *Detailed entries* sections already opened with a `###` entry, and Parts 1 through 4 of the audit report each already carried a `###` band heading that Part 5 lacked. No record heading level, identifier, field or anchor slug moved; all 147 in-document anchor links were re-resolved with zero breakages, and the record census is unchanged at 138 and 53. The dual-slugifier note kept in the detailed entry remains open as a convention rather than a defect | Closed — measured clean at the pinned version; `.markdownlint.jsonc` states the same measurement | Platform team |
+| `RISK-161` | **CLOSED at this revision.** ~~`markdownlint` does **not** reach a clean exit on the nine documentation files.~~ It now does: measured at the pinned 0.45.0 on this tree, the command exits **0** with **zero** diagnostics. The path was 19 → 3 → 0. Review finding `MIN-01` took 19 → 3 by fixing 11 `MD012`, 4 `MD022` and 1 `MD058`; code-review finding `LOW-02` took the last 3 `MD001` → 0, and in doing so found the reasoning that had declined them to be false on its facts — the change was **nine** headings, not 32, and it made both documents *consistent with their own conventions* rather than restructuring them: seventeen of the register's nineteen *Detailed entries* sections already opened with a `###` entry, and Parts 1 through 4 of the audit report each already carried a `###` band heading that Part 5 lacked. No record heading level, identifier, field or anchor slug moved; all **140** anchor-bearing links across the nine documents — counted as markdown links whose target carries a `#` fragment, 99 same-file and 41 cross-file — were re-resolved with zero breakages, and the record census is unchanged at 138 and 53. *(The figure previously published here was 147, which does not reproduce under that rule; 140 is the measured count at this revision and is corrected rather than carried forward.)* The dual-slugifier note kept in the detailed entry remains open as a convention rather than a defect | Closed — measured clean at the pinned version; `.markdownlint.jsonc` states the same measurement | Platform team |
 | `RISK-162` | Synchronous server IO stays globally enabled (`ErpMiddleware`, `AllowSynchronousIO = true` on every request), which lets a slow client hold a thread-pool thread. AAP 0.3.2 excludes the removal as `M-11`. **New evidence narrows the risk of fixing it:** no application-code consumer of synchronous *server-stream* IO exists — zero matches for `StreamReader` over `Request.Body`, `Request.Body.Read`, `Response.Body.Write` or `StreamWriter` over `Response.Body`, and no `Response.Body` or `FileStreamResult` anywhere; the only synchronous `StreamWriter` with a `Flush` writes to a `MemoryStream`. **Recommended fix:** remove the assignment; build and exercise every upload, download and export route; convert any consumer a compile error or a runtime `InvalidOperationException` identifies. The evidence suggests that set is empty. Note the AAP text cites `WebVella.Erp/Utilities/CodeEvalService.cs`, a path that does not exist — the file is at `WebVella.Erp.Web/Services/CodeEvalService.cs`. Weakness classification: CWE-400, OWASP A04. | Documented only — AAP 0.3.2 excludes it (`M-11`). Review finding `CK-11`. | Platform team |
 | `RISK-163` | Two client libraries load from cdnjs with no `integrity` attribute and at mismatched versions — Leaflet CSS 1.6.0 and Leaflet JS 0.7.3 — in the geography branch of the administrator-only page `Plugins.SDK/Pages/entity/data.cshtml`. A repository-wide sweep of views returns exactly these two remote references. Advisory status was checked live rather than assumed: the GitHub Advisory Database returns **0** advisories for the `leaflet` npm package and OSV returns **0** vulnerabilities for `0.7.3` and `1.6.0`, so the risk is substitution rather than a known defect. **An adjacent defect found at the same site:** the tile layer is fetched over plaintext `http://a.tile.openstreetmap.org/...`, which is mixed content on an HTTPS page. **Recommended fix:** align both assets on 1.9.4 and add the verified digests — CSS `sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H`, JS `sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH` — with `crossorigin="anonymous"`, and switch the tile URL to HTTPS. **Cross-finding interaction:** enforcing the mandated Content-Security-Policy will refuse both cdnjs assets and break this page unless they are vendored first, so CSP enforcement has two blockers, not one. Weakness classification: CWE-829, OWASP A08. | Documented only — AAP 0.3.2 excludes it (`M-15`). Review finding `CK-12`. | Frontend maintainer |
 | `RISK-164` | An **administrator** can still have request-supplied C# compiled through the page-component render route's `design`, `options` and `help` modes, and through the node-less path. That is what those modes exist for — component authoring — and the privilege required is the same one that already governs the five page-node mutation actions. Every refusal and every authorized use is audited with the acting identity and the subject, and never with the submitted source. **Recommended fix, if a deployment wants the capability gone:** remove the authoring modes from production builds, or move component authoring to a build-time artefact. Neither is in scope here. Weakness classification: CWE-94, OWASP A03. | Accepted by design. Residual of review finding `CK-01`. | Platform team |
@@ -247,7 +247,7 @@ comments carrying the `RISK-004` and `RISK-007` citations out of those two files
 | --- | --- | --- |
 | Static-analysis backlog kept as warnings | `RISK-003` | `RISK-024` |
 | Content-Security-Policy ships report-only | `RISK-004` | `RISK-022` |
-| Four by-design raw-output channels | `RISK-006` | `RISK-023` |
+| By-design raw-output channels (count corrected to five) | `RISK-006` | `RISK-023` |
 | Three anonymous routes share one per-address failure budget | `RISK-032` | `RISK-111` |
 | Deterministic initialisation vector | `RISK-003` / `RISK-005` | `RISK-006` (cited from `CryptoUtility.cs`) |
 | Credential hashing deviation | `RISK-005` | `RISK-003` |
@@ -262,13 +262,17 @@ done. New identifiers were allocated above the previous maximum (`RISK-128`) rat
 `RISK-072`–`RISK-107` band, so no number that any revision of any document has ever used acquires a new
 meaning.
 
-| Subject | Previously numbered | Now | Disposition |
+| Overloaded identifier | First subject it headed | Second subject | Third subject |
 | --- | --- | --- | --- |
 | `RISK-032` | A dangerous URL scheme stored in a sitemap node URL survives HTML encoding | ~~Ten authenticated API actions still return a stack trace in the response body~~ — **CLOSED**: 0 occurrences remain; all ten route through the development-gated `SafeErrorMessage` | The `smtp_service` credential is not encrypted at rest |
 | `RISK-033` | `ConvertDefaultValue` builds DDL default literals without escaping quotes | Provisioning emits six pre-existing bootstrap DDL statements | The SMTP certificate-validation opt-out survives in Development posture |
 | `RISK-034` | SUPERSEDED — the taint-analysis family is not excluded | Plugin patches seed page-component options containing server-authored code | The permission migration preserves operator-created delegations |
 | `RISK-035` | The taint-dataflow analyzer family runs, but intraprocedurally only | *(restated for a later pass under "residuals introduced by the continuous security review")* | Four residual observations recorded while closing the SMTP credential work |
 
+**Subject by subject, with the identifier each one now carries.**
+
+| Subject | Previously numbered | Now | Disposition |
+| --- | --- | --- | --- |
 | The `smtp_service` credential is not encrypted at rest | `RISK-032` | `RISK-032` | Canonical — kept, because this is the subject the index has always carried for `RISK-032` |
 | Ten authenticated API actions still return a stack trace in the response body | `RISK-032` | `RISK-142` (inventory) and `RISK-147` (the closed record) | Renumbered — a distinct subject. Its inventory was replaced by `RISK-142`; the closure statement itself is `RISK-147`, moved off `RISK-032` so that identifier heads one record only |
 | A dangerous URL scheme in a sitemap node URL survives HTML encoding | `RISK-032` | `RISK-037` | Not renumbered — it is the **same subject** as `RISK-037`, so the second write-up became a *Superseded statement of RISK-037* rather than acquiring an identifier of its own |
@@ -1717,7 +1721,8 @@ the two quoted below plus the `PcJavaScriptBlock` emitter recorded further down 
 breaching the functionality-preservation requirement. The compensating controls are restricting
 markup and script authoring to privileged roles, plus the Content-Security-Policy once enforced — **read
 that first clause with the correction in the next paragraph, which narrows it from *authoring* to
-*placement*.** These four channels are the concrete reason RISK-022 exists.
+*placement*.** These five channels are the concrete reason RISK-022 exists — the three inline-script
+emitters most directly, since `script-src 'self'` is the clause enforcement would break.
 
 **What that control does and does not cover.** Saying "authoring requires a privileged role" overstates it. What is administrator-only is *choosing the channel*: the five page-node mutation actions that write a node's options are gated by `IsCodeAuthoringAuthorized`, so only an administrator can place a markup-block component on a page or set its `Html` option. The **bytes** rendered raw need not come from that administrator. The option value is resolved through `PageDataModel.GetPropertyValueByDataSource`, so a `DATASOURCE` variable such as `{"type":0,"string":"Record.some_field"}` resolves through `GetProperty` against a model whose named properties include `Record`, `ParentRecord` and `CurrentUser` — that is, live database field values. Once an administrator points a raw channel at a record field, anyone who can write that field can influence what is emitted unencoded. The accurate statement of the control is therefore: **a privileged role decides what is rendered raw, not who supplies it**, and that is why the Content-Security-Policy is the load-bearing half of the compensation rather than an optional addition.
 
@@ -1771,20 +1776,24 @@ widget content.
 recorded separately and precisely, because the naive description of them would be a false claim: they
 are **not** unconditional sinks. Each is an opt-in markup channel whose safe, auto-encoded path is
 already present in the `else` branch, and the raw branch runs only when a caller has set
-`IsHtml = true`. Line numbers below are the **current** ones; they sit later in each file than the audit
-report's locators because the remediation inserted its own explanatory comments above them.
+`IsHtml = true`. Line numbers below are the **current** ones, re-measured against the shipped files at
+this revision; they sit later in each file than the audit report's locators because the remediation
+inserted its own explanatory comments above them. *(An earlier revision of this table published a set of
+locators that resolved in none of the three files, eight of them past end of file; those numbers are
+superseded by the measured ones here. The substantive claim — a guarded raw branch with an auto-encoded
+`else` branch in all three views — was and remains correct.)*
 
 | View | Guarded raw branch | Safe auto-encoded branch |
 | --- | --- | --- |
-| `WebVella.Erp.Web/Pages/Shared/NavItem.cshtml` | `@if (navItem.IsHtml)` L25 → `@Html.Raw(navItem.Content)` L27; the pattern repeats at L51 → L53 for leaf nodes | `else` L29 → `@navItem.Content` L31; and `else` L55 → L57 |
-| `WebVella.Erp.Web/Pages/Shared/NavMenu.cshtml` | `@if (menu.IsHtml)` L25 → `@Html.Raw(menu.Content)` L27; repeats at L57 → L59 for the no-wrapper branch | `else` L29 → `@menu.Content` L31; and `else` L61 → L63 |
-| `WebVella.Erp.Web/Components/SiteMenu/SiteMenu.cshtml` | `@if (menuItem.IsHtml)` L30 → `@Html.Raw(menuItem.Content)` L32 | `else` L34 → `@menuItem.Content` L36 |
+| `WebVella.Erp.Web/Pages/Shared/NavItem.cshtml` (47 lines) | `@if (navItem.IsHtml)` L18 → `@Html.Raw(navItem.Content)` L20; the pattern repeats at L39 → L41 for leaf nodes | `else` L22 → `@navItem.Content` L24; and `else` L43 → L45 |
+| `WebVella.Erp.Web/Pages/Shared/NavMenu.cshtml` (56 lines by `wc -l`; `cat -n` numbers 57, the file carrying no final newline) | `@if (menu.IsHtml)` L19 → `@Html.Raw(menu.Content)` L21; repeats at L45 → L47 for the no-wrapper branch | `else` L23 → `@menu.Content` L25; and `else` L49 → L51 |
+| `WebVella.Erp.Web/Components/SiteMenu/SiteMenu.cshtml` (38 lines) | `@if (menuItem.IsHtml)` L27 → `@Html.Raw(menuItem.Content)` L29 | `else` L31 → `@menuItem.Content` L33 |
 
 **What the residual actually is.** Not an anonymous stored-XSS channel — a **privileged-author** one:
 whoever can set `IsHtml = true` and author the `Content` value. The database values interpolated into
 that content are already encoded, URL-allow-listed or character-constrained at composition time in
 `BaseErpPageModel`, so an ordinary data path cannot reach the raw branch with attacker text. The
-compensating control is the same as for the four channels above — markup authoring restricted to
+compensating control is the same as for the five channels above — markup authoring restricted to
 privileged roles, plus the Content-Security-Policy — read with the same correction recorded there: what is
 privileged is *choosing* the raw channel, not necessarily *supplying* its bytes. This entry is the narrower
 case, because the composition-time encoding named above does bound the data path here.
@@ -2155,7 +2164,7 @@ administrative surface rather than as closing an exposure.
 
 #### Superseded statement of RISK-051 — first record that the `CA3001`–`CA3012` taint-analysis family does not run at all
 
-**This section is a superseded statement, not a second entry, and it declares no identifier of its own.** The current record is [`RISK-051` — The `CA3001`–`CA3012` taint-analysis family does not run](#risk-051-the-ca3001ca3012-taint-analysis-family-covers-19-of-19-compilations-one-is-scanned-at-bounded-interprocedural-depth). It is retained so that a reader holding an earlier copy can see exactly which claim changed.
+**This section is a superseded statement, not a second entry, and it declares no identifier of its own.** The current record is [`RISK-051` — Taint-analysis depth is bounded for one of nineteen compilations (coverage is 19 of 19)](#risk-051-the-ca3001ca3012-taint-analysis-family-covers-19-of-19-compilations-one-is-scanned-at-bounded-interprocedural-depth). It is retained so that a reader holding an earlier copy can see exactly which claim changed.
 
 > **Superseded twice in mechanism, retained for its measurements.** This entry has been overtaken by two
 > successive changes, and both are recorded because the second reverses the first.
@@ -3067,7 +3076,7 @@ ours to change.
 **Why not fixed.** Three independent reasons, any one of which would be sufficient. The component is an
 intentional-HTML channel, and this class of channel is remediated by compensating control — restricting
 authoring of markup and script to privileged roles, plus the Content-Security-Policy, with the scope
-correction recorded against the four by-design channels: what is privileged is choosing the raw channel,
+correction recorded against the by-design channels: what is privileged is choosing the raw channel,
 not necessarily supplying its bytes — rather than by encoding, because encoding it would disable the feature it implements. The rendering code is vendored.
 And correcting already-seeded values in a deployed installation would require a data migration over
 stored page-component options, which is neither a confirmed Critical nor High finding and is exactly
@@ -3081,7 +3090,7 @@ the thirteen existing seeds, so stored data and validation rules cannot disagree
 
 #### Superseded statement of RISK-051 — interim record that the taint-dataflow family ran intraprocedurally only
 
-**This section is a superseded statement, not a second entry, and it declares no identifier of its own.** The current record is [`RISK-051` — The `CA3001`–`CA3012` taint-analysis family does not run](#risk-051-the-ca3001ca3012-taint-analysis-family-covers-19-of-19-compilations-one-is-scanned-at-bounded-interprocedural-depth). It is retained so that a reader holding an earlier copy can see exactly which claim changed.
+**This section is a superseded statement, not a second entry, and it declares no identifier of its own.** The current record is [`RISK-051` — Taint-analysis depth is bounded for one of nineteen compilations (coverage is 19 of 19)](#risk-051-the-ca3001ca3012-taint-analysis-family-covers-19-of-19-compilations-one-is-scanned-at-bounded-interprocedural-depth). It is retained so that a reader holding an earlier copy can see exactly which claim changed.
 
 | Field | Value |
 | --- | --- |
@@ -3353,7 +3362,7 @@ statement than it is.
 
 ### Superseded statement of RISK-051 — second record that security taint analysis does not run
 
-**This section is a superseded statement, not a second entry, and it declares no identifier of its own.** The current record is [`RISK-051` — The `CA3001`–`CA3012` taint-analysis family does not run](#risk-051-the-ca3001ca3012-taint-analysis-family-covers-19-of-19-compilations-one-is-scanned-at-bounded-interprocedural-depth). It is retained so that a reader holding an earlier copy can see exactly which claim changed.
+**This section is a superseded statement, not a second entry, and it declares no identifier of its own.** The current record is [`RISK-051` — Taint-analysis depth is bounded for one of nineteen compilations (coverage is 19 of 19)](#risk-051-the-ca3001ca3012-taint-analysis-family-covers-19-of-19-compilations-one-is-scanned-at-bounded-interprocedural-depth). It is retained so that a reader holding an earlier copy can see exactly which claim changed.
 
 | Field | Value |
 | --- | --- |
@@ -6693,7 +6702,7 @@ above, that is stated plainly and the change itself is recorded in
 | `L-05` | No health endpoint, metrics, tracing or correlation identifier — all four probes measure **0** | CWE-1059-adjacent | A09:2021 | **Documented only.** The "no rollback tooling" half of this finding does not hold — a published-artifact startup smoke test runs in CI and rollback guidance is documented in [the credential migration guide](credential-migration.md). **Fix, smallest first:** add an ASP.NET Core health-check endpoint that probes the database and reports readiness, which also closes the startup-window gap where a host accepts connections while still provisioning; emit the framework's existing `HttpContext.TraceIdentifier` into every audit and log record as a correlation key, needing no new dependency; include that identifier in the notification payload so a fault e-mail can be reconciled with its persisted record, which is the SMTP-boundary gap; and only then adopt `ActivitySource` and a metrics meter. Detailed as `RISK-141` |
 | `L-06` | Inert TypeScript build configuration in seven projects | CWE-1164 | A05:2021 | **Documented only.** `TypeScriptToolsVersion` and its companion properties appear in exactly **seven** `.csproj` files with no TypeScript sources and no `tsconfig.json` anywhere in the tree, so nothing compiles them. **Fix:** delete the inert property groups. If TypeScript is genuinely wanted, add real sources and a `tsconfig.json` — but that is a feature, not a fix |
 | `L-07` | No lock file and an unpinned SDK version | — | A05:2021 | **Half closed, half documented.** The SDK half is **fixed**: `global.json` previously carried its version key commented out (`//"version": "7.0.103"`) and now pins **`10.0.302`** with `"rollForward": "disable"` — an exact pin rather than a band, because a patch release can move an analyzer's default severity or the audit defaults and so move the gate's verdict. The lock-file half is documented. **Four build files were deliberately declined and remain absent from the repository: `Directory.Build.targets`, `Directory.Packages.props`, `nuget.config` and `packages.lock.json`.** **Fix:** adopt central package management (`Directory.Packages.props`) and commit a lock file (`packages.lock.json`) so restore is byte-deterministic; add `nuget.config` to pin the package source explicitly; and add `Directory.Build.targets` to re-append the promoted audit codes after every project body, which is what would close RISK-029 |
-| `L-08` | Service-catalogue and documentation drift | CWE-1059-adjacent | A05:2021 | **Partly closed, the rest documented.** The service-catalogue half is **fixed**: `catalog-info.yaml:L5-L6` no longer advertises cloud-native microservices or a serverless architecture — it now states the platform's actual shape, the same sentence `docs/index.md:L3` publishes — and the descriptor links the audit report directly, so its security-audit claim is evidenced rather than asserted. Two non-changes there were deliberate and are recorded in that report's entry rather than inferred: the `PR #2` link at `:L28-L30` is retained as a historical pointer, and the `Blitzy Documentation` link at `:L31-L33` still points at a directory whose creation was declined. The four deferred items are enumerated in [the security audit report](security-audit-report.md) under *documentation drift deferred into this report*, and are not duplicated here. **Fix:** correct the licence badge at `README.md:L12` and the stack claim at `:L18` in a documentation-only change, so the correction cannot be entangled with a code diff |
+| `L-08` | Service-catalogue and documentation drift | CWE-1059-adjacent | A05:2021 | **Partly closed, the rest documented.** The service-catalogue half is **fixed**: the description at `catalog-info.yaml:L8-L10` no longer advertises cloud-native microservices or a serverless architecture — it now states the platform's actual shape, the same sentence `docs/index.md:L3` publishes — and the descriptor links the audit report directly, so its security-audit claim is evidenced rather than asserted. Both stale links were **removed**, not retained: the `PR #2: Serverless Microservices Rewrite` pointer and the `Blitzy Documentation` link to the absent `blitzy/documentation` directory. Four links that resolve were added in their place — the audit report at `:L29-L33`, the risk register at `:L34-L36`, the security policy at `:L37-L39` and the documentation tree at `:L40-L42` — leaving the `GitHub Repository` and `PR #1` links from the pre-remediation descriptor in place. Three tags that advertised capabilities the repository does not contain (`infrastructure`, `modernization`, `refactor`) were removed for the same reason as the description rewrite, leaving `audit`, `csharp`, `dotnet`, `security` and `web-app` at `:L11-L16`. *(An earlier revision of this row said those two links were retained as deliberate non-changes and cited `:L5-L6`, `:L28-L30` and `:L31-L33` — locators from the pre-remediation file, which the 47-line shipped descriptor no longer matches. All of it is superseded, and the L-08 remediation in [the security audit report](security-audit-report.md) is authoritative.)* The four deferred items are enumerated in that report under *documentation drift deferred into this report*, and are not duplicated here. **Fix:** correct the licence badge at `README.md:L12` and the stack claim at `:L18` in a documentation-only change, so the correction cannot be entangled with a code diff |
 | `L-09` | No server-side request forgery surface | CWE-918 (not present) | A10:2021 | **No fix required — proven not applicable.** Every `HttpClient` in the repository is browser-side Blazor WebAssembly code, and the one server-side construction of a URI from data is guarded to a fixed path prefix and resolves through a database repository rather than a network call. Recorded deliberately, as a negative result, so that A10 is not re-investigated from scratch and so that no speculative SSRF finding is ever added |
 | `L-10` | No CI/CD pipeline existed | CWE-1053-adjacent | A08:2021 | **Addressed.** Before this engagement `.github` contained exactly one file, `.github/FUNDING.yml`, so the automated-validation objective had nowhere to live; a security-scan workflow now enforces the gates. What remains is recorded in *build-graph and gate coverage* below and as RISK-030: a solution-level command reaches 17 of the 19 projects, and the two WebAssembly projects are covered by dedicated per-project steps instead |
 
@@ -7532,9 +7541,17 @@ forward.
 
 **What was measured after the change, because a repair that breaks a link is not a repair.** The anchor a
 heading generates does not depend on its level under either slugifier, so **not one of the nine slugs
-changed**; all **147** in-document anchor links across the nine documents were re-resolved with **zero**
+changed**; all **140** anchor-bearing links across the nine documents were re-resolved with **zero**
 breakages; the audit report's record census is unchanged at **138** records and **53** Part 1 entries, which
 is what the workflow's `MILESTONE-01` step asserts; and `markdownlint` at the pinned 0.45.0 exits **0**.
+**The counting rule for that 140, stated so the figure can be re-derived rather than trusted:** a
+markdown link whose target contains a `#` fragment, counted across the nine documents — **99** same-file
+and **41** cross-file, out of **413** internal markdown links in total. It is stable under stripping
+fenced code blocks and inline code, because none of the 140 sits inside either. *(An earlier revision
+published **147** here and in the `RISK-161` row, and **138** in the remediation log's own later pass.
+Neither reproduces under the rule above; the measured figure does, and it replaces both. It moved from
+137 to 140 within this pass when three at-site supersession pointers were added to the remediation log,
+which is exactly why the rule is published beside the number.)*
 Two anchors that *were* broken — both introduced by this same remediation pass while writing supersession
 notes — were found by that check and fixed in the same change. `MD001` never carried a correctness property;
 what it carried was a real inconsistency with each document's own conventions, and that is what was closed.
