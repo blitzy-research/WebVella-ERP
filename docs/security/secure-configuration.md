@@ -909,7 +909,7 @@ revisions of this guide and of the risk register said *four* components emit inl
 author-supplied markup through a raw-output channel. There are **five**:
 `PcJavaScriptBlock/Display.cshtml:11` wraps `@Html.Raw(options.Script)` in a literal `<script>` element
 and was named in neither document until code-review finding `MAJ-09` raised it. `RISK-170` is now the
-canonical inventory — all **111** raw-output sinks across **61** views, each with the code that writes
+canonical inventory — all **109** raw-output sinks across **61** views, each with the code that writes
 its value and the authorization contract governing that writer — and it quantifies the refactoring
 target as **59** inline `<script>` elements and **27** inline `style` attributes. Use it, not this
 table's prose, when scoping the work.

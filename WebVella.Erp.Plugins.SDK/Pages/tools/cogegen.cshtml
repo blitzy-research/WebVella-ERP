@@ -77,12 +77,25 @@
 		<div class="card-body pt-3">
 			<div class="tab-content">
 				<div class="tab-pane active" id="wv-tab1">
+					@* SECURITY H-06, runtime finding F-130 (CWE-79 stored cross-site scripting, OWASP
+						A03:2021). Every value in this grid is read out of the two databases being compared,
+						so all three columns below were live stored-scripting sinks while they were wrapped
+						in Html.Raw: a data source, role, application, page or sitemap element whose stored
+						name carried markup executed here, and the content policy this platform emits is
+						report-only, so encoding is the only control in force.
+						record.Element is a hard-coded literal and record.Name is free-form database text, so
+						both are written as plain Razor expressions and auto-encoded - do NOT reintroduce
+						Html.Raw around either. Each ChangeList entry is markup CodeGenService composes
+						around interpolated database text, so encoding it whole would print this tool's own
+						label markup as visible source; it is rendered through
+						CodeGenService.RenderChangeDescription, which copies only the four span tokens the
+						service is permitted to compose and encodes every other character. *@
 					<wv-grid columns="@Model.Columns" bordered="true" hover="true" has-tfoot="false">
 						@foreach (var record in Model.Changes)
 						{
 							<wv-grid-row>
 								<wv-grid-column>
-									@Html.Raw(record.Element)
+									@record.Element
 								</wv-grid-column>
 								<wv-grid-column>
 									@switch (record.Type)
@@ -100,7 +113,7 @@
 								</wv-grid-column>
 
 								<wv-grid-column>
-									@Html.Raw(record.Name)
+									@record.Name
 								</wv-grid-column>
 
 								<wv-grid-column>
@@ -109,7 +122,7 @@
 										<ul>
 											@foreach (var change in record.ChangeList)
 											{
-												<li>@Html.Raw(change)</li>
+												<li>@Html.Raw(WebVella.Erp.Plugins.SDK.Services.CodeGenService.RenderChangeDescription(change))</li>
 											}
 										</ul>
 									}

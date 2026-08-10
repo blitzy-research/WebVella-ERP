@@ -9312,6 +9312,144 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
             return response;
         }
         #endregion
+
+        #region << Change-description rendering >>
+
+        /// <summary>
+        /// The complete set of markup fragments this service is permitted to compose into a change
+        /// description. An ordinal, case-sensitive match of one of these exact strings is the only markup
+        /// the code-generation preview renders as markup; every other character is HTML-encoded.
+        /// </summary>
+        /// <remarks>
+        /// KEEP IN SYNC WITH THE COMPOSITION SITES. This is the whole vocabulary the
+        /// <c>ChangeList.Add</c> sites in this file emit. A fragment added at a composition site without
+        /// being added here renders as encoded text rather than as markup, which is visible and harmless.
+        /// Widening this list is the opposite: it is a security change and needs the same review as any
+        /// other.
+        /// </remarks>
+        private static readonly string[] ChangeMarkupAllowList = new string[]
+        {
+            "<span class='go-green label-block'>",
+            "<span class='go-red'>",
+            "<span class='go-gray'>",
+            "</span>"
+        };
+
+        /// <summary>
+        /// Renders one <c>MetaChangeModel.ChangeList</c> entry as HTML that is safe in an element context,
+        /// copying only the markup tokens this service itself composes and HTML-encoding everything else.
+        /// </summary>
+        /// <param name="change">
+        /// A change description as composed by this service: database text interpolated into the label
+        /// markup listed in <c>ChangeMarkupAllowList</c>. A null or empty value renders as the empty string.
+        /// </param>
+        /// <returns>
+        /// HTML in which each allow-listed token appears verbatim and every other character is encoded.
+        /// </returns>
+        /// <remarks>
+        /// <para>
+        /// THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021 Injection. Finding H-06,
+        /// reopened by runtime finding F-130. The code-generation preview renders every
+        /// <c>MetaChangeModel.ChangeList</c> entry through <c>Html.Raw</c>, and this service composes those
+        /// entries at 113 sites by interpolating names, labels and descriptions read from the two databases
+        /// being compared directly into label markup - see <c>UpdateEntityCode</c>, <c>UpdateRoleCode</c>,
+        /// <c>UpdateApplicationCode</c> and their siblings. A data source, role, application, page or
+        /// sitemap element whose stored name carries markup therefore executed in the session of whoever ran
+        /// the comparison, under the application's own origin and with that reader's session cookie. The
+        /// Content-Security-Policy this platform emits is report-only, so it records such an injection and
+        /// does not stop it, which leaves output encoding as the only control in force.
+        /// </para>
+        /// <para>
+        /// WHY AN ALLOW-LIST OF MARKUP TOKENS RATHER THAN ENCODING THE WHOLE VALUE. Encoding the finished
+        /// entry would encode this service's own label markup too, so all 113 descriptions would render as
+        /// visible HTML source and the comparison table would stop being readable - the preservation
+        /// requirement forbids that, and it is the same reason the platform's other stored-markup sinks were
+        /// fixed where their values are composed rather than where they are rendered. Encoding at the 113
+        /// composition sites was the alternative considered here and rejected: it is 160 interpolation holes
+        /// to audit and it protects none of the sites anyone writes next. These entries are composed from
+        /// exactly four literal byte sequences and are consumed at exactly one sink, so the sink can instead
+        /// enumerate what this service is allowed to emit. A token is copied only on an EXACT ordinal match;
+        /// altered casing, altered quoting, an extra attribute, or any other element or handler is encoded,
+        /// so anything unforeseen fails closed as inert text.
+        /// </para>
+        /// <para>
+        /// RESIDUAL, recorded in docs/security/risk-register.md under RISK-170: a stored value that
+        /// reproduces one of the four tokens byte for byte renders as that span. Each carries one fixed class
+        /// and no other attribute, so the effect is cosmetic - no script, no event handler and no URL can be
+        /// expressed through it.
+        /// </para>
+        /// <para>
+        /// It is public because the Razor view <c>Pages/tools/cogegen.cshtml</c> is its only caller. The
+        /// values it renders are already markup by the time they reach the view, so the view cannot encode
+        /// them itself.
+        /// </para>
+        /// </remarks>
+        public static string RenderChangeDescription(string change)
+        {
+            if (string.IsNullOrEmpty(change))
+            {
+                return string.Empty;
+            }
+
+            var encoder = System.Text.Encodings.Web.HtmlEncoder.Default;
+            var rendered = new System.Text.StringBuilder(change.Length + 64);
+            var textStart = 0;
+            var position = 0;
+
+            while (position < change.Length)
+            {
+                var token = MatchChangeMarkupToken(change, position);
+                if (token == null)
+                {
+                    position++;
+                    continue;
+                }
+
+                if (position > textStart)
+                {
+                    rendered.Append(encoder.Encode(change.Substring(textStart, position - textStart)));
+                }
+
+                rendered.Append(token);
+                position += token.Length;
+                textStart = position;
+            }
+
+            if (textStart < change.Length)
+            {
+                rendered.Append(encoder.Encode(change.Substring(textStart)));
+            }
+
+            return rendered.ToString();
+        }
+
+        /// <summary>
+        /// Returns the allow-listed markup token that begins at the given index, or null when the text at
+        /// that index is not one of the permitted tokens.
+        /// </summary>
+        /// <param name="value">The change description being rendered.</param>
+        /// <param name="position">An index inside <paramref name="value"/> to test.</param>
+        /// <returns>The matched token, or null when no allow-listed token begins there.</returns>
+        private static string MatchChangeMarkupToken(string value, int position)
+        {
+            if (value[position] != '<')
+            {
+                return null;
+            }
+
+            foreach (var token in ChangeMarkupAllowList)
+            {
+                if (position + token.Length <= value.Length
+                    && string.CompareOrdinal(value, position, token, 0, token.Length) == 0)
+                {
+                    return token;
+                }
+            }
+
+            return null;
+        }
+
+        #endregion
     }
 
     internal static class Extensions

@@ -96,7 +96,7 @@ fourteen are declared by their index row alone.
 | `RISK-020` | On one management page `document.title` disagrees with the visible heading. | Named, not fixed — cosmetic | Platform team |
 | `RISK-021` | The shipped `Config.json` files contained a live connection string, encryption key, token signing key, storage connection string and mail password, with `DevelopmentMode: true`. **All eight files are now scrubbed**, `web.config` sets `Production`, and the seeded administrator credential is no longer a literal. | **Closed** for the tracked configuration files; see `RISK-026` for the residual | Platform team |
 | `RISK-022` | **Narrowed.** Content-Security-Policy still ships in report-only mode *by default*, because enforcing it as written would break working screens. What is no longer true is that enforcement was unreachable: it is now selected by the configuration key `SecurityHeaders:ContentSecurityPolicyReportOnly` (environment form `SecurityHeaders__ContentSecurityPolicyReportOnly`), whose polarity is inverted — setting it to `false` is what *enforces* the policy — so the remaining risk is a rollout decision rather than a missing capability. The policy **value** itself is not configurable and must not become so: `SecurityHeadersOptions.ContentSecurityPolicy` is a `public const` holding the mandated string byte-for-byte, and only the delivery mode is bindable. | Accepted | Platform team |
-| `RISK-023` | **Narrowed, and its count corrected.** By-design raw-output channels are deliberately not encoded — **five**, not four. They are `PcHtmlBlock/Display.cshtml:L10`, `PcHtmlBlock/Design.cshtml:L10`, `Nav/Nav.Default.cshtml:L48`, `WvSdkPageSitemap/Form.cshtml:L92` and — unnamed anywhere in this register until code-review finding `MAJ-09` — `PcJavaScriptBlock/Display.cshtml:L11`, a fifth inline-script emitter, which is why it is load-bearing for `RISK-022`'s report-only justification rather than incidental. `RISK-170` is canonical for the channel inventory and carries the complete **111**-call census. Encoding any of the five would disable the feature it implements, which is why the disposition is a compensating control rather than a fix. What is no longer true is that they sit among a wider set of unencoded stored channels: every stored sink whose markup the platform itself composes is now encoded at its builder, so these **five** are the only raw channels remaining and their compensating control is defence in depth behind an actual fix. Counting raw *calls* rather than raw *channels* gives a larger number and does not contradict this: the remaining calls render markup the server composes from an enum or an identifier - the list `action` cells, and the data-source `icon` cell, whose value is `PageUtils.GetDataSourceIconBadge(DataSourceType.DATABASE\|CODE)` - so no stored text reaches them, and the navigation and menu calls render a value already encoded at composition in `BaseErpPageModel`. | Accepted | Platform team |
+| `RISK-023` | **Narrowed, and its count corrected.** By-design raw-output channels are deliberately not encoded — **five**, not four. They are `PcHtmlBlock/Display.cshtml:L10`, `PcHtmlBlock/Design.cshtml:L10`, `Nav/Nav.Default.cshtml:L48`, `WvSdkPageSitemap/Form.cshtml:L92` and — unnamed anywhere in this register until code-review finding `MAJ-09` — `PcJavaScriptBlock/Display.cshtml:L11`, a fifth inline-script emitter, which is why it is load-bearing for `RISK-022`'s report-only justification rather than incidental. `RISK-170` is canonical for the channel inventory and carries the complete **109**-call census. Encoding any of the five would disable the feature it implements, which is why the disposition is a compensating control rather than a fix. What is no longer true is that they sit among a wider set of unencoded stored channels: every stored sink whose markup the platform itself composes is now encoded at its builder, so these **five** are the only raw channels remaining and their compensating control is defence in depth behind an actual fix. Counting raw *calls* rather than raw *channels* gives a larger number and does not contradict this: the remaining calls render markup the server composes from an enum or an identifier - the list `action` cells, and the data-source `icon` cell, whose value is `PageUtils.GetDataSourceIconBadge(DataSourceType.DATABASE\|CODE)` - so no stored text reaches them, and the navigation and menu calls render a value already encoded at composition in `BaseErpPageModel`. | Accepted | Platform team |
 | `RISK-024` | The static-analysis backlog is reported as warnings rather than enforced as errors, because promoting roughly 3,000 pre-existing diagnostics would force the mass refactor the constraints forbid. | Accepted | Platform team |
 | `RISK-025` | Residual observations around the `H-10` deserialisation binder: the binder is measurably **inert at an `ExpandoObject` target**, the serialisation counterparts are deliberately unconstrained, the `JobResultWrapper` fallback branch is effectively unreachable for well-formed payloads, and — added while closing review finding `F18` — the tightened allow-list imposes a **forward-compatibility constraint on any future first-party type persisted in a polymorphic payload**. **Cited from `WebVella.Erp/Api/Models/AutoMapper/Profiles/JobProfile.cs`.** | Accepted / named, not fixed | Platform team |
 | `RISK-026` | The demo credential in the Blazor WebAssembly **client** page `Client/Pages/Index.razor.cs` is **removed**; what stays is that every secret ever published in this repository's **history** remains public. | **Reduced** — the client-side literal is closed; the history residual is accepted, with a CI detective control | Platform team |
@@ -207,7 +207,7 @@ fourteen are declared by their index row alone.
 | `RISK-167` | Log retention is now age-based, which is a **behaviour change** for an installation that was silently keeping 1,000 rows forever: rows older than the retention window will now be deleted on the next scheduled run. The operator-initiated *clear all* handlers are untouched and still delete unconditionally; their copy-pasted comments and row-by-row deletes are hygiene, not a security defect. **Recommended action for operators:** confirm the retention window matches your evidence-retention obligation before the first run after upgrade, and export anything older first. Weakness classification: CWE-1053, OWASP A09. | Documented consequence of review finding `CK-13`. | Deployment owner |
 | `RISK-168` | **Closed at this revision.** All **32** manual verification scenarios in the Gate 5 matrix have now been executed against disposable hosts and live PostgreSQL databases and hold committed, commit-bound attestations in the tracked `manual-verification-results.txt`, so the matrix reports `deferred=0` and no manual row blocks the release gate. **31** of the 32 are classified `REQUIRED`; the thirty-second, `M18` — measuring the deliberate login-latency increase — is the one `ADVISORY` row, and it was executed as well because the release gate refuses any row that is not `PASS`, advisory included. **A plain-text attestation file remains auditable rather than cryptographically trustworthy:** the gate requires it to be tracked and unmodified, to name a commit that is an ancestor of the commit under test, and to match a scenario revision that rotates whenever the scenario or its procedure is rewritten — but a party who can commit can write a line. **Residual recommendation:** adopt signed attestations, and re-execute any scenario whose revision rotates. Weakness classification: CWE-693, OWASP A09. | Closed for execution; the signing recommendation stays open. Residual of review findings `CK-19` and `MAJ-01`. | Whoever performs a release |
 | `RISK-169` | Two pre-existing `DbFileRepository` behaviours found while closing `CK-15` and left alone under the minimal-change constraint: blob paths are addressed in a way that assumes a single storage root, and the filesystem move operates on the file **name** rather than a fully qualified path. Neither is reachable as a security defect on the database-backed storage this platform ships, and neither was raised by the review. **Recommended fix:** none required for security; record them before any future change to the storage backend. Weakness classification: CWE-1164, OWASP A04. | Documented observation, out of scope. Found while closing review finding `CK-15`. | Platform team |
-| `RISK-170` | The **complete inventory** of raw-output, inline-script and inline-style channels: **111** `Html.Raw` sinks across **61** views, **59** inline `<script>` elements and **27** inline `style=` attributes, each with its writer and the authorization contract governing that writer. Raised by `MAJ-09`, which found that RISK-023 named only eight sinks and left three channels unnamed — `PcJavaScriptBlock/Display.cshtml:L11`, `PcGrid/Display.cshtml:L64` and `PcApplications/Display.cshtml:L70`. The first is a **fifth** by-design inline-script emitter, so RISK-022's report-only justification undercounted. This entry also quantifies what enforcing the mandated `script-src`/`style-src` policy would require. | **Accepted — inventory published; per-channel dispositions recorded** | Engineering |
+| `RISK-170` | The **complete inventory** of raw-output, inline-script and inline-style channels: **109** `Html.Raw` sinks across **61** views, **59** inline `<script>` elements and **27** inline `style=` attributes, each with its writer and the authorization contract governing that writer. Raised by `MAJ-09`, which found that RISK-023 named only eight sinks and left three channels unnamed — `PcJavaScriptBlock/Display.cshtml:L11`, `PcGrid/Display.cshtml:L64` and `PcApplications/Display.cshtml:L70`. The first is a **fifth** by-design inline-script emitter, so RISK-022's report-only justification undercounted. This entry also quantifies what enforcing the mandated `script-src`/`style-src` policy would require. | **Accepted — inventory published; per-channel dispositions recorded** | Engineering |
 | `RISK-171` | **Formal, attributable acceptance of the five `CA5351` analyzer residuals** — the legacy MD5 verification path `C-03`'s credential migration requires, plus the general-purpose digest helpers outside the remediated key handling. Raised by code-review finding `MAJ-01`, which found the Gate 1 allow-list carrying twenty-one **bare** pairs: a tolerance with no approver, no grounds and no exit condition is not an approved treatment. The acceptance, its approval record and the exit condition that retires it are in the detailed entry. | **Accepted — mandatory residual, formally approved, with a stated exit condition** | Repository owner |
 | `RISK-172` | **No authentication cookie carries the `__Host-` prefix.** A tree-wide search finds the token in no source file, manifest or configuration file, so the audit report's claim that the `erp_auth_mscdm` rename *applied* those semantics was wrong on two counts — the prefix is a property of the NAME, and the rename's real cause was a collision (`P-13`). Bounded by what is in force: `CookieSecurePolicy.Always`, `HttpOnly`, `SameSite=Lax`, bounded expiry, distinct names per host and Data Protection application isolation. **Fix:** prepend `__Host-` to all seven names in a maintenance release, keeping `Path=/` and no `Domain`, and expect one further forced sign-out | Accepted — hardening with no confirmed finding behind it; a second forced sign-out is the cost | Platform team |
 | `RISK-173` | **`DoBadRequestResponse` discards a caller-supplied message.** `ApiControllerBase.cs:L57` declares a `message` parameter and never assigns it: the non-development branch assigns the generic string only when `message` is EMPTY, so a caller supplying a specific reason gets neither. The direction of the fault is always LESS disclosure, so it is a usability defect rather than a weakness; it is `public` on a published package and called from plugin controllers, so honouring `message` would change response bodies on paths no finding implicates | Accepted — pre-existing, byte-identical to the pre-engagement tree, outside the authorised change scope | Platform team |
@@ -230,10 +230,18 @@ fourteen are declared by their index row alone.
 
 Several analyses were written independently and reused the same low identifiers for different
 subjects. Where that happened the identifier cited from **source code** was treated as fixed and the
-other subject was renumbered, so every citation in the codebase still resolves. Only four identifiers
-are cited from source code — `RISK-004` and `RISK-006` in `WebVella.Erp/Utilities/CryptoUtility.cs`,
-`RISK-007` in `WebVella.Erp.Web/Services/AuthService.cs` and `RISK-040` in
-`WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs` — and none of them was moved.
+other subject was renumbered, so every citation in the codebase still resolves. The identifiers cited from
+source code at the time of the renumbering were `RISK-004` and `RISK-006` in
+`WebVella.Erp/Utilities/CryptoUtility.cs`, `RISK-007` in `WebVella.Erp.Web/Services/AuthService.cs` and
+`RISK-040` in `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs`, and none of them was moved.
+**That list is no longer the current set and must not be read as one** — commit `3f847993` rewrote the
+comments carrying the `RISK-004` and `RISK-007` citations out of those two files, and two citations of
+`RISK-170` have since been added. Measured at this revision there are **four** citations in three files:
+`RISK-006` in `WebVella.Erp/Utilities/CryptoUtility.cs:L248`, `RISK-040` in
+`WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs:L377`, and `RISK-170` in
+`WebVella.Erp.Web/Components/HeadTopIncludes/HeadTopIncludes.cs:L47` and
+`WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs:L9376`. Reproduce with
+`grep -rn "RISK-" --include="*.cs" --include="*.cshtml" . | grep -v "^./docs"`.
 
 | Subject | Previously numbered | Now |
 | --- | --- | --- |
@@ -1526,7 +1534,7 @@ mutual-exclusivity claim was right and is carried into the canonical entry.
 | **Owner** | The **application security owner** for the platform — that is, whoever owns `SecurityHeadersOptions` and the seven host pipelines — jointly with the **frontend maintainer** for the plugin and tag-helper surfaces that emit the inline markup. Enforcement cannot be promoted by an infrastructure change alone, because clearing the backlog means editing components; that is why the decision is owned by both roles rather than by whoever last touched the middleware. |
 | **Promotion gate** | See *Governance of the promotion to enforcement* immediately below — the threshold, the criteria and the stage exit conditions are stated there rather than left to judgement. |
 | **Consequence for the mandated requirement** | Because the policy is delivered report-only it is **not enforced**, so the engagement's seven-header requirement is **`UNRESOLVED / PARTIAL`, not compliant** — six of the seven mandated header *names* are emitted and enforced, and the seventh arrives as `Content-Security-Policy-Report-Only`. Raised by code-review finding `MAJ-08`. This register is **not** the authority for that status: the single authoritative status surface is the [audit report's status section](security-audit-report.md#status-at-this-revision-gate-by-gate), and where anything here disagrees with it, that section governs. |
-| **Measured backlog** | `RISK-170` — **59** inline `<script>` elements and **27** inline `style` attributes across the **111**-sink raw-output census, which is what makes enforcement a project rather than a configuration flag. |
+| **Measured backlog** | `RISK-170` — **59** inline `<script>` elements and **27** inline `style` attributes across the **109**-sink raw-output census, which is what makes enforcement a project rather than a configuration flag. |
 
 **Report-only is NOT the remediation for H-06, and must not be recorded as such.** This needs saying
 explicitly, because the two are adjacent and easily conflated. `H-06` (stored cross-site scripting,
@@ -1613,7 +1621,7 @@ reports additionally implicate CKEditor 5, the `wv-lazyload`/Stencil bundle (inl
 entry and RISK-023 both said *four* components emit inline script or author-supplied markup through a
 raw-output channel. There are **five**: `PcJavaScriptBlock/Display.cshtml:L11` wraps
 `@Html.Raw(options.Script)` in a literal `<script>` element and was named in neither entry. Code-review
-finding `MAJ-09` raised it, and RISK-170 now carries the complete inventory — all **111** raw-output
+finding `MAJ-09` raised it, and RISK-170 now carries the complete inventory — all **109** raw-output
 sinks across **61** views with each writer and its authorization contract, plus the measured enforcement
 cost of **59** inline `<script>` elements and **27** inline `style` attributes. Read RISK-170 as the
 census this entry's backlog is drawn from; the two are consistent, and where the emitter *count* is
@@ -1845,26 +1853,37 @@ grep -rhoE '\sstyle="[^"]*"' --include=*.cshtml . | wc -l
 
 | Measure | Count |
 | --- | --- |
-| Raw-output sinks (comment blocks removed) | **111** |
+| Raw-output sinks (comment blocks removed) | **109** |
 | Distinct views containing a sink | **61**, all `.cshtml` |
 | Sinks in `.cs` or `.razor` files | **0** |
-| Distinct sink arguments | **35** |
+| Distinct sink arguments | **33** |
 | Inline `<script>` elements carrying no `src` | **59** |
 | Inline `style="…"` attributes | **27** |
 
-**Why a bare `grep -c 'Html.Raw('` disagrees, and which number is right.** A bare grep counts **118**
-across 67 files, because it also matches this remediation's own explanatory comments — the six Project
-widget views each carry a *do not reintroduce `Html.Raw`* note, and `PcHtmlBlock.cs` carries two
-XML-documentation mentions. Those seven mentions are prose, not sinks. **111 across 61 views is the
-sink-only figure and is the one this register asserts.** The delta is fully accounted for:
+**Why a bare `grep` for `Html.Raw` disagrees, and which number is right.** The looser pattern — the
+helper's name without its opening parenthesis — counts **117** occurrences across **67** `.cshtml` files,
+because it also matches this remediation's own explanatory comments. Those prose mentions number **8** and
+are enumerated rather than estimated: the six Project widget views each carry a *do not reintroduce
+`Html.Raw`* note (`PcProjectWidgetTimesheet`, `PcProjectWidgetTasksQueue` and
+`PcProjectWidgetTaskDistribution`, Design and Display each), and
+`WebVella.Erp.Plugins.SDK/Pages/tools/cogegen.cshtml` carries two in the Razor comment the class K
+correction below added. 117 − 8 = **109 across 61 views, which is the sink-only figure and the one this
+register asserts.** The `.cs` mentions are prose too, in seven files:
 
 ```bash
-grep -rn 'Html\.Raw' --include=*.cs . | wc -l   # 9 — every one a comment, no sink
+grep -rhoE 'Html\.Raw' --include=*.cshtml . | wc -l   # 117 — the loose pattern, prose included
+grep -rn  'Html\.Raw' --include=*.cs . | wc -l        # 13 — every one a comment, no sink
 ```
 
-#### Class-by-class inventory — all 111 sinks
+*(The figure in this paragraph read "118 across 67 files" and "9" until runtime finding `F-130`
+re-measured both against the tree. The loose `.cshtml` count was **117** at that revision and at the one
+before it, so the 118 was an off-by-one rather than a stale measurement, and the `.cs` count had grown as
+later fixes added explanatory comments. The prose-mention arithmetic in the earlier wording also did not
+close — it named six notes plus two mentions and then called them "seven".)*
 
-The thirteen classes below partition the 111 sinks exactly; the **Sinks** column sums to 111. "Trust
+#### Class-by-class inventory — all 109 sinks
+
+The thirteen classes below partition the 109 sinks exactly; the **Sinks** column sums to 109. "Trust
 boundary" names who must be compromised or mistaken for attacker-controlled bytes to reach the sink.
 
 | # | Class | Sinks | Writer | Trust boundary | Disposition | CSP directive it forces |
@@ -1879,7 +1898,7 @@ boundary" names who must be compromised or mistaken for attacker-controlled byte
 | H | Markup-block component — `ViewBag.ProccessedHtml` | 2 | `PcHtmlBlock.cs` via `PageDataModel.GetPropertyValueByDataSource` | Administrator chooses the channel; **any writer of a bound record field supplies the bytes** | **Partly closed by HIGH-01.** Administrator-authored *literal* markup still renders raw; every *model-resolved* value is now passed through `HtmlSanitizer.Sanitize` | `script-src 'unsafe-inline'` for the literal path only; the sanitized path emits no script |
 | I | `IsHtml`-guarded navigation and menu content | 5 | `BaseErpPageModel` composition into `MenuItem.Content`; raw branch runs only when `IsHtml = true` | Privileged author sets `IsHtml`; interpolated database values are already encoded, URL-allow-listed or character-constrained at composition time | **Accepted (RISK-023).** Renders on every page of all seven hosts | `style-src 'unsafe-inline'` (badge `style=` attributes) |
 | J | Administrator-authored designer text — `options.EmptyText`, `app.Author` | 2 | `PcGrid` node options; the `application` record's `author` field | Administrator — page-node options via `IsCodeAuthoringAuthorized`; application metadata via one of the 24 `[Authorize(Roles = "administrator")]` endpoints | **Accepted, newly named.** Both are privileged-author markup channels with no anonymous path | none required; benefits from `script-src` once enforced |
-| K | SDK code-generation preview — `record.Element`, `record.Name`, `change` | 3 | `tools/cogegen.cshtml.cs` diff/preview builder | Administrator — code generation is administrator-gated | Left as-is — server-composed preview markup | none |
+| K | SDK code-generation preview — the change descriptions (`CodeGenService.RenderChangeDescription(change)`) | 1 | `CodeGenService.cs` composes each description at one of 113 sites by interpolating names, labels and descriptions read from the two compared databases | **Any writer of a compared object's name, label or description** — viewing the preview needs administrator, but the values reaching it come from ordinary schema and record writes | **CLOSED, and this row said otherwise — see the class K correction below.** `record.Element` and `record.Name` no longer use the raw helper at all, and the one remaining call renders only the four span tokens the service is permitted to compose, encoding every other character | none |
 | L | SDK server-built nav fragments — `item`, `Model.CreateFieldUrl + fieldCard["type"]` | 2 | `AdminPageUtils.GetAppAdminSubNav`; `create-field-select.cshtml.cs:L31` literal path | None reachable — server-built paths and enum type names | **Not a sink** | none |
 | M | SDK relation metadata — `record["name"]`, `record["origin"]`, `record["target"]` | 3 | `entity/relations.cshtml.cs:L154-L177`, interpolating relation, entity and field names into badge markup | Administrator-gated schema write; every interpolated value is an identifier constrained by the platform's identifier grammar | Left as-is — identifier-bounded interpolation | `style-src 'unsafe-inline'` (badge `style=` attributes) |
 
@@ -1921,12 +1940,13 @@ both with an `alert` tripwire installed and on a pristine load with the native `
 preserved — because RCDATA decodes character references, a Unicode label still yields the genuine `测试`,
 `مهمة` and `🚀` in `document.title` with zero U+FFFD and no literal entity text.
 
-**The counts in this entry are unchanged.** The sink total is still **111 across 61 views**, class B still
-holds **10**, and *"Sinks in `.cs` or `.razor` files: 0"* remains correct — the `Html.Raw` call really is in
-a `.cshtml`. Only the disposition moved, from accepted to closed.
+**The counts in this entry were unchanged by *this* correction.** The sink total stayed at 111 across 61
+views, class B still holds **10**, and *"Sinks in `.cs` or `.razor` files: 0"* remains correct — the
+`Html.Raw` call really is in a `.cshtml`. Only the disposition moved, from accepted to closed. **The total
+has since moved to 109 for a different reason, and the class K correction below is that reason.**
 
 **Enumerating every occurrence, so this inventory is checkable rather than merely asserted.** The
-thirteen classes above partition the sinks; the command below prints all 111 individually as
+thirteen classes above partition the sinks; the command below prints all 109 individually as
 `file:line — argument`, which is what makes the partition auditable. Its output is sorted by argument, so
 each class in the table above appears as a contiguous block.
 
@@ -1958,6 +1978,61 @@ for a,p,i in sorted(out): print(f'{p}:{i} — {a}')
 print('total:', len(out))
 PY
 ```
+
+#### Correction to class K — two of its three sinks were live, not accepted (`F-130`)
+
+Runtime testing of the delivered tree found that the code-generation preview **executed** stored script,
+and this entry had dispositioned the whole class as *"left as-is — server-composed preview markup"*. The
+correction is written here rather than silently overwritten, because the way the class was misjudged is the
+reusable lesson.
+
+**What was exploitable.** `WebVella.Erp.Plugins.SDK/Pages/tools/cogegen.cshtml` emitted three columns of the
+Changes grid through the raw helper: `record.Element` at `:L85`, `record.Name` at `:L103` and each change
+description at `:L112`. `record.Name` is assigned at 40 sites in `CodeGenService.cs` and every one of them is
+free-form database text — a data source, role, application, page, sitemap or entity name or label. Each
+change description is assigned at 113 sites and every one interpolates the same kind of value into label
+markup, for example
+`$"<span class='go-green label-block'>name</span>  from <span class='go-red'>{oldEntity.Name}</span> to <span class='go-red'>{currentEntity.Name}</span>"`.
+Measured against a running host before the fix: a data source named `qa_ds_<script>alert('ds-xss')</script>`
+and a role named `qa_role_<script>alert('role-xss')</script>` produced **three native dialogs, three live
+`<script>` elements inside `#wv-tab1` and three unencoded `<script>` sequences in the raw server response**,
+with **zero** encoded forms — while the *same* values were correctly encoded in the adjacent Code pane of the
+very same response.
+
+**Why the class-by-class method did not surface it.** Exactly the failure class B recorded, repeated: the
+row's Writer column named the *page's own builder* and its Trust boundary column named *administrator*,
+because the values arrive as pre-assembled markup and the interpolation that makes them dangerous happens in
+a different file, in C#. The trust boundary that matters is not who may **view** the preview but who may
+**write** the compared object's name — and that is any ordinary schema or record write. Class B's lesson,
+*"a future re-run of this inventory must classify each argument by its writer, not by its call site"*, was
+written before this row was re-read; had it been applied to class K, the row would have been re-opened
+without a runtime finding.
+
+**Disposition now.** `record.Element` (hard-coded literals only) and `record.Name` (text by contract) are
+plain Razor expressions, so Razor's automatic encoding applies and the class loses two raw calls — which is
+the whole of the census move from 111 to 109. The change descriptions keep one raw call, fed by the new
+`CodeGenService.RenderChangeDescription`, which walks the composed string once and copies a token only on an
+**exact ordinal match** against the four fragments this service is allowed to compose —
+`<span class='go-green label-block'>`, `<span class='go-red'>`, `<span class='go-gray'>` and `</span>` —
+HTML-encoding every other character. Altered casing, altered quoting, an extra attribute, and any other
+element or handler therefore render as inert text.
+
+**Why not simply delete the raw wrapper here as well, and why not the sanitizer.** Deleting it would encode
+this tool's own label markup, so all 113 descriptions would print as visible HTML source — the same
+regression this register records for the navigation and widget views, and a preservation breach. Passing the
+value through `HtmlSanitizer.Sanitize` would strip the `class` attribute, which review finding `N23`
+deliberately removed from that sanitizer's allow-list, so the colour labels would lose their styling.
+Encoding at the 113 composition sites — the platform's usual doctrine — was the third option: it is 160
+interpolation holes to audit and it protects none of the sites written next, whereas the sink-side allow-list
+fails closed for all of them. Verified after the fix on the same fixtures and the same route: **0 dialogs, 0
+payload `<script>` elements, 0 `<script>alert` sequences in the 50,257-byte response**, the payload visible
+as inert literal text, and the tool's own labels still live markup at `rgb(244, 67, 54)` and
+`rgb(76, 175, 80)` with the Code pane still emitting its generated C#.
+
+**Residual, accepted.** A stored value that reproduces one of the four tokens byte for byte renders as that
+span. Each carries one fixed class and no other attribute, so no script, no event handler and no URL can be
+expressed through it; the effect is cosmetic. `CodeGenService.cs` cites this entry by name at the renderer,
+which is why the register is now cited from four source files rather than three.
 
 **Observation on class B, recorded rather than fixed.** `BodyBottomIncludes.cs:L30-L31` composes
 `var globalScript = $"var SiteLang=\"{ErpSettings.Lang}\";moment.locale(\"{ErpSettings.Lang}\");"` and
@@ -2005,7 +2080,7 @@ HTML Block — so the execution half of RISK-168 is closed; the signing recommen
 
 **This section is a superseded statement, not a second entry, and it declares no identifier of its own.** The current record is [`RISK-037` — Sitemap node URLs are encoded but their scheme is not validated](#risk-037-sitemap-node-urls-are-encoded-but-their-scheme-is-not-validated). It is retained so that a reader holding an earlier copy can see exactly which claim changed.
 
-**Neither of two claims this section once carried holds.** It was published as `RISK-032`, an identifier three different subjects were competing for; and its **Location** row asserted that an in-code comment in `WebVella.Erp.Web/Models/BaseErpPageModel.cs:392-402` "defers here by name". No source file cites this identifier: the only four `RISK-` citations anywhere in the tree are `RISK-004` and `RISK-006` in `WebVella.Erp/Utilities/CryptoUtility.cs`, `RISK-007` in `WebVella.Erp.Web/Services/AuthService.cs` and `RISK-040` in `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs`. Reproduce with `grep -rn "RISK-" --include="*.cs" --include="*.cshtml" . | grep -v "^./docs"`.
+**Neither of two claims this section once carried holds.** It was published as `RISK-032`, an identifier three different subjects were competing for; and its **Location** row asserted that an in-code comment in `WebVella.Erp.Web/Models/BaseErpPageModel.cs:392-402` "defers here by name". No source file cites this identifier. The `RISK-` citations anywhere in the tree, measured at this revision, are `RISK-006` in `WebVella.Erp/Utilities/CryptoUtility.cs`, `RISK-040` in `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs` and `RISK-170` in both `WebVella.Erp.Web/Components/HeadTopIncludes/HeadTopIncludes.cs` and `WebVella.Erp.Plugins.SDK/Services/CodeGenService.cs` — four citations in three files. (This sentence named `RISK-004` and `RISK-007` instead of the two `RISK-170` citations until runtime finding `F-130` re-measured it; those two citations were rewritten out of their files by commit `3f847993`.) Reproduce with `grep -rn "RISK-" --include="*.cs" --include="*.cshtml" . | grep -v "^./docs"`.
 
 | Field | Value |
 | --- | --- |
@@ -6640,7 +6715,7 @@ solution requiring the least modification (guideline 7), and exact preservation 
 - **Touching the raw-output occurrences that render server-generated markup.** The census is exact, not
   approximate: **128** `Html.Raw(` occurrences across **69** `.cshtml` files **at the audit baseline**, of
   which `Html.Raw(action)` accounts for **49** and `Html.Raw(record["action"])` for **6** — roughly 55 in
-  total. *(The delivered tree measures **111** calls across **61** views, counting invocation sites rather than the textual mentions a looser pattern also matches;
+  total. *(The delivered tree measures **109** calls across **61** views, counting invocation sites rather than the textual mentions a looser pattern also matches;
   `RISK-170` is canonical for the current census. The 114/62 figure that once circulated was the census
   of the tree at commits
   `88136e3b` through `0f7419ae` and went stale at commit `859356e4`, which removed the last three
