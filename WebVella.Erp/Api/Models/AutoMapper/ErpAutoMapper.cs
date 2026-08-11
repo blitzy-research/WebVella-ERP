@@ -1,8 +1,9 @@
-﻿using AutoMapper;
-using AutoMapper.Configuration;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text;
+using AutoMapper;
+using AutoMapper.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace WebVella.Erp.Api.Models.AutoMapper
 {
@@ -12,7 +13,9 @@ namespace WebVella.Erp.Api.Models.AutoMapper
 
 		public static void Initialize(MapperConfigurationExpression cfg)
 		{
-			Mapper = new Mapper(new MapperConfiguration(cfg));
+			// AutoMapper 15 requires an ILoggerFactory here; the platform performs no mapping logging,
+			// so a no-op factory keeps behaviour identical to the pre-15 overload.
+			Mapper = new Mapper(new MapperConfiguration(cfg, NullLoggerFactory.Instance));
 		}
 	}
 }

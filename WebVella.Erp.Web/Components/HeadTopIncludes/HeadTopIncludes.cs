@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using WebVella.Erp.Web.Hooks;
 using WebVella.Erp.Web.Models;
@@ -26,7 +27,40 @@ namespace WebVella.Erp.Web.Components
 			ViewBag.Title = "";
 			if (string.IsNullOrWhiteSpace(includedTitle))
 			{
-				var titleTag = "<title>" + pageModel.PageContext.ViewData["Title"] + "</title>";
+				//THREAT ADDRESSED - finding H-06 (CWE-79 improper neutralization of input during web page generation,
+				//OWASP A03:2021), raised against the delivered tree as F-129 / Q2. This line composed the <title> element
+				//by string concatenation and Default.cshtml emits the finished string through Html.Raw, so whatever
+				//ViewData["Title"] held reached the browser as MARKUP. The value carries ErpRequestContext.Page.Label -
+				//stored, administrator-editable database text - on every page view in this folder, and Site.cshtml does so
+				//for the public /s/{name} route, which made it a stored cross-site-scripting sink reachable by the
+				//LOWEST-privileged authenticated role.
+				//WHY <title> IS NOT SELF-PROTECTING, which is what let this survive the original census: the element is
+				//RCDATA, so a bare <script> inside it really is inert - but a literal "</title>" TERMINATES the element and
+				//returns the tokenizer to the normal markup state, after which the rest of the stored value is parsed as
+				//ordinary HTML. A label of "</title><script>alert(1)</script>" therefore built a real <script> as a SIBLING
+				//inside <head> and executed it DURING PARSE, on the application's own authenticated origin. Runtime-verified;
+				//the report-only Content-Security-Policy observed that violation without blocking it. The identical stored
+				//value was already inert at the remediated SiteMenu sink in the SAME response, which is what identified this
+				//as a scope gap in H-06 rather than a new defect.
+				//The census that classified the 128 raw-output sites read .cshtml files for Html.Raw arguments; it could not
+				//see that THIS argument is assembled here, in C#, from a database value, so the sink was recorded as
+				//server-generated markup. RISK-170 carries the correction.
+				//The fix is the smallest one that closes it (Minimal Change guideline 7): encode the value, not the tag, at
+				//the single point of composition - one writer here and one reader in Default.cshtml, so no other emission
+				//path needs touching, and the value cached in HttpContext.Items is safe for every later reader. The Html.Raw
+				//in Default.cshtml is deliberately left alone because that same call also emits the <meta>, <link> and
+				//<script> tags PageUtils builds - encoding there would break page head rendering outright.
+				//WHY THIS ENCODER: HtmlEncoder.Default is the encoder Razor's own automatic encoding uses and the one
+				//BaseErpPageModel.EncodeMenuText already applies to the menu half of this same value, so the fix matches an
+				//in-repository precedent. Because RCDATA decodes character references the browser renders the identical
+				//characters - a legitimate title, Unicode and apostrophes included, is unchanged on screen and in
+				//document.title - which is what preserves user-facing behaviour, while "</title>" can no longer exit the
+				//element.
+				//The null coalesce reproduces the previous behaviour exactly - string concatenation rendered a null value as
+				//empty, so a route that sets no title still emits <title></title> - and it is also required, because
+				//ViewData["Title"] is an object and Encode throws on a null argument.
+				var titleText = pageModel.PageContext.ViewData["Title"]?.ToString() ?? "";
+				var titleTag = "<title>" + HtmlEncoder.Default.Encode(titleText) + "</title>";
 				ViewBag.Title = titleTag;
 				pageModel.HttpContext.Items["<title>"] = titleTag;
 			}

@@ -43,6 +43,47 @@ namespace WebVella.Erp.Eql
 		/// </summary>
 		public EqlSettings Settings { get; private set; } = new EqlSettings();
 
+		/// <summary>
+		/// When true, values of fields carrying the Encrypted flag are projected verbatim instead of
+		/// being replaced with <see cref="Api.RecordManager.EncryptedFieldRedactedValue"/>. Defaults
+		/// to false, and only in-assembly credential resolution ever sets it.
+		/// </summary>
+		/// <remarks>
+		/// THREAT ADDRESSED - finding C-02 / F16, CWE-200 (exposure of sensitive information to an
+		/// unauthorized actor) and CWE-522 (insufficiently protected credentials), OWASP A01:2021
+		/// Broken Access Control + A02:2021 Cryptographic Failures.
+		/// <para>
+		/// WHAT WAS WRONG: redaction was applied at the two projection seams inside
+		/// DbRecordRepository, but this class carries its OWN private ConvertJObjectToEntityRecord,
+		/// which called ExtractFieldValue directly. The query language is a first-class, caller-facing
+		/// API - reachable through the api/v3/en_US/eql endpoint, through every database data source,
+		/// and through Razor page models that run EQL themselves - so
+		/// <c>SELECT id,email,password FROM user</c> returned PBKDF2 hashes to any role holding
+		/// entity-level read on the user entity. The entity permission check a few lines below is
+		/// exactly that: an ENTITY check, with no notion of a field.
+		/// </para>
+		/// <para>
+		/// WHY A FLAG RATHER THAN UNCONDITIONAL REDACTION: credential verification needs the real
+		/// stored value, and in this platform it is obtained through this very class -
+		/// SecurityManager resolves users with EQL, not with a repository call. Two call sites need
+		/// the true value and no others: GetUser(Guid), whose result feeds both the SaveUser
+		/// change-detection comparison and the version-4 migration that revokes the published
+		/// default administrator credential, and GetUser(email, password), the platform's single
+		/// credential-verification routine.
+		/// </para>
+		/// <para>
+		/// WHY IT IS SAFE TO HAVE AN OPT-OUT AT ALL: the member is <c>internal</c> and
+		/// <c>init</c>-only, so it can be set only by code compiled into WebVella.Erp and only in an
+		/// object initializer at construction. It is deliberately NOT part of
+		/// <see cref="EqlSettings"/>: those settings are public and are attached to stored data
+		/// source definitions, so a flag living there could be requested by data rather than by code.
+		/// Nothing deserializes an EqlCommand, no route model binds to one, and the default is the
+		/// safe value - so every caller that does not explicitly opt in, including every caller
+		/// outside this assembly, gets redaction and cannot ask for anything else.
+		/// </para>
+		/// </remarks>
+		internal bool IncludeEncryptedFieldValues { get; init; }
+
 		private DbContext suppliedContext = null;
 		public DbContext CurrentContext
 		{
@@ -303,7 +344,18 @@ namespace WebVella.Erp.Eql
 					if (!hasPermisstion)
 						throw new Exception($"No access to entity '{meta.Field.EntityName}'");
 
-					record[meta.Field.Name] = DbRecordRepository.ExtractFieldValue(jObj[meta.Field.Name], meta.Field);
+					//THREAT ADDRESSED - finding C-02 / F16, CWE-200 and CWE-522, OWASP A01 + A02. See
+					//IncludeEncryptedFieldValues above for why the flag exists and why it cannot be
+					//requested from outside this assembly. Redaction wraps the extraction rather than
+					//living inside ExtractFieldValue because that method is also on the WRITE path,
+					//where it hashes the incoming value - redacting in there would persist the marker.
+					//This single line covers relation projections too: the meta.Relation branch below
+					//recurses into this same method, so a nested $relation.password is projected
+					//through here as well, with the same flag value threaded down.
+					var extractedValue = DbRecordRepository.ExtractFieldValue(jObj[meta.Field.Name], meta.Field);
+					record[meta.Field.Name] = IncludeEncryptedFieldValues
+						? extractedValue
+						: DbRecordRepository.RedactEncryptedFieldValue(extractedValue, meta.Field);
 				}
 				else if (meta.Relation != null)
 				{

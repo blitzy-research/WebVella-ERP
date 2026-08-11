@@ -47,7 +47,10 @@ namespace WebVella.Erp.Database
 					{
 						List<DbParameter> parameters = new List<DbParameter>();
 
-						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+						// SECURITY H-10. Serialize side; see the deserialize site below for the retained-type-handling
+						// rationale. Attaching the binder here changes nothing that is stored: it overrides BindToType
+						// only, so the $type strings written stay byte-identical.
+						JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 						DbParameter parameterId = new DbParameter();
 						parameterId.Name = "id";
@@ -61,7 +64,10 @@ namespace WebVella.Erp.Database
 						parameterJson.Type = NpgsqlDbType.Json;
 						parameters.Add(parameterJson);
 
-						string tableName = RECORD_COLLECTION_PREFIX + entity.Name;
+						// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Concatenated into the CREATE
+						// TABLE and CREATE COLUMN statements below. Validate returns a conforming name unchanged, so the
+						// emitted DDL is identical for legitimate entities.
+						string tableName = DbIdentifier.Validate(RECORD_COLLECTION_PREFIX + entity.Name);
 
 						DbRepository.CreateTable(tableName);
 						foreach (var field in entity.Fields)
@@ -162,7 +168,11 @@ namespace WebVella.Erp.Database
 				{
 					NpgsqlCommand command = con.CreateCommand("UPDATE entities SET json=@json WHERE id=@id;");
 
-					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+					// SECURITY H-10. Serialize side; see the deserialize site below for the retained-type-handling
+					// rationale. Attaching the binder here changes nothing that is stored: it overrides BindToType
+					// only, so the $type strings written back stay byte-identical and a document written by this
+					// build still loads on one running the previous build.
+					JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 					var parameter = command.CreateParameter() as NpgsqlParameter;
 					parameter.ParameterName = "json";
@@ -207,9 +217,18 @@ namespace WebVella.Erp.Database
 				using (NpgsqlDataReader reader = command.ExecuteReader())
 				{
 
+					// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). THE DESERIALIZE
+					// SITE - the one place in this file where the binder actually fires. Left unconstrained, automatic
+					// type handling resolves whatever $type token the entities table happens to contain into a CLR
+					// type, a well-known remote-code-execution primitive. TypeNameHandling is RETAINED because the
+					// stored documents cannot be read without it - every already-persisted entity carries
+					// discriminators for the DbBaseField hierarchy in DbEntity.Fields, so removing it would stop
+					// existing installations loading their own schema - and resolution is constrained instead to the
+					// binder's enumerated first-party allow-list, which refuses anything outside it.
 					JsonSerializerSettings settings = new JsonSerializerSettings
 					{
 						TypeNameHandling = TypeNameHandling.Auto,
+						SerializationBinder = ErpSerializationBinder.Instance,
 						NullValueHandling = NullValueHandling.Ignore,
 						MissingMemberHandling = MissingMemberHandling.Ignore,
 					};
@@ -272,7 +291,14 @@ namespace WebVella.Erp.Database
 
 						var entity = Read(entityId);
 
-						NpgsqlCommand command = con.CreateCommand("DELETE FROM entities WHERE id=@id; DROP TABLE rec_" + entity.Name);
+						// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The entity id is bound as a
+						// parameter, but PostgreSQL cannot parameterise the identifier in DROP TABLE. This is the
+						// highest-consequence identifier sink in the platform: the statement is already a multi-statement
+						// batch, so a name carrying a semicolon would append attacker-chosen DDL to a command running
+						// inside a transaction with full schema rights. Quote validates against the allow-list and emits
+						// double-quoted, throwing rather than sanitising; quoting is behaviour-preserving because the
+						// allow-list admits only lower-case names, which fold to themselves.
+						NpgsqlCommand command = con.CreateCommand("DELETE FROM entities WHERE id=@id; DROP TABLE " + DbIdentifier.Quote("rec_" + entity.Name));
 
 						var parameterId = command.CreateParameter() as NpgsqlParameter;
 						parameterId.ParameterName = "id";

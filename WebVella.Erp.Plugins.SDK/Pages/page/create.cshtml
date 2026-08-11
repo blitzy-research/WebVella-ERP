@@ -6,14 +6,21 @@
 	Layout = "~/Pages/_AppMaster.cshtml";
 	ViewData["Title"] = "Create New Page";
 
+	// SECURITY (CWE-79 reflected XSS / CWE-601 open redirect, OWASP A03) - ReturnUrl is URL-decoded
+	// query-string input reaching two rendering sinks, the page header's return-url and the Cancel href.
+	// BOTH controls are required: Razor's HTML encoding stops attribute breakout and is the right encoding
+	// for a WHOLE href that URL-encoding would break at the path separators, but a browser decodes entities
+	// before parsing the scheme, so the value is ALSO allow-listed as a same-site relative URL. A rejected
+	// value renders exactly as an absent one did.
+	var safeReturnUrl = Url.IsLocalUrl(Model.ReturnUrl) ? Model.ReturnUrl : String.Empty;
 }
 
 <wv-page-header color="#dc3545" area-label="Pages" title="Create New Page" 
-	icon-class="fa fa-plus" return-url="@Model.ReturnUrl">
+	icon-class="fa fa-plus" return-url="@safeReturnUrl">
 
 <wv-page-header-actions>
 	<wv-button type='Submit' form="CreateRecord" class='btn btn-green btn-sm'><span class='fa fa-save go-white'></span> Create Page</wv-button>
-	<a href='@Html.Raw(Model.ReturnUrl)' class='btn btn-white btn-sm'>Cancel</a>
+	<a href='@safeReturnUrl' class='btn btn-white btn-sm'>Cancel</a>
 </wv-page-header-actions>
 
 	</wv-page-header>

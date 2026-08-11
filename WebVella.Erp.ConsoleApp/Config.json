@@ -1,15 +1,17 @@
 ﻿{
 	"Settings": {
-		"ConnectionString": "Server=192.168.10.25;Port=5436;User Id=test;Password=test;Database=erp3_base;Pooling=true;MinPoolSize=1;MaxPoolSize=100;CommandTimeout=120;",
-		"EncryptionKey": "BC93B776A42877CFEE808823BA8B37C83B6B0AD23198AC3AF2B5A54DCB647658",
+		// SECURITY - findings H-05 and H-04 (CWE-798 hard-coded credentials, CWE-321 hard-coded key), OWASP A02 / A05: the connection string and the encryption key were committed to source control, so they stay EMPTY and are supplied out of band as Settings__ConnectionString and Settings__EncryptionKey ("__" separates sections).
+		// DevelopmentMode ships "false" for H-12 (CWE-489 active debug code). Every key is RETAINED with an empty value because the JSON configuration source is non-optional - do NOT delete this file.
+		"ConnectionString": "",
+		"EncryptionKey": "",
 		"Lang": "en",
 		"Locale": "en-US",
 		"TimeZoneName": "FLE Standard Time",
-		"CacheKey": "", //if empty current date will be used 
-		"DevelopmentMode": "true",
+		"CacheKey": "", //if empty current date will be used
+		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "false",
 		"EnableFileSystemStorage": "false",
-		"FileSystemStorageFolder": "\\\\192.168.10.25\\Share\\webvella-erp-files",
+		"FileSystemStorageFolder": "",
 		"EmailEnabled": false,
 		"EmailSMTPServerName": "",
 		"EmailSMTPPort": "25",

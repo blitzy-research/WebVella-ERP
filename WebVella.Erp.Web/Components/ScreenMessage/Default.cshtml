@@ -1,20 +1,74 @@
-﻿@using WebVella.Erp.Web.Models;
+﻿@using Newtonsoft.Json;
+@using WebVella.Erp.Web;
+@using WebVella.Erp.Web.Models;
 @using WebVella.Erp.Web.Utils;
 @{
 	var screenMessage = (ScreenMessage)ViewBag.ScreenMessage;
 }
 @if (screenMessage != null)
 {
+	@*  SECURITY - review finding L-OPEN-04, CWE-116 (improper encoding or escaping of output),
+		OWASP A03:2021. THREAT ADDRESSED: these three values were interpolated with plain Razor
+		expressions INSIDE QUOTED JAVASCRIPT STRING LITERALS, so they were HTML-encoded for a context that
+		is not HTML. Two distinct defects followed, both confirmed in a browser rather than reasoned about.
+		SCRIPT CORRUPTION. A BACKSLASH is the one character in this threat set that the HTML encoder does
+		not touch at all. A message ending in one - "550 rejected by relay \" from a mail relay, say -
+		emitted a literal backslash immediately before the closing quote, which escaped that quote and let
+		the literal run on into the arguments after it. Chrome answers with a PARSE-TIME
+		"Uncaught SyntaxError: missing ) after argument list" and discards THE WHOLE SCRIPT BLOCK, so
+		neither the notification nor anything else in the block runs, with no trace outside the console.
+		MANGLED DIAGNOSTICS. Everything else in the set is encoded, but into HTML entities - and script
+		content is raw text in HTML, where an entity reference is NEVER decoded. So a quote reached the
+		parser as the six characters "&quot;", a newline as "&#xA;", an apostrophe as "&#x27;" and a
+		bullet as "&#x2022;". That is why a breakout was never demonstrated for those characters - they
+		arrive inert - but it also means the operator was shown entity soup instead of the message. It is
+		not hypothetical: the multi-line TLS failure text this platform stores in an email's server_error
+		and shows through this very component rendered as
+		"...connection.&#xA;&#xA;The server&#x27;s SSL certificate...".
+		THE VALUES ARE NOW SERIALISED, not encoded. JsonConvert produces a complete JSON string literal -
+		its own quotes included, backslashes doubled, quotes escaped, newlines emitted as the two-character
+		escape a JavaScript parser expects - which
+		is why the quotes are gone from the template below: supplying them would nest one string inside
+		another. WvJsonRaw then escapes the one character JSON leaves alone that matters inside a script
+		element, "<", so no value can spell "</script>" and end the block early. That is exactly the
+		contract WvJsonRaw documents - a complete serialised JSON document written into script content on
+		its own - and using it here needs no new helper and no new public API.
+		The type label is serialised too. It comes from a four-value enum today and cannot carry a hostile
+		character, but it is interpolated into the same statement, and leaving one interpolation encoded
+		for the wrong context invites the next edit to copy it. *@
+	@*  SECURITY - CWE-79 (stored cross-site scripting) and CWE-116 (improper encoding of output),
+		OWASP A03:2021. THREAT ADDRESSED: correcting the encoding above delivers the value's TRUE characters
+		into the notification library, and the library's sink parses what it is given as HTML - so the
+		serialisation fix, on its own, converted text that had been inert as HTML entities into DOM that
+		EXECUTES. Runtime-proven, not reasoned about: an SMTP peer's own response text reaching
+		email.ServerError through SmtpInternalService.EmailSendNowOnPost rendered as a real <img> child of
+		.toast-message whose onerror ran on the application's origin with the operator's authenticated
+		session, and the report-only Content-Security-Policy observed it without blocking it.
+		WHY escapeHtml AND WHY HERE. toastr 2.1.3 defaults escapeHtml to FALSE, and with that default BOTH
+		arguments are raw: setTitle and setMessage each do $element.append(value), which parses markup.
+		Setting it true routes both through the library's own escaper, and jQuery then decodes the
+		references back to the original characters - so the operator still reads the real message, with the
+		backslash and multi-line diagnostics this component was fixed to display correctly, while the
+		parser can no longer be made to create an element. It is supplied in the per-call options object
+		because toastr merges that object OVER its defaults (notify: $.extend(options, optionsOverride)),
+		which closes the message and the title sinks together in the one file that owns this statement,
+		without editing the vendored library or changing any other caller's behaviour.
+		The values stay SERIALISED: escapeHtml protects the HTML context INSIDE the library, and the JSON
+		string literal protects the JavaScript context of the statement below. Removing either reopens one
+		of the two defects. *@
+	var messageJson = Html.WvJsonRaw(JsonConvert.SerializeObject(screenMessage.Message ?? string.Empty));
+	var titleJson = Html.WvJsonRaw(JsonConvert.SerializeObject(screenMessage.Title ?? string.Empty));
+	var typeJson = Html.WvJsonRaw(JsonConvert.SerializeObject(screenMessage.Type.GetLabel()));
 	<script>
 	@if (screenMessage != null)
 	{
 		switch (screenMessage.Type)
 		{
 			case ScreenMessageType.Error:
-				@:toastr["error"]("@screenMessage.Message", "@screenMessage.Title", {"positionClass": "toast-top-center","newestOnTop": false,"timeOut": 7000,"extendedTimeOut":7000});
+				@:toastr["error"](@messageJson, @titleJson, {"escapeHtml": true,"positionClass": "toast-top-center","newestOnTop": false,"timeOut": 7000,"extendedTimeOut":7000});
 				break;
 			default:
-				@:toastr["@screenMessage.Type.GetLabel()"]("@screenMessage.Message", "@screenMessage.Title", {"positionClass": "toast-top-center","newestOnTop": false,"timeOut": 3000,"extendedTimeOut":3000});
+				@:toastr[@typeJson](@messageJson, @titleJson, {"escapeHtml": true,"positionClass": "toast-top-center","newestOnTop": false,"timeOut": 3000,"extendedTimeOut":3000});
 				break;
 		}
 	}

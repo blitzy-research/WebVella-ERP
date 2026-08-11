@@ -6,6 +6,7 @@ using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
 using WebVella.Erp.Eql;
 using WebVella.Erp.Exceptions;
+using WebVella.Erp.Web.Utils;
 
 
 //TODO develop service
@@ -33,7 +34,17 @@ namespace WebVella.Erp.Plugins.Project.Services
 				record["id"] = id;
 				record["created_by"] = createdBy;
 				record["created_on"] = createdOn;
-				record["body"] = body;
+				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding SR-05 (seam/M-01).
+				//This value is never rendered through Razor: PcPostList serializes the whole record into a
+				//JSON attribute and the client bundle assigns "body" straight to innerHTML, so whatever is
+				//stored here is parsed as MARKUP in every later reader's session, on this application's own
+				//origin and with that reader's session cookie. The Content-Security-Policy this platform
+				//emits is report-only, so it would record such an injection rather than stop it. Sanitizing
+				//at the point of storage - rather than encoding - is what keeps the field's legitimate rich
+				//text working while removing anything that can execute. This is the single choke point for
+				//every writer of a comment or post: the controller action passes its request body straight
+				//through to here.
+				record["body"] = HtmlSanitizer.Sanitize(body);
 				record["parent_id"] = parentId;
 				record["l_scope"] = JsonConvert.SerializeObject(scope);
 				record["l_related_records"] = JsonConvert.SerializeObject(relatedRecords);
@@ -160,7 +171,15 @@ namespace WebVella.Erp.Plugins.Project.Services
 				}
 
 				//Add activity log
-				var subject = $"commented on <a href=\"/projects/tasks/tasks/r/{taskRecord["id"]}/details\">[{taskRecord["key"]}] {taskRecord["subject"]}</a>";
+				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding SR-05 (seam/M-01).
+				//This string is composed as TRUSTED MARKUP and the feed bundle assigns it to innerHTML, but
+				//two of its three interpolations are author-controlled task data. An unencoded task subject
+				//therefore closes the anchor and opens whatever element it likes in every watcher's feed -
+				//and it does so in a record none of those watchers authored, which is what makes the feed the
+				//widest-reaching sink of the three. The interpolated values are encoded here, at the point
+				//they enter markup, so the anchor this builds keeps working while its text stays text. The
+				//identifier in the href is a Guid taken from the record's own key and is not author-supplied.
+				var subject = $"commented on <a href=\"/projects/tasks/tasks/r/{taskRecord["id"]}/details\">[{HtmlSanitizer.EncodeText(taskRecord["key"]?.ToString())}] {HtmlSanitizer.EncodeText(taskRecord["subject"]?.ToString())}</a>";
 				var relatedRecords = new List<string>() { taskRecord["id"].ToString(), record["id"].ToString() };
 				if (projectId != null)
 				{

@@ -110,8 +110,32 @@ namespace WebVella.Erp.Plugins.Project.Components
 						new TaskService().GetTaskIconAndColor((string)task["priority"],out iconClass, out color);
 
 						var row = new EntityRecord();
-						row["task"] = $"<i class='{iconClass}' style='color:{color}'></i> <a href=\"/projects/tasks/tasks/r/{(Guid)task["id"]}/details\">[{task["key"]}] {task["subject"]}</a>";
-						row["user"] = $"<img src=\"{imagePath}\" class=\"rounded-circle\" width=\"24\"> {(string)user["username"]}";
+						//SECURITY - H-06 (CWE-79, OWASP A03: stored cross-site scripting): the two cells below
+						//used to be composed here as HTML strings and emitted through Html.Raw by Design.cshtml
+						//and Display.cshtml, so the task key, the task subject, the owner name, the avatar path
+						//and the priority icon class and colour - every one of them database text - reached the
+						//browser unencoded. Each value is now published as its own DATA field and the markup is
+						//authored in the views, where Razor encodes automatically.
+						//The icon class and the colour get an additional allow-list because HTML encoding alone
+						//does not fully constrain them: they land in a class attribute and inside a style
+						//declaration, where a crafted value still injects extra class names or extra CSS without
+						//ever needing to escape the attribute. See SafeStyleValue for the checks themselves.
+						//Those two checks used to be private members of this class, which is how FOUR sibling
+						//render paths for the same two values came to be left unguarded - three widget-side
+						//paths, plus the platform-wide select conversion boundary that QA found afterwards and
+						//that no plugin-owned guard could ever have reached. They now live in
+						//WebVella.Erp.Web.Utils.SafeStyleValue so that every consumer, framework and plugin
+						//alike, shares one implementation. The call below is
+						//redundant today because TaskService.GetTaskIconAndColor guards its own output, and it is
+						//kept anyway: this component would otherwise depend on a caller-side guarantee for its
+						//own safety, and the check is idempotent, so an already-clean value passes unchanged.
+						row["task_id"] = (Guid)task["id"];
+						row["task_key"] = task["key"];
+						row["task_subject"] = task["subject"];
+						row["task_icon_class"] = SafeStyleValue.IconClass(iconClass);
+						row["task_color"] = SafeStyleValue.CssColor(color);
+						row["user_image"] = imagePath;
+						row["user_name"] = (string)user["username"];
 						row["date"] = ((DateTime?)task["end_time"]).ConvertToAppDate();
 						resultRecords.Add(row);
 					}

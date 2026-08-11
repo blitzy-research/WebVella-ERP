@@ -10,7 +10,10 @@ public partial class WvLogin : WvBaseComponent
     protected override void OnInitialized()
     {
         base.OnInitialized();
-        _returnUrl = NavigatorExt.GetStringFromQuery(Navigator, WasmConstants.ReturnUrlQuery);
+        //Review finding M-02, CWE-601. The value is read through the local-only policy, so a crafted
+        //absolute or scheme-relative returnUrl cannot become a post-authentication navigation off this
+        //origin. A refused value reads as absent, which the branches below already handle by going to "/".
+        _returnUrl = NavigatorExt.GetLocalReturnUrlFromQuery(Navigator, WasmConstants.ReturnUrlQuery);
         State = ComponentState.Content;
     }
 
@@ -20,7 +23,10 @@ public partial class WvLogin : WvBaseComponent
         {
             if (await ApiService.HasTokenAsync())
             {
-                var returnUrl = NavigatorExt.GetStringFromQuery(Navigator, WasmConstants.ReturnUrlQuery, null);
+                //Review finding M-02, CWE-601. The already-signed-in path is the SAME sink as the post-login
+                //path below and needed the same policy - an attacker who can get a signed-in user to open the
+                //login route with a crafted returnUrl needs no credential at all for the redirect to fire.
+                var returnUrl = NavigatorExt.GetLocalReturnUrlFromQuery(Navigator, WasmConstants.ReturnUrlQuery, null);
                 if (returnUrl is not null) Navigator.NavigateTo(returnUrl);
                 else Navigator.NavigateTo("/");
             }

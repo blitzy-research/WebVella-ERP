@@ -12,13 +12,20 @@
 		pageIconClass = Model.ErpPage.IconClass;
 	}
 
+	// SECURITY (CWE-79 reflected XSS / CWE-601 open redirect, OWASP A03) - ReturnUrl is URL-decoded
+	// query-string input reaching two rendering sinks, the page header's return-url and the Cancel href.
+	// BOTH controls are required: Razor's HTML encoding stops attribute breakout and is the right encoding
+	// for a WHOLE href that URL-encoding would break at the path separators, but a browser decodes entities
+	// before parsing the scheme, so the value is ALSO allow-listed as a same-site relative URL. The
+	// Redirect(ReturnUrl) in OnPost is guarded separately - rendering and redirection are different sinks.
+	var safeReturnUrl = Url.IsLocalUrl(Model.ReturnUrl) ? Model.ReturnUrl : String.Empty;
 }
 <wv-page-header color="#dc3545" area-label="Pages" title="@Model.ErpPage.Label" subtitle="Manage"
-				icon-class="@pageIconClass" return-url="@Model.ReturnUrl">
+				icon-class="@pageIconClass" return-url="@safeReturnUrl">
 
 	<wv-page-header-actions>
 		<wv-button type='Submit' form="ManageRecord" class='btn btn-blue btn-sm'><span class='fa fa-save go-white'></span> Save Page</wv-button>
-		<a href='@Html.Raw(Model.ReturnUrl)' class='btn btn-white btn-sm'>Cancel</a>
+		<a href='@safeReturnUrl' class='btn btn-white btn-sm'>Cancel</a>
 	</wv-page-header-actions>
 
 	<wv-page-header-toolbar>
@@ -63,12 +70,5 @@
 	<wv-section class="mt-4" title="Sitemap" is-card="true">
 		@await Component.InvokeAsync("WvSdkPageSitemap", new { pageId = Model.RecordId, mode = WvFieldRenderMode.Form })
 	</wv-section>
-	@*<wv-section class="mt-4" title="Render" is-card="true">
-			<wv-row>
-				<wv-column span="12">
-					<wv-field-code label-text="RazorBody" value="@Model.RazorBody" name="RazorBody"></wv-field-code>
-				</wv-column>
-			</wv-row>
-		</wv-section>*@
 </wv-form>
 

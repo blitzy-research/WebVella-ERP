@@ -511,7 +511,7 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     foreach (var node in currentBodyNodes.Where(x => x.ParentId == null))
                         QueuePageBodyNode(node, currentBodyNodes, queue);
 
-                    //nodes in queue are ordered in that way from parent to child, 
+                    //nodes in queue are ordered in that way from parent to child,
                     //so referential problems during create and update should be eliminated
                     while (queue.Count > 0)
                     {
@@ -696,7 +696,7 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     }
 
                     //we load page body nodes again because delete is recursive
-                    //and deleting one node may delete other node which are moved 
+                    //and deleting one node may delete other node which are moved
                     //to another branch of the nodes tree, such nodes will be
                     //created in code for create and update
                     oldBodyNodes = ReadOldPageBodyNodes();
@@ -955,7 +955,16 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     using (NpgsqlDataReader reader = command.ExecuteReader())
                     {
 
-                        JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+                        // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). TypeNameHandling
+                        // resolves a $type discriminator carried in the stored payload into a CLR type, which with an
+                        // unconstrained binder is a well documented remote-code-execution primitive. It is deliberately
+                        // RETAINED - the entity metadata already persisted in the legacy database carries discriminators on
+                        // every element of DbEntity.Fields, because the declared element type DbBaseField is abstract and the
+                        // runtime elements are its concrete subclasses, so removing it would stop existing installations
+                        // loading at all - and resolution is constrained instead by an explicit type allow-list.
+                        // ErpSerializationBinder overrides BindToType only, so the $type strings written on serialisation are
+                        // unchanged.
+                        JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
                         List<DbEntity> entities = new List<DbEntity>();
                         while (reader.Read())
                         {
@@ -987,7 +996,11 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     using (NpgsqlDataReader reader = command.ExecuteReader())
                     {
 
-                        JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+                        // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). As on the entity read
+                        // above: TypeNameHandling is RETAINED because already-persisted relation payloads carry
+                        // discriminators and would fail to load without it, and resolution is constrained instead by the
+                        // binder's explicit type allow-list.
+                        JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
                         List<DbEntityRelation> relations = new List<DbEntityRelation>();
                         while (reader.Read())
                         {
@@ -1015,7 +1028,10 @@ namespace WebVella.Erp.Plugins.SDK.Services
                 try
                 {
                     con.Open();
-                    NpgsqlCommand command = new NpgsqlCommand($"SELECT * FROM rec_{entityName};", con);
+                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The record table name is an
+                    // identifier, which PostgreSQL cannot bind as a parameter. Quote validates it against the allow-list
+                    // and emits it double-quoted, throwing rather than sanitising if it does not conform.
+                    NpgsqlCommand command = new NpgsqlCommand($"SELECT * FROM {DbIdentifier.Quote("rec_" + entityName)};", con);
                     NpgsqlDataAdapter adapter = new NpgsqlDataAdapter(command);
                     DataTable table = new DataTable();
                     adapter.Fill(table);
@@ -1266,7 +1282,10 @@ namespace WebVella.Erp.Plugins.SDK.Services
         {
             using (DbConnection con = DbContext.Current.CreateConnection())
             {
-                var command = con.CreateCommand($"SELECT * FROM public.rel_{relation.Name}");
+                // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Second relation
+                // read path in this file; the schema qualifier stays outside the validated fragment
+                // for the same reason as in ReadOldNNRelationRecords.
+                var command = con.CreateCommand($"SELECT * FROM public.{DbIdentifier.Quote("rel_" + relation.Name)}");
                 DataTable dt = new DataTable();
                 new NpgsqlDataAdapter(command).Fill(dt);
 
@@ -1288,7 +1307,14 @@ namespace WebVella.Erp.Plugins.SDK.Services
                     //As relation tables are created after the first relation creation, we need first to check
                     //if the table exists
 
-                    var teCommand = new NpgsqlCommand($"SELECT EXISTS(SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'rel_{relation.Name}');", con);
+                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). Validate is used here and NOT
+                    // Quote - the one place in this file where the distinction matters. The name is emitted into a
+                    // single-quoted SQL STRING LITERAL that pg_tables compares against a catalogue value, not into an
+                    // identifier position; a double-quoted form would be compared as literal text including the quotes,
+                    // match no row, and make this existence probe silently answer "table does not exist" for every
+                    // relation. Validate returns the name unchanged once it matches the allow-list, which admits no
+                    // single quote or backslash, so the literal cannot be broken out of.
+                    var teCommand = new NpgsqlCommand($"SELECT EXISTS(SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = '{DbIdentifier.Validate("rel_" + relation.Name)}');", con);
                     DataTable dt1 = new DataTable();
                     new NpgsqlDataAdapter(teCommand).Fill(dt1);
                     bool isTableExists = false;
@@ -1302,7 +1328,11 @@ namespace WebVella.Erp.Plugins.SDK.Services
 
                     teCommand.Cancel();
 
-                    var command = new NpgsqlCommand($"SELECT * FROM public.rel_{relation.Name}", con);
+                    // SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The "public." schema qualifier
+                    // stays OUTSIDE the validated fragment: DbIdentifier rejects a dot, because quoting "public.rel_x" as
+                    // one identifier would ask PostgreSQL for a table whose name literally contains a dot. Only the
+                    // unqualified relation table name is validated and quoted.
+                    var command = new NpgsqlCommand($"SELECT * FROM public.{DbIdentifier.Quote("rel_" + relation.Name)}", con);
                     DataTable dt = new DataTable();
                     new NpgsqlDataAdapter(command).Fill(dt);
 
@@ -1444,7 +1474,7 @@ $"#region << ***Create entity*** Entity name: {entity.Name} >>\n" +
                 else
                 {
                     //// POSSIBLE UPDATE
-                    /////////////////////////////////////////////////////		
+                    /////////////////////////////////////////////////////
                     var changeCheckResponse = UpdateFieldCode(field, entityOldFieldsDictionary[field.Id], currentEntity);
                     if (changeCheckResponse.HasUpdate)
                     {
@@ -7733,7 +7763,7 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
                 code += $"\tpatchObject[\"name\"] = \"{(string)currentRole["name"]}\";\n";
                 response.ChangeList.Add($"<span class='go-green label-block'>name</span>  from <span class='go-red'>{(string)oldRole["name"]}</span> to <span class='go-red'>{(string)currentRole["name"]}</span>");
             }
-            //label	
+            //label
             if ((string)currentRole["description"] != (string)oldRole["description"])
             {
                 hasUpdate = true;
@@ -9144,7 +9174,7 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
 
             var oldRecordLists = ReadOldEntityRecords(oldEntity.Name);
 
-            //if any, cleanup old records from fields which don't exist in new entity meta 
+            //if any, cleanup old records from fields which don't exist in new entity meta
             if (fieldsToRemoveFromOldEntity.Any())
             {
                 foreach (var rec in oldRecordLists)
@@ -9194,7 +9224,15 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
 
             var response = $"#region << ***Create record*** Id: {rec["id"]} ({currentEntity.Name}) >>\n" +
             "{\n" +
-                $"\tvar json = @\"{JsonConvert.SerializeObject(rec, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All }).EscapeMultiline()}\";\n" +
+                // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). TypeNameHandling is
+                // RETAINED because the record snapshots this generator emits carry discriminators and would not round
+                // trip without it, and resolution is constrained instead by an explicit type allow-list. This is a
+                // SERIALIZE call emitting generated source text: attaching the binder is safe only because BindToName
+                // is left to the base implementation, so the emitted $type strings stay byte-identical and SDK code
+                // generation is unaffected. The binder is appended inside the existing single-line initializer
+                // because it sits in an interpolation hole of a non-verbatim interpolated string, which cannot
+                // contain a newline.
+                $"\tvar json = @\"{JsonConvert.SerializeObject(rec, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance }).EscapeMultiline()}\";\n" +
                 $"\tEntityRecord rec = JsonConvert.DeserializeObject<EntityRecord>(json);\n" +
                 $"\tvar result = recMan.CreateRecord(\"{currentEntity.Name}\", rec);\n" +
                 $"\tif( !result.Success ) throw new Exception(result.Message);\n" +
@@ -9217,7 +9255,12 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
             {
                 var response = $"#region << ***Update record*** Id: {rec["id"]} ({currentEntity.Name}) >>\n" +
                 "{\n" +
-                    $"\tvar json = @\"{JsonConvert.SerializeObject(rec, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All }).EscapeMultiline()}\";\n" +
+                    // SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021). As on the create-record
+                    // generator above: a SERIALIZE call emitting generated source text, so attaching the binder is safe
+                    // only because BindToName is left to the base implementation and the emitted $type strings stay
+                    // byte-identical. The binder is appended inside the existing single-line initializer because it sits
+                    // in an interpolation hole of a non-verbatim interpolated string, which cannot contain a newline.
+                    $"\tvar json = @\"{JsonConvert.SerializeObject(rec, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance }).EscapeMultiline()}\";\n" +
                     $"\tEntityRecord rec = JsonConvert.DeserializeObject<EntityRecord>(json);\n" +
                     $"\tvar result = recMan.UpdateRecord(\"{currentEntity.Name}\", rec);\n" +
                     $"\tif( !result.Success ) throw new Exception(result.Message);\n" +
@@ -9268,6 +9311,144 @@ $"#region << ***Update role*** Role name: {(string)currentRole["name"]} >>\n" +
 
             return response;
         }
+        #endregion
+
+        #region << Change-description rendering >>
+
+        /// <summary>
+        /// The complete set of markup fragments this service is permitted to compose into a change
+        /// description. An ordinal, case-sensitive match of one of these exact strings is the only markup
+        /// the code-generation preview renders as markup; every other character is HTML-encoded.
+        /// </summary>
+        /// <remarks>
+        /// KEEP IN SYNC WITH THE COMPOSITION SITES. This is the whole vocabulary the
+        /// <c>ChangeList.Add</c> sites in this file emit. A fragment added at a composition site without
+        /// being added here renders as encoded text rather than as markup, which is visible and harmless.
+        /// Widening this list is the opposite: it is a security change and needs the same review as any
+        /// other.
+        /// </remarks>
+        private static readonly string[] ChangeMarkupAllowList = new string[]
+        {
+            "<span class='go-green label-block'>",
+            "<span class='go-red'>",
+            "<span class='go-gray'>",
+            "</span>"
+        };
+
+        /// <summary>
+        /// Renders one <c>MetaChangeModel.ChangeList</c> entry as HTML that is safe in an element context,
+        /// copying only the markup tokens this service itself composes and HTML-encoding everything else.
+        /// </summary>
+        /// <param name="change">
+        /// A change description as composed by this service: database text interpolated into the label
+        /// markup listed in <c>ChangeMarkupAllowList</c>. A null or empty value renders as the empty string.
+        /// </param>
+        /// <returns>
+        /// HTML in which each allow-listed token appears verbatim and every other character is encoded.
+        /// </returns>
+        /// <remarks>
+        /// <para>
+        /// THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021 Injection. Finding H-06,
+        /// reopened by runtime finding F-130. The code-generation preview renders every
+        /// <c>MetaChangeModel.ChangeList</c> entry through <c>Html.Raw</c>, and this service composes those
+        /// entries at 113 sites by interpolating names, labels and descriptions read from the two databases
+        /// being compared directly into label markup - see <c>UpdateEntityCode</c>, <c>UpdateRoleCode</c>,
+        /// <c>UpdateApplicationCode</c> and their siblings. A data source, role, application, page or
+        /// sitemap element whose stored name carries markup therefore executed in the session of whoever ran
+        /// the comparison, under the application's own origin and with that reader's session cookie. The
+        /// Content-Security-Policy this platform emits is report-only, so it records such an injection and
+        /// does not stop it, which leaves output encoding as the only control in force.
+        /// </para>
+        /// <para>
+        /// WHY AN ALLOW-LIST OF MARKUP TOKENS RATHER THAN ENCODING THE WHOLE VALUE. Encoding the finished
+        /// entry would encode this service's own label markup too, so all 113 descriptions would render as
+        /// visible HTML source and the comparison table would stop being readable - the preservation
+        /// requirement forbids that, and it is the same reason the platform's other stored-markup sinks were
+        /// fixed where their values are composed rather than where they are rendered. Encoding at the 113
+        /// composition sites was the alternative considered here and rejected: it is 160 interpolation holes
+        /// to audit and it protects none of the sites anyone writes next. These entries are composed from
+        /// exactly four literal byte sequences and are consumed at exactly one sink, so the sink can instead
+        /// enumerate what this service is allowed to emit. A token is copied only on an EXACT ordinal match;
+        /// altered casing, altered quoting, an extra attribute, or any other element or handler is encoded,
+        /// so anything unforeseen fails closed as inert text.
+        /// </para>
+        /// <para>
+        /// RESIDUAL, recorded in docs/security/risk-register.md under RISK-170: a stored value that
+        /// reproduces one of the four tokens byte for byte renders as that span. Each carries one fixed class
+        /// and no other attribute, so the effect is cosmetic - no script, no event handler and no URL can be
+        /// expressed through it.
+        /// </para>
+        /// <para>
+        /// It is public because the Razor view <c>Pages/tools/cogegen.cshtml</c> is its only caller. The
+        /// values it renders are already markup by the time they reach the view, so the view cannot encode
+        /// them itself.
+        /// </para>
+        /// </remarks>
+        public static string RenderChangeDescription(string change)
+        {
+            if (string.IsNullOrEmpty(change))
+            {
+                return string.Empty;
+            }
+
+            var encoder = System.Text.Encodings.Web.HtmlEncoder.Default;
+            var rendered = new System.Text.StringBuilder(change.Length + 64);
+            var textStart = 0;
+            var position = 0;
+
+            while (position < change.Length)
+            {
+                var token = MatchChangeMarkupToken(change, position);
+                if (token == null)
+                {
+                    position++;
+                    continue;
+                }
+
+                if (position > textStart)
+                {
+                    rendered.Append(encoder.Encode(change.Substring(textStart, position - textStart)));
+                }
+
+                rendered.Append(token);
+                position += token.Length;
+                textStart = position;
+            }
+
+            if (textStart < change.Length)
+            {
+                rendered.Append(encoder.Encode(change.Substring(textStart)));
+            }
+
+            return rendered.ToString();
+        }
+
+        /// <summary>
+        /// Returns the allow-listed markup token that begins at the given index, or null when the text at
+        /// that index is not one of the permitted tokens.
+        /// </summary>
+        /// <param name="value">The change description being rendered.</param>
+        /// <param name="position">An index inside <paramref name="value"/> to test.</param>
+        /// <returns>The matched token, or null when no allow-listed token begins there.</returns>
+        private static string MatchChangeMarkupToken(string value, int position)
+        {
+            if (value[position] != '<')
+            {
+                return null;
+            }
+
+            foreach (var token in ChangeMarkupAllowList)
+            {
+                if (position + token.Length <= value.Length
+                    && string.CompareOrdinal(value, position, token, 0, token.Length) == 0)
+                {
+                    return token;
+                }
+            }
+
+            return null;
+        }
+
         #endregion
     }
 

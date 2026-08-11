@@ -4,6 +4,12 @@
 		<OutputType>Exe</OutputType>
 		<TargetFramework>net10.0</TargetFramework>
 		<SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+		<!-- Security: the shipped Config.json files are blanked, so this id is what makes
+		     the Development-only user-secrets provider resolve a real store; without it that
+		     provider loads nothing and cannot say so (optional: true), leaving the tracked
+		     configuration file as the only way to run this project. The id is not a secret - the
+		     store lives outside the repository - and regenerating it orphans existing stores. -->
+		<UserSecretsId>9b3e4423-9b40-55c3-9abc-bcd7bcf79685</UserSecretsId>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -11,6 +17,11 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- CWE-16 (configuration), OWASP A05:2021: this file name is the CONTRACT Program.cs must ask for.
+		     Capital-C Config.json and lower-case config.json are the same file only on a case-insensitive
+		     filesystem, so a mismatch made the mandatory JSON provider throw at startup on Linux before
+		     environment variables could supply a scrubbed secret. Do not re-case this item and do not add
+		     a lower-case duplicate. -->
 		<Content Include="Config.json">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
@@ -19,7 +30,11 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\WebVella.ERP\WebVella.Erp.csproj" />
+		<!-- Security H-19: keep this directory segment cased exactly as the folder on disk. An
+		     upper-cased "WebVella.ERP" broke solution-wide restore on case-sensitive filesystems,
+		     dropping the core project and every advisory it carries out of the dependency-audit
+		     graph, so the vulnerability scan read falsely clean. -->
+		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 
 </Project>

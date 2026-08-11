@@ -163,15 +163,49 @@ namespace WebVella.Erp.Web.TagHelpers
 						var fileRow = new TagBuilder("div");
 						fileRow.AddCssClass("filerow");
 						fileRow.Attributes.Add("data-file-id", ((Guid)file["id"]).ToString());
+
+						// THREAT ADDRESSED - review finding F-03 (CWE-79, OWASP A03:2021 - stored cross-site
+						// scripting). This row used to be assembled by interpolating three persisted values into
+						// a single markup string and writing it with AppendHtml, which encodes nothing. The
+						// stored file PATH was interpolated twice into quoted attributes, where a quote closes
+						// the attribute and lets a new one - including an event handler - be added, and the
+						// display NAME went straight into element content, where a "<" begins a tag. Newly
+						// uploaded files are sanitised on the upload path, but existing rows were never
+						// migrated, so every legacy user_file row remained renderable as markup.
+						// The row is now built with TagBuilder: attribute values go through Attributes.Add and
+						// AddCssClass, and the display name through InnerHtml.Append, all of which encode. The
+						// fixed <em> child is appended as its own element rather than as raw text inside the
+						// anchor, so no part of this row is a raw channel any more. The emitted markup is
+						// otherwise identical - same elements, same order, same classes, same attributes - which
+						// is what keeps this field, and the form.js that appends new rows in the same shape,
+						// rendering exactly as before.
+						// The icon class is NOT allow-listed here: unlike the page header's icon, it never
+						// leaves the server's control - RenderService.GetPathTypeIcon returns one of a fixed set
+						// of compile-time literals chosen by file extension, assigned above at fileRecord
+						// ["icon_class"] - so encoding is the whole of the control it needs.
 						//Append icon
-						fileRow.InnerHtml.AppendHtml($"<div class='icon'><i class='fa {(string)file["icon_class"]}'></i></div>");
+						var rowIconEl = new TagBuilder("div");
+						rowIconEl.AddCssClass("icon");
+						var rowIconGlyphEl = new TagBuilder("i");
+						rowIconGlyphEl.AddCssClass("fa");
+						rowIconGlyphEl.AddCssClass((string)file["icon_class"]);
+						rowIconEl.InnerHtml.AppendHtml(rowIconGlyphEl);
+						fileRow.InnerHtml.AppendHtml(rowIconEl);
 
 						//Append meta
 						var rowMeta = new TagBuilder("div");
 						rowMeta.AddCssClass("meta");
 
 						//Append file 
-						rowMeta.InnerHtml.AppendHtml($"<a class='link' href='/fs{(string)file["path"]}' target='_blank' title='/fs{(string)file["path"]}'>{(string)file["name"]}<em></em></a>");
+						var rowFileHref = $"/fs{(string)file["path"]}";
+						var rowFileLinkEl = new TagBuilder("a");
+						rowFileLinkEl.AddCssClass("link");
+						rowFileLinkEl.Attributes.Add("href", rowFileHref);
+						rowFileLinkEl.Attributes.Add("target", "_blank");
+						rowFileLinkEl.Attributes.Add("title", rowFileHref);
+						rowFileLinkEl.InnerHtml.Append((string)file["name"]);
+						rowFileLinkEl.InnerHtml.AppendHtml(new TagBuilder("em"));
+						rowMeta.InnerHtml.AppendHtml(rowFileLinkEl);
 						//Append size
 						var sizeString = "";
 						var sizeKBInt = (int)((decimal)file["size"]); //size is in KB

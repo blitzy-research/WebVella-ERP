@@ -17,6 +17,13 @@
 		<div class="dropdown-menu level-0">
 			@foreach (var menuItem in siteMenu)
 			{
+				@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel, rendered on every
+				   page of all seven hosts. The single producer of SiteMenu items in Models/BaseErpPageModel.cs
+				   already encodes the path segment and the link text, so what arrives is server-authored markup
+				   with inert data slots and encoding HERE would print the anchor as literal text; do NOT move that
+				   encoding out of there. The residual control is that markup authoring is restricted to privileged
+				   roles: the Content-Security-Policy ships REPORT-ONLY, so it observes violations and blocks
+				   nothing, and enforcing it is future owner-governed work. *@
 				@if (menuItem.IsHtml)
 				{
 					@Html.Raw(menuItem.Content)

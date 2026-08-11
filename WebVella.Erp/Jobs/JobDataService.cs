@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using WebVella.Erp.Api.Models.AutoMapper;
 using WebVella.Erp.Database;
+using WebVella.Erp.Api.Models;
 
 namespace WebVella.Erp.Jobs
 {
@@ -24,7 +25,11 @@ namespace WebVella.Erp.Jobs
 
 		public Job CreateJob(Job job)
 		{
-			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
+			// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+			// Software and Data Integrity Failures). Job payload persistence. The binder is attached to serialise settings too: BindToName is
+			// not overridden so it is a no-op there, but it means no settings object in this file can
+			// later be reused for reading without carrying the allow-list.
+			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 
 			List<NpgsqlParameter> parameters = new List<NpgsqlParameter>();
 			parameters.Add(new NpgsqlParameter("id", job.Id) { NpgsqlDbType = NpgsqlDbType.Uuid });
@@ -93,7 +98,7 @@ namespace WebVella.Erp.Jobs
 			if (job.Result != null)
 			{
 				JobResultWrapper jrWrap = new JobResultWrapper { Result = job.Result };
-				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
+				JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 				string result = JsonConvert.SerializeObject(jrWrap, settings);
 				parameters.Add(new NpgsqlParameter("result", result) { NpgsqlDbType = NpgsqlDbType.Text });
 			}
@@ -294,7 +299,7 @@ namespace WebVella.Erp.Jobs
 
 		public bool CreateSchedule(SchedulePlan schedulePlan)
 		{
-			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
+			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 
 			List<NpgsqlParameter> parameters = new List<NpgsqlParameter>();
 			parameters.Add(new NpgsqlParameter("id", schedulePlan.Id) { NpgsqlDbType = NpgsqlDbType.Uuid });
@@ -343,7 +348,7 @@ namespace WebVella.Erp.Jobs
 
 		public bool UpdateSchedule(SchedulePlan schedulePlan)
 		{
-			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
+			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All, SerializationBinder = ErpSerializationBinder.Instance };
 
 			List<NpgsqlParameter> parameters = new List<NpgsqlParameter>();
 			parameters.Add(new NpgsqlParameter("id", schedulePlan.Id) { NpgsqlDbType = NpgsqlDbType.Uuid });

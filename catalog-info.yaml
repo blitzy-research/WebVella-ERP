@@ -2,15 +2,16 @@ apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
   name: blitzy-WebVella-ERP
-  description: WebVella ERP monolith decomposition — cloud-native microservices, serverless
-    architecture, and OWASP security audit
+  # Release readiness is gated rather than asserted, and this description must not
+  # claim otherwise: the gate-by-gate status in the audit report linked below is the
+  # authority.
+  description: WebVella ERP — .NET 10 / ASP.NET Core modular monolith on PostgreSQL, with an
+    OWASP Top 10 (2021) security audit and remediation in the tree; release readiness is
+    gated, not asserted.
   tags:
   - audit
   - csharp
   - dotnet
-  - infrastructure
-  - modernization
-  - refactor
   - security
   - web-app
   labels:
@@ -25,11 +26,19 @@ metadata:
   - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/pull/1
     title: 'PR #1: OWASP Security Audit & Remediation'
     icon: github
-  - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/pull/2
-    title: 'PR #2: Serverless Microservices Rewrite'
-    icon: github
-  - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/tree/master/blitzy/documentation
-    title: Blitzy Documentation
+  - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/docs/security/security-audit-report.md
+    # The finding count is stated as the audit inventory plus the later review
+    # inventories rather than as a single total, because a restated total drifts.
+    title: Security Audit Report — the 53-finding audit inventory plus every later review finding, each in the mandated eight-field format
+    icon: docs
+  - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/docs/security/risk-register.md
+    title: Security Risk Register — accepted risks and ongoing recommendations
+    icon: docs
+  - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/blob/master/SECURITY.md
+    title: Security Policy — reporting channel and current posture
+    icon: docs
+  - url: https://github.com/Blitzy-Sandbox/blitzy-WebVella-ERP/tree/master/docs
+    title: Documentation
     icon: docs
 spec:
   type: website

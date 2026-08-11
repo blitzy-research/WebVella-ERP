@@ -1,0 +1,325 @@
+﻿<Project>
+
+	<!-- Repository-wide security gate. Turns "dotnet restore" and "dotnet build" into
+	     Validation Gate 1 (static analysis) and Gate 2 (dependency analysis), so a
+	     reintroduced vulnerability fails the build rather than needing to be noticed.
+	     Findings, evidence and disposition: docs/security/security-audit-report.md,
+	     docs/security/remediation-log.md, docs/security/risk-register.md.
+
+	     MSBuild rather than a repository-root .editorconfig: all four .editorconfig
+	     files here declare "root = true", so a root style file would be ignored inside
+	     the four subtrees that hold the core, web and plugin libraries. MSBuild imports
+	     this file for every project beneath this directory regardless of that scoping,
+	     so it reaches all 19 projects whether the build is driven from the solution or
+	     from one project file.
+
+	     This is the whole build-level gate: no companion analyzer configuration file
+	     exists in the tree and none may be added (see the prohibition below). The SDK
+	     is pinned in global.json; properties that already match an SDK default are
+	     stated anyway so the gate is defined here rather than by a default that moves
+	     between toolchains.
+
+	     Deliberately absent, and not to be added: target framework, language version,
+	     nullable or implicit-usings settings, package metadata, package references,
+	     central package version management, a lock file, and a companion .targets
+	     import. Each project owns its own compilation and packaging settings. -->
+
+	<!-- THREAT ADDRESSED: use of components with known vulnerabilities (OWASP A06:2021,
+	     CWE-1104, CWE-1035). Serves Gate 2 by auditing the advisory database on every
+	     restore. Mode "all" is load-bearing rather than belt-and-braces: this graph has
+	     carried a transitive-only advisory (MimeKit, reached through MailKit), which
+	     "direct" never reports. Level "low" stops a Moderate advisory hiding beneath a
+	     High-only bar. -->
+	<PropertyGroup>
+		<NuGetAudit>true</NuGetAudit>
+		<NuGetAuditMode>all</NuGetAuditMode>
+		<NuGetAuditLevel>low</NuGetAuditLevel>
+	</PropertyGroup>
+
+	<!-- THREAT ADDRESSED: an advisory that is reported but ignored. An audit that only
+	     warns is not a gate. NU1901 to NU1904 are the low/moderate/high/critical audit
+	     diagnostics; NU1900 and NU1905 are the data-availability ones, and including
+	     them is the load-bearing part, because an audit that cannot reach an advisory
+	     database otherwise reports nothing and the build goes green on a vulnerable
+	     package. Appended, never assigned: the SDK contributes NU1605 and SYSLIB0011 to
+	     this property and a bare literal would drop both.
+
+	     By design, an advisory anywhere in the graph fails restore and build. Clear it
+	     by upgrading the package, or accept it through a recorded risk acceptance in
+	     docs/security/risk-register.md - never by deleting this property group.
+
+	     RESIDUAL, closed elsewhere: a source that resolves the package but serves no
+	     advisory data at all emits no diagnostic for this group to promote. The
+	     workflow's advisory negative control covers that case by restoring a knowingly
+	     vulnerable probe and failing when the restore SUCCEEDS. Neither mechanism is
+	     redundant with the other. A transient outage therefore fails the build instead
+	     of passing quietly; re-run the job rather than demoting these two codes. -->
+	<PropertyGroup>
+		<WarningsAsErrors>$(WarningsAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904;NU1905</WarningsAsErrors>
+	</PropertyGroup>
+
+	<!-- THREAT ADDRESSED: insecure coding patterns reaching production unreviewed
+	     (OWASP A02:2021, A03:2021, A08:2021). Serves Gate 1. DISCLOSED SUBSTITUTION:
+	     the external SAST tooling named in the audit brief could not be installed here,
+	     so the SDK's Roslyn analyzers stand in for it, which also keeps the gate free
+	     of any new package reference.
+
+	     "latest-recommended" arms CA5350 and CA5351 (weak and broken hashing), CA5359
+	     (disabled certificate validation) and CA5364 (deprecated transport protocols).
+
+	     AnalysisLevelSecurity is what arms the remaining security families, and the
+	     LEVEL form is the only form that works: the SDK target that selects the
+	     Security category's configuration reads the level suffix first, and because
+	     AnalysisLevelSecurity defaults to AnalysisLevel the "recommended" suffix wins
+	     and AnalysisModeSecurity is never consulted. Do not "simplify" this to the mode
+	     property. Setting the level to "all" selects the SDK's own shipped
+	     configuration for the category, which is why the widening needs no file in this
+	     tree. It arms query construction (CA2100), unrestricted type-name handling
+	     (CA2326 to CA2328), hard-coded keys (CA5390), non-random initialisation vectors
+	     (CA5401) and disabled token-validation checks (CA5404).
+
+	     NOTHING IS PROMOTED TO AN ERROR, and nothing may be: the WarningsAsErrors
+	     promotion above carries NU19xx codes and no CA identifier. Arming a family and
+	     escalating it are different acts; escalating a roughly 700-file legacy backlog
+	     would force the repository-wide refactor the remediation scope forbids. The
+	     analyzer diagnostics therefore stay warnings, which is why the workflow
+	     measures them instead of reading the build's exit code, and why its pass
+	     criterion is absent-or-justified rather than zero: it enumerates each (rule,
+	     file) pair, requires a written justification, and fails on any unreviewed pair
+	     or any increase in count. Some armed rules fire on the remediation's own
+	     sanctioned mitigations - CA2326 on the presence of type-name handling even
+	     where the allow-listing binder is attached, CA5351 on the legacy digest
+	     verification path that exists so stored credentials keep working - so silence
+	     is never accepted as proof and deleting them would undo the remediation. -->
+	<PropertyGroup>
+		<EnableNETAnalyzers>true</EnableNETAnalyzers>
+		<AnalysisLevel>latest-recommended</AnalysisLevel>
+		<AnalysisLevelSecurity>latest-all</AnalysisLevelSecurity>
+		<!-- The taint family and the one compilation it is excluded from are named as
+		     properties so the workflow's Gate 1 reads the boundary out of this file
+		     instead of carrying its own copy; two copies of a security boundary drift.
+		     Edit them here rather than from the command line, because MSBuild splits a
+		     command-line property value on ';'. -->
+		<ErpTaintAnalysisFamily>CA3001;CA3002;CA3003;CA3004;CA3005;CA3006;CA3007;CA3008;CA3009;CA3010;CA3011;CA3012</ErpTaintAnalysisFamily>
+		<ErpTaintAnalysisExcludedProject>WebVella.Erp.Web</ErpTaintAnalysisExcludedProject>
+	</PropertyGroup>
+
+	<!-- THE ONE EXCLUSION, AND IT IS A TERMINATION CONSTRAINT RATHER THAN A PREFERENCE.
+	     The interprocedural taint family is superlinear in compilation size, and
+	     WebVella.Erp.Web compiles 395 Razor views into a single compilation: armed and
+	     unbounded it does not terminate, while each of the other 18 projects completes
+	     in seconds and reports zero. So the exclusion is conditioned on that one
+	     project name and the family stays armed everywhere else. Do not widen it to
+	     another CA identifier or another project without re-measuring per project.
+
+	     The excluded compilation is still scanned - separately and bounded - by the
+	     workflow step that arms the family for it with a cost bound, because an
+	     unscanned compilation and a clean one are indistinguishable from outside. What
+	     remains residual there is DEPTH, not coverage, and is carried as RISK-051.
+
+	     Set ErpSecurityTaintAnalysis=all to arm the family everywhere, which is how the
+	     exclusion is re-measured on a future toolchain without editing this file. -->
+	<PropertyGroup Condition="'$(ErpSecurityTaintAnalysis)' != 'all' AND '$(MSBuildProjectName)' == '$(ErpTaintAnalysisExcludedProject)'">
+		<NoWarn>$(NoWarn);$(ErpTaintAnalysisFamily)</NoWarn>
+	</PropertyGroup>
+
+	<!-- The hook that carries the cost bound for that separate scan. A dataflow cost
+	     bound can only be expressed as analyzer configuration, so this lets a caller
+	     supply ONE such file by absolute path, written outside the repository and never
+	     tracked. Inert unless ErpTaintAnalysisOptions is set, so every ordinary
+	     restore, build, publish, pack and IDE load compiles exactly as measured. -->
+	<ItemGroup Condition="'$(ErpTaintAnalysisOptions)' != ''">
+		<GlobalAnalyzerConfigFiles Include="$(ErpTaintAnalysisOptions)" />
+	</ItemGroup>
+
+	<!-- NO GLOBAL ANALYZER CONFIG IS SUPPLIED, AND NONE MAY BE ADDED. A '.globalconfig'
+	     at the repository root is the one mechanism that can change any rule's SEVERITY
+	     for all 19 projects at once, because the SDK discovers it by walking every
+	     directory above each project rather than by .editorconfig root scoping. Per-rule
+	     escalation is outside this gate's scope, so no such file and no EditorConfigFiles
+	     item may introduce one. Gate 1 asserts this absence over the tree, tracked or
+	     untracked, and separately asserts which configuration the compiler loaded. -->
+
+	<!-- Machine-readable analyzer evidence, opt-in. Supplying a directory makes each
+	     project emit its own SARIF 2.1 log, so a verdict can be diffed or filtered
+	     instead of re-derived from build text. Operator-invoked rather than wired into
+	     CI, because the raw output is megabytes of the pre-existing backlog that would
+	     bury the security signal; the workflow publishes Gate 1's derived evidence
+	     instead. The path is per project: one shared ErrorLog would have the projects
+	     overwrite one another and the surviving report would describe only whichever
+	     finished last. -->
+	<PropertyGroup Condition="'$(SecurityAnalyzerSarifDirectory)' != ''">
+		<ErrorLog>$(SecurityAnalyzerSarifDirectory)/$(MSBuildProjectName).sarif,version=2.1</ErrorLog>
+	</PropertyGroup>
+
+	<!-- DOC-COMMENT DIAGNOSTICS, OPT-IN. Review finding N1, gate half. THREAT ADDRESSED:
+	     a gate blindness rather than a code weakness. The compiler only PARSES XML
+	     documentation comments when it is asked to emit a documentation file, so
+	     CS1570 (malformed XML in a doc comment), CS1571 (a parameter documented twice)
+	     and CS1573 (a parameter left undocumented while its siblings are documented)
+	     are invisible to every ordinary build and to every step of the workflow.
+	     Eleven CS1570 defects consequently reached the tracked tree and were caught by
+	     human review instead of by CI. Setting this property is what lets the analyzer
+	     build measure those rules alongside the CA families, so the same class of
+	     regression is caught mechanically next time.
+
+	     IT IS OPT-IN RATHER THAN ALWAYS-ON because generating documentation also arms
+	     CS1591, missing comment on a publicly visible member, which this repository
+	     carries in the thousands as a pre-existing backlog. Left to speak it would bury
+	     the security signal in the evidence Gate 1 publishes, and clearing it would be
+	     the mass documentation pass the engagement's minimal-change clause forbids. So
+	     CS1591 is silenced here, under this condition and nowhere else, which keeps
+	     every ordinary restore, build, publish, pack and IDE load compiling exactly as
+	     measured.
+
+	     WHY THE SUPPRESSION IS WRITTEN IN THIS FILE AND MUST NEVER MOVE TO A COMMAND
+	     LINE. A `-p:NoWarn=CS1591` on the invocation becomes a GLOBAL MSBuild property,
+	     and a global property OVERRIDES rather than appends - so the conditioned NoWarn
+	     above stops contributing and the CA3001-CA3012 taint exclusion silently
+	     disarms. Measured, not theorised: a documentation build invoked that way armed
+	     the unbounded interprocedural taint family against WebVella.Erp.Web and had to
+	     be abandoned after 21 minutes. Appending inside a PropertyGroup preserves
+	     $(NoWarn), so the exclusion survives; this group is placed after it for exactly
+	     that reason. No CA identifier is added to NoWarn here, so Gate 1's NoWarn
+	     boundary assertion - which rejects any CA code outside the measured taint
+	     exclusion - is unaffected, and that step evaluates the property without this
+	     opt-in in any case. -->
+	<PropertyGroup Condition="'$(ErpDocumentationDiagnostics)' == 'true'">
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
+	</PropertyGroup>
+
+	<!-- LICENCE GOVERNANCE GATE. THREAT ADDRESSED: a supply-chain integrity one rather
+	     than a code weakness. Four manifests here declare PackageLicenseExpression
+	     Apache-2.0 and are published to nuget.org - WebVella.Erp, WebVella.Erp.Web,
+	     WebVella.Erp.Plugins.Mail and WebVella.Erp.Plugins.SDK - and all four sit on a
+	     graph reaching AutoMapper, which from 15.1.1 onward is published under the
+	     Reciprocal Public License 1.5. Publishing an Apache-2.0 claim over that graph
+	     states a licence the package does not carry, to every downstream consumer,
+	     IRREVOCABLY. Only the repository owner may settle it, so the unresolved
+	     decision is made mechanically unshippable instead. See RISK-001.
+
+	     It lives in this file, not in the core manifest, so all four packable projects
+	     are covered by one definition; placing it in one manifest left the other three
+	     packable with the same unratified expression and no diagnostic.
+
+	     It gates `dotnet pack` ONLY, because packing is the only action that publishes
+	     the claim. restore, build, publish, run, `dotnet list package` and every CI
+	     gate step are unaffected.
+
+	     THE ANSWER MUST BE A COMMITTED RECORD, NOT A PROPERTY. A global property lives
+	     for one process: it records no approver, no date and no reviewable trace, and
+	     any script can supply it. ERPLIC005 therefore refuses that form by name rather
+	     than ignoring it. The gate reads its answer from docs/security/risk-register.md,
+	     beside RISK-001, as exactly one line with no semicolons:
+	         AUTOMAPPER-LICENCE-DECISION: <answer> | approver: <name and contact>
+	         | date: <YYYY-MM-DD> | ref: <ticket or URL>
+	     where <answer> is accepted-rpl-1.5 or declined-rpl-1.5. Anything else is
+	     refused rather than ignored, so a typo cannot read as consent. The register
+	     documents this shape with a distinct example token, so neither the example nor
+	     any prose mention can satisfy the patterns below.
+
+	     The conflict is DETECTED, not hard-coded, so the gate disables itself once it
+	     stops applying: the pin is read from the core manifest at pack time and
+	     compared against ErpPermissiveAutoMapperVersions. If AutoMapper publishes a
+	     patched permissively licensed release and the pin moves to it, add that version
+	     to the list as a reviewed edit and packing proceeds with no property at all.
+	     Scope errs towards over-inclusion - any project declaring a licence expression
+	     is covered - because over-inclusion costs an authorisation the owner owes
+	     anyway while under-inclusion costs an irrevocable publication. -->
+	<PropertyGroup>
+		<ErpCoreProjectFile>$(MSBuildThisFileDirectory)WebVella.Erp/WebVella.Erp.csproj</ErpCoreProjectFile>
+		<!-- Every AutoMapper release published under a permissive expression, in both
+		     bracketed and bare notation. Extend only after reading the release's own
+		     .nuspec, and edit here rather than from the command line (';' splitting). -->
+		<ErpPermissiveAutoMapperVersions Condition="'$(ErpPermissiveAutoMapperVersions)' == ''">[14.0.0];14.0.0</ErpPermissiveAutoMapperVersions>
+		<ErpLicenceDecisionRecordFile>$(MSBuildThisFileDirectory)docs/security/risk-register.md</ErpLicenceDecisionRecordFile>
+	</PropertyGroup>
+
+	<Target Name="ErpAssertAutoMapperLicenceDecisionRecorded"
+	        BeforeTargets="GenerateNuspec"
+	        Condition="'$(PackageLicenseExpression)' != ''">
+		<!-- The pin is read from the single manifest that declares it, so every packable
+		     project is judged against the same fact rather than its own view of the
+		     graph. The core manifest has no XML namespace, so a plain XPath applies. -->
+		<XmlPeek XmlInputPath="$(ErpCoreProjectFile)"
+		         Query="/Project/ItemGroup/PackageReference[@Include='AutoMapper']/@Version"
+		         Condition="Exists('$(ErpCoreProjectFile)')">
+			<Output TaskParameter="Result" ItemName="ErpAutoMapperPinnedVersionItem" />
+		</XmlPeek>
+		<PropertyGroup>
+			<ErpAutoMapperPinnedVersion>@(ErpAutoMapperPinnedVersionItem)</ErpAutoMapperPinnedVersion>
+			<ErpAutoMapperLicenceConflict>false</ErpAutoMapperLicenceConflict>
+			<ErpAutoMapperLicenceConflict Condition="'$(ErpAutoMapperPinnedVersion)' != '' AND !$(ErpPermissiveAutoMapperVersions.Contains('$(ErpAutoMapperPinnedVersion)'))">true</ErpAutoMapperLicenceConflict>
+		</PropertyGroup>
+		<!-- The record is read inside the target, so an ordinary build never opens the
+		     file and only `dotnet pack` pays for it. The text defaults to a non-empty
+		     sentinel because a property function invoked with an empty argument is a
+		     syntax error rather than a false, so an absent record file would break the
+		     gate instead of blocking it. The anchor requires a decision-shaped token
+		     FOLLOWED BY A PIPE, which is what keeps a prose mention harmless while a
+		     malformed real attempt is still recognised and refused by name. -->
+		<PropertyGroup>
+			<ErpLicenceRecordText>(no licence decision record file)</ErpLicenceRecordText>
+			<ErpLicenceRecordText Condition="Exists('$(ErpLicenceDecisionRecordFile)')">$([System.IO.File]::ReadAllText($(ErpLicenceDecisionRecordFile)))</ErpLicenceRecordText>
+			<ErpLicenceRecordAnchor>AUTOMAPPER-LICENCE-DECISION:[ \t]*[a-zA-Z0-9.-]+[ \t]*\|</ErpLicenceRecordAnchor>
+			<ErpLicenceRecordShape>AUTOMAPPER-LICENCE-DECISION:[ \t]*DECISIONTOKEN[ \t]*\|[ \t]*approver:[ \t]*[^|]+\|[ \t]*date:[ \t]*[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*\|[ \t]*ref:[ \t]*[^ \t|]+</ErpLicenceRecordShape>
+			<ErpLicenceRecordAttempted>$([System.Text.RegularExpressions.Regex]::IsMatch($(ErpLicenceRecordText), $(ErpLicenceRecordAnchor)))</ErpLicenceRecordAttempted>
+			<ErpLicenceRecordAccepted>$([System.Text.RegularExpressions.Regex]::IsMatch($(ErpLicenceRecordText), $(ErpLicenceRecordShape.Replace('DECISIONTOKEN','accepted-rpl-1\.5'))))</ErpLicenceRecordAccepted>
+			<ErpLicenceRecordDeclined>$([System.Text.RegularExpressions.Regex]::IsMatch($(ErpLicenceRecordText), $(ErpLicenceRecordShape.Replace('DECISIONTOKEN','declined-rpl-1\.5'))))</ErpLicenceRecordDeclined>
+			<ErpAutoMapperLicenceDecisionRecorded Condition="'$(ErpLicenceRecordAccepted)' == 'true'">accepted-rpl-1.5</ErpAutoMapperLicenceDecisionRecorded>
+			<ErpAutoMapperLicenceDecisionRecorded Condition="'$(ErpLicenceRecordDeclined)' == 'true' AND '$(ErpLicenceRecordAccepted)' != 'true'">declined-rpl-1.5</ErpAutoMapperLicenceDecisionRecorded>
+		</PropertyGroup>
+		<!-- Every branch below fails closed: an unreadable pin, an unreadable record, a
+		     contradiction and a malformed answer each block packing rather than pass,
+		     because a gate that cannot read its input must not consent on the owner's
+		     behalf. -->
+		<Error Condition="'$(ErpAutoMapperPinnedVersion)' == ''"
+		       Code="ERPLIC004"
+		       Text="Packing is blocked: the AutoMapper pin could not be read from '$(ErpCoreProjectFile)', so the licence-governance gate cannot evaluate whether this package's declared PackageLicenseExpression '$(PackageLicenseExpression)' is accurate. This fails closed on purpose - a gate that cannot read its input must not pass. Restore the manifest, or update ErpCoreProjectFile in Directory.Build.props. See docs/security/risk-register.md (RISK-001)." />
+		<Error Condition="'$(ErpAutoMapperLicenceDecision)' != ''"
+		       Code="ERPLIC005"
+		       Text="ErpAutoMapperLicenceDecision was supplied as an MSBuild property, and that form is no longer accepted as approval (a transient 'dotnet pack -p:...' property is not durable authenticated approval - it records no approver, no date and no reviewable trace, and any script can supply it). Record the decision instead as one committed line in docs/security/risk-register.md: 'AUTOMAPPER-LICENCE-DECISION: accepted-rpl-1.5 | approver: NAME AND CONTACT | date: YYYY-MM-DD | ref: TICKET OR URL'. Then pack with no property at all. See RISK-001 for both options and the reversal steps." />
+		<Error Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND !Exists('$(ErpLicenceDecisionRecordFile)')"
+		       Code="ERPLIC006"
+		       Text="Packing is blocked: the licence decision record file '$(ErpLicenceDecisionRecordFile)' does not exist, so the owner's licence decision cannot be read and this gate cannot evaluate whether $(MSBuildProjectName)'s declared PackageLicenseExpression '$(PackageLicenseExpression)' is accurate. This fails closed on purpose - a gate that cannot read its input must not pass. Restore the file, or update ErpLicenceDecisionRecordFile in Directory.Build.props." />
+		<Error Condition="'$(ErpLicenceRecordAccepted)' == 'true' AND '$(ErpLicenceRecordDeclined)' == 'true'"
+		       Code="ERPLIC007"
+		       Text="Packing is blocked: '$(ErpLicenceDecisionRecordFile)' contains BOTH an accepted-rpl-1.5 and a declined-rpl-1.5 decision record. Two contradictory answers are not resolved by order or precedence here, because either choice would be this gate inventing the owner's intent. Leave exactly one record line and remove the other. See RISK-001." />
+		<Error Condition="'$(ErpLicenceRecordAttempted)' == 'true' AND '$(ErpAutoMapperLicenceDecisionRecorded)' == ''"
+		       Code="ERPLIC003"
+		       Text="Packing is blocked: '$(ErpLicenceDecisionRecordFile)' contains something shaped like an AUTOMAPPER-LICENCE-DECISION record, but it does not match the required form, so it is refused rather than ignored - a typo must not be mistaken for the owner's consent. The line must read exactly: 'AUTOMAPPER-LICENCE-DECISION: accepted-rpl-1.5 | approver: NAME AND CONTACT | date: YYYY-MM-DD | ref: TICKET OR URL', with declined-rpl-1.5 as the only other accepted answer, an ISO date, and no semicolons. See RISK-001." />
+		<Error Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecisionRecorded)' == ''"
+		       Code="ERPLIC001"
+		       Text="Packing is blocked: $(MSBuildProjectName) declares PackageLicenseExpression '$(PackageLicenseExpression)' while its dependency graph reaches AutoMapper $(ErpAutoMapperPinnedVersion), which is published under the Reciprocal Public License 1.5. Publishing that combination would state a licence this package does not carry, to every downstream consumer, irrevocably. This is a repository-owner decision (RISK-001) and is deliberately not settled automatically. To pack, commit ONE line to docs/security/risk-register.md - 'AUTOMAPPER-LICENCE-DECISION: accepted-rpl-1.5 | approver: NAME AND CONTACT | date: YYYY-MM-DD | ref: TICKET OR URL' - so the approval is durable, attributable and reviewable; or decline it, revert the pin using the reversal steps in RISK-001, and pack normally. Build, publish and run are unaffected by this gate." />
+		<Error Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecisionRecorded)' == 'declined-rpl-1.5'"
+		       Code="ERPLIC002"
+		       Text="Packing is blocked: the Reciprocal Public License 1.5 is recorded as DECLINED in '$(ErpLicenceDecisionRecordFile)', but AutoMapper $(ErpAutoMapperPinnedVersion) is still referenced, so $(MSBuildProjectName)'s declared licence expression '$(PackageLicenseExpression)' would still be inaccurate. Complete the decline by reverting the pin as documented in docs/security/risk-register.md (RISK-001), which also restores advisory GHSA-rvv3-g6hj-g44x and therefore requires the narrow audit suppression and formal risk acceptance described there." />
+		<Message Condition="'$(ErpAutoMapperLicenceConflict)' == 'true' AND '$(ErpAutoMapperLicenceDecisionRecorded)' == 'accepted-rpl-1.5'"
+		         Importance="high"
+		         Text="AutoMapper licence: packing $(MSBuildProjectName) with the Reciprocal Public License 1.5 recorded as ACCEPTED for AutoMapper $(ErpAutoMapperPinnedVersion), from the committed record in '$(ErpLicenceDecisionRecordFile)'. Confirm PackageLicenseExpression '$(PackageLicenseExpression)' still states the intended posture before publishing. See docs/security/risk-register.md (RISK-001)." />
+		<Message Condition="'$(ErpAutoMapperLicenceConflict)' != 'true' AND '$(ErpAutoMapperPinnedVersion)' != ''"
+		         Importance="high"
+		         Text="AutoMapper licence: no reciprocal-licence conflict detected for $(MSBuildProjectName) - AutoMapper resolves to a permissively licensed version, so no owner decision is required to pack." />
+	</Target>
+
+	<!-- NOTHING IS SUPPRESSED IN THIS FILE, and no advisory diagnostic may be. The only
+	     NoWarn set anywhere here is the taint family above, for one project; no NU19xx
+	     code is silenced in this file or in any project manifest, so a project's NoWarn
+	     is either the SDK default or that family. Verify against the build rather than
+	     by text search:
+	         dotnet msbuild <project> -getItem:NuGetAuditSuppress
+	         dotnet msbuild <project> -getProperty:NoWarn
+	     The item list is empty for every project, and no project's NoWarn carries an
+	     NU19xx code. Note that NoWarn is NOT uniform across projects, so quoting one
+	     project's value as though it were global is itself an error.
+
+	     Accepting an advisory instead of clearing it is a governed act, not an edit: it
+	     requires a recorded, justified risk acceptance in docs/security/risk-register.md
+	     naming the advisory, its severity, why the upgrade is declined and who accepted
+	     the residual risk, and it must name ONE narrowly scoped diagnostic - never a
+	     wildcard, and never a wholesale removal of the promotion above, either of which
+	     would silence every advisory in the graph and defeat Gate 2. RISK-001 carries
+	     the one open case and its reversal steps. -->
+
+</Project>

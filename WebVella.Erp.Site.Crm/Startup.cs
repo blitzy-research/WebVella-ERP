@@ -23,6 +23,13 @@ namespace WebVella.Erp.Site.Crm
 		// This method gets called by the runtime. Use this method to add services to the container.
 		public void ConfigureServices(IServiceCollection services)
 		{
+			// THREAT ADDRESSED - findings H-04 / H-05 (CWE-798 hard-coded credentials, CWE-321 hard-coded key),
+			// OWASP A05: this host deliberately builds NO configuration of its own, and that absence is the fix.
+			// Program.cs uses WebHost.CreateDefaultBuilder, whose chain already reads environment variables, and
+			// ErpSettings is initialised from the chain ErpMvcExtensions extends. A second ConfigurationBuilder
+			// here would never reach ErpSettings, so it would only appear to supply secrets. Config.json is
+			// SCRUBBED AND RETAINED, never deleted: its JSON source is non-optional.
+
 			//legacy until we fix system tables
 			AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 			services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Optimal);
@@ -30,6 +37,9 @@ namespace WebVella.Erp.Site.Crm
 			services.AddRouting(options => { options.LowercaseUrls = true; });
 
 			//CORS policy declaration
+			// DELIBERATELY UNCHANGED - finding H-14 (CWE-942 permissive cross-domain policy) covers only the two
+			// hosts that allowed any origin. This one already names its origins, so tightening it would change
+			// working behaviour for no gain; the hard-coded localhost origins are a documented low-severity note.
 			services.AddCors(options =>
 			{
 				options.AddPolicy("AllowNodeJsLocalhost",
@@ -62,12 +72,20 @@ namespace WebVella.Erp.Site.Crm
 			services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
 					.AddCookie(options =>
 					{
-						options.Cookie.HttpOnly = true;
 						options.Cookie.Name = "erp_auth_crm";
 						options.LoginPath = new PathString("/login");
 						options.LogoutPath = new PathString("/logout");
 						options.AccessDeniedPath = new PathString("/error?access_denied");
 						options.ReturnUrlParameter = "returnUrl";
+
+						// THREAT ADDRESSED - finding H-15 (CWE-614 cookie without 'Secure', CWE-319 cleartext transmission),
+						// plus CWE-1275 improper SameSite and CWE-613 insufficient session expiration, OWASP A02 / A07. This
+						// is H-15's cookie half; its transport half is in Configure below. SameSite is deliberately Lax and
+						// MUST NOT be "hardened" to Strict: Strict withholds the cookie on the redirect back out of /login and
+						// so breaks the return-URL round trip LoginPath and ReturnUrlParameter exist to provide, while Lax
+						// still withholds it on a cross-site POST. All four attributes are single-sourced in
+						// ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie; called LAST so it wins over the above.
+						ErpMvcServicesExtensions.ConfigureErpAuthenticationCookie(options);
 					});
 
 			services.AddErp();
@@ -76,12 +94,17 @@ namespace WebVella.Erp.Site.Crm
 		// This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
 		public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
 		{
+			// THREAT ADDRESSED - CWE-348 less trusted source, CWE-290 spoofing, CWE-307 excessive authentication
+			// attempts, OWASP A05: behind a reverse proxy the rate-limit partition and the per-address half of the
+			// login lockout collapsed onto the proxy's address and Request.IsHttps read false for TLS requests.
+			// FIRST is load-bearing, and no proxy is trusted until Settings:ForwardedHeaders names one.
+			app.UseErpForwardedHeaders();
+
 			app.UseRequestLocalization(new RequestLocalizationOptions
 			{
 				DefaultRequestCulture = new Microsoft.AspNetCore.Localization.RequestCulture(CultureInfo.GetCultureInfo("en-US"))
 			});
 
-			//env.EnvironmentName = EnvironmentName.Production;
 			// Add the following to the request pipeline only in development environment.
 			if (string.Equals(env.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
 			{
@@ -97,9 +120,25 @@ namespace WebVella.Erp.Site.Crm
 			}
 
 			//Should be before Static files
+			// THREAT ADDRESSED - finding M-01, missing security response headers (OWASP A05). ORDERING IS THE
+			// REMEDIATION: a matched static asset TERMINATES the pipeline, so this must precede both
+			// UseStaticFiles calls. Registered once in AddErp but ordered per host, UseErp() running later.
+			app.UseSecurityHeaders();
+
 			app.UseResponseCompression();
 
 			app.UseCors("AllowNodeJsLocalhost"); //Enable CORS -> should be before static files to enable for it too
+
+			// THREAT ADDRESSED - finding H-15, CWE-319 cleartext transmission, OWASP A02: no host enforced HTTPS
+			// or published an HSTS policy, so a session could be downgraded and its cookie intercepted. Guarded to
+			// non-Development, which runs over plain HTTP. HSTS precedes the redirect, which short-circuits
+			// plaintext requests, and both follow UseCors because redirection answers a preflight with a redirect
+			// browsers reject. HstsOptions are set to the mandated year once in AddErp: none belong here.
+			if (!string.Equals(env.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase))
+			{
+				app.UseHsts();
+				app.UseHttpsRedirection();
+			}
 
 			app.UseStaticFiles(new StaticFileOptions
 			{
@@ -113,6 +152,13 @@ namespace WebVella.Erp.Site.Crm
 			});
 			app.UseStaticFiles(); //Workaround for blazor to work - https://github.com/dotnet/aspnetcore/issues/9588
 			app.UseRouting();
+
+			// THREAT ADDRESSED - finding H-16, CWE-307 excessive authentication attempts, OWASP A07: unlimited
+			// request rates left credential stuffing unthrottled. Activates the per-remote-address window
+			// registered in AddErp, after both UseStaticFiles calls so assets are never throttled and after
+			// UseRouting for endpoint metadata. Coarse TRANSPORT layer only - the mandated five-attempt
+			// per-account lockout is LoginThrottleService.
+			app.UseRateLimiter();
 			app.UseAuthentication();
 			app.UseAuthorization();
 

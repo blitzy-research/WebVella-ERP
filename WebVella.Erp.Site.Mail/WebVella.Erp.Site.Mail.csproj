@@ -6,6 +6,12 @@
 		<TypeScriptToolsVersion>3.1</TypeScriptToolsVersion>
 		<SatelliteResourceLanguages>en</SatelliteResourceLanguages>
 		<ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+		<!-- Security: the shipped Config.json files are blanked, so this id is what makes
+		     the Development-only user-secrets provider resolve a real store; without it that
+		     provider loads nothing and cannot say so (optional: true), leaving the tracked
+		     configuration file as the only way to run this project. The id is not a secret - the
+		     store lives outside the repository - and regenerating it orphans existing stores. -->
+		<UserSecretsId>433b5aa4-8f48-5924-b1c5-a2b91b06b85c</UserSecretsId>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -17,7 +23,11 @@
 		<ProjectReference Include="..\WebVella.Erp.Plugins.Next\WebVella.Erp.Plugins.Next.csproj" />
 		<ProjectReference Include="..\WebVella.Erp.Plugins.SDK\WebVella.Erp.Plugins.SDK.csproj" />
 		<ProjectReference Include="..\WebVella.Erp.Web\WebVella.Erp.Web.csproj" />
-		<ProjectReference Include="..\WebVella.ERP\WebVella.Erp.csproj" />
+		<!-- Security H-19: keep this directory segment cased exactly as the folder on disk. An
+		     upper-cased "WebVella.ERP" broke solution-wide restore on case-sensitive filesystems,
+		     dropping the core project and every advisory it carries out of the dependency-audit
+		     graph, so the vulnerability scan read falsely clean. -->
+		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 
 </Project>

@@ -1,14 +1,16 @@
 ﻿{
 	"Settings": {
-		"ConnectionString": "Server=192.168.10.25;Port=5436;User Id=dev;Password=dev;Database=erp3_project_with_sdk;Pooling=true;MinPoolSize=1;MaxPoolSize=100;CommandTimeout=120;",
-		"EncryptionKey": "BC93B776A42877CFEE808823BA8B37C83B6B0AD23198AC3AF2B5A54DCB647658",
+		// SECURITY - findings H-05 (CWE-798 hard-coded credentials), H-04 (CWE-321 hard-coded signing key) and C-04 (hard-coded encryption key), OWASP A02 / A05: these values were committed to source control, so they stay EMPTY and are supplied out of band as Settings__ConnectionString, Settings__EncryptionKey, Settings__Jwt__Key and Settings__EmailSMTPPassword ("__" separates sections).
+		// Every key is RETAINED with an empty value because the JSON configuration source is non-optional - do NOT delete this file. DevelopmentMode ships "false" for H-12 (CWE-489 active debug code, CWE-209 error-message disclosure) and is a STRING by design, not a JSON boolean. See docs/security/secure-configuration.md.
+		"ConnectionString": "",
+		"EncryptionKey": "",
 		"Lang": "en",
 		"Locale": "en-US",
 		"TimeZoneName": "FLE Standard Time",
-		"DevelopmentMode": "true",
+		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "true",
 		"EnableFileSystemStorage": "false",
-		"FileSystemStorageFolder": "\\\\192.168.10.25\\Share\\erp3-files",
+		"FileSystemStorageFolder": "",
 		"EmailEnabled": false,
 		"EmailSMTPServerName": "",
 		"EmailSMTPPort": "25",
@@ -17,7 +19,7 @@
 		"EmailFrom": "",
 		"EmailTo": "",
 		"Jwt": {
-			"Key": "ThisIsMySecretKeyThisIsMySecretKeyThisIsMySecretKey",
+			"Key": "",
 			"Issuer": "webvella-erp",
 			"Audience": "webvella-erp"
 		}

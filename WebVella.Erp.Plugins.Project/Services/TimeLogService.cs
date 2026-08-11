@@ -9,6 +9,7 @@ using WebVella.Erp.Database;
 using WebVella.Erp.Eql;
 using WebVella.Erp.Exceptions;
 using WebVella.Erp.Web.Models;
+using WebVella.Erp.Web.Utils;
 using WebVella.Erp.Web.Pages.Application;
 
 
@@ -41,7 +42,13 @@ namespace WebVella.Erp.Plugins.Project.Services
 				record["created_by"] = createdBy;
 				record["created_on"] = createdOn;
 				record["logged_on"] = loggedOn.ConvertAppDateToUtc();
-				record["body"] = body;
+				//THREAT ADDRESSED - stored cross-site scripting, CWE-79, OWASP A03:2021. Review finding SR-05 (seam/M-01).
+				//As in CommentService: PcTimelogList serializes this record into a JSON attribute and the
+				//client bundle assigns "body" to innerHTML, so a stored value is parsed as markup for every
+				//later reader rather than encoded by Razor. Sanitizing here preserves the field's legitimate
+				//rich text and removes only what could execute, and it covers both writers - the controller
+				//action and the internal re-log path further down this file.
+				record["body"] = HtmlSanitizer.Sanitize(body);
 				record["minutes"] = minutes;
 				record["is_billable"] = isBillable;
 				record["l_scope"] = JsonConvert.SerializeObject(scope);
@@ -263,7 +270,11 @@ namespace WebVella.Erp.Plugins.Project.Services
 				}
 
 				//Add activity log
-				var subject = $"logged {((int)record["minutes"]).ToString("N0")} {loggedTypeString} minutes on <a href=\"/projects/tasks/tasks/r/{taskRecord["id"]}/details\">[{taskRecord["key"]}] {taskRecord["subject"]}</a>";
+				//THREAT ADDRESSED - CWE-79, OWASP A03:2021, review finding SR-05 (seam/M-01). Trusted markup carrying
+				//author-controlled task data into the feed's innerHTML sink; the interpolated key and subject
+				//are encoded at the point they enter markup. See the equivalent site in CommentService for
+				//the full rationale. The minute count is an int and the href identifier is a Guid.
+				var subject = $"logged {((int)record["minutes"]).ToString("N0")} {loggedTypeString} minutes on <a href=\"/projects/tasks/tasks/r/{taskRecord["id"]}/details\">[{HtmlSanitizer.EncodeText(taskRecord["key"]?.ToString())}] {HtmlSanitizer.EncodeText(taskRecord["subject"]?.ToString())}</a>";
 				var relatedRecords = new List<string>() { taskRecord["id"].ToString(), record["id"].ToString() };
 				if (projectId != null)
 				{

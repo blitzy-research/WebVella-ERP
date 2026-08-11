@@ -8,6 +8,14 @@ public partial class Index : ComponentBase
 
     [Inject] private IAuthenticationService _authService { get; set; }
     [Inject] private IApiService _apiService { get; set; }
+    [Inject] private NavigationManager _navigator { get; set; }
+
+    //THREAT ADDRESSED - finding F-09, CWE-798 (use of hard-coded credentials), OWASP A07:2021.
+    //Needed so the Login button can hand the user to the real /login page instead of
+    //authenticating with a credential compiled into the shipped WebAssembly payload. Injected the
+    //same way as the two services above; WvBaseComponent injects NavigationManager under this
+    //exact name, so /login and this page name it identically.
+    [Inject] private NavigationManager Navigator { get; set; }
 
     private bool _isAuthenticated = false;
     private WvUser _user = null;
@@ -16,13 +24,35 @@ public partial class Index : ComponentBase
         if (firstRender)
         {
             _isAuthenticated = await _authService.HasTokenAsync();
-            _user = await _apiService.GetCurrentUserAsync();
+
+            //Review finding C-02. The current user was requested UNCONDITIONALLY, on the very line after
+            //this page had already established that no token exists. For an anonymous visitor - the normal
+            //case for "/" - that request cannot succeed: it reaches GetAuthorizedHttpClientAsync, which has
+            //no token to attach, and the visit ends in an exception rather than in a rendered page. Asking
+            //only when the answer can be obtained uses the result this page has already computed, so the
+            //anonymous path becomes an ordinary render with a Login button instead of a failed one.
+            if (_isAuthenticated)
+                _user = await _apiService.GetCurrentUserAsync();
+
             await InvokeAsync(StateHasChanged);
         }
     }
-    private async Task _login()
+    //THREAT ADDRESSED - finding F-09, CWE-798 (use of hard-coded credentials), OWASP A07:2021
+    //Identification and Authentication Failures. This method called LoginAsync with a literal
+    //e-mail and password. Those literals were not test scaffolding: this is /, the client's entry
+    //page, the button that reaches them ships in the rendered markup, and a Blazor WebAssembly
+    //assembly is downloaded to and readable by every visitor - so the credential was published to
+    //anyone who asked for the page, and any deployment that still had that account authenticated
+    //an anonymous visitor as it with one click.
+    //
+    //The button now hands the user to the application's real login page, which already exists
+    //at /login (LoginPage.razor -> WvLogin) with a form, error reporting and returnUrl handling.
+    //No replacement credential is introduced and none is read from configuration: a browser-
+    //delivered client cannot hold a secret at all, so the only correct destination is the form.
+    //The returnUrl is the query parameter WvLogin itself reads, so a successful login returns here.
+    private void _login()
     {
-        _isAuthenticated = await _authService.LoginAsync(new LoginModel { Email = "erp@webvella.com", Password = "erp" });
+        Navigator.NavigateTo($"/login?{WasmConstants.ReturnUrlQuery}=/");
     }
     private async Task _logout()
     {

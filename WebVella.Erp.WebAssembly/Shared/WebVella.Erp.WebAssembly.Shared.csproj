@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net7.0</TargetFramework>
+    <!-- Security H-18 (CWE-1104, OWASP A06:2021): .NET 7 left support on 2024-05-14, so an advisory
+         raised against it can never be patched. Kept on the supported line the other 17 projects use. -->
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>

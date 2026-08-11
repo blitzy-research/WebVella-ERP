@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading.Tasks;
 using WebVella.Erp.Utilities;
 using WebVella.Erp.Utilities.Dynamic;
+using WebVella.Erp.Api.Models;
 
 namespace WebVella.Erp.Notifications
 {
@@ -107,7 +108,11 @@ namespace WebVella.Erp.Notifications
 		private void ListenForNotifications()
 		{
 			sqlConnection = new NpgsqlConnection(ErpSettings.ConnectionString);
-			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+			// SECURITY H-10 (CWE-502 deserialization of untrusted data / OWASP A08:2021
+			// Software and Data Integrity Failures). This payload arrives base64-encoded over a PostgreSQL NOTIFY channel, so anything able to
+			// issue a NOTIFY on that channel controls the $type token. It was omitted from the original
+			// site census and is the least trusted deserialisation input in the platform.
+			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 
 			sqlConnection.Open();
 			sqlConnection.Notification += (o, e) =>
@@ -152,7 +157,7 @@ namespace WebVella.Erp.Notifications
 		/// <param name="notification"></param>
 		public void SendNotification(Notification notification)
 		{
-			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto };
+			JsonSerializerSettings settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, SerializationBinder = ErpSerializationBinder.Instance };
 			var json = JsonConvert.SerializeObject(notification, settings);
 			var encodedText = Encoding.UTF8.ToBase64(json);
 			string sql = $"notify {SQL_NOTIFICATION_CHANNEL_NAME}, '{encodedText}';";

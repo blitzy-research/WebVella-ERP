@@ -50,9 +50,17 @@
 			default:
 				break;
 		}
+		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING. The component publishes each
+		   value as its own data field, allow-listing the icon class and the colour, and the elements are
+		   authored here as literal Razor markup so Razor encodes every value in its own context. Do NOT
+		   reintroduce Html.Raw; the Design and Display twins must stay identical - change both or neither. *@
+		var taskUrl = $"/projects/tasks/tasks/r/{record["task_id"]}/details";
+		var taskIconClass = (string)record["task_icon_class"];
+		var taskColorStyle = "color:" + (string)record["task_color"];
+		var userImagePath = (string)record["user_image"];
 		<wv-grid-row>
-			<wv-grid-column>@Html.Raw((string)record["task"])</wv-grid-column>
-			<wv-grid-column width="200px">@Html.Raw((string)record["user"])</wv-grid-column>
+			<wv-grid-column><i class="@taskIconClass" style="@taskColorStyle" aria-hidden="true"></i> <a href="@taskUrl">[@record["task_key"]] @record["task_subject"]</a></wv-grid-column>
+			<wv-grid-column width="200px"><img src="@userImagePath" class="rounded-circle" width="24" alt="" /> @record["user_name"]</wv-grid-column>
 			<wv-grid-column width="120px" class="@dateClass">@dateString</wv-grid-column>
 		</wv-grid-row>
 	}

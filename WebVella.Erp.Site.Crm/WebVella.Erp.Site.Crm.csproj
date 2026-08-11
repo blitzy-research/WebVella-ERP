@@ -6,6 +6,7 @@
 		<TypeScriptToolsVersion>3.1</TypeScriptToolsVersion>
 		<SatelliteResourceLanguages>en</SatelliteResourceLanguages>
 		<ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+		<UserSecretsId>7cdbf11d-ae56-5ee3-907d-2a50d47825c9</UserSecretsId>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -18,7 +19,7 @@
 		<ProjectReference Include="..\WebVella.Erp.Plugins.Next\WebVella.Erp.Plugins.Next.csproj" />
 		<ProjectReference Include="..\WebVella.Erp.Plugins.SDK\WebVella.Erp.Plugins.SDK.csproj" />
 		<ProjectReference Include="..\WebVella.Erp.Web\WebVella.Erp.Web.csproj" />
-		<ProjectReference Include="..\WebVella.ERP\WebVella.Erp.csproj" />
+		<ProjectReference Include="..\WebVella.Erp\WebVella.Erp.csproj" />
 	</ItemGroup>
 
 </Project>

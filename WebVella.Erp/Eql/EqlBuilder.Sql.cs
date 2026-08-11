@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
+using WebVella.Erp.Database;
 using WebVella.Erp.Fts;
 
 namespace WebVella.Erp.Eql
@@ -18,6 +19,41 @@ namespace WebVella.Erp.Eql
 
 		#region <--- constants --->
 		const string RECORD_COLLECTION_PREFIX = "rec_";
+
+		#region SECURITY H-09 identifier chokepoints
+
+		// SECURITY H-09 (CWE-89 SQL injection / OWASP A03:2021 Injection). The EQL compiler emits
+		// parameterised SQL for every VALUE, but a table name is an identifier and PostgreSQL cannot
+		// bind an identifier as a parameter, so entity and relation table names are necessarily
+		// concatenated into the generated statement - in FROM, JOIN, ORDER BY, SELECT and operand
+		// positions, at roughly thirty-seven sites in this file.
+		//
+		// Rather than validate at each of those sites, all of them are routed through these two
+		// helpers, so the allow-list is applied exactly once per name and cannot be forgotten when a
+		// new emit site is added. The names originate in entity metadata and in parsed EQL text, so
+		// they are attacker-influenceable wherever a caller can create an entity or relation, or
+		// where stored metadata has been tampered with.
+		//
+		// DbIdentifier.Validate is used rather than DbIdentifier.Quote because Validate returns the
+		// identifier unchanged once it matches the allow-list. That keeps the generated SQL
+		// byte-identical to what this builder produced before, which matters here because these
+		// values are not only emitted as identifiers but are also used as JOIN ALIASES and are
+		// concatenated into textual column prefixes such as rec_x."field". Quoting would change all
+		// of those strings for no security gain: the allow-list already rejects the double quote,
+		// whitespace, semicolons, comment markers and upper case, which makes injection impossible
+		// by construction. A non-conforming name throws DbException instead of being sanitised.
+
+		private static string RecordTable(string entityName)
+		{
+			return DbIdentifier.Validate("rec_" + entityName);
+		}
+
+		private static string RelationTable(string relationName)
+		{
+			return DbIdentifier.Validate("rel_" + relationName);
+		}
+
+		#endregion
 		const string BEGIN_OUTER_SELECT = @"SELECT row_to_json( X ) FROM (";
 		const string BEGIN_SELECT = @"SELECT ";
 		const string REGULAR_FIELD_SELECT = @" {1}.""{0}"" AS ""{0}"",";
@@ -85,7 +121,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 			var fieldsSql = BuildFieldsSql(rootInfo, 1, fieldsMeta);
 			sql.Append(fieldsSql);
 			sql.AppendLine(END_SELECT);
-			sql.AppendLine(string.Format(FROM, $"{RECORD_COLLECTION_PREFIX}{rootInfo.Entity.Name}"));
+			sql.AppendLine(string.Format(FROM, RecordTable(rootInfo.Entity.Name)));
 
 			//WHERE
 			List<EqlRelationFieldNode> relationsUsedInWhere = new List<EqlRelationFieldNode>();
@@ -110,13 +146,26 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 				sql.Append("ORDER BY ");
 				foreach (var field in selectNode.OrderBy.Fields)
 				{
-					if (!fromEntity.Fields.Any(x => x.Name == field.FieldName))
+					//THREAT ADDRESSED - CWE-89 (improper neutralization of special elements used in an SQL
+					//command), OWASP A03 Injection. An ORDER BY field name can arrive from an EQL parameter
+					//(BuildOrderByNode reads it straight out of EqlParameter.Value), so it is a caller-supplied
+					//string, and it used to be concatenated into the statement inside hand-written quotes. The
+					//membership test below is a genuine allow-list and did already stop a crafted name reaching
+					//the statement, but the emission is now made canonical as well, exactly as the four sort
+					//emissions in DbRecordRepository were: the identifier written out is the MATCHED METADATA
+					//field's own name, quoted through DbIdentifier rather than by string concatenation. The
+					//invariant is then uniform and checkable - no caller-supplied string reaches an identifier
+					//position anywhere in this builder. field.Direction needs no such treatment: the grammar
+					//admits only the ASC and DESC terms there, and the parameter form is checked against those
+					//two values in BuildOrderByNode before it ever gets here.
+					var orderByFieldMeta = fromEntity.Fields.FirstOrDefault(x => x.Name == field.FieldName);
+					if (orderByFieldMeta == null)
 					{
 						errors.Add(new EqlError { Message = $"Order field '{field.FieldName}' is not found in entity '{fromEntity.Name}'" });
 						return string.Empty;
 					}
 
-					sql.Append(RECORD_COLLECTION_PREFIX + fromEntity.Name + ".\"" + field.FieldName + "\"" + " " + field.Direction);
+					sql.Append(RecordTable(fromEntity.Name) + "." + DbIdentifier.Quote(orderByFieldMeta.Name) + " " + field.Direction);
 					if (selectNode.OrderBy.Fields.Last() != field )
 						sql.Append(" , ");
 
@@ -304,10 +353,10 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					// intended to generate ST_AsGeoJson(...) or ST_AsText(...)
 					string format = (field as GeographyField).Format.ToString();
 
-					AppendToStringBuilder(sb, depth, true, string.Format(GEOGRAPHY_FIELD_SELECT, field.Name, $"{RECORD_COLLECTION_PREFIX}{rootInfo.Entity.Name}", format));
+					AppendToStringBuilder(sb, depth, true, string.Format(GEOGRAPHY_FIELD_SELECT, field.Name, RecordTable(rootInfo.Entity.Name), format));
 				}
 				else
-					AppendToStringBuilder(sb, depth, true, string.Format(REGULAR_FIELD_SELECT, field.Name, $"{RECORD_COLLECTION_PREFIX}{rootInfo.Entity.Name}"));
+					AppendToStringBuilder(sb, depth, true, string.Format(REGULAR_FIELD_SELECT, field.Name, RecordTable(rootInfo.Entity.Name)));
 			}
 
 			//append total count column
@@ -345,7 +394,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 				{
 					if (info.Relation.OriginEntityId == info.Entity.Id)
 					{
-						string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}";
+						string alias = RecordTable(info.Relation.OriginEntityName);
 						if (info.Parent != null && info.Parent.Relation != null)
 							alias = info.Parent.Relation.Name;
 
@@ -353,7 +402,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 							$"${info.Relation.Name}",
 							fieldsSql.ToString(),
-							$"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}",
+							RecordTable(info.Relation.TargetEntityName),
 							info.Relation.Name,
 							info.Relation.TargetFieldName,
 							alias,
@@ -361,14 +410,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					}
 					else //when the relation is target -> origin, we have to query origin entity
 					{
-						string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}";
+						string alias = RecordTable(info.Relation.TargetEntityName);
 						if (info.Parent != null && info.Parent.Relation != null)
 							alias = info.Parent.Relation.Name;
 
 						AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 								$"${info.Relation.Name}",
 								fieldsSql.ToString(),
-								$"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}",
+								RecordTable(info.Relation.OriginEntityName),
 								info.Relation.Name,
 								info.Relation.OriginFieldName,
 								alias,
@@ -381,14 +430,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					{
 						if (info.Relation.OriginEntityId != info.Entity.Id)
 						{
-							string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}";
+							string alias = RecordTable(info.Relation.OriginEntityName);
 							if (info.Parent != null && info.Parent.Relation != null)
 								alias = info.Parent.Relation.Name;
 
 							AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 								$"${info.Relation.Name}",
 								fieldsSql.ToString(),
-								$"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}",
+								RecordTable(info.Relation.TargetEntityName),
 								info.Relation.Name,
 								info.Relation.TargetFieldName,
 								alias,
@@ -396,14 +445,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						}
 						else //when the relation is target -> origin, we have to query origin entity
 						{
-							string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}";
+							string alias = RecordTable(info.Relation.TargetEntityName);
 							if (info.Parent != null && info.Parent.Relation != null)
 								alias = info.Parent.Relation.Name;
 
 							AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 									$"${info.Relation.Name}",
 									fieldsSql.ToString(),
-									$"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}",
+									RecordTable(info.Relation.OriginEntityName),
 									info.Relation.Name,
 									info.Relation.OriginFieldName,
 									alias,
@@ -414,14 +463,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					{
 						if (info.RelationInfo.Direction == EqlRelationDirectionType.OriginTarget)
 						{
-							string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}";
+							string alias = RecordTable(info.Relation.OriginEntityName);
 							if (info.Parent != null && info.Parent.Relation != null)
 								alias = info.Parent.Relation.Name;
 
 							AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 									$"${info.Relation.Name}",
 									fieldsSql.ToString(),
-									$"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}",
+									RecordTable(info.Relation.TargetEntityName),
 									info.Relation.Name,
 									info.Relation.TargetFieldName,
 									alias,
@@ -429,14 +478,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						}
 						else
 						{
-							string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}";
+							string alias = RecordTable(info.Relation.TargetEntityName);
 							if (info.Parent != null && info.Parent.Relation != null)
 								alias = info.Parent.Relation.Name;
 
 							AppendToStringBuilder(sb, depth, true, string.Format(OTM_RELATION_TEMPLATE,
 										$"${info.Relation.Name}",
 										fieldsSql.ToString(),
-										$"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}",
+										RecordTable(info.Relation.OriginEntityName),
 										info.Relation.Name,
 										info.Relation.OriginFieldName,
 										alias,
@@ -446,7 +495,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 				}
 				else if (info.Relation.RelationType == EntityRelationType.ManyToMany)
 				{
-					string relationTable = "rel_" + info.Relation.Name;
+					string relationTable = RelationTable(info.Relation.Name);
 					string targetJoinAlias = info.Relation.Name + "_target";
 					string originJoinAlias = info.Relation.Name + "_origin";
 
@@ -461,14 +510,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 
 					if (direction == EqlRelationDirectionType.TargetOrigin)
 					{
-						string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}";
+						string alias = RecordTable(info.Relation.TargetEntityName);
 						if (info.Parent != null && info.Parent.Relation != null)
 							alias = info.Parent.Relation.Name;
 
 						AppendToStringBuilder(sb, depth, true, string.Format(MTM_RELATION_TEMPLATE,
 									$"${info.Relation.Name}",
 									fieldsSql.ToString(),
-									$"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}",
+									RecordTable(info.Relation.OriginEntityName),
 									info.Relation.Name,
 									relationTable,
 									targetJoinAlias,
@@ -483,14 +532,14 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					}
 					else
 					{
-						string alias = $"{RECORD_COLLECTION_PREFIX}{info.Relation.OriginEntityName}";
+						string alias = RecordTable(info.Relation.OriginEntityName);
 						if (info.Parent != null && info.Parent.Relation != null)
 							alias = info.Parent.Relation.Name;
 
 						AppendToStringBuilder(sb, depth, true, string.Format(MTM_RELATION_TEMPLATE,
 									$"${info.Relation.Name}",
 									fieldsSql.ToString(),
-									$"{RECORD_COLLECTION_PREFIX}{info.Relation.TargetEntityName}",
+									RecordTable(info.Relation.TargetEntityName),
 									info.Relation.Name,
 									relationTable,
 									originJoinAlias,
@@ -547,9 +596,73 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 			}
 		}
 
-		private string ProcessExpressionOperandNode(EqlNode operandNode, string entityName, List<EqlRelationFieldNode> relationsUsedInWhere, out Field field)
+		// THREAT ADDRESSED - CWE-89 (improper neutralization of special elements used in an SQL command),
+		// OWASP A03 Injection. Emits an EQL text literal as a PostgreSQL string literal that the server's
+		// lexer cannot be talked out of, whatever the literal contains.
+		//
+		// WHAT WAS WRONG: the TextValue operand below re-wrapped the PARSED literal in quotes with no
+		// escaping at all. The grammar declares its string terminal as
+		// new StringLiteral("STRING", "'", StringOptions.AllowsDoubledQuote) (EqlGrammar.cs:15), so Irony
+		// DECODES a doubled quote in the source down to a single quote in Token.ValueString. The EQL fragment
+		// WHERE x = 'a'' OR 1=1 --'  therefore arrived here as the text  a' OR 1=1 --  and was emitted back
+		// into the statement as  'a' OR 1=1 --'  - the literal closed early and the remainder became SQL.
+		//
+		// WHY ESCAPING RATHER THAN A BOUND PARAMETER: parameterizing the literal was considered first and
+		// rejected because it silently widens two existing guards. ProcessExpressionNode classifies operands
+		// by the SHAPE of the string emitted here - a leading '@' means "parameter" - so a literal rendered as
+		// a placeholder would slip past the "first operand must be an entity field name" check in that method,
+		// and the CONTAINS and STARTSWITH branches, which today reject a literal second operand outright with
+		// "Parameter not found", would begin accepting one. Both are behaviour changes, and a bound parameter
+		// would additionally have to be appended to the Parameters list, which Build aliases from the caller's
+		// own list - so a second Execute on the same command would accumulate duplicates. One audited quoting
+		// function closes the injection while leaving operand classification, error semantics and the
+		// parameter collection all exactly as they were.
+		//
+		// WHY TWO FORMS: inside a plain '...' literal PostgreSQL treats a doubled quote as the only escape and
+		// a backslash as ordinary data, so doubling the quote is exact and complete. That holds only while
+		// standard_conforming_strings is on. It is on by default from PostgreSQL 9.1 and Npgsql never changes
+		// it, but a server or session that turned it off would start reading a backslash as an escape
+		// introducer, and  \'  would then close a literal that quote-doubling alone had left safe. Rather than
+		// rest on a server setting, a value containing a backslash is emitted in the E'...' form, whose escape
+		// processing is fixed and identical under both settings, with the backslash and the quote both
+		// escaped. Neither form can be terminated from inside, and both reproduce the input text character for
+		// character, so no stored or searched value changes meaning.
+		private static string QuoteSqlTextLiteral(string text)
+		{
+			if (text == null)
+			{
+				text = string.Empty;
+			}
+
+			//PostgreSQL cannot represent U+0000 in a text value at all, so it is refused here as an EQL error
+			//rather than handed to the driver to fail on obscurely part way through executing a statement.
+			//The char overloads of Contains are used throughout: they are ordinal by definition, so no
+			//culture can make a quote or a backslash go unnoticed.
+			if (text.Contains('\0'))
+			{
+				throw new EqlException("WHERE CLAUSE: a text value may not contain a null character.");
+			}
+
+			if (!text.Contains('\\'))
+			{
+				return "'" + text.Replace("'", "''", StringComparison.Ordinal) + "'";
+			}
+
+			//Order matters: the backslash is escaped first, so the backslashes introduced when escaping the
+			//quote are not themselves doubled a second time.
+			return "E'" + text.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "\\'", StringComparison.Ordinal) + "'";
+		}
+
+		// textLiteralValue carries the RAW, unescaped text of a string-literal operand out to the caller and is
+		// null for every other operand kind. It exists because the full-text-search branch in
+		// ProcessExpressionNode used to recover a literal's value by trimming the first and last character off
+		// the emitted SQL, which no longer round-trips once the value is escaped - and which was itself the
+		// second half of the same injection, since the recovered text was interpolated straight back into a
+		// quoted literal.
+		private string ProcessExpressionOperandNode(EqlNode operandNode, string entityName, List<EqlRelationFieldNode> relationsUsedInWhere, out Field field, out string textLiteralValue)
 		{
 			field = null;
+			textLiteralValue = null;
 			string operandString = string.Empty;
 			switch (operandNode.Type)
 			{
@@ -563,7 +676,7 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						if (field == null)
 							throw new EqlException($"WHERE CLAUSE: Field '{fieldName}' not found in entity {entityName}");
 
-						operandString = RECORD_COLLECTION_PREFIX + entityName + ".\"" + fieldName + "\"";
+						operandString = RecordTable(entityName) + ".\"" + fieldName + "\"";
 					}
 					break;
 				case EqlNodeType.BinaryExpression:
@@ -578,7 +691,10 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					operandString = $"'{((EqlNumberValueNode)operandNode).Number.ToString()}'";
 					break;
 				case EqlNodeType.TextValue:
-					operandString = $"'{((EqlTextValueNode)operandNode).Text}'";
+					//THREAT ADDRESSED - CWE-89, OWASP A03. See QuoteSqlTextLiteral above: this line used to be
+					//$"'{...Text}'" and the parsed text reached the statement unescaped.
+					textLiteralValue = ((EqlTextValueNode)operandNode).Text ?? string.Empty;
+					operandString = QuoteSqlTextLiteral(textLiteralValue);
 					break;
 				case EqlNodeType.Keyword:
 					if (((EqlKeywordNode)operandNode).Keyword == "null")
@@ -634,8 +750,10 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 				return null;
 
 			Field firstOperandField, secondOperandField;
-			string firstOperandString = ProcessExpressionOperandNode(expNode.FirstOperand, entityName, relationsUsedInWhere, out firstOperandField);
-			string secondOperandString = ProcessExpressionOperandNode(expNode.SecondOperand, entityName, relationsUsedInWhere, out secondOperandField);
+			//The first operand's raw literal text is discarded deliberately: no branch below needs it, because
+			//a literal is never a legal first operand - the guard immediately after this rejects it.
+			string firstOperandString = ProcessExpressionOperandNode(expNode.FirstOperand, entityName, relationsUsedInWhere, out firstOperandField, out _);
+			string secondOperandString = ProcessExpressionOperandNode(expNode.SecondOperand, entityName, relationsUsedInWhere, out secondOperandField, out string secondOperandTextLiteral);
 
 			if (!( firstOperandString.StartsWith(" (") || firstOperandString.StartsWith(" to_tsvector") || firstOperandString.StartsWith("@") ) && firstOperandField == null)
 				throw new EqlException($"WHERE: First operand in where expressions should always be an entity field name . '{firstOperandString}' is not a field name.");
@@ -779,10 +897,15 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 								return $" to_tsvector( 'simple', {firstOperandString} ) @@ plainto_tsquery( 'simple', COALESCE( {paramName}, ' ') ) ";
 
 						}
-						else if (secondOperandString.StartsWith("'")) //text
+						else if (secondOperandTextLiteral != null) //text
 						{
-							var text = secondOperandString.Substring(1);
-							text = text.Substring(0, text.Length - 1);
+							//THREAT ADDRESSED - CWE-89, OWASP A03. This branch used to detect a text operand by
+							//testing the emitted SQL for a leading quote, then recover its value by trimming the
+							//first and last character, then interpolate that value straight back into a quoted
+							//literal below - the same unescaped round trip QuoteSqlTextLiteral exists to close.
+							//The operand node now hands the raw value back directly, so neither the shape test
+							//nor the trimming is needed, and both emissions below are quoted properly.
+							var text = secondOperandTextLiteral;
 
 							bool singleWord = true;
 							if (!string.IsNullOrWhiteSpace(text))
@@ -796,10 +919,10 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 							if (singleWord)
 							{
 								text = text + ":*"; //search for all lexemes starting with this word
-								return $" to_tsvector( 'simple', {firstOperandString} ) @@ to_tsquery( 'simple', '{text}') ";
+								return $" to_tsvector( 'simple', {firstOperandString} ) @@ to_tsquery( 'simple', {QuoteSqlTextLiteral(text)}) ";
 							}
 							else
-								return $" to_tsvector( 'simple', {firstOperandString} ) @@ plainto_tsquery( 'simple', '{text}') ";
+								return $" to_tsvector( 'simple', {firstOperandString} ) @@ plainto_tsquery( 'simple', {QuoteSqlTextLiteral(text)}) ";
 						}
 					}
 					else
@@ -844,21 +967,21 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 					if (relation.OriginEntityId == fromEntity.Id)
 					{
 						relationJoinSql += string.Format(FILTER_JOIN,
-							$"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+							RecordTable(relation.TargetEntityName),
 							relationAlias,
 							relationAlias,
 							relation.TargetFieldName,
-							$"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+							RecordTable(relation.OriginEntityName),
 							relation.OriginFieldName);
 					}
 					else //when the relation is target -> origin, we have to query origin entity
 					{
 						relationJoinSql += string.Format(FILTER_JOIN,
-							   $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+							   RecordTable(relation.OriginEntityName),
 							   relationAlias,
 							   relationAlias,
 							   relation.OriginFieldName,
-							   $"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+							   RecordTable(relation.TargetEntityName),
 							   relation.TargetFieldName);
 					}
 				}
@@ -871,21 +994,21 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						if (relation.OriginEntityId == fromEntity.Id)
 						{
 							relationJoinSql += string.Format(FILTER_JOIN,
-								$"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+								RecordTable(relation.TargetEntityName),
 								relationAlias,
 								relationAlias,
 								relation.TargetFieldName,
-								 $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+								 RecordTable(relation.OriginEntityName),
 								relation.OriginFieldName);
 						}
 						else //when the relation is target -> origin, we have to query origin entity
 						{
 							relationJoinSql += string.Format(FILTER_JOIN,
-								 $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+								 RecordTable(relation.OriginEntityName),
 								relationAlias,
 								relationAlias,
 								relation.OriginFieldName,
-								$"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+								RecordTable(relation.TargetEntityName),
 								relation.TargetFieldName);
 						}
 					}
@@ -894,31 +1017,31 @@ LEFT OUTER JOIN  {0} {1} ON {2}.{3} = {4}.{5}";
 						if (relationInfo.Direction == EqlRelationDirectionType.TargetOrigin)
 						{
 							relationJoinSql = string.Format(FILTER_JOIN,
-								$"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+								RecordTable(relation.OriginEntityName),
 							   relationAlias,
 							   relationAlias,
 							   relation.OriginFieldName,
-							   $"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+							   RecordTable(relation.TargetEntityName),
 							   relation.TargetFieldName);
 						}
 						else
 						{
 							relationJoinSql += string.Format(FILTER_JOIN,
-								$"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}",
+								RecordTable(relation.TargetEntityName),
 								relationAlias,
 								relationAlias,
 								relation.TargetFieldName,
-								 $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}",
+								 RecordTable(relation.OriginEntityName),
 								relation.OriginFieldName);
 						}
 					}
 				}
 				else if (relation.RelationType == EntityRelationType.ManyToMany)
 				{
-					string relationTable = "rel_" + relation.Name;
+					string relationTable = RelationTable(relation.Name);
 
-					string targetJoinTable = $"{RECORD_COLLECTION_PREFIX}{relation.TargetEntityName}";
-					string originJoinTable = $"{RECORD_COLLECTION_PREFIX}{relation.OriginEntityName}";
+					string targetJoinTable = RecordTable(relation.TargetEntityName);
+					string originJoinTable = RecordTable(relation.OriginEntityName);
 
 					//if target is entity we query
 					if (fromEntity.Id == relation.TargetEntityId)

@@ -13,7 +13,16 @@ namespace WebVella.Erp.Utilities
     {
         #region <--- Fields --->
 
-        private const string defaultCryptKey = "BC93B776A42877CFEE808823BA8B37C83B6B0AD23198AC3AF2B5A54DCB647658";
+        // SECURITY (C-04, CWE-798 hard-coded credentials / CWE-321 hard-coded cryptographic key, OWASP
+        // A02:2021) - this class holds NO default encryption key, and none may be added. A compiled-in default
+        // is public knowledge twice over: this assembly ships to nuget.org, so the constant is readable straight
+        // out of the library, and the same literal shipped in every Config.json - so a deployment that supplied
+        // no key of its own encrypted with a key an attacker already held, unrotatable because every deployment
+        // shared it. INVARIANT: absent key configuration fails fast (see CryptKey below). A constant without a
+        // fallback, or a fallback without a constant, each leave the defect in place - both must stay absent.
+
+        // Caches the encryption key after the first SUCCESSFUL resolution. The configured key is the only value ever
+        // stored here.
         private static string cryptKey;
 
         #endregion
@@ -26,13 +35,28 @@ namespace WebVella.Erp.Utilities
             {
                 if (string.IsNullOrEmpty(cryptKey))
                 {
-                    if (string.IsNullOrWhiteSpace(ErpSettings.EncryptionKey)) {
-                        cryptKey = defaultCryptKey;
+                    // SECURITY (C-04, CWE-798/CWE-321, OWASP A02:2021) - a caller reaching this property with no key
+                    // configured is stopped loudly rather than handed a predictable key it would mistake for protection.
+                    // There is deliberately no development-mode escape hatch, which would reintroduce the defect, and no
+                    // generated random key, which would silently make already-encrypted data undecryptable.
+                    if (string.IsNullOrWhiteSpace(ErpSettings.EncryptionKey))
+                    {
+                        // Only configuration key NAMES appear below. The value, any prefix of it, its length and any
+                        // digest of it are all withheld, so this failure cannot leak key material into a console, a
+                        // log file or a crash report (CWE-532).
+                        throw new InvalidOperationException(
+                            "WebVella ERP cannot encrypt or decrypt data: required security configuration " +
+                            "'Settings:EncryptionKey' is missing. Supply it through the 'Settings__EncryptionKey' " +
+                            "environment variable, or in Config.json - the legacy misspelled " +
+                            "'Settings:EncriptionKey' spelling is still honoured. No compiled-in default " +
+                            "encryption key exists, by design (OWASP Top 10 finding C-04 - CWE-798, CWE-321), " +
+                            "and no insecure fallback remains. See docs/security/secure-configuration.md for the " +
+                            "supported supply channels and for how a deployment that relied on a removed default " +
+                            "keeps its existing encrypted data readable.");
                     }
-                    else {
 
-                        cryptKey = ErpSettings.EncryptionKey;
-                    }
+                    // The configured key is the ONLY value this property will ever cache or return.
+                    cryptKey = ErpSettings.EncryptionKey;
                 }
                 return cryptKey;
             }
@@ -43,7 +67,8 @@ namespace WebVella.Erp.Utilities
         #region <--- Methods --->
 
         /// <summary>
-        /// 	Encrypts the text using default related key
+        /// 	Encrypts the text with the configured key resolved through <see cref="CryptKey"/>, which throws
+        /// 	rather than falling back to a compiled-in default when none is configured (C-04).
         /// </summary>
         /// <param name="text"> The text. </param>
         /// <param name="algorithm"> The algorithm. </param>
@@ -54,7 +79,8 @@ namespace WebVella.Erp.Utilities
         }
 
         /// <summary>
-        /// 	Decrypts the text using machine related key
+        /// 	Decrypts the cypher text with the configured key resolved through <see cref="CryptKey"/>, which
+        /// 	throws rather than falling back to a compiled-in default when none is configured (C-04).
         /// </summary>
         /// <param name="cypherText"> The cypher text. </param>
         /// <param name="algorithm"> The algorithm. </param>
@@ -65,7 +91,8 @@ namespace WebVella.Erp.Utilities
         }
 
         /// <summary>
-        /// 	Encrypts the text using default related key
+        /// 	Encrypts the input data with the configured key resolved through <see cref="CryptKey"/>, which
+        /// 	throws rather than falling back to a compiled-in default when none is configured (C-04).
         /// </summary>
         /// <param name="inputData"> The input data. </param>
         /// <param name="algorithm"> The algorithm. </param>
@@ -76,7 +103,8 @@ namespace WebVella.Erp.Utilities
         }
 
         /// <summary>
-        /// 	Decrypts the text using machine related key
+        /// 	Decrypts the input data with the configured key resolved through <see cref="CryptKey"/>, which
+        /// 	throws rather than falling back to a compiled-in default when none is configured (C-04).
         /// </summary>
         /// <param name="inputData"> The input data. </param>
         /// <param name="algorithm"> The algorithm. </param>
@@ -212,6 +240,53 @@ namespace WebVella.Erp.Utilities
 
         #region <--- Private Methods --->
 
+        // SECURITY NOTE (M-08, CWE-329, OWASP A02:2021) - DOCUMENTED ONLY, DELIBERATELY NOT CHANGED HERE.
+        // The key and initialisation-vector derivation below is deterministic - the vector is derived from the
+        // key itself, so the same plaintext always produces the same ciphertext. It is latent, the symmetric
+        // encrypt/decrypt API having no in-repository callers, and changing the derivation or moving to an
+        // authenticated cipher mode would make every already-persisted ciphertext undecryptable, which the
+        // preservation requirement forbids. Accepted as RISK-006 in docs/security/risk-register.md, which
+        // carries the recommended fix. CA5390, CA5401 and the CA5351 diagnostics on the MD5 derivation below
+        // describe this code and are intentionally left as warnings.
+
+        /// <summary>
+        /// 	Projects key or initialisation-vector material to bytes, refusing any character outside US-ASCII
+        /// 	instead of silently substituting it.
+        /// </summary>
+        /// <param name="material"> The key or initialisation-vector text actually about to be consumed. </param>
+        /// <param name="materialName"> Names which material failed, for the diagnostic only. Never the value. </param>
+        /// <returns> The US-ASCII bytes of <paramref name="material"/>. </returns>
+        private static byte[] ToAsciiKeyMaterial(string material, string materialName)
+        {
+            // THREAT ADDRESSED - CWE-331 (insufficient entropy) with CWE-176 (improper handling of Unicode
+            // encoding), OWASP A02:2021. Both derivation helpers below called Encoding.ASCII.GetBytes directly,
+            // and that encoder does not fail on input it cannot represent - it SUBSTITUTES, mapping every
+            // character above U+007F to '?' (0x3F). The consequence was measured: a 32-character key of 32
+            // DISTINCT non-ASCII characters derived to 3f repeated 32 times, so the AES key was predictable from
+            // the key's SHAPE alone, two different keys derived identical bytes, and the initialisation vector -
+            // derived from the same text - collided too. An ordinary accented passphrase lost one byte of key
+            // material per accent. Failing is the point: the alternative is not a lesser key but one an attacker
+            // can reconstruct without seeing it. Only the material's ROLE is named - never its value, length, the
+            // offending character or its position (CWE-532).
+            for (int index = 0; index < material.Length; index++)
+            {
+                if (material[index] > 0x7f)
+                {
+                    throw new InvalidOperationException(
+                        $"WebVella ERP cannot derive cryptographic {materialName} material: the supplied value " +
+                        "contains at least one character outside US-ASCII. Such characters cannot be represented " +
+                        "by the ASCII projection this derivation uses and were previously replaced with '?', " +
+                        "which silently destroyed key entropy (CWE-331, CWE-176). " +
+                        "Supply US-ASCII key material only - printable ASCII letters, digits and " +
+                        "symbols. When 'Settings:EncryptionKey' is the source, startup validation reports this " +
+                        "before any data is touched. See docs/security/secure-configuration.md for the accepted " +
+                        "character set, and docs/security/risk-register.md for how a deployment that already " +
+                        "encrypted data under a non-ASCII key recovers it.");
+                }
+            }
+
+            return Encoding.ASCII.GetBytes(material);
+        }
 
         /// <summary>
         /// 	Gets the valid encode key.
@@ -237,7 +312,10 @@ namespace WebVella.Erp.Utilities
             else
                 result = key;
 
-            return Encoding.ASCII.GetBytes(result);
+            // The sizing above measures CHARACTERS while the projection below consumes BYTES; refusing non-ASCII
+            // material is what makes the two agree, because for US-ASCII input one character is exactly one byte -
+            // so this is byte-identical to the previous Encoding.ASCII.GetBytes for every key that already worked.
+            return ToAsciiKeyMaterial(result, "key");
         }
 
         /// <summary>
@@ -248,10 +326,13 @@ namespace WebVella.Erp.Utilities
         /// <returns> </returns>
         private static byte[] GetValidIV(String InitVector, int ValidLength)
         {
+            // The vector is derived from the key text, so it inherited the same silent substitution -
+            // a non-ASCII key produced an all-'?' vector that collided across different keys. The pad character
+            // is a space, which is itself ASCII, so padding never introduces material this guard would refuse.
             if (InitVector.Length > ValidLength)
-                return Encoding.ASCII.GetBytes(InitVector.Substring(0, ValidLength));
+                return ToAsciiKeyMaterial(InitVector.Substring(0, ValidLength), "initialisation vector");
 
-            return Encoding.ASCII.GetBytes(InitVector.PadRight(ValidLength, ' '));
+            return ToAsciiKeyMaterial(InitVector.PadRight(ValidLength, ' '), "initialisation vector");
         }
 
         /// <summary>

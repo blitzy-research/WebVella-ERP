@@ -12,6 +12,10 @@ using WebVella.Erp.Plugins.Project.Model;
 using WebVella.Erp.Recurrence;
 using WebVella.Erp.Web.Models;
 using WebVella.Erp.Web.Pages.Application;
+//SECURITY - H-06 (CWE-79): SafeStyleValue was promoted from this plugin into WebVella.Erp.Web so the
+//framework's own select conversion boundary could call it too. The framework cannot reference a plugin
+//that references it, so a guard owned here could never have covered the platform-wide select sink.
+using WebVella.Erp.Web.Utils;
 
 
 //TODO develop service
@@ -214,6 +218,25 @@ namespace WebVella.Erp.Plugins.Project.Services
 			return eqlResult;
 		}
 
+		/// <summary>
+		/// Resolves the icon class and colour configured against a task priority option.
+		/// </summary>
+		/// <remarks>
+		/// SECURITY - H-06 (CWE-79, OWASP A03:2021 - stored cross-site scripting). This method is the
+		/// single point at which the priority option's icon class and colour leave the entity metadata,
+		/// and every consumer renders both of them straight into HTML attributes - a class attribute and
+		/// a "color:" style declaration. One of those consumers is not a source file at all: it is a
+		/// stored ICodeVariable that the platform compiles and evaluates at runtime, which composes
+		/// "&lt;i class='{iconClass}' style='color:{color}'&gt;" with NO encoding whatsoever, so the Track
+		/// Time grid rendered whatever the option happened to contain. Guarding the values here rather
+		/// than at each consumer is therefore not merely tidier - it is the only way to cover that
+		/// consumer without rewriting stored configuration, which the remediation scope excludes.
+		/// The guards reject rather than escape, and both are idempotent, so a consumer that applies
+		/// SafeStyleValue again for its own sake is unaffected.
+		/// </remarks>
+		/// <param name="priorityValue">The stored priority option value.</param>
+		/// <param name="iconClass">Receives the icon class, or an empty string when it is not a safe class list.</param>
+		/// <param name="color">Receives the colour, or an empty string when it is not a recognised colour shape.</param>
 		public void GetTaskIconAndColor(string priorityValue, out string iconClass, out string color)
 		{
 			iconClass = "";
@@ -223,8 +246,10 @@ namespace WebVella.Erp.Plugins.Project.Services
 			var recordPriority = priorityOptions.FirstOrDefault(x => x.Value == priorityValue);
 			if (recordPriority != null)
 			{
-				iconClass = recordPriority.IconClass;
-				color = recordPriority.Color;
+				//SECURITY - H-06 (CWE-79): allow-list the two attribute-bound values as they leave the
+				//database. See the remarks above and SafeStyleValue for why encoding alone is not enough.
+				iconClass = SafeStyleValue.IconClass(recordPriority.IconClass);
+				color = SafeStyleValue.CssColor(recordPriority.Color);
 			}
 
 		}
@@ -380,7 +405,11 @@ namespace WebVella.Erp.Plugins.Project.Services
 
 
 			//Add activity log
-			var subject = $"created <a href=\"/projects/tasks/tasks/r/{patchRecord["id"]}/details\">[{patchRecord["key"]}] {taskSubject}</a>";
+			//THREAT ADDRESSED - CWE-79, OWASP A03:2021, review finding SR-05 (seam/M-01). Trusted markup carrying
+			//author-controlled task data into the feed's innerHTML sink; the interpolated key and subject are
+			//encoded at the point they enter markup. See the equivalent site in CommentService for the full
+			//rationale. The href identifier is a Guid.
+			var subject = $"created <a href=\"/projects/tasks/tasks/r/{patchRecord["id"]}/details\">[{HtmlSanitizer.EncodeText(patchRecord["key"]?.ToString())}] {HtmlSanitizer.EncodeText(taskSubject)}</a>";
 			var relatedRecords = new List<string>() { patchRecord["id"].ToString(), projectId.ToString() };
 			var scope = new List<string>() { "projects" };
 			//Add watchers as scope

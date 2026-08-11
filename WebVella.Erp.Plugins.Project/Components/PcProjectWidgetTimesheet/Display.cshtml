@@ -11,11 +11,31 @@
 	var gridColumns = (List<WvGridColumnMeta>)ViewBag.GridColumns;
 	var records = (List<EntityRecord>)ViewBag.Records;
 }
+@* QA FINDING P13-01 - the nine-column timesheet grid has a 603.55px intrinsic width and was drawn
+   straight through its card's border and off the page inside the 327px card it occupies at 375 CSS px,
+   because all six of its ancestors compute overflow-x:visible. The wrapper below scrolls on the x axis
+   only; the rule is .erp-scroll-x in WebVella.Erp.Web/Theme/styles.css, which is deliberately an opt-in
+   class rather than overflow-x on the shared .erp-list wrapper - that would clip the filter-row dropdowns
+   on every list screen in the platform. As with the encoding note below, the Design and Display twins
+   must stay identical: change both or neither. *@
+<div class="erp-scroll-x">
 <wv-grid small="true" columns="@gridColumns" has-tfoot="false">
 	@foreach (var record in records)
 	{
+		@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - CONTEXTUAL ENCODING. The component publishes "label"
+		   as plain text and the avatar path separately, and the avatar element is authored here as literal
+		   Razor markup, so Razor encodes the src attribute and the label text each in its own context. Do NOT
+		   reintroduce Html.Raw; the Design and Display twins must stay identical - change both or neither.
+		   REVIEW FINDING N26 - the cell content is emitted on ONE line on purpose. Written across several lines
+		   it also emitted the newlines and indentation between them, which collapse to a leading and a trailing
+		   space inside the cell: visible in the right-aligned "font-weight-bold text-right" total row, where the
+		   figure no longer sat flush right. The three rows that carry no avatar (Billable, Non-Billable, Total)
+		   must emit the label and nothing else, exactly as the builder's own markup did before this encoding
+		   pass, and the separator below reproduces the single space the builder placed after the avatar. *@
+		var labelImagePath = (string)record["label_image"];
+		var labelImageSeparator = labelImagePath != null ? " " : "";
 		<wv-grid-row>
-			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">@Html.Raw(record["label"])</wv-grid-column>
+			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold text-right" : "")">@if (labelImagePath != null){<img src="@labelImagePath" class="rounded-circle" width="24" alt="" />}@labelImageSeparator@record["label"]</wv-grid-column>
 			<wv-grid-column class="@((string)record["id"] == "total" ? "font-weight-bold" : "") text-right">
 				@((decimal)record["day1"] > 0 ? Math.Round((decimal)record["day1"]/60,2) + "h" : "-")
 			</wv-grid-column>
@@ -44,3 +64,4 @@
 	}
 
 </wv-grid>
+</div>

@@ -74,8 +74,24 @@ textarea.autogrow {
 	vertical-align: middle;
 }
 
+/* P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum). THREAT ADDRESSED: the platform link colour was
+   Material Blue 500 (#2196F3), measured at runtime as 3.12:1 against the white page background -
+   below the 4.5:1 minimum for normal-size text, on every link in the product, which makes it the
+   highest-blast-radius contrast defect found.
+
+   WHY BLUE 800 AND NOT BLUE 700, which was the first attempt: Blue 700 (#1976D2) measures 4.61:1
+   on the white page and passes there, but re-measurement found ten `a.nav-link` elements on the SDK
+   Web API page sitting on a `.go-bkg-gray-light` panel whose background is #FAFAFA, and on that
+   0.5%-darker surface the same colour scores only 4.41:1 - a fail. 1.4.3 is evaluated against each
+   element's own background, so a link colour with no headroom fails as soon as a panel is anything
+   other than pure white. Blue 800 measures 5.75:1 on white and 5.51:1 on #FAFAFA, clearing the
+   threshold on every surface the product actually paints links onto. It also makes the rest/hover
+   pair a clean one-step Material progression, since the hover colour below is Blue 900.
+
+   The BlueColor theme token stays at #2196F3 because it also drives chart series colours and
+   .go-blue backgrounds, where the text threshold does not apply. */
 a {
-	color: #2196F3;
+	color: #1565C0;
 }
 
 	a:hover {
@@ -88,6 +104,94 @@ a {
 
 .btn-outline-secondary:not(:disabled):not(.disabled):active:focus, .btn-outline-secondary:not(:disabled):not(.disabled).active:focus, .show > .btn-outline-secondary.dropdown-toggle:focus {
 	box-shadow: none;
+}
+
+/*
+	P6-11 (WCAG 2.1 AA 2.4.7 Focus Visible, and 1.4.11 Non-text Contrast for the indicator itself).
+
+	THREAT ADDRESSED: a keyboard-only operator could not tell which control held focus, because no
+	rule anywhere in the product styled a focus-visible state. Measured at runtime before this block
+	existed, on /sdk/objects/entity/l: of 12 consecutive Tab stops, 11 landed on a per-row
+	`a.btn.btn-sm.btn-outline-secondary` whose entire focus affordance was
+	`box-shadow: 0 0 0 0.2rem rgba(255,255,255,0.5)` - 50%-opacity WHITE composited over the white
+	page, i.e. 1.00:1 contrast, which renders as literally nothing. Only the 1 remaining stop kept a
+	user-agent ring. A naive automated check that looks for "box-shadow is not none" therefore
+	reports an indicator on 12 of 12 stops while 11 of them are invisible. Separately, the
+	`.form-control:focus { box-shadow: none }` rule above deletes the only visible ring Bootstrap
+	ships for inputs, leaving a #80bdff border tint at roughly 2.0:1.
+
+	WHY :focus-visible AND NOT :focus - the delivery contract requires user-facing behaviour to be
+	preserved. Chrome reports :focus-visible as FALSE when a link or a button is reached by mouse and
+	TRUE only for keyboard traversal (and for text inputs, where a ring on click is the expected
+	behaviour); this was confirmed by real mouse clicks during measurement. Scoping the indicator to
+	:focus-visible therefore leaves mouse interaction pixel-identical to before. For the same reason
+	the 49 pre-existing `:focus` rules in this file - including the white ring above - are left
+	exactly as they are: repainting `.btn-outline-secondary:focus` would make a ring appear on every
+	mouse click, which is a visual change nobody asked for. Note that the white ring is declared
+	identically in the vendored button-colors.css as well, so deleting it here would merely promote
+	that copy; overriding the outline instead sidesteps the duplicate entirely.
+
+	WHY NO !important - a bare `:focus-visible` selector has specificity (0,1,0) and loses to
+	Bootstrap's `.btn:focus { outline: 0 }` at (0,2,0). The qualified selectors in the second rule
+	are (0,2,0) or (0,2,1), tie with each suppressing Bootstrap rule, and win on source order because
+	this stylesheet is the last one loaded on every page. `.modal` and `.modal-content` are
+	deliberately NOT in that list: Bootstrap clears their outline on purpose, and a ring drawn around
+	an entire dialog would be a visible regression.
+
+	The ring colour is the primary theme token so it remains configurable. Its default #007bff was
+	MEASURED at 3.98:1 against the white page and computes to 3.86:1 against the dark brand
+	background used by #sidebar - both above the 3:1 threshold WCAG 1.4.11 sets for a non-text
+	indicator. (An earlier revision of this comment stated 3.68:1 for the white case; that was an
+	arithmetic slip on my part, corrected here against the measured value.)
+*/
+:focus-visible {
+	outline: 2px solid --primary_color;
+	outline-offset: 1px;
+}
+
+/*
+	P6-11, continued. An outline drawn OUTSIDE the border box is invisible wherever an ancestor
+	clips. `.menu-nav` below declares `overflow: hidden` and sizes itself to exactly 40px, while
+	`.menu-nav a` is `width: 100%; height: 100%` - so every anchor in the application bar (home,
+	each sitemap group, settings and logout) fills its clipping parent exactly and a ring at
+	`outline-offset: 1px` would be clipped away entirely. Drawing the ring INSIDE the border box
+	instead keeps it wholly within the clipping ancestor, so it paints in full.
+
+	The obvious alternative - `overflow: visible` on `.menu-nav` - is WRONG and is deliberately not
+	used: that rule pairs `overflow: hidden` with `text-overflow: ellipsis`, `white-space: nowrap`
+	and `max-width: 400px`, and `text-overflow` has no effect without `overflow` being clipped. Making
+	it visible would stop long application-menu labels from truncating and let them overrun the bar,
+	which is a functional regression in exchange for a focus ring.
+
+	The brand anchor is included for a DIFFERENT reason, established by measuring it rather than by
+	assuming it behaved like its neighbours: nothing clips it - every ancestor up to `html` is
+	`overflow: visible` - yet an outside-drawn ring still painted only 382 of the 816 pixels it should,
+	with no bottom edge at all. Its `span.app-label` child is an `inline-block` 40px tall, taller than
+	the anchor's own 24px inline box, and Chrome unions atomic-inline descendant boxes into an
+	element's outline rects. That makes the effective box span the full height of the bar, which puts
+	the ring's top row at y = -1, off the top of the viewport, and its bottom cap at y = 43-45, behind
+	the `position: relative` page-header band that paints after it. Drawing inside the border box
+	brings both edges back within the bar's own 40px, where nothing overlaps them.
+*/
+.menu-nav a:focus-visible,
+#brand-logo a:focus-visible {
+	outline-offset: -2px;
+}
+
+/* Elements whose outline is explicitly suppressed by a (0,2,0)-or-higher vendor rule, and which
+   therefore need a selector of matching specificity rather than the bare one above. */
+.btn:focus-visible,
+button:focus-visible,
+.form-control:focus-visible,
+.custom-select:focus-visible,
+.custom-range:focus-visible,
+.page-link:focus-visible,
+.custom-file-input:focus-visible ~ .custom-file-label,
+a[class*="badge-"]:focus-visible,
+.carousel-control-prev:focus-visible,
+.carousel-control-next:focus-visible {
+	outline: 2px solid --primary_color;
+	outline-offset: 1px;
 }
 
 .text-muted {
@@ -106,6 +210,32 @@ a {
 	.go-red * {
 		fill: --red_color !important;
 	}
+
+/* P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum), correcting a regression this remediation itself
+   introduced. THREAT ADDRESSED: `.go-red` is used both as text on the white page AND as text inside
+   the dark request/response blocks the SDK Web API page renders, which carry
+   `class="rounded go-bkg-gray-dark go-white p-3"` - a #212121 surface. Darkening the red token from
+   Material Red 500 to Red 700 to fix the light-surface case measured 4.98:1 there (up from 3.68:1)
+   but made the dark-surface case WORSE: measured 3.23:1, down from 4.37:1. Both figures fail 4.5,
+   so the dark case was already non-compliant, but the fix must not leave it worse than it found it.
+
+   One flat colour cannot serve both surfaces, so the dark case is scoped rather than compromised:
+   `.go-white` is the class the platform puts on a container to switch it to light-on-dark, which
+   makes it the precise and self-documenting condition for "red text on a dark surface". Material
+   Red 300 measures 5.39:1 on #212121 and 7.03:1 on #000000, so it clears AA on every dark surface
+   the palette offers. A lighter tint is also the conventional treatment for light-on-dark code, and
+   it stays distinguishable from the surrounding white text in the same block.
+
+   `!important` is required here, not chosen: `.go-red` above is itself `!important`, and an
+   important declaration always beats a non-important one regardless of specificity. With both
+   important, the (0,2,0) selector below wins over the (0,1,0) one above. The literal is used rather
+   than a token because the palette exposes no Red 300 - `--red_light_color` is Red 50 (#FFEBEE),
+   near-white, which would read as pink-white rather than red against these blocks. */
+.go-white .go-red,
+.go-white .go-red * {
+	color: #E57373 !important;
+	fill: #E57373 !important;
+}
 
 .go-bkg-red {
 	background-color: --red_color !important;
@@ -2435,8 +2565,17 @@ a {
 	padding: 0.5rem;
 }
 
+/* P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum). THREAT ADDRESSED: this rule replaces Bootstrap's
+   white-on-solid-blue active pill with blue text on a 7.5%-opacity blue tint. #007bff composited
+   against that tint over the #FAFAFA panel the SDK Web API page uses measures 3.43:1, below the
+   4.5:1 minimum. Raised to Material Blue 800, MEASURED at 5.01:1 against that composited background
+   (the composite was verified against the rendered raster, which contains 6,244 pixels of exactly
+   rgb(231,240,250)). This rule is still required even though `a` above now resolves to the same
+   colour, because Bootstrap's own `.nav-pills .nav-link.active` is (0,2,0) and would otherwise paint
+   white text on a solid blue fill; the active pill stays distinguishable from its inactive siblings
+   by that background tint, which is how Bootstrap pills signal state. */
 .nav-pills .nav-link.active, .nav-pills .show > .nav-link {
-	color: #007bff;
+	color: #1565C0;
 	background: rgba(0, 123, 255, 0.075);
 }
 
@@ -2492,11 +2631,19 @@ dropdown-item.active {
 	border-color: --gray_border_color;
 }
 
+/* P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum). THREAT ADDRESSED: #999 on the #fff card background
+   measures 2.85:1, below the 4.5:1 minimum for 12px text. This rule is the actual source of the
+   card-title contrast failure that presents as `span.lns-header` - the `.lns-header a,
+   .lns-header span.title { color: #333 }` rule further down targets DESCENDANTS of .lns-header and
+   never applies to the header span itself, which inherits its colour from here. Measured on the
+   Projects dashboard: 7 card titles ("Tasks", "Priority", "My Timesheet", "All Users' Timesheet",
+   "My Overdue Tasks", "My Tasks Due Today", "My 10 Upcoming Tasks"), all at 2.85:1. Raised to
+   Material Grey 600, which measures 4.61:1. */
 .card-header {
 	padding: 0.25rem 0.5rem;
 	/*background: --blue_gray_light_color;*/
 	background: #fff;
-	color: #999;
+	color: #757575;
 	/*text-transform: uppercase;*/
 	font-size: 12px;
 }
@@ -2952,6 +3099,46 @@ body.sidebar-lg #sidebar .nav-item .dropdown-item {
 	flex-flow: row;
 }
 
+/* QA FINDINGS P6-05 and P6-21 - RESPONSIVE CONTAINMENT OF THE APPLICATION BAR.
+   #nav above is display:flex with a fixed height:40px and the flex default flex-wrap:nowrap, and
+   .app-sitemap is flex-flow:row - shorthand, so its wrap component is nowrap too. On any route whose
+   application sitemap is populated the bar's intrinsic width therefore exceeds a narrow viewport and,
+   because overflow-x is visible and nothing wraps, the content simply spills to the right. Measured on
+   the running hosts at 375 CSS px: the SDK sitemap (12 links) gives #nav a 457px intrinsic width, an
+   82px overflow, and puts the LOGOUT control's right edge at 456.8px - 81.8px beyond the viewport and
+   unreachable, since documentElement overflows by the same 82px and the bar itself does not scroll.
+   The Projects sitemap (7 links) overflows at 768px as well.
+
+   WHY WRAPPING RATHER THAN overflow-x:auto, which is the more obvious fix and is deliberately NOT used
+   here: #nav and .app-sitemap both contain Bootstrap .dropdown-menu children (the settings menu and every
+   sitemap group), and those are absolutely positioned OUTSIDE their parent's box. Any non-visible
+   overflow on an ancestor establishes a clipping container, so overflow-x:auto would trade an
+   unreachable logout control for silently clipped dropdown menus - a worse defect, and one that only
+   shows up on interaction rather than on load.
+
+   Scoped to below Bootstrap's lg breakpoint, complementing the @media (min-width: 992px) blocks already
+   in this file, so the >= 992px layout - where nothing overflowed - is byte-identical to before. */
+@media (max-width: 991.98px) {
+	#nav {
+		flex-wrap: wrap;
+		/* The fixed 40px must go with the wrap, or a wrapped second line is drawn outside the bar's
+		   own box and over the page content beneath it. */
+		height: auto;
+	}
+
+		/* Flex items default to min-width:auto, which refuses to shrink below their content's
+		   intrinsic width; that refusal is what forced the overflow instead of a wrap. */
+		#nav > * {
+			min-width: 0;
+		}
+
+		/* Higher specificity than the .app-sitemap shorthand above, which is what lets the wrap
+		   component be overridden without restating flex-direction. */
+		#nav .app-sitemap {
+			flex-wrap: wrap;
+		}
+}
+
 /*#endregion*/
 
 /*#region << UI Elements*/
@@ -2971,9 +3158,19 @@ body.sidebar-lg #sidebar .nav-item .dropdown-item {
 	border-left: 1px solid --brand_hover_color;
 }
 
+	/* P6-11 (WCAG 2.2 AA 2.5.8 Target Size (Minimum), 24x24 CSS px). THREAT ADDRESSED: this anchor
+	   measured 143.47 x 16 px at 375 CSS px - wide enough, but only 16px tall, so a pointer user with
+	   limited precision could miss it. Vertical padding is used deliberately instead of
+	   display:inline-block + min-height: on a non-replaced INLINE element, padding-top and
+	   padding-bottom extend the border box that getBoundingClientRect() reports (taking the anchor to
+	   24px) WITHOUT contributing to the line box, so the logo image and the app label do not move by
+	   a single pixel. No horizontal padding is added, because that WOULD widen the line box and
+	   #brand-logo is max-width constrained to 182px with text-overflow: ellipsis. */
 	#brand-logo a {
 		position: relative;
 		top: -1px;
+		padding-top: 4px;
+		padding-bottom: 4px;
 	}
 
 	#brand-logo img {
@@ -3026,10 +3223,15 @@ body.sidebar-lg #sidebar .nav-item .dropdown-item {
 			margin: -0.25rem;
 		}
 
+		/* P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum). THREAT ADDRESSED: #777 on the #fff card-footer
+		   background measures 4.48:1 - it misses the 4.5:1 minimum by 0.02, which is why the QA
+		   measurement reported this .nav-link at 4.47:1. This is the app-launcher card footer, so it
+		   renders on the landing page of every host. Raised to Material Grey 600 (4.61:1); the :hover
+		   colour below is already #333 and is unchanged. */
 		.app-card .card-footer .nav-link {
 			padding: 0.25rem;
 			margin-right: 0.25rem;
-			color: #777;
+			color: #757575;
 		}
 
 			.app-card .card-footer .nav-link:hover {
@@ -3127,6 +3329,23 @@ body.sidebar-lg #sidebar .nav-item .dropdown-item {
 
 pre, code {
 	font-size: 1rem;
+}
+
+/* P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum). THREAT ADDRESSED: Bootstrap ships
+   `code { color: #e83e8c }`, which measures 3.82:1 on white - below the 4.5:1 minimum. Measured at
+   runtime on /sdk/objects/data_source/l, where 15 `td > code` cells render the model type name at
+   that ratio. The failing declaration lives in the vendored bootstrap.css, which the delivery
+   contract permits version updates to but not edits, so this is an OVERRIDE rather than a fix at
+   source: `code` is specificity (0,0,1), identical to Bootstrap's, and this stylesheet is loaded
+   last on every page, so it wins on source order. #c7254e is the long-standing Bootstrap code
+   colour and measures 5.52:1, keeping the hue family intact.
+
+   Deliberately a `code`-only rule and NOT folded into the `pre, code` selector above: Bootstrap sets
+   `pre { color: #212529 }`, so adding a colour to that shared selector would turn every
+   preformatted block pink. Bootstrap's own `a > code` and `pre code { color: inherit }` rules are
+   (0,0,2) and still win, so code inside links and inside <pre> keeps inheriting as before. */
+code {
+	color: #c7254e;
 }
 
 /*#endregion*/
@@ -3400,6 +3619,26 @@ border-bottom-style:dashed;
 /*#endregion*/
 
 /*#region << Erp List >> */
+
+/* QA FINDING P13-01 - HORIZONTAL CONTAINMENT FOR A FIXED-COLUMN TABLE INSIDE A NARROW CARD.
+   The Projects dashboard timesheet widget renders a nine-column grid whose intrinsic width is 603.55px.
+   Inside the 327px card it occupies at 375 CSS px that is a 276.55px spill, and every one of its six
+   ancestors computes overflow-x:visible, so the table is drawn straight through the card's border and
+   past the edge of the page.
+
+   WHY AN OPT-IN CLASS RATHER THAN overflow-x:auto ON .erp-list, which is the more obvious fix and is
+   deliberately NOT used here: .erp-list wraps EVERY wv-grid in the platform, including list pages whose
+   thead .filter-row cells hold Bootstrap dropdowns and date pickers. Non-visible overflow on the shared
+   wrapper establishes a clipping container for all of them, so those popups would be cut off at the
+   table's edge on every list screen - a regression far wider than the widget being fixed. Applying the
+   scroller only where a fixed-column table is placed in a narrow container keeps the blast radius at
+   exactly that widget.
+
+   overflow-y is left at its initial value on purpose: naming only the x axis keeps the y axis visible,
+   so nothing inside the scroller is clipped vertically. */
+.erp-scroll-x {
+	overflow-x: auto;
+}
 
 .erp-list .table-hover tbody tr:hover {
 	background-color: rgba(0, 0, 0, 0.025);
@@ -3914,9 +4153,14 @@ border-bottom-style:dashed;
 		top: -1px;
 	}
 
+	/* P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum). Same #777 defect as the app-card footer nav-link,
+	   on 13.6px text. Raised TWO steps on the Material ramp rather than one, because this element
+	   does not sit on the white page: the first attempt at Material Grey 600 was re-measured at
+	   runtime and still failed, reaching only 4.23:1, since the page header behind it is #F5F5F5
+	   rather than #FFFFFF. Grey 700 measures 5.68:1 against that #F5F5F5 band. */
 	.pc-page-header .meta-label .subtext {
 		font-size: 0.85rem;
-		color: #777;
+		color: #616161;
 		text-transform: lowercase;
 	}
 

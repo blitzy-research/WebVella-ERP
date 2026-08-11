@@ -1,4 +1,5 @@
-﻿using Newtonsoft.Json;
+﻿using CSScriptLib;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -6,6 +7,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using WebVella.Erp.Api;
 using WebVella.Erp.Api.Models;
+using WebVella.Erp.Diagnostics;
 using WebVella.Erp.Eql;
 using WebVella.Erp.Web.Service;
 using WebVella.Erp.Web.Services;
@@ -14,6 +16,11 @@ namespace WebVella.Erp.Web.Models
 {
 	public class PageDataModel
 	{
+		//THREAT ADDRESSED - CWE-209, audit finding H-13. Byte-identical to the sentence
+		//ApiControllerBase.DoBadRequestResponse and WebApiController.SafeErrorMessage return outside
+		//development, so one wording covers every fault surface and a reader cannot tell which one answered.
+		private const string GENERIC_EVALUATION_ERROR_MESSAGE = "An internal error occurred!";
+
 		internal bool SafeCodeDataVariable { get; set; } = false;
 
 		DataSourceManager dsMan = new DataSourceManager();
@@ -390,6 +397,92 @@ namespace WebVella.Erp.Web.Models
 
 		}
 
+		/// <summary>
+		/// Compiles and evaluates a page-component code variable or C# snippet, persisting any fault to the
+		/// platform log and replacing its text with a generic message outside development.
+		/// </summary>
+		/// <param name="csCode">The C# source held by the component option, or read from a snippet resource.</param>
+		/// <param name="source">A short identifier written to the log record's source column.</param>
+		/// <returns>The value the evaluated code produced.</returns>
+		/// <remarks>
+		/// <para>
+		/// THREAT ADDRESSED - CWE-209 information exposure through an error message, OWASP A05:2021; audit
+		/// finding H-13, remediation Class 14.
+		/// </para>
+		/// <para>
+		/// A page-component option may hold a <c>CODE</c> or <c>SNIPPET</c> data-source variable, which is
+		/// compiled by CS-Script at RENDER time. When the code names an assembly the host has not loaded,
+		/// Roslyn's diagnostic list becomes the exception message - and every page component in this platform
+		/// ends its <c>InvokeAsync</c> with <c>catch (Exception ex) { ViewBag.Error = new ValidationException {
+		/// Message = ex.Message }; return View("Error"); }</c>, whose <c>Error.cshtml</c> renders that message
+		/// through <c>wv-validation</c> as an <c>alert alert-danger</c> block. The message therefore reached
+		/// the browser verbatim. On the shipped tree that was not hypothetical: the <c>all_emails</c> and
+		/// <c>details</c> pages of the Mail plugin carry five <c>PcFieldText</c> options whose code variables
+		/// open with <c>using WebVella.Erp.Plugins.Mail.Api;</c>, so on every host that does not deploy that
+		/// plugin - six of the seven - <c>/mail/emails/all/l</c> rendered TWELVE blocks reading
+		/// "(7,28): error CS0234: The type or namespace name 'Mail' does not exist in the namespace
+		/// 'WebVella.Erp.Plugins' (are you missing an assembly reference?)" complete with line and column
+		/// coordinates and internal namespace names, to any authenticated user, in Production.
+		/// </para>
+		/// <para>
+		/// THE REMEDY mirrors <c>ApiControllerBase.DoBadRequestResponse</c> exactly, which is the pattern this
+		/// codebase already uses for the same weakness on the API surface: the detail is surfaced only when
+		/// <c>ErpSettings.DevelopmentMode</c> is set, and every other environment receives the same generic
+		/// sentence. Rendering is otherwise unchanged - the component still shows its error block, so a
+		/// misconfigured page still LOOKS misconfigured rather than silently blank.
+		/// </para>
+		/// <para>
+		/// NO DIAGNOSTIC CAPABILITY IS LOST. The compiler output is written to the platform log, whose
+		/// screens are administrator gated, where <c>Log.MakeDetailsJson</c> places the message and stack
+		/// trace in the record's <c>details</c> column and leaves <c>message</c> short - the arrangement
+		/// review finding <c>M-OPEN-03</c> established.
+		/// </para>
+		/// <para>
+		/// <c>DoNotNotify</c> IS LOAD-BEARING, not incidental. The default status is
+		/// <see cref="LogNotificationStatus.NotNotified"/>, which makes <c>LogService</c> announce the record
+		/// by e-mail. A single render of that emails page evaluates twelve failing variables, so the default
+		/// would send twelve messages per page load - an amplification a broken component could aim at the
+		/// operator mailbox.
+		/// </para>
+		/// <para>
+		/// ONLY <see cref="CompilerException"/> IS CAUGHT, and that narrowness is deliberate. CS-Script raises
+		/// that type - and only that type - when <c>LoadCode</c> fails to compile; a fault raised by the
+		/// script's own <c>Evaluate</c> body propagates as whatever the author threw. Catching
+		/// <c>Exception</c> here instead was measured and rejected: it also replaced legitimate domain text
+		/// that the platform surfaces on purpose, turning the Mail host's "SmtpService with id = '...' not
+		/// found." into the generic sentence. That is a user-facing change no finding asked for, and the
+		/// engagement's modification boundaries forbid it. Compiler output is machine detail about the
+		/// server's own assemblies; an authored exception message is product text.
+		/// </para>
+		/// </remarks>
+		private object EvaluateGuarded(string csCode, string source)
+		{
+			try
+			{
+				return CodeEvalService.Evaluate(csCode, erpPageModel);
+			}
+			catch (CompilerException ex)
+			{
+				try
+				{
+					new LogService().Create(LogType.Error, source,
+						"Page component code compilation failed", ex, null, LogNotificationStatus.DoNotNotify);
+				}
+				catch
+				{
+					//A logging failure must not replace the fault being reported with a different one, nor
+					//stop the generic message below from reaching the component. The compiler diagnostic is
+					//lost in that case; the disclosure is still closed, which is the property that matters.
+				}
+
+				//InvalidOperationException rather than Exception: a component option whose code cannot compile
+				//in this host IS an invalid-state condition, the type is not one CA2201 reserves, and every
+				//page component's fallthrough `catch (Exception ex)` still receives it - so the rendering path
+				//is byte-for-byte the one a CS-Script CompilerException took before this change.
+				throw new InvalidOperationException(ErpSettings.DevelopmentMode ? ex.Message : GENERIC_EVALUATION_ERROR_MESSAGE);
+			}
+		}
+
 		public object GetPropertyValueByDataSource(string text)
 		{
 			if (string.IsNullOrWhiteSpace(text))
@@ -434,7 +527,8 @@ namespace WebVella.Erp.Web.Models
 						}
 						else
 						{
-							result = CodeEvalService.Evaluate(variable.String, erpPageModel);
+							//THREAT ADDRESSED - CWE-209, see EvaluateGuarded. The raw call used to be here.
+							result = EvaluateGuarded(variable.String, "PageDataModel:CodeVariable");
 						}
 						break;
 					case DataSourceVariableType.HTML:
@@ -469,7 +563,8 @@ namespace WebVella.Erp.Web.Models
 								if (snippet.Name.ToLowerInvariant().EndsWith(".cs"))
 								{
 									string csCode = snippet.GetText();
-									result = CodeEvalService.Evaluate(csCode, erpPageModel);
+									//THREAT ADDRESSED - CWE-209, see EvaluateGuarded. The raw call used to be here.
+									result = EvaluateGuarded(csCode, $"PageDataModel:Snippet:{variable.String}");
 								}
 								else
 								{

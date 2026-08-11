@@ -97,12 +97,29 @@ namespace WebVella.Erp.Plugins.Project.Components
 						userRecord["overdue"] = (int)0;
 						userRecord["today"] = (int)0;
 						userRecord["other"] = (int)0;
-						if (ownerId == null && !userDict.ContainsKey(Guid.Empty)) 
-							userDict[Guid.Empty] = userRecord;
-						else if (!userDict.ContainsKey(ownerId.Value))
-							userDict[ownerId.Value] = userRecord;
+						//The unowned bucket is keyed on Guid.Empty, and that key is now derived ONCE, here, rather
+						//than re-derived at each of the three places below that need it.
+						//THIS REPAIR IS LOAD-BEARING FOR A SECURITY CONTROL, which is why it is made rather than
+						//left as the pre-existing defect it is. The previous form read
+						//"if (ownerId == null && !userDict.ContainsKey(Guid.Empty)) ... else if
+						//(!userDict.ContainsKey(ownerId.Value))", so on the SECOND task with no owner the first
+						//test was false - the empty bucket already existed - and control fell through to
+						//ownerId.Value on a null Nullable<Guid>, throwing "Nullable object must have a value."
+						//The catch below turned that into an error card in place of the whole widget, so the
+						//H-06 encoding fix recorded immediately underneath - which publishes the avatar path and
+						//the owner name as DATA so the views encode them - NEVER EXECUTED for any project holding
+						//two or more unowned tasks. A stored cross-site-scripting control that cannot be reached
+						//is not a control, so leaving the crash in place would have left the remediation
+						//unverifiable in exactly the data state most installations are in.
+						//Behaviour is otherwise unchanged, case by case: an unowned task with no bucket yet still
+						//creates it; an owned task with no bucket yet still creates it; an owned task whose bucket
+						//exists still reuses it. Only the case that used to throw now accumulates, which is what
+						//the original "&& !ContainsKey" test shows was intended all along.
+						var ownerKey = ownerId ?? Guid.Empty;
+						if (!userDict.ContainsKey(ownerKey))
+							userDict[ownerKey] = userRecord;
 
-						var currentRecord = userDict[ownerId != null ? ownerId.Value : Guid.Empty];
+						var currentRecord = userDict[ownerKey];
 
 						if (endTime != null)
 						{
@@ -116,7 +133,7 @@ namespace WebVella.Erp.Plugins.Project.Components
 						else {
 							currentRecord["other"] = ((int)currentRecord["other"]) + 1;
 						}
-						userDict[ownerId != null ? ownerId.Value : Guid.Empty] = currentRecord;
+						userDict[ownerKey] = currentRecord;
 					}
 
 					var records = new List<EntityRecord>();
@@ -128,7 +145,16 @@ namespace WebVella.Erp.Plugins.Project.Components
 							var row = new EntityRecord();
 							var imagePath = "/_content/WebVella.Erp.Web/assets/avatar.png";
 
-							row["user"] = $"<img src=\"{imagePath}\" class=\"rounded-circle\" width=\"24\"> No owner";
+							//SECURITY - H-06 (CWE-79, OWASP A03: stored cross-site scripting): this cell used to
+							//be composed here as an HTML string and then emitted through Html.Raw by both
+							//Design.cshtml and Display.cshtml, which made every value interpolated into it
+							//executable in the browser. The avatar and the owner name are now published as
+							//separate DATA fields and the markup is authored in the views, where Razor encodes
+							//them automatically. The path in this branch is a fixed literal, but the field is
+							//still published so that both branches hand the views the same record shape -
+							//EntityRecord throws KeyNotFoundException for a field a row does not define.
+							row["user_image"] = imagePath;
+							row["user_name"] = "No owner";
 							row["overdue"] = statRecord["overdue"];
 							row["today"] = statRecord["today"];
 							row["other"] = statRecord["other"];
@@ -143,7 +169,13 @@ namespace WebVella.Erp.Plugins.Project.Components
 							if (user["image"] != null && (string)user["image"] != "")
 								imagePath = "/fs" + (string)user["image"];
 
-							row["user"] = $"<img src=\"{imagePath}\" class=\"rounded-circle\" width=\"24\"> {(string)user["username"]}";
+							//SECURITY - H-06 (CWE-79, OWASP A03: stored cross-site scripting): user["image"] and
+							//user["username"] are database text that any user with write access to the user
+							//record controls. Publishing them as data instead of as pre-built markup moves the
+							//encoding into the view, where Razor escapes both the src attribute value and the
+							//name text, so neither can close the attribute or open a new element.
+							row["user_image"] = imagePath;
+							row["user_name"] = (string)user["username"];
 							row["overdue"] = statRecord["overdue"];
 							row["today"] = statRecord["today"];
 							row["other"] = statRecord["other"];

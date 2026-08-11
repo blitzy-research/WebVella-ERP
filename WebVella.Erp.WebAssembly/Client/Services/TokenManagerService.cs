@@ -79,7 +79,13 @@ public class TokenManagerService : ITokenManagerService
         if (expirationDate < DateTime.UtcNow)
             return string.Empty;
 
-        AuthResponse authResponse = await _httpClient.PostAndReadAsJsonAsync<JwtToken, AuthResponse>("api/v3/en_US/auth/jwt/token/refresh", tokenModel);
+        //Review finding C-01. This URL is resolved against HttpClient.BaseAddress, which already ends in
+        //"api/", so the literal "api/" that used to start this string produced "/api/api/v3/en_US/auth/jwt/
+        //token/refresh" - a route the server does not serve. The refresh therefore always answered 404, the
+        //token was removed below as if the server had rejected it, and the user was signed out the moment
+        //their token entered its refresh window. The route root now comes from the one shared constant that
+        //AuthenticationService also uses, so the two cannot diverge again.
+        AuthResponse authResponse = await _httpClient.PostAndReadAsJsonAsync<JwtToken, AuthResponse>($"{WasmConstants.ApiAuthRoot}token/refresh", tokenModel);
         var token = authResponse.Object?.ToString();
         if (string.IsNullOrWhiteSpace(token))
         {

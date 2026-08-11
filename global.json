@@ -1,5 +1,13 @@
 {
+  // Security (finding L-07): the SDK is pinned EXACTLY, because both the NuGetAudit
+  // defaults and the analyzer rule set are SDK-version dependent - a patch release can
+  // change either, so anything looser leaves the dependency and SAST gates' verdict
+  // dependent on whichever SDK a machine happens to have. "disable" is the pin: the
+  // build uses 10.0.302 or it fails. Raising it is therefore a reviewed commit that also
+  // re-measures the analyzer baselines the security workflow enforces.
+  // See docs/security/secure-configuration.md.
   "sdk": {
-    //"version": "7.0.103"
+    "version": "10.0.302",
+    "rollForward": "disable"
   }
 }

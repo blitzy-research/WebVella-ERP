@@ -9,6 +9,7 @@
 @{
 	var options = (PcProjectWidgetTasksPriorityChart.PcProjectWidgetTasksPriorityChartOptions)ViewBag.Options;
 	var datasets = (List<WvChartDataset>)ViewBag.Datasets;
+	var chartLabels = (List<string>)ViewBag.ChartLabels;
 	var lowPriority = (int)ViewBag.LowPriority;
 	var normalPriority = (int)ViewBag.NormalPriority;
 	var highPriority = (int)ViewBag.HighPriority;
@@ -19,7 +20,13 @@
 }
 <wv-row flex-vertical-alignment="Center" class="w-100 h-100" no-gutters="true">
 	<wv-column class="flex-grow-0">
-		<wv-chart type="Doughnut" datasets="@datasets" width="100px" height="100px"></wv-chart>		
+		<wv-chart type="Doughnut" datasets="@datasets" labels="@chartLabels" width="100px" height="100px"></wv-chart>
+		@*P6-03: the wv-chart tag helper writes tooltips:{enabled:false} into its Chart.js
+		  configuration and exposes no attribute to change it, so this file re-enables them from a
+		  beforeInit plugin. It must load AFTER wv-chart, which emits Chart.bundle.min.js and then
+		  registers the constructor in a jQuery ready handler - by this point Chart exists and no
+		  chart has been built yet. An external file, never inline, so script-src 'self' still holds.*@
+		<script src="/_content/WebVella.Erp.Plugins.Project/js/wv-chart-tooltips/wv-chart-tooltips.js"></script>
 	</wv-column>
 	<wv-column class="flex-grow-1 pl-4">
 		<wv-row class="mb-2">

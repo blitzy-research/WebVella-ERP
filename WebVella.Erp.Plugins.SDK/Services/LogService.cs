@@ -13,41 +13,48 @@ namespace WebVella.Erp.Plugins.SDK.Services
 {
     public class LogService
     {
+        /// <summary>
+        /// How long a diagnostic or job record is kept by the scheduled retention job.
+        /// </summary>
+        /// <remarks>
+        /// Thirty days is the window this code always claimed to implement and is the figure the security
+        /// documentation states, so it is preserved exactly; only the SELECTION of what falls outside it is
+        /// corrected. Named rather than repeated so the two statements below can never drift apart.
+        /// </remarks>
+        private const int RetentionDays = 30;
+
         public void ClearJobAndErrorLogs()
         {
-            //clear system logs older than 30 days and if there is more than 1000 records
-            string logSql = "SELECT id, created_on FROM system_log ORDER BY created_on ASC";
-            var logTable = ExecuteQuerySqlCommand(logSql);
-            var logRows = logTable.Rows;
-            DateTime logTreshold = DateTime.UtcNow.AddDays(-30);
-            if (logRows.Count > 1000 && (DateTime)logRows[0]["created_on"] < logTreshold)
-            {
-                var logsToDelete = logRows.OfType<DataRow>().OrderByDescending(r => r["created_on"]).Select(r => (Guid)r["id"]).Skip(1000).ToList();
-                foreach (var logId in logsToDelete)
-                {
-                    string deleteSql = $"DELETE FROM system_log WHERE id = @id";
-                    List<NpgsqlParameter> parameters = new List<NpgsqlParameter>();
-                    parameters.Add(new NpgsqlParameter("id", logId) { NpgsqlDbType = NpgsqlDbType.Uuid });
-                    ExecuteNonQuerySqlCommand(deleteSql, parameters);
-                }
-            }
+            //THREAT ADDRESSED - review finding L-OPEN-01, CWE-359 (exposure of private personal
+            //information to an unauthorized actor), OWASP A09:2021. THIS IS NOW AGE-BASED, and the count
+            //test that used to gate it is gone deliberately.
+            //system_log is where the authentication audit trail lands, so every row can carry a submitted
+            //e-mail address and a source IP address. The previous rule was "keep the newest 1000 rows, and
+            //only consider deleting anything at all when there are more than 1000 rows AND the oldest is
+            //over thirty days old", which failed in BOTH directions and neither of them was the documented
+            //behaviour:
+            //  RETENTION FAILURE - an installation whose log never exceeds a thousand rows kept personal
+            //  data FOREVER. Years-old e-mail addresses and IP addresses were retained by a rule that
+            //  claimed a thirty-day window, which is precisely the indefinite retention CWE-359 describes
+            //  and what a data-protection commitment cannot survive.
+            //  EVIDENCE DESTRUCTION - the mirror image. One row older than thirty days armed the rule, and
+            //  it then deleted everything beyond the newest thousand REGARDLESS OF AGE. A burst of activity
+            //  - exactly what an attack looks like - could therefore delete audit records minutes old,
+            //  while keeping the thousand rows an attacker generated last. A retention rule must never be
+            //  able to remove a record that is still inside its own window.
+            //Age is now the ONLY criterion, evaluated against the database clock rather than the
+            //application's, so a host with a skewed clock cannot widen or narrow the window. Both
+            //statements are set-based: the previous code read every id into memory and issued one DELETE
+            //per row, so a large backlog meant an unbounded id list and one round trip per record.
+            List<NpgsqlParameter> logParameters = new List<NpgsqlParameter>();
+            logParameters.Add(new NpgsqlParameter("retention_days", RetentionDays) { NpgsqlDbType = NpgsqlDbType.Integer });
+            ExecuteNonQuerySqlCommand("DELETE FROM system_log WHERE created_on < now() - make_interval(days => @retention_days)", logParameters);
 
-            //clear Canceled, Failed, Finished and Aborted jobs older than 30 days and if there is more than 1000 records
-            string sql = "SELECT id, created_on FROM jobs WHERE status = 3 OR status = 4 OR status = 5 OR status = 6 ORDER BY created_on ASC";
-            var jobTable = ExecuteQuerySqlCommand(sql);
-            var jobRows = jobTable.Rows;
-            DateTime jobTreshold = DateTime.UtcNow.AddDays(-30);
-            if (jobRows.Count > 1000 && (DateTime)jobRows[0]["created_on"] < jobTreshold)
-            {
-                var jobsToDelete = jobRows.OfType<DataRow>().OrderByDescending(r => r["created_on"]).Select(r => (Guid)r["id"]).Skip(1000).ToList();
-                foreach (var jobId in jobsToDelete)
-                {
-                    string deleteSql = $"DELETE FROM jobs WHERE id = @id";
-                    List<NpgsqlParameter> parameters = new List<NpgsqlParameter>();
-                    parameters.Add(new NpgsqlParameter("id", jobId) { NpgsqlDbType = NpgsqlDbType.Uuid });
-                    ExecuteNonQuerySqlCommand(deleteSql, parameters);
-                }
-            }
+            //Canceled, Failed, Finished and Aborted jobs only: a Pending or Running job is never removed by
+            //age, exactly as before.
+            List<NpgsqlParameter> jobParameters = new List<NpgsqlParameter>();
+            jobParameters.Add(new NpgsqlParameter("retention_days", RetentionDays) { NpgsqlDbType = NpgsqlDbType.Integer });
+            ExecuteNonQuerySqlCommand("DELETE FROM jobs WHERE (status = 3 OR status = 4 OR status = 5 OR status = 6) AND created_on < now() - make_interval(days => @retention_days)", jobParameters);
         }
 
         public void ClearJobLogs()

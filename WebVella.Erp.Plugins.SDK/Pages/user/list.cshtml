@@ -1,6 +1,11 @@
 ﻿@page "/sdk/access/user/l/list"
 
 @model WebVella.Erp.Plugins.SDK.Pages.User.ListModel
+@*P6-17: ToErrorList is an extension on ValidationException from WebVella.Erp.Web.Utils, which the
+  shared Pages/_ViewImports.cshtml does not import. Added per-view, exactly as the platform's own
+  guarded-delete page at Pages/entity/data.cshtml does, rather than widening the shared imports for
+  every page in this plugin.*@
+@using WebVella.Erp.Web.Utils;
 @{
 	Layout = "~/Pages/_AppMaster.cshtml";
 	ViewData["Title"] = "Users";
@@ -12,19 +17,39 @@
 	</wv-page-header-actions>
 </wv-page-header>
 
+@*P6-17: refusals from the delete handler - an unauthorized principal, the system account, or an
+  operator deleting themselves - report here. Without this element the handler's messages would be set
+  and never shown, and a declined deletion would look like one that silently did nothing.*@
+<wv-validation errors="@Model.Validation.ToErrorList()" message="@Model.Validation.Message"></wv-validation>
+
 	<wv-grid bordered="true" hover="true" columns="Model.Columns" page="Model.Pager" total-count="Model.Records.TotalCount" page-size="Model.PagerSize">
 		@foreach (var record in Model.Records)
 		{
+			var recordId = (Guid)record["id"];
+			var isSystemUser = (string)record["username"] == "system";
 			<wv-grid-row>
-				<wv-grid-column>
-					@if ((string)record["username"] == "system")
-					{
-					<wv-button type="Button" is-disabled="true" color="White" size="Small" icon-class="fa fa-lock fa-fw"></wv-button>
-					}
-					else
-					{
-					<wv-button type="LinkAsButton" href="@($"/sdk/access/user/m/{(Guid)record["id"]}")" color="White" size="Small" icon-class="fa fa-pencil-alt fa-fw"></wv-button>
-					}
+				<wv-grid-column text-nowrap="true">
+					@*P6-17: the edit and delete actions share one form so the row keeps a single action
+					  cell. The delete posts the record id as a query key, which is the shape the
+					  platform's own record grid uses at Pages/entity/data.cshtml - reusing it keeps one
+					  handler contract in the SDK rather than two.*@
+					<wv-form label-mode="Stacked" mode="Form" name="DeleteUser" validation-errors="Model.Validation.ToErrorList()" id="DeleteUser" action="/sdk/access/user/l/list?recordId=@recordId" method="Post">
+						@if (isSystemUser)
+						{
+						<wv-button type="Button" is-disabled="true" color="White" size="Small" icon-class="fa fa-lock fa-fw"></wv-button>
+						}
+						else
+						{
+						<wv-button type="LinkAsButton" href="@($"/sdk/access/user/m/{recordId}")" color="White" size="Small" icon-class="fa fa-pencil-alt fa-fw"></wv-button>
+						}
+						@*Withheld for the system account and for the operator's own row. Both are refused
+						  server-side as well; this only keeps the interface from offering an action it
+						  knows will be declined.*@
+						@if (Model.DeleteAccess && !isSystemUser && recordId != Model.CurrentUserId)
+						{
+						<wv-button type="Submit" color="White" size="Small" icon-class="icon fa fa-trash fa-fw go-red" onclick="return confirm('Delete this user? This cannot be undone.')"></wv-button>
+						}
+					</wv-form>
 				</wv-grid-column>
 				<wv-grid-column>@record["username"]</wv-grid-column>
 				<wv-grid-column>@record["email"]</wv-grid-column>

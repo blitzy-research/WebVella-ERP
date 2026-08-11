@@ -113,19 +113,29 @@ namespace WebVella.Erp.Plugins.Project.Components
 					var records = new List<EntityRecord>(); //id and other fields
 					#region << Init Rows >>
 					{
+						//SECURITY - H-06 (CWE-79, OWASP A03: stored cross-site scripting): "label" used to be a
+						//union of a plain caption on these three summary rows and an HTML avatar string on the
+						//per-user rows below, and Display.cshtml/Design.cshtml emitted it through Html.Raw for
+						//every row alike. The avatar is now carried separately in "label_image" so that "label"
+						//is always plain text the views can auto-encode. The summary rows have no avatar, but
+						//they must still define the field: EntityRecord derives from Expando, whose indexer
+						//throws KeyNotFoundException for a field the row never set.
 						var billableRow = new EntityRecord();
 						billableRow["id"] = "billable";
 						billableRow["label"] = "Billable";
+						billableRow["label_image"] = null;
 						billableRow["total"] = (decimal)0;
 						records.Add(billableRow);
 						var nonbillableRow = new EntityRecord();
 						nonbillableRow["id"] = "nonbillable";
 						nonbillableRow["label"] = "Non-Billable";
+						nonbillableRow["label_image"] = null;
 						nonbillableRow["total"] = (decimal)0;
 						records.Add(nonbillableRow);
 						var totalRow = new EntityRecord();
 						totalRow["id"] = "total";
 						totalRow["label"] = "Total";
+						totalRow["label_image"] = null;
 						totalRow["total"] = (decimal)0;
 						records.Add(totalRow);
 					}
@@ -179,7 +189,14 @@ namespace WebVella.Erp.Plugins.Project.Components
 							var userTimelogsGroupByDate = userTimelogs.GroupBy(x => (((DateTime?)x["logged_on"]).ConvertToAppDate() ?? DateTime.Now).ToString("dd-MM")).ToList();
 							var userRow = new EntityRecord();
 							userRow["id"] = (string)user["username"];
-							userRow["label"] = $"<img src=\"{imagePath}\" class=\"rounded-circle\" width=\"24\"> {(string)user["username"]}";
+							//SECURITY - H-06 (CWE-79, OWASP A03: stored cross-site scripting): user["image"] and
+							//user["username"] are database text, and this row was previously an HTML string that
+							//the views emitted through Html.Raw, so both values executed in the browser. They are
+							//now published as data - a plain-text label and a separate image path - and the views
+							//author the avatar markup, which lets Razor encode the name text and the src
+							//attribute value independently and in the correct context for each.
+							userRow["label"] = (string)user["username"];
+							userRow["label_image"] = imagePath;
 							userRow["total"] = (decimal)0;
 
 							for (int i = 0; i < 7; i++)

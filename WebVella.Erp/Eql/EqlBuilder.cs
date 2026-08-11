@@ -107,7 +107,13 @@ namespace WebVella.Erp.Eql
 			}
 			catch (Exception ex)
 			{
-				result.Errors.Add(new EqlError { Message = ex.Message });
+				// THREAT ADDRESSED - finding F26, CWE-209, OWASP A05. Reproduced at runtime: POST
+				// api/v3/en_US/eql with a malformed statement answered an authenticated caller with the raw
+				// text of an unexpected .NET exception. A genuine EQL syntax fault travels the EqlException
+				// clause above and is UNAFFECTED, so the authoring feedback developers rely on is preserved;
+				// only the unexpected-fault path, which carries internal detail and nothing a caller can act
+				// on, collapses to the platform's own generic wording outside Development.
+				result.Errors.Add(new EqlError { Message = ErpSettings.DevelopmentMode ? ex.Message : "An internal error occurred!" });
 			}
 
 			return result;

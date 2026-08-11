@@ -4,6 +4,8 @@ using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+//SECURITY - CWE-79: supplies HtmlEncoder for the reflected sinks in GenerateListPageDescription.
+using System.Text.Encodings.Web;
 using System.Text.RegularExpressions;
 using System.Web;
 using WebVella.Erp.Api;
@@ -94,6 +96,69 @@ namespace WebVella.Erp.Web.Utils
 			}
 		}
 
+		/// <summary>
+		/// SECURITY (CWE-79 reflected XSS / CWE-601 open redirect / OWASP A03:2021 Injection):
+		/// validates an attacker-influenceable return URL against a local-URL allow-list and returns
+		/// it only when it is safe both to render into a link and to hand to a redirect.
+		/// <para>
+		/// The threat this addresses is NOT delimiter breakout - HTML encoding already handles that.
+		/// It is the URL context itself: an entire value such as "javascript:alert(1)" survives HTML
+		/// encoding completely intact, so it renders as a working href and executes in the
+		/// application's own authenticated origin the moment the link is clicked. The same value
+		/// handed to a redirect, and any absolute or protocol-relative value such as
+		/// "https://evil.example" or "//evil.example", additionally makes the platform a redirector
+		/// to an attacker-controlled site. Neither is reachable through encoding; only validation
+		/// closes them, which is why this check exists and why it lives in one place.
+		/// </para>
+		/// <para>
+		/// The allow-list is deliberately identical to the framework's own
+		/// <c>Microsoft.AspNetCore.Mvc.Routing.UrlHelperBase.IsLocalUrl</c> so that its behaviour is
+		/// auditable against a recognised reference implementation rather than being bespoke:
+		/// "/" and "/path" are accepted, "~/path" is accepted, and "//host", "/\host", any value
+		/// carrying a scheme and any value not rooted at "/" are rejected. Query strings and
+		/// fragments are untouched, so "/a/b?x=1&amp;y=2#frag" is preserved exactly.
+		/// </para>
+		/// </summary>
+		/// <param name="returnUrl">The candidate return URL, already URL-decoded.</param>
+		/// <param name="fallbackUrl">
+		/// The value to return when the candidate is rejected. Defaults to an empty string, which is
+		/// what every caller in this platform already treats as "no return URL supplied" and answers
+		/// with its own server-authored local default - so a rejected value degrades into existing
+		/// behaviour instead of into a broken link.
+		/// </param>
+		/// <returns>The candidate when it is a local URL; otherwise <paramref name="fallbackUrl"/>.</returns>
+		public static string GetSafeReturnUrl(string returnUrl, string fallbackUrl = "")
+		{
+			if (String.IsNullOrWhiteSpace(returnUrl))
+			{
+				return fallbackUrl;
+			}
+
+			//Surrounding whitespace is discarded because browsers ignore it when resolving a URL,
+			//so " /valid/path" is legitimate and must keep working.
+			var candidate = returnUrl.Trim();
+
+			//Embedded control characters are rejected outright rather than stripped. Browsers ignore
+			//TAB, CR, LF and NUL inside a URL, which makes them a way to smuggle an active scheme
+			//past a naive prefix test (for example "java\nscript:alert(1)"); and a legitimate return
+			//URL produced anywhere in this platform never contains one.
+			foreach (var character in candidate)
+			{
+				if (Char.IsControl(character))
+				{
+					return fallbackUrl;
+				}
+			}
+
+			//Accept "/" and "/path", but not "//host" (protocol-relative) or "/\host" (which several
+			//browsers normalise to a protocol-relative URL). Also accept the framework's "~/path"
+			//application-root form.
+			var isLocalUrl = (candidate[0] == '/' && (candidate.Length == 1 || (candidate[1] != '/' && candidate[1] != '\\')))
+				|| (candidate.Length > 1 && candidate[0] == '~' && candidate[1] == '/');
+
+			return isLocalUrl ? candidate : fallbackUrl;
+		}
+
 		public static List<Filter> GetPageFiltersFromQuery(HttpContext httpContext)
 		{
 			var result = new List<Filter>();
@@ -169,7 +234,17 @@ namespace WebVella.Erp.Web.Utils
 			if (httpContext.Request.Query.ContainsKey(prefix + "sortBy"))
 			{
 				var fieldDataName = httpContext.Request.Query[prefix + "sortBy"];
-				sortHtml += fieldDataName;
+				// SECURITY (CWE-79, OWASP A03:2021 - REFLECTED cross-site scripting): the string this method
+				// returns is markup, and every caller hands it to the page header's "description" attribute,
+				// which renders it raw because the "<strong>" and "<ul>" wrappers below are the feature. That
+				// makes the two values interpolated into it - this sort field name and the filter names further
+				// down - reflected sinks: both come straight off the query string, so a request such as
+				// "?sortBy=name<script>...</script>" placed a working script into an authenticated page.
+				// Encoding is applied to the interpolated value only, never to the surrounding markup, so a
+				// legitimate field name renders byte-for-byte as it did before. Doing it here rather than at the
+				// sink is what keeps the two apart: by the time the composed string reaches the sink, the
+				// attacker's characters and the product's own tags are indistinguishable.
+				sortHtml += HtmlEncoder.Default.Encode(fieldDataName);
 
 				descriptionList.Add(sortHtml);
 			}
@@ -189,7 +264,11 @@ namespace WebVella.Erp.Web.Utils
 			var filterHtml = "";
 			if (filters.Count > 0)
 			{
-				filterHtml = "<strong>filtered by</strong> " + String.Join(',', filters.Select(x => x.Name).ToList());
+				//SECURITY - CWE-79 reflected cross-site scripting: a filter name is a regular-expression capture
+				//taken out of the query key itself (GetPageFiltersFromQuery above), so it is caller-supplied just
+				//as the sort field name is. Encoded per name, leaving the "<strong>" wrapper and the comma
+				//separator as markup. See the fuller comment on the sort field name above.
+				filterHtml = "<strong>filtered by</strong> " + String.Join(',', filters.Select(x => HtmlEncoder.Default.Encode(x.Name)).ToList());
 				descriptionList.Add(filterHtml);
 			}
 			//if (String.IsNullOrWhiteSpace(filterHtml))
@@ -2163,6 +2242,31 @@ namespace WebVella.Erp.Web.Utils
 				if(scriptTag.IsNomodule)
 				{
 					var attribute = $"nomodule";
+					resultStringList.Add(attribute);
+				}
+				#endregion
+
+				#region << defer / async >>
+				//PERFORMANCE - completes a contract this method already advertised but never honoured.
+				//ScriptTagInclude has declared Defer and Async since it was written, yet neither attribute was
+				//ever emitted, so every external script this platform includes was unavoidably synchronous and
+				//render-blocking. That is what forced the CWE-754 upload-refusal feedback to sit inside the
+				//in-head site.js and put its bytes on the critical path of every page of every host; see
+				//wwwroot/js/upload-rejection-feedback.js for the finding it caused. Only the two attributes the
+				//model already declares are emitted, and only when a caller opts in, so every existing include -
+				//all of which leave both flags false - renders byte-identically to before.
+				//Both are ignored by browsers on inline scripts, which is why this sits in the external-resource
+				//branch only. defer is emitted first when both are set, matching the HTML specification's rule
+				//that async wins for a classic script and defer is its no-async fallback.
+				if(scriptTag.Defer)
+				{
+					var attribute = $"defer";
+					resultStringList.Add(attribute);
+				}
+
+				if(scriptTag.Async)
+				{
+					var attribute = $"async";
 					resultStringList.Add(attribute);
 				}
 				#endregion

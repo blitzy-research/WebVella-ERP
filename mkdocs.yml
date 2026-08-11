@@ -1,6 +1,41 @@
 site_name: 'blitzy-WebVella-ERP'
 nav:
   - Home: index.md
+  # Navigation is what makes the security set discoverable in the published site, so these entries must accompany any page added under docs/security/.
+  - Security:
+    - Audit Report: security/security-audit-report.md
+    - Remediation Log: security/remediation-log.md
+    - Risk Register: security/risk-register.md
+    - Secure Configuration: security/secure-configuration.md
+    - Credential Migration: security/credential-migration.md
 plugins:
-  - techdocs-core
+  # DEFECT ADDRESSED - QA finding DOC-03, site search was dead on every page. TWO changes are
+  # needed, because the defect has two halves and fixing only the first leaves search silently
+  # absent instead of noisily broken.
+  #
+  # HALF ONE - the crashing script. techdocs-core installs a search plugin on the author's
+  # behalf and chooses MkDocs' BUILT-IN search unless use_material_search is set. That built-in
+  # plugin appends search/main.js to extra_javascript, and that script dereferences a global
+  # `base_url` which the material theme techdocs-core itself selects never defines - so every
+  # page load raised an uncaught ReferenceError and the search box returned nothing.
+  # use_material_search: true swaps in mkdocs-material's own search plugin, which ships the
+  # matching client bundle and injects no stray script.
+  #
+  # HALF TWO - the plugin KEY the theme gates on. techdocs-core registers whichever plugin it
+  # chose as config["plugins"]["search"], but mkdocs-material's partials/header.html emits the
+  # magnifier button and includes partials/search.html only when "material/search" is in
+  # config.plugins. With the flag alone the index and the search worker were both built
+  # correctly - driving that worker directly returned 4, 10 and 4 result groups for "PBKDF2",
+  # "Content-Security-Policy" and "600,000" - yet `md-search` appeared in 0 of 133 built pages,
+  # so there was no input to type into and nothing to click. Declaring material/search here
+  # supplies the key the template tests. It is declared AFTER techdocs-core deliberately:
+  # mkdocs-material's search plugin resolves its language and separator defaults out of the
+  # THEME's translations during on_config, and techdocs-core is what sets the theme to material,
+  # so running it first would have nothing to read.
+  #
+  # Neither line adds a dependency: use_material_search is techdocs-core's own option, and
+  # mkdocs-material is already the theme techdocs-core selects.
+  - techdocs-core:
+      use_material_search: true
+  - material/search
   - mermaid2

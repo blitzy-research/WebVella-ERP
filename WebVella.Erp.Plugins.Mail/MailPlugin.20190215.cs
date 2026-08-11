@@ -597,17 +597,33 @@ namespace WebVella.Erp.Plugins.Mail
 					entity.RecordPermissions.CanRead = new List<Guid>();
 					entity.RecordPermissions.CanUpdate = new List<Guid>();
 					entity.RecordPermissions.CanDelete = new List<Guid>();
+					//SECURITY - finding F31 (High), CWE-200 exposure of sensitive information to an unauthorized
+					//actor, CWE-522 insufficiently protected credentials, CWE-732 incorrect permission assignment,
+					//OWASP A01:2021 + A02:2021.
+					//THREAT ADDRESSED: this entity stores the SMTP relay credential, and every verb below used to
+					//grant the Regular role as well as Administrator. Because entity record permissions are enforced
+					//in the DATA layer - Api/RecordManager, Eql/EqlCommand, Api/ImportExportManager - any
+					//authenticated non-administrator could read the relay username and password through the record
+					//API, the query language or the AllSmtpSevices data source, and could also UPDATE the server
+					//address: redirect the relay to an attacker-controlled host with a valid certificate and every
+					//subsequent outbound message and its credentials go there instead.
+					//THE FIX IS REMOVAL, not addition: the Regular grants are gone and only Administrator remains, so
+					//this is deny-by-default for every other role, enforced below the presentation layer as the
+					//mandated Authorization Enforcement standard requires.
+					//NOTHING LEGITIMATE LOSES ACCESS, which was verified rather than assumed. The mail application's
+					//own sitemap access list is already Administrator-only - set in MailPlugin.20190419 and
+					//reasserted by MailPlugin.20200610 - and Web/Models/BaseErpPageModel enforces that list
+					//deny-by-default, so every mail screen, including the test-send and send-now page hooks, was
+					//already unreachable for a Regular user. The background queue processor runs in a system scope,
+					//whose principal holds the Administrator role. Existing installations are migrated by
+					//Patch20260802.
 					//Create
-					entity.RecordPermissions.CanCreate.Add(new Guid("f16ec6db-626d-4c27-8de0-3e7ce542c55f"));
 					entity.RecordPermissions.CanCreate.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 					//READ
-					entity.RecordPermissions.CanRead.Add(new Guid("f16ec6db-626d-4c27-8de0-3e7ce542c55f"));
 					entity.RecordPermissions.CanRead.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 					//UPDATE
-					entity.RecordPermissions.CanUpdate.Add(new Guid("f16ec6db-626d-4c27-8de0-3e7ce542c55f"));
 					entity.RecordPermissions.CanUpdate.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 					//DELETE
-					entity.RecordPermissions.CanDelete.Add(new Guid("f16ec6db-626d-4c27-8de0-3e7ce542c55f"));
 					entity.RecordPermissions.CanDelete.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 					{
 						var response = entMan.CreateEntity(entity, systemFieldIdDictionary);
@@ -848,12 +864,28 @@ namespace WebVella.Erp.Plugins.Mail
 				textboxField.System = true;
 				textboxField.DefaultValue = null;
 				textboxField.MaxLength = null;
-				textboxField.EnableSecurity = false;
+				//SECURITY - finding F31 (High), CWE-200, CWE-522, CWE-732, OWASP A01:2021 + A02:2021.
+				//THREAT ADDRESSED: the field that holds the SMTP relay credential was provisioned with field
+				//security OFF and no permissions at all, so nothing distinguished it from the server address or
+				//the port. Defence in depth behind the entity-level revocation above: that stops a
+				//non-administrator reaching these records at all, and this stops the credential being rendered
+				//into an editing surface for anyone who does reach them by another route.
+				//BOTH LINES ARE REQUIRED and the first is the one easily lost in a later edit:
+				//Web/Components/PcFieldBase gates the whole field-permission evaluation behind EnableSecurity,
+				//which defaults to false, so permissions without it are completely inert - while EnableSecurity
+				//without permissions denies everyone. Administrator only; no Regular and no Guest entry belongs
+				//in either list. This mirrors what ERPService already does for the user entity's password field.
+				//NOT CONVERTED TO A PASSWORD FIELD, deliberately: that is a field-type change, and the password
+				//field type routes writes through the one-way credential hash, which would destroy a secret the
+				//SMTP client must be able to present in plaintext and break all mail delivery.
+				textboxField.EnableSecurity = true;
 				textboxField.Permissions = new FieldPermissions();
 				textboxField.Permissions.CanRead = new List<Guid>();
 				textboxField.Permissions.CanUpdate = new List<Guid>();
 				//READ
+				textboxField.Permissions.CanRead.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 				//UPDATE
+				textboxField.Permissions.CanUpdate.Add(new Guid("bdc56420-caf0-4030-8a0e-d264938e0cda"));
 				{
 					var response = entMan.CreateField(new Guid("17698b9f-e533-4f8d-a651-a00f7de2989e"), textboxField, false);
 					if (!response.Success)
@@ -908,14 +940,34 @@ namespace WebVella.Erp.Plugins.Mail
 				dropdownField.Searchable = false;
 				dropdownField.Auditable = false;
 				dropdownField.System = true;
-				dropdownField.DefaultValue = "1";
+				//SECURITY - review finding H-OPEN-03 (High), CWE-319 cleartext transmission of sensitive
+				//information, CWE-311 missing encryption of sensitive data, OWASP A02:2021.
+				//THREAT ADDRESSED: this default was "1" - Auto - which MailKit resolves to StartTlsWhenAvailable on
+				//every port except 465, so a freshly provisioned service sent the relay credential and every message
+				//in cleartext against any relay that did not advertise STARTTLS. An active man-in-the-middle
+				//produces exactly that condition by stripping the advertisement from the EHLO response, and on an
+				//unencrypted session the certificate validation restored by H-11 never runs at all. "3" is StartTls,
+				//which MailKit REQUIRES the relay to advertise and fails when it does not.
+				//THE PORT DEFAULT ABOVE IS LEFT AT 25 deliberately: this finding is about the transport mode, and an
+				//internal MTA on 25 accepts STARTTLS. Changing a working default port is not remediation.
+				dropdownField.DefaultValue = "3";
+				//SECURITY - review finding H-OPEN-03. THE THREE CLEARTEXT-CAPABLE MODES ARE RETAINED AS VALUES AND
+				//RELABELLED, rather than deleted from the list, and the reason is that the permitted set is
+				//POSTURE-DEPENDENT while an option list is not. SmtpService.ResolveConnectionSecurity honours the
+				//stored mode in development posture so a plaintext local mail catcher stays usable, and the
+				//smtp_service validation hooks in Services/SmtpInternalService reject these three outside it.
+				//Deleting the values would break that development path through the UI and would strand every
+				//already-stored value outside its own field definition, where an administrator editing an unrelated
+				//column would be blocked by a value they never chose. The labels are what stop this dropdown
+				//silently advertising a mode production refuses - which is the half of the finding a validation
+				//message alone cannot answer, because the administrator reads the label first.
 				dropdownField.Options = new List<SelectOption>
 	{
-		new SelectOption() { Label = "None", Value = "0", IconClass = "", Color = ""},
-		new SelectOption() { Label = "Auto", Value = "1", IconClass = "", Color = ""},
+		new SelectOption() { Label = "None (cleartext - development posture only)", Value = "0", IconClass = "", Color = ""},
+		new SelectOption() { Label = "Auto (raised to StartTls outside development posture)", Value = "1", IconClass = "", Color = ""},
 		new SelectOption() { Label = "SslOnConnect", Value = "2", IconClass = "", Color = ""},
 		new SelectOption() { Label = "StartTls", Value = "3", IconClass = "", Color = ""},
-		new SelectOption() { Label = "StartTlsWhenAvailable", Value = "4", IconClass = "", Color = ""}
+		new SelectOption() { Label = "StartTlsWhenAvailable (raised to StartTls outside development posture)", Value = "4", IconClass = "", Color = ""}
 	};
 				dropdownField.EnableSecurity = false;
 				dropdownField.Permissions = new FieldPermissions();
@@ -4787,6 +4839,29 @@ namespace WebVella.Erp.Plugins.Mail
 
 			#region << ***Create page body node*** Page name: all_emails  id: 555c9704-efe8-4e15-832f-9f49ef553e16 >>
 			{
+				//SECURITY - review finding INT-14 (Major), CWE-79 improper neutralisation of input during web
+				//page generation (STORED cross-site scripting), CWE-116 improper encoding, OWASP A03:2021
+				//Injection.
+				//THREAT ADDRESSED: the code variable in the options below interpolates the email row's
+				//`server_error` column into a SINGLE-QUOTED HTML title attribute and returns the result as raw
+				//markup, because PcFieldHtml renders its value as HTML by design. That column holds
+				//`ex.Message` from a failed send, which for a relay error is the SMTP PEER'S OWN RESPONSE TEXT -
+				//data from outside this trust boundary, and text a peer can be made to echo, for example by
+				//rejecting a recipient address back verbatim. A response containing an apostrophe therefore
+				//closed the attribute and injected markup that executed for every administrator who opened the
+				//e-mail list: a stored cross-site scripting chain whose source is an external service and whose
+				//sink is an administrative screen.
+				//THE FIX IS CONTEXTUAL ENCODING AT THE SINK, which is where it belongs: the untrusted value is
+				//passed through System.Net.WebUtility.HtmlEncode, which encodes ' as &#39; and " as &quot;
+				//alongside < > and &, so it can neither close the attribute nor open a tag. That type lives in
+				//System.Private.CoreLib, so it is always available to the runtime script compiler, which
+				//references the loaded domain assemblies.
+				//ENCODING ONLY THE UNTRUSTED PART IS DELIBERATE: the literal `&#xA;` in the prefix is an
+				//intentional line break inside the tooltip, and encoding the composed string would render it as
+				//the visible text "&#xA;" instead. So the prefix is composed first and only `serverError` is
+				//encoded.
+				//EXISTING INSTALLATIONS are migrated by Patch20260806, because this seed only protects
+				//databases provisioned after this change; the stored node code is what actually runs elsewhere.
 				var id = new Guid("555c9704-efe8-4e15-832f-9f49ef553e16");
 				Guid? parentId = new Guid("5dfef806-4448-4bce-8a5d-91e8587cbe33");
 				Guid? nodeId = null;
@@ -4797,7 +4872,7 @@ namespace WebVella.Erp.Plugins.Mail
   ""label_mode"": ""3"",
   ""label_text"": """",
   ""mode"": ""4"",
-  ""value"": ""{\""type\"":\""1\"",\""string\"":\""using System;\\nusing System.Collections.Generic;\\nusing WebVella.Erp.Web.Models;\\nusing WebVella.Erp.Api.Models;\\n\\npublic class ErrorCodeHtmlVariable : ICodeVariable\\n{\\n\\tpublic object Evaluate(BaseErpPageModel pageModel)\\n\\t{\\n\\n\\t\\tif (pageModel == null)\\n\\t\\t\\treturn null;\\n\\n        var recordId  = pageModel.TryGetDataSourceProperty<Guid>(\\\""RowRecord.id\\\"");\\n\\t\\tvar serverError = pageModel.TryGetDataSourceProperty<string>(\\\""RowRecord.server_error\\\"");\\n\\t\\tvar retriesCount = pageModel.TryGetDataSourceProperty<decimal>(\\\""RowRecord.retries_count\\\"");\\n\\t\\t\\n\\t\\tif( string.IsNullOrWhiteSpace(serverError))\\n\\t\\t    return \\\""\\\"";\\n\\t\\t    \\n\\t\\t serverError = $\\\""Atempts to send: {retriesCount}&#xA;Error: \\\"" + serverError;\\n\\t\\t return $\\\""<i class='fas fa-exclamation-triangle' style='color:#CC0000' title='{serverError}'></i> &nbsp;\\\"";\\n\\t}\\n}\"",\""default\"":\""\""}"",
+  ""value"": ""{\""type\"":\""1\"",\""string\"":\""using System;\\nusing System.Collections.Generic;\\nusing WebVella.Erp.Web.Models;\\nusing WebVella.Erp.Api.Models;\\n\\npublic class ErrorCodeHtmlVariable : ICodeVariable\\n{\\n\\tpublic object Evaluate(BaseErpPageModel pageModel)\\n\\t{\\n\\n\\t\\tif (pageModel == null)\\n\\t\\t\\treturn null;\\n\\n        var recordId  = pageModel.TryGetDataSourceProperty<Guid>(\\\""RowRecord.id\\\"");\\n\\t\\tvar serverError = pageModel.TryGetDataSourceProperty<string>(\\\""RowRecord.server_error\\\"");\\n\\t\\tvar retriesCount = pageModel.TryGetDataSourceProperty<decimal>(\\\""RowRecord.retries_count\\\"");\\n\\t\\t\\n\\t\\tif( string.IsNullOrWhiteSpace(serverError))\\n\\t\\t    return \\\""\\\"";\\n\\t\\t    \\n\\t\\t serverError = $\\\""Atempts to send: {retriesCount}&#xA;Error: \\\"" + System.Net.WebUtility.HtmlEncode(serverError);\\n\\t\\t return $\\\""<i class='fas fa-exclamation-triangle' style='color:#CC0000' title='{serverError}'></i> &nbsp;\\\"";\\n\\t}\\n}\"",\""default\"":\""\""}"",
   ""name"": ""field"",
   ""class"": """",
   ""upload_mode"": ""1"",

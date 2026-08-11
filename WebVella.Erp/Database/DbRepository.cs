@@ -409,7 +409,7 @@ namespace WebVella.Erp.Database
 
 		public static void CreateNtoNRelation(string relName, string originTableName, string originFieldName, string targetTableName, string targetFieldName)
 		{
-			string relTableName = $"rel_{relName}";
+			string relTableName = DbIdentifier.Validate($"rel_{relName}");
 			CreateTable(relTableName);
 			CreateColumn(relTableName, "origin_id", FieldType.GuidField, false, null, false, false, false, false);
 			CreateColumn(relTableName, "target_id", FieldType.GuidField, false, null, false, false, false, false);
@@ -451,7 +451,7 @@ namespace WebVella.Erp.Database
 
 		public static void DeleteNtoNRelation(string relName, string originTableName, string targetTableName)
 		{
-			string relTableName = $"rel_{relName}";
+			string relTableName = DbIdentifier.Validate($"rel_{relName}");
 
 			DeleteRelation($"{relName}_origin", originTableName);
 			DeleteRelation($"{relName}_target", targetTableName);

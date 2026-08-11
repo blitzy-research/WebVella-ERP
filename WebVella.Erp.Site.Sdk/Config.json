@@ -1,16 +1,18 @@
 ﻿{
 	"Settings": {
-		"ConnectionString": "Server=192.168.10.25;Port=5436;User Id=test;Password=test;Database=erp3_sdk;Pooling=true;MinPoolSize=1;MaxPoolSize=100;CommandTimeout=120;",
-		"EncryptionKey": "BC93B776A42877CFEE808823BA8B37C83B6B0AD23198AC3AF2B5A54DCB647658",
+		// SECURITY - findings H-05 (CWE-798 hard-coded credentials) and C-04 (CWE-321 hard-coded encryption key), OWASP A02 / A05: these values were committed to source control, so they stay EMPTY and are supplied out of band as Settings__ConnectionString and Settings__EncryptionKey ("__" separates sections). The mail password is scrubbed on the same grounds and is supplied as Settings__EmailSMTPPassword, and the storage location and blob connection string are scrubbed because a storage location is itself a secret (review finding CR2-F-12).
+		// Every key is RETAINED with an empty value because the JSON configuration source is non-optional - do NOT delete this file. DevelopmentMode ships "false" for H-12 (CWE-489 active debug code, CWE-209 error-message disclosure) and is a STRING by design, not a JSON boolean. See docs/security/secure-configuration.md.
+		"ConnectionString": "",
+		"EncryptionKey": "",
 		"Lang": "en",
 		"Locale": "en-US",
 		"TimeZoneName": "FLE Standard Time",
-		"DevelopmentMode": "true",
+		"DevelopmentMode": "false",
 		"EnableBackgroungJobs": "false",
 		"EnableFileSystemStorage": "false",
-		"FileSystemStorageFolder": "\\\\192.168.10.25\\Share\\erp3-files",
+		"FileSystemStorageFolder": "",
 		"EnableCloudBlobStorage": "false",
-		"CloudBlobStorageConnectionString": "disk://path=c:\\temp\\WebVella_files", // see https://github.com/aloneguid/storage/blob/develop/doc/blobs.md
+		"CloudBlobStorageConnectionString": "", // see https://github.com/aloneguid/storage/blob/develop/doc/blobs.md
 		"EmailEnabled": false,
 		"EmailSMTPServerName": "",
 		"EmailSMTPPort": "25",

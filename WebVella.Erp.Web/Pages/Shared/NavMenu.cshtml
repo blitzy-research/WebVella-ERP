@@ -8,6 +8,14 @@
 {
 	<div class="menu-nav-wrapper @menu.Class">
 		<div class="menu-nav @(menu.Nodes.Count > 0 ? "dropdown" : "")">
+			@* SECURITY H-06 (CWE-79 stored XSS, OWASP A03) - INTENTIONAL raw markup channel. Four components
+			   render this view and two are invoked from Nav.Default.cshtml, so it reaches every page of all
+			   seven hosts. MenuItem.Content arrives as server-authored markup whose database-sourced slots were
+			   encoded or allow-listed in Models/BaseErpPageModel.cs - do NOT move that out of there - and
+			   encoding HERE would print literal anchor HTML and break dropdown toggling, because NavItem.cshtml
+			   rewrites the same value AS MARKUP. The residual control is that markup authoring is restricted to
+			   privileged roles: the Content-Security-Policy ships REPORT-ONLY, so it blocks nothing, and
+			   enforcing it is future owner-governed work. *@
 			@if (menu.IsHtml)
 			{
 				@Html.Raw(menu.Content)
@@ -30,6 +38,10 @@
 }
 else
 {
+	@* SECURITY H-06 - INTENTIONAL raw markup channel, no-wrapper branch. Its only live caller is the
+	   Projects plugin's "Create Task" user-menu item, whose Content is a fixed server-side literal with no
+	   database data, so encoding here would print that structure as literal text for no security benefit.
+	   Any database-sourced item reaching this view is already encoded in Models/BaseErpPageModel.cs. *@
 	@if (menu.IsHtml)
 	{
 		@Html.Raw(menu.Content)

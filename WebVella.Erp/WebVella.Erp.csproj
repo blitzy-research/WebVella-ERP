@@ -11,6 +11,17 @@
 		<Version>1.7.7</Version>
 		<Authors>WebVella</Authors>
 		<Company>WebVella</Company>
+		<!-- Security H-01 - LICENCE POSTURE, PENDING OWNER RATIFICATION. This expression is
+		     the licence this package declares to everyone who consumes it from nuget.org, and it is not
+		     yet ratified: the AutoMapper pin below links a dependency published under the Reciprocal
+		     Public License 1.5, whose source-disclosure obligation an Apache-2.0 declaration does not
+		     carry forward. Only the repository owner may settle that, so the mismatch is mechanically
+		     unshippable rather than merely noted: the ErpAssertAutoMapperLicenceDecisionRecorded target
+		     in Directory.Build.props fails `dotnet pack` until the decision is recorded as one committed
+		     AUTOMAPPER-LICENCE-DECISION line in docs/security/risk-register.md. An MSBuild property is
+		     NOT accepted as approval - the gate refuses that form by name (ERPLIC005). build, publish
+		     and run are unaffected; the risk is in distributing the claim. RISK-001 carries both options
+		     and the reversal steps. -->
 		<PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
 		<Copyright>Copyright 2025</Copyright>
 		<PackageProjectUrl>https://webvella.com</PackageProjectUrl>
@@ -44,7 +55,21 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="AutoMapper" Version="[14.0.0]" />
+		<!-- Security H-01 (CWE-674 uncontrolled recursion, OWASP A06:2021): AutoMapper below 15.1.1
+		     allows denial of service through uncontrolled recursion (GHSA-rvv3-g6hj-g44x /
+		     CVE-2026-32933, High). Pinned to the newest release on the lowest patched major, so the
+		     advisory is genuinely closed with nothing suppressed to achieve it.
+		     LICENCE ESCALATION - RISK-001, OPEN, OWNER DECISION REQUIRED. Every version from 15.1.1
+		     onwards ships under the Reciprocal Public License 1.5 rather than MIT, which conflicts with
+		     the Apache-2.0 expression declared above, and there is no patched permissive line to fall
+		     back to. Reverting the pin would restore the High advisory and would need an audit
+		     suppression to keep the gate green, which would also silence the CI negative control that
+		     pins 14.0.0 and requires its restore to FAIL. The residual concern is legal, not technical,
+		     and it is mechanically unshippable: the licence gate in Directory.Build.props fails
+		     `dotnet pack` for every packable manifest until the owner's decision is recorded as one
+		     committed AUTOMAPPER-LICENCE-DECISION line in docs/security/risk-register.md. Do not change
+		     this pin without settling the licence question first (RISK-001). -->
+		<PackageReference Include="AutoMapper" Version="[15.1.3]" />
 		<PackageReference Include="CsvHelper" Version="33.1.0" />
 		<PackageReference Include="Ical.Net" Version="5.1.4" />
 		<PackageReference Include="Irony.NetCore" Version="1.1.11" />
@@ -78,5 +103,6 @@
 		<TypeScriptMapRoot />
 		<TypeScriptSourceRoot />
 	</PropertyGroup>
+
 
 </Project>
