@@ -151,6 +151,17 @@ namespace WebVella.Erp.Plugins.Project.Components
 					};
 
 					ViewBag.Datasets = chartDatasets;
+
+					//P6-03 (Visual / Data-driven UI): the two arcs above were rendered with an empty
+					//`labels` array, so neither segment identified itself. Supplied here rather than in the
+					//two views so the Design and the Display twin cannot drift apart.
+					//The names carry a per-cent sign deliberately. Unlike the figures printed beside this
+					//chart, which are absolute hours, the two values plotted here are integer percentages -
+					//and of TOTAL LOGGED hours (billed + non-billed), not of the estimate, which is why the
+					//pair always sums to 100 even on a project that is over or under its estimate. A bare
+					//"Billable: 28" beside a legend reading "9.5 h" would invite exactly that misreading.
+					//Order matches Data above: billed share, non-billed share.
+					ViewBag.ChartLabels = new List<string>() { "Billable %", "Non-billable %" };
 				}
 				switch (context.Mode)
 				{

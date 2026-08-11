@@ -112,6 +112,18 @@ namespace WebVella.Erp.Plugins.Project.Components
 					};
 
 					ViewBag.Datasets = chartDatasets;
+
+					//P6-03 (Visual / Data-driven UI): the three arcs above were rendered with an empty
+					//`labels` array, so a reader could see the proportion of overdue work and never learn
+					//which colour meant what. The names are supplied here rather than in the views for the
+					//same reason the priority allow-list below its sibling widget lives in the component -
+					//the Design and the Display twin both bind them, and one source cannot drift apart.
+					//They are the literal strings both views already print beside the chart, deliberately
+					//not read from stored data: pairing a chart with a second data source is exactly the
+					//coupling that made the priority widget's legend and its arcs disagree.
+					//Order matches Data above: overdue, due today, not yet due.
+					ViewBag.ChartLabels = new List<string>() { "Overdue", "Due today", "Upcoming due" };
+
 					ViewBag.OverdueTasks = overdueTasks;
 					ViewBag.DueTodayTasks = dueTodayTasks;
 					ViewBag.NotDueTasks = notDueTasks;

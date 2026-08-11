@@ -121,6 +121,15 @@ namespace WebVella.Erp.Plugins.Project.Components
 						}
 					};
 
+					//P6-03 (Visual / Data-driven UI): the three arcs above were rendered with an empty
+					//`labels` array, so no segment identified itself. Supplied here rather than in the two
+					//views so the Design and the Display twin cannot drift apart, and taken as the literal
+					//strings both views already print beside the chart rather than from the stored select
+					//options - reading them from stored data would add a second instance of the coupling
+					//that already makes this widget's legend icon and its arcs disagree by one hue step.
+					//Order matches Data above: high, normal, low.
+					ViewBag.ChartLabels = new List<string>() { "High", "Normal", "Low" };
+
 					ViewBag.LowPriority = lowPriority;
 					ViewBag.NormalPriority = normalPriority;
 					ViewBag.HighPriority = highPriority;
