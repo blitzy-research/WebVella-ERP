@@ -49,9 +49,9 @@ follow, and they are the whole point of this guide:
 | Configuration provider chain | **The tracked JSON file is always first**, so a blanked value can never override a supplied secret — that precedence is the control, and it holds at all four builder sites. `WebVella.Erp.Web/ErpMvcExtensions.cs` (in `AddErp`) supplies the chain the Crm, Mail, MicrosoftCDM, Next and Sdk hosts rely on; `WebVella.Erp.Site` and `WebVella.Erp.Site.Project` each build their own in `Startup.ConfigureServices`; `WebVella.Erp.ConsoleApp/Program.cs` builds a fourth. Every one reads `Config.json`, then environment variables, then — in Development only — user secrets |
 | Missing-secret behaviour | Fail fast for the **two** secrets every host needs — `Settings:ConnectionString` and `Settings:EncryptionKey`. `WebVella.Erp/ErpSettings.cs` aborts startup with an actionable message naming **every** missing or weak one of those at once; `WebVella.Erp/Utilities/CryptoUtility.cs` throws rather than falling back, and the compiled-in default key is gone. The token signing key is **not** in this class — it degrades a capability instead of stopping startup, which is set out under [*Required settings*](#required-settings) |
 | Known published defaults | Rejected by SHA-256 digest comparison, so this repository's own example encryption key and token signing key cannot be used even if supplied deliberately. The digests are stored rather than the literals, so neither the source nor this page reintroduces the secret it eliminates |
-| Response security headers | All seven emitted by `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`, registered once through `AddErp` and ordered in **all seven** hosts ahead of `UseResponseCompression` and both `UseStaticFiles` calls |
+| Response security headers | All seven emitted by `WebVella.Erp.Web/Middleware/SecurityHeadersMiddleware.cs`, registered once through `AddErp` and ordered in **all seven Razor site** hosts ahead of `UseResponseCompression` and both `UseStaticFiles` calls. The **eighth** deployable host, `WebVella.Erp.WebAssembly/Server`, is covered separately and must stay so: it does not reference `WebVella.Erp.Web`, so it neither calls `AddErp` nor sees the middleware by reference. It links `SecurityHeadersMiddleware.cs` into its own compilation and calls `app.UseSecurityHeaders()` as its **first** middleware, which is load-bearing because `UseBlazorFrameworkFiles` and `UseStaticFiles` terminate the pipeline for a matched asset. It also pins `services.AddHsts(...)` itself, since it does not inherit the `AddErp` pin — see [*Transport security*](#transport-security) below. This host shipped with none of the six non-transport headers for one revision (QA finding `P6-04`) |
 | Content-Security-Policy | Emitted in **report-only** mode carrying the mandated value **verbatim** and nothing else. There is **no `report-uri` directive and no collection endpoint**; both were removed, because appending `report-uri` altered the mandated value and the collector's early return could answer a request without attaching the other six headers. Reports are read from the browser console during the rollout instead (`RISK-022`) |
-| Transport security | `UseHsts()` then `UseHttpsRedirection()` in all seven hosts, guarded to non-Development and ordered **after** `UseCors` so cross-origin preflight is not broken by a redirect. A startup guard refuses a non-Development host that can see no HTTPS request path at all |
+| Transport security | `UseHsts()` then `UseHttpsRedirection()` in all seven Razor site hosts, guarded to non-Development and ordered **after** `UseCors` so cross-origin preflight is not broken by a redirect. A startup guard refuses a non-Development host that can see no HTTPS request path at all. The eighth host, `WebVella.Erp.WebAssembly/Server`, already had both calls but **not** the options pin: `HstsMiddleware` runs later than the headers middleware and decides the value, and at framework-default `HstsOptions` that value is `max-age=2592000` with no `includeSubDomains` — measured, not assumed, on that host at a hostname outside `HstsOptions.ExcludedHosts`. It now calls `services.AddHsts(...)` with the same 365-day, subdomain-inclusive, non-preload values `AddErp` pins, so both writers emit the identical string and the overwrite is a no-op in either order. **Removing that pin silently reinstates the thirty-day header** |
 | Cookies | Authentication: `SecurePolicy=Always` **unconditionally, including in Development**, `SameSite=Lax`, `HttpOnly`, a 24-hour sliding idle window and a 7-day absolute horizon. Antiforgery: `SecurePolicy=Always` outside Development and `SameAsRequest` in Development, retaining the framework's `SameSite=Strict` default |
 | Data Protection | Per-application discriminator bound to the host's application name, so one host cannot decrypt another's authentication cookie; the key-ring directory is opt-in through `Settings:DataProtectionKeyDirectory` (`RISK-115`) |
 | Rate limiting | `UseRateLimiter()` in all seven hosts — a per-address fixed window of 600 requests per minute — positioned after both static-file middlewares so assets are never throttled |
@@ -946,6 +946,79 @@ delivery mode is staged. That is the one place where the mandated header set can
 first deployment without breaking working features, and staging the delivery mode is the only way to
 honour both the mandated set and the requirement that existing functionality keep working.
 
+### What enforcement actually does today — measured, so you can plan against it
+
+The route above was written from an inventory. Enforcement has since been **exercised**: a second copy of
+the published SDK host was run with `SecurityHeaders__ContentSecurityPolicyReportOnly=false` and nothing
+else changed — the two processes' environments were diffed and that switch was the only key that differed.
+Read this before scheduling any promotion, because two of its findings change the plan above.
+
+**The switch itself works, completely.** The response carries
+`Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'` byte-for-byte, the
+report-only name is absent, and the other six mandated headers are unchanged — on a document, a static
+asset and a redirect alike. The browser confirms it more directly than the header does: the same page on
+the two hosts raises the identical violations with identical directive attribution, differing only in
+disposition, `enforce` against `report`. **Nothing needs building or writing to enforce this policy. It is
+one configuration key.** What is missing is not capability; it is the readiness of the application.
+
+**Sign-in keeps working, which is exactly why this is easy to get wrong.** The credential path is a
+server-rendered form POST with no JavaScript dependency, so an operator who flips the switch and checks
+that they can still log in will conclude the deployment is fine. It is not.
+
+**Two corrections to the numbered route above.**
+
+- **Step 4 is incomplete.** It calls for the missing image and worker directives. Measurement found a
+  **third**: the web-component runtime lazy-loads an implementation chunk over a `blob:` URL, and that
+  request is the one thing in the whole run that was *blocked* rather than reported. **`script-src` must
+  also admit `blob:`**, or the application-sitemap editor renders a blank panel no matter how much of the
+  inline backlog has been cleared.
+- **A step 0 is missing entirely, and it is the one to do first.** Destructive controls guard themselves
+  with inline `onclick="return confirm(…)"`, and inline handler attributes are **blocked** under
+  enforcement — hashes do not cover them; only `'unsafe-hashes'` does. The guard therefore does not warn,
+  and because it also cannot return `false`, **the action proceeds unprompted**. Measured on four
+  destructive controls: deleting a user, purging finished jobs, purging the log (57,278 records in this
+  installation) and deleting an application. Move these guards to delegated `addEventListener` handlers in
+  an external file — never blocked, no policy relaxation needed — **before** promoting anything. Do it
+  regardless of whether you ever promote: one of those guards is already inert today for an unrelated
+  reason (`RISK-199`).
+
+**What breaks, so the re-test in step 5 knows what to look for.** 897 violations were recorded, every one
+enforcing. **806 of them — 90% — are `style-src`.** That is not incidental: the two things this product
+must emit inline are per-application brand colour and per-column table geometry, both computed per record
+at render time, and neither expressible in a stylesheet. All seven external stylesheets applied perfectly
+(3,939 rules, zero failures), so class-driven styling is untouched; data-driven styling is what dies. Two
+concrete outcomes worth recognising on sight: every application icon on the launcher becomes **invisible**
+(the glyph is white by design because it is meant to sit on the coloured badge the inline style provides —
+block both and you get white on transparent over a white card), and list column widths render up to
+**2.7×** their intended size, inserting large empty gaps.
+
+Functionally: the top navigation menus cannot be opened at all, paging and column sorting are dead on
+every list, search drawers and column filters are dead, per-row JSON editors are dead, and the
+application-sitemap editor renders nothing below its tab bar.
+
+**The single most important operational warning.** Across the entire run there were **zero HTTP responses
+at status 400 or above and zero JavaScript exceptions.** Every request returned 200 and `window.onerror`
+never fired, because the functions that become undefined are only called from inline code that is itself
+blocked — callers fail together with callees, so nothing throws. **A status-code health check, an uptime
+monitor and an error-rate dashboard will all report this deployment as perfectly healthy while its
+navigation is unusable and its delete confirmations have silently disappeared.** Promote on the stage exit
+conditions, never on a schedule, and re-test by *using* the screens rather than by watching metrics.
+
+**One cheap win before anything else.** The rich-text editor bundle is loaded in the global `<head>` of
+every page — including the login page, which hosts no editor — and contributes a fixed 62 violations and
+104,512 characters of blocked CSS to **every request**. Loading it only where an editor is actually hosted
+removes roughly **71%** of the total violation volume and makes the editor render correctly where it is
+used.
+
+**And set expectations honestly about the destination.** After the work above, the first policy this
+product can realistically *enforce* is
+`default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'`. That still
+removes the inline-`<script>` sink the header exists to close, but it is **not** the mandated
+`script-src 'self'; style-src 'self'`. Reaching the mandated value literally would require replacing the
+third-party web-component runtime and re-architecting how per-record styling is emitted. Both are outside
+this engagement and both are the owner's decision — so do not read step 5 as a promise that clearing the
+backlog makes the mandated string enforceable.
+
 ### Who owns the promotion to enforcement
 
 The steps above describe the work; they deliberately do not authorise it. Promotion is governed, and
@@ -969,7 +1042,8 @@ criteria cannot drift between documents. In summary:
 
 **And state this plainly to anyone reading a status summary: report-only is not the remediation for
 `H-06`.** The stored cross-site-scripting finding is remediated in the view and builder layer — text
-sinks encoded, and every retained by-design markup channel enumerated in `RISK-023` and `RISK-037`. A
+sinks encoded, and every retained by-design markup channel enumerated in `RISK-023`; the sitemap URL
+scheme residual once carried as `RISK-037` is now closed by allow-list validation at the menu builder. A
 report-only policy is **detective, not preventive**: the browser reports the violation and then runs
 the script anyway. It closes nothing on its own and must never be cited as evidence that `H-06` is
 covered.
@@ -2344,6 +2418,37 @@ HOST=localhost:5001
   # 6. All seven headers, on a dynamic response AND on a static asset. Six in Development.
 curl -sI "https://$HOST/login" | grep -iE 'content-security-policy|strict-transport|x-content-type|x-frame|x-xss|referrer-policy|permissions-policy'
 curl -sI "https://$HOST/_content/WebVella.Erp.Web/js/wv-lazyload/wv-lazyload.js" | grep -ic 'content-security-policy'
+
+  # 6b. THE EIGHTH HOST. WebVella.Erp.WebAssembly/Server is covered by its own linked
+  #     registration, not by AddErp, so it has to be probed separately - it shipped with none
+  #     of the six non-transport headers for one revision (QA finding P6-04) precisely because
+  #     "all seven Razor hosts pass" was read as complete coverage. Probe the CLASSES its
+  #     static middlewares terminate the pipeline for, since those are the ones that shipped
+  #     bare: the document, a framework script, the runtime .wasm, appsettings.json and a 404.
+  #     WASM_HOST is that host's own origin, not $HOST.
+WASM_HOST=localhost:6181
+WASM_PUBLISH_DIR=/path/to/published/wasm-host
+
+  #     .NET 10 FINGERPRINTS asset filenames, so /_framework/dotnet.wasm and
+  #     /_framework/blazor.boot.json do not exist - guessing either yields a 404 that still
+  #     carries the headers, which would read as a pass for the wrong reason. Resolve a real
+  #     name from the published output instead.
+WASM_ASSET=$(basename "$(ls "$WASM_PUBLISH_DIR"/wwwroot/_framework/dotnet.native.*.wasm | head -1)")
+
+for p in / /_framework/blazor.webassembly.js "/_framework/$WASM_ASSET" /appsettings.json /no-such-asset.css ; do
+  printf '%s -> %s of 7\n' "$p" \
+    "$(curl -sI "https://$WASM_HOST$p" | grep -icE '^(content-security-policy(-report-only)?|strict-transport-security|x-content-type-options|x-frame-options|x-xss-protection|referrer-policy|permissions-policy):')"
+done
+
+  #     And the plaintext listener, if one is declared: the 307 must carry them too, which is
+  #     what proves the registration is ahead of UseHttpsRedirection rather than behind it.
+curl -sI "http://localhost:6180/" | grep -icE '^(content-security-policy(-report-only)?|strict-transport-security|x-content-type-options|x-frame-options|x-xss-protection|referrer-policy|permissions-policy):'
+  #     And the HSTS value specifically, at a hostname HstsOptions.ExcludedHosts does NOT
+  #     exclude - localhost IS excluded, so probing it cannot see the framework's own writer and
+  #     cannot catch the thirty-day default reappearing. Expect exactly ONE header carrying
+  #     max-age=31536000; includeSubDomains. A value of max-age=2592000 means the AddHsts pin
+  #     in that host's Program.cs was removed.
+curl -sI -H 'Host: erp.example.test' "https://$WASM_HOST/" | grep -iE '^strict-transport-security:'
 
   # 7. The content policy must be report-only at this stage, and the enforcing header ABSENT.
 curl -sI "https://$HOST/login" | grep -ic 'content-security-policy-report-only'

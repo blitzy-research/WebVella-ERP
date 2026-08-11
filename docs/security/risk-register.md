@@ -22,7 +22,7 @@ exactly one *declaring* entry below.
 **The identifier contract, stated so it can be checked mechanically.** Every identifier the index lists
 is declared in exactly one of **three** ways:
 
-1. **Its own declaring heading** — text beginning `RISK-NNN`, an em dash and a space. **121** identifiers.
+1. **Its own declaring heading** — text beginning `RISK-NNN`, an em dash and a space. **142** identifiers.
 2. **A combined declaring heading** — `RISK-NNN and RISK-MMM — …`, used where one analysis genuinely
    covers two identifiers and splitting it would duplicate the reasoning. **2** identifiers
    (`RISK-152` and `RISK-153`).
@@ -49,16 +49,29 @@ echo "own heading $(wc -l < /tmp/c_head), combined $(wc -l < /tmp/c_comb), row-o
 comm -23 /tmp/c_headall /tmp/c_index | grep -q . || echo 'every declared identifier is indexed'
 ```
 
-Measured at this revision: **own heading 128, combined 2, row-only 21, indexed 151** — the
-routes partition the index and every declared identifier is indexed. Four additions and one correction are
+Measured at this revision: **own heading 142, combined 2, row-only 21, indexed 165** — the
+routes partition the index and every declared identifier is indexed. Five additions and one correction are
 folded into those numbers rather than presented separately: nine identifiers, `RISK-172`–`RISK-180`, were
 added by the checkpoint documentation and gate review; three more, `RISK-181`–`RISK-183`, were added by the
-final frontend verification; four more, `RISK-184`–`RISK-187`, were added by the performance checkpoint;
-each of the sixteen with its own declaring heading and its own index row. An earlier revision's figures read
+final frontend verification; four more, `RISK-184`–`RISK-187`, were added by the performance checkpoint; two more,
+`RISK-188`–`RISK-189`, were added by the responsive-overflow remediation of `P6-05`, `P6-21`, `P6-22` and
+`P13-01`; six more, `RISK-190`–`RISK-195`, were added by the accessibility remediation of `P6-11`; and three more,
+`RISK-196`–`RISK-198`, were added by the data-driven-UI and user-administration remediation of `P6-03`
+and `P6-17`; and one more, `RISK-199`, by the CSP-enforcement measurement of `A17`; and two more,
+`RISK-200`–`RISK-201`, by the final cross-cutting regression sweep, both pre-existing conditions it
+surfaced and neither caused by this work; each of the
+thirty with its own declaring heading and its own index row. An earlier revision's figures read
 `own heading 111 … indexed 134` while the script already returned **112** and **135**, an off-by-one that
 pre-dated those passes and was corrected rather than carried forward. A stated count that disagrees with the
 script beside it teaches a reader to stop running the script, which is the one outcome a reproducible
 contract cannot afford.
+
+**A second drift of the same kind, found by running the script rather than by reading.** Route 1 above stated
+**121** identifiers while the script returned **128** at the preceding revision — stale by seven, and stale before
+any of the passes named above touched this file, because each of them updated the *measured* line and left the
+*route* figure alone. It is now **140** and agrees. The lesson is the one this section already argues, sharpened:
+a contract with two figures for the same quantity will drift at whichever one is not the output of the check, so
+route 1's count is to be re-read from `wc -l < /tmp/c_head` on every future edit and never incremented by hand.
 
 **What was wrong before, recorded rather than quietly replaced.** The previous version of this contract
 claimed a declaring heading was the *only* route apart from **seven** row-declared identifiers
@@ -110,7 +123,7 @@ fourteen are declared by their index row alone.
 | `RISK-034` | The `smtp_service` permission migration revokes **only** the Regular and Guest grants rather than replacing the permission lists, so a delegation an operator created on a custom role survives the migration. Reviewing those delegations is an operator action the migration cannot take for them. | Accepted — deliberate scope choice | Repository owner |
 | `RISK-035` | Four residual observations recorded while closing the SMTP credential work: the `email` entity's Regular-role grants, inert sitemap node access lists in the mail plugin, the row-driven shape of the EQL entity read-permission check, and the pre-existing `catch (ValidationException ex) { … throw ex; }` idiom in `ProcessPatches()`. | Named, not fixed | Platform team |
 | `RISK-036` | **The in-process residual this entry existed to record is CLOSED.** The state moved to `WebVella.Erp/Database/DbSecurityStateRepository`, which is **durable** (it survives restart), **shared** (every instance against the same database observes the same revocation), atomic, reclaimed by **expiry only and never by capacity**, and needs no schema change because it writes under the reserved `wv_sec_` prefix in the pre-existing `plugin_data` table; consulting it **fails closed**, so an unreachable store answers *revoked* rather than *not revoked*. ~~Separately, authentication tickets minted before this control shipped carry no session claim and are therefore accepted rather than rejected.~~ Also withdrawn: review finding `CR2-F-01` made both checks fail closed, so a credential with no parseable session identifier is refused and signed out. What remains is **cost, not scope**: one indexed point lookup per authenticated request, and a positive-only in-process mirror that can refuse but never authorise. | Closed — restated; the residual is per-request lookup cost | Platform team |
-| `RISK-037` | Sitemap node URLs are HTML-encoded but their **scheme is not validated**, so an administrator who can author a sitemap node can still store a `javascript:` URL that runs when the link is activated. HTML encoding closes the markup-breakout half of the weakness and does not close the scheme half. Declined here because scheme filtering would break legitimate `mailto:` and `tel:` navigation entries. | Named, not fixed — reasoned decline | Repository owner |
+| `RISK-037` | **CLOSED — the decline was superseded by a fix, and this row said otherwise for one revision too long (QA finding `DOC-02`).** The residual was that sitemap node URLs were HTML-encoded but their **scheme was not validated**, so an administrator who could author a sitemap node could store a `javascript:` URL that ran when the link was activated. `WebVella.Erp.Web/Models/BaseErpPageModel.cs:L249` now carries `TryEncodeMenuUrl`, a scheme **allow-list** — application-local paths, `~/`, `#` fragments and explicit `http://`/`https://` only, with any value containing a control character rejected outright — applied at both menu builder sites (`:L536`, `:L563`); a rejected value degrades to the inert `href="#" onclick="return false"` anchor the builder already emitted for a node with no URL. The owner decision the decline was reserving is therefore **taken and shipped**: `mailto:` and `tel:` are rejected along with `javascript:`, which is the consequence to be aware of. | **Closed — validated at the builder** | No owner action outstanding |
 | `RISK-038` | The encoder rewrites four legitimate value shapes — `&`, `'`, `+` and every non-ASCII character — so encoded output is **render-equivalent but not byte-identical** for those shapes. A downstream consumer that reads the composed markup as a string rather than parsing it as HTML would see the difference. | Accepted | Platform team |
 | `RISK-039` | Stored output encoding lives in the **markup builders**, not in the views, because the views cannot encode without breaking the navigation. Nothing in the compiler prevents a future builder from interpolating an unencoded value. Guarded by comment, by a source-invariant check in the verification harness, and by this entry — not by the type system. | Accepted | Platform team |
 | `RISK-040` | Ten information-disclosure sites in the two plugin controllers — seven in `WebVella.Erp.Plugins.SDK/Controllers/AdminController.cs` and three in `WebVella.Erp.Plugins.Project/Controllers/ProjectController.cs` — now return the generic message outside Development but write **no** server-side log record, so the underlying fault detail is unavailable anywhere in Production. The guard closes the disclosure; it does not preserve the diagnostic. | Named, not fixed — recommended | Platform team |
@@ -156,7 +169,7 @@ fourteen are declared by their index row alone.
 | `RISK-116` | ~~Gate 3 accepts exactly **one** credential-shaped location: a commented-out connection-string template in `WebVella.Erp.Site/Config.json` whose every value is angle-bracketed.~~ **CLOSED - the residual no longer exists.** The commented-out template was removed from `WebVella.Erp.Site/Config.json`, so the reviewed allowance now has nothing to allow: Gate 3 reports **0 credential-shaped locations and 0 tolerated** across 1,518 tracked text files. The reasoning is retained below because the *decision* it records still governs - narrowing the pattern to ignore an angle-bracketed value was rejected as a fail-open for any real password containing `<`, and that pattern is unchanged. | Closed | Platform team |
 | `RISK-117` | The licence-governance gate that keeps `RISK-001` unshippable refuses to **build** a package, not to **publish** one: a `.nupkg` produced before the gate existed remains pushable, and the gate can confirm that an answer was recorded but not that the person recording it was entitled to. What it buys is deliberateness — the answer must be typed and appears in the log or the diff — on the one step that cannot be undone. | Accepted — bounded residual of the control | Whoever performs a release |
 | `RISK-118` | Authenticated page renderings stay recoverable from the **browser's** back/forward cache after logout, because authenticated content responses carry no `Cache-Control` while `/login` and `/logout` do. Measured during runtime verification: two presses of Back after logout restored the authenticated shell with **no document request issued**. The restored view is inert — the same ticket replayed against four protected routes is refused server-side — so what survives is one already-delivered rendering on a device an attacker must already hold. Recorded with a minimal fix rather than remediated: `Cache-Control` is not in the mandated seven-header set, and the ticket-acceptance weakness behind `CR2-F-01` / `CR2-F-02` is separately proven closed. | Accepted — documented with fix guidance | Platform team |
-| `RISK-119` | Two **pre-existing** defects in the shipped Blazor WebAssembly client's HTTP layer, found while remediating `B3-SEAM-01` and outside its scope. `Client/Services/TokenManagerService.cs` builds its refresh URL as `api/v3/en_US/auth/jwt/token/refresh` on an `HttpClient` whose `BaseAddress` already ends in `/api/`, so the client's automatic token refresh addresses a doubled segment that no route serves. `Client/ApiService/ApiService.System.cs` sets a **lower-case** `bearer` scheme on `DefaultRequestHeaders`, and both token-issuing hosts select the authentication handler by a case-**sensitive** `Authorization` prefix match, so those calls are not authenticated as bearer at all — and the credential is left attached to a shared client rather than scoped to one request. Neither is a new exposure and neither weakens the `B3-SEAM-01` fix, which builds its own URL and sets its own correctly-cased request-scoped header. | Accepted — documented with fix guidance | Platform team |
+| `RISK-119` | **CLOSED — both defects, and the third condition inside the second, were subsequently fixed; this row said "Accepted" for one revision too long (QA finding `DOC-02`).** The residuals were two **pre-existing** defects in the shipped Blazor WebAssembly client's HTTP layer, found while remediating `B3-SEAM-01` and outside its scope. `Client/Services/TokenManagerService.cs` builds its refresh URL as `api/v3/en_US/auth/jwt/token/refresh` on an `HttpClient` whose `BaseAddress` already ends in `/api/`, so the client's automatic token refresh addresses a doubled segment that no route serves. `Client/ApiService/ApiService.System.cs` sets a **lower-case** `bearer` scheme on `DefaultRequestHeaders`, and both token-issuing hosts select the authentication handler by a case-**sensitive** `Authorization` prefix match, so those calls are not authenticated as bearer at all — and the credential is left attached to a shared client rather than scoped to one request. Neither is a new exposure and neither weakens the `B3-SEAM-01` fix, which builds its own URL and sets its own correctly-cased request-scoped header. **All three are now closed in source:** `Client/Services/TokenManagerService.cs:L88` composes the refresh path from the shared `WasmConstants.ApiAuthRoot` constant so the doubled `api/` segment is gone; `Client/ApiService/ApiService.System.cs:L35` emits the canonical `"Bearer"` spelling **and** `WebVella.Erp.Site/Startup.cs:L219` with `WebVella.Erp.Site.Project/Startup.cs:L216` now match the prefix `StringComparison.OrdinalIgnoreCase`, so the RFC 7235-conforming half was repaired too and neither side relies on the other's leniency; and `GetNotAuthorizedHttpClientAsync` clears `DefaultRequestHeaders.Authorization`, so the shared client can no longer carry a credential onto a request that must not have one. | **Closed — fixed on both the client and the host side** | No owner action outstanding |
 | `RISK-120` | ~~The page header's `description` attribute is the **one** value on `WvPageHeader` that is deliberately rendered raw, and it must stay that way. Its only non-literal supplier is `PageUtils.GenerateListPageDescription`.~~ **CLOSED — reclassified from an accepted residual to a fixed defect by review finding `F-02`, and the sole-supplier claim above is RETRACTED as false.** `WebVella.Erp.Web/Components/PcPageHeader/PcPageHeader.cs` is a second, data-bound supplier: it resolves `ViewBag.ProccessedDescription` from `context.DataModel.GetPropertyValueByDataSource(instanceOptions.Description)`, and both `PcPageHeader/Display.cshtml` and `Design.cshtml` bind it to `description=`, so arbitrary page and record data reached the raw sink — the very condition this entry described as hypothetical. The channel is no longer raw: `description` now renders through `InnerHtml.Append` and is HTML-encoded, and a separate, explicitly named `description-html` attribute carries trusted markup. The five SDK list views that legitimately pass builder-composed markup were moved to it in the same change, so the list screens still render their `ul`/`li` and `<strong>` elements exactly as before while every data-bound description is encoded. The builder-side encoding that closed `P-22` is retained and unchanged. | Closed — fixed under review finding `F-02` | Platform team |
 | `RISK-121` | QA finding `F-AA` path 4: the Track Time grid's **title** cell is sanitised by a tag allow-list that produces real `<b>` elements rather than encoding them. No grid-rendering source exists in this repository — `wv-grid` ships inside the third-party `WebVella.TagHelpers` 1.8.0 package, which the plan restricts to version updates — and a sanitiser that emits `<b>` while stripping `<script>` is behaving as designed. QA measured nothing exploitable: no dialog, no live handler, hostile rectangles 0 × 0. | Named, not fixed — third-party, non-exploitable as measured | Platform team |
 | `RISK-122` | The **33** remaining findings from the frontend QA pass — 21 Minor and 12 Info — are pre-existing quality, accessibility, responsive-layout and environment observations in code this remediation never touched, each carrying a git-level counterfactual proving pre-existence. They are enumerated with recommended fixes in the detailed entry below, grouped by theme. The plan declines them: minimal code changes only, no feature additions, no refactoring beyond security requirements, third-party libraries restricted to version updates, and fix only what is confirmed. | Documented for a future sprint | Platform team |
@@ -225,6 +238,20 @@ fourteen are declared by their index row alone.
 | `RISK-185` | **The credential write path derives a hash before the uniqueness rejection.** `RecordManager` hashes inside the field-value collector, which runs ahead of the uniqueness check, so *N* concurrent duplicate user-create submissions cost *N* PBKDF2 derivations. Measured: exactly **one** row created every time (no race defect) at 147–211 ms against a baseline's 23–78 ms. Requires an **authenticated administrator** and is bounded by the 600-per-minute limiter. Reordering the platform's only plaintext-to-hash write seam for a performance reason is refused under the minimal-change clause | Accepted — an authenticated-only, limiter-bounded asymmetry | Platform team |
 | `RISK-186` | **A throttled request is refused before authentication**, so a routed page answers `429` rather than its usual `302` to `/login`. Verified: the same anonymous `GET /` gave `302` before throttling, `429` with `Retry-After: 60` while throttled, and `302` after the window rolled over; a real static file stayed `200` throughout. **The ordering is the control** — `H-16` is about unlimited requests to the login page and the anonymous token endpoints, which a limiter running after authentication could not protect. The refusal now also carries `Retry-After`, which it previously omitted | Accepted — reversing the ordering would reopen `H-16` | Platform team |
 | `RISK-187` | **Steady-state memory footprint changed by the added controls; it plateaus.** The middleware, the lockout mirror and the security-state store change the resident set; the reporting checkpoint measured about **+17%** under sustained load and **+4%** at rest, and was explicit that **both** builds plateau. Re-measured over four load rounds, per-round growth decayed 9,680 → 140 → 88 → 48 kB and then went **negative** during the settle, with threads returning to idle ⇒ **no leak**. On this host the remediated plateau was in fact *lower* than the baseline's, so the sign is workload-dependent; the plateau is what generalises. Both in-process caches are size-capped and lazily populated | Accepted — a footprint change, not a leak | Platform team |
+| `RISK-188` | **Wide data tables still push the page itself past a narrow viewport.** Fixing the application bar (`P6-05`, `P6-21`) and the dashboard timesheet widget (`P13-01`) left a third instance of the same class untouched, and it is a *page*-level one: at 375 CSS px the SDK and CRM records list table drives `documentElement.scrollWidth` to **667** against a 375 clientWidth (**292px**), and the mail emails list plus its right-floated `div.pager-info` drives it to **840** (**465px** at 375, **72px** at 768). Attribution measured, not assumed: of the 136 / 136 / 66 / 28 overflowing elements at those four combinations, **not one is a descendant of `#nav`** — the bar is clean at 16 of 16 host×width combinations. Content stays reachable by page scroll, unlike the logout control that `P6-21` was about. **Not fixed deliberately:** the minimal containment would be `overflow-x` on the shared `.erp-list` wrapper, and that is the exact change `P13-01` rejected because `.erp-list` wraps every grid in the platform and its `thead .filter-row` cells hold dropdowns a clipping container would cut off. No QA finding raises it, and AAP §0.3.2 forbids the enhancement | Accepted — documented, recommended for a future responsive pass | Frontend maintainer |
+| `RISK-189` | **The `P13-01` scroller trades a 2.5px card-border spill for an 11.5px scrollable clip at desktop width, on one widget.** The Projects dashboard carries **two** timesheet widgets, not one: *My Timesheet* (intrinsic table width **484.28px**) and *All Users' Timesheet* (**603.55px** — the widget `P13-01` names). At 1280 the wrapper's content box is 592px, so the 603.55px table now loses about **11.5px** of its ninth column to the scroller — the header reads `Tota` and a value `8.02` until scrolled. Without the wrapper that same table painted **2.55px past its card's border** instead. Both are containment defects; the fix makes the larger one (276.55px at 375) zero and converts the residual into scrollable rather than overhanging content, with nothing lost — `scrollLeft` reaches the full extent and `scrollHeight == clientHeight`, so no vertical clipping. Scoping the rule to `max-width: 991.98px`, as the `#nav` rule is scoped, was considered and **rejected**: the dashboard is two-column from 992px, so cards there are narrower than 603.55px and the spill would return worse between 992 and roughly 1300px. *My Timesheet* is unaffected at every width | Accepted — nothing is lost, content is scrollable | Frontend maintainer |
+| `RISK-190` | **The `.go-*` semantic colour palette is a Material *fill* palette reused for text, and it cannot be made AA-compliant hue by hue.** The `P6-11` remediation raised the two hues that were observed failing on the pages the finding covers — `--gray_color` 2.68 → **4.61** and `--red_color` 3.68 → **4.98** — but the family has roughly nineteen hues in three tints each, and the rest stay below 4.5:1 when used as text on white. Measured on the SDK Web API page: `.go-green` **2.78:1**. Computed for the two other hues these widgets render: `.go-orange` **2.16:1**, and `.go-light-blue` passes only because it is used on dark. The decisive fact is that **Orange has no step on its ramp that reaches 4.5:1** — 700 is 3.05:1 and both 800 and 900 are 3.79:1 — so darkening per hue produces a family that is *partly* compliant and permanently inconsistent, not a fixed one. The architectural remedy is a text-specific variant set (or pairing colour with a non-colour cue), which is the feature addition AAP §0.3.2 excludes. **WCAG 1.4.1 Use of Colour is satisfied regardless**: every coloured value in these widgets is paired with an adjacent monochrome label ("Overdue", "Due today", "Upcoming due", "High", "Normal", "Low"), so colour is never the sole carrier of meaning | Accepted — documented, recommended for a future design pass | Frontend maintainer |
+| `RISK-191` | **The Task-Priority widget's legend colour comes from persisted data while its chart arcs come from the theme token, so the two can disagree.** Raising `--red_color` for `RISK-190` moved the doughnut arcs, which read `theme.RedColor` in `PcProjectWidgetTasksPriorityChart.cs`, from `#F44336` to `#D32F2F`; the legend arrow beside "High" did **not** move, because `Display.cshtml` emits `style="color: @option.Color"` from the stored `SelectOption.Color`, seeded `#F44336`. The residue is exactly **128 pixels across two 12×12 icons**, one Material step apart in the same hue, found by exact-pixel census rather than by eye. This **exposes a pre-existing coupling rather than creating one**: the two values were only ever coincidentally equal, and any operator who recolours a priority option has always broken the agreement. The sibling Tasks widget does not have the defect — its legend values are `.go-red` and resolve through the same token, verified as an exact match. Reverting a measured 3.68:1 text failure to remove a one-step hue difference on a 12px icon is the wrong trade; correcting it properly means either a data change to the seeded option colour (excluded — stored data) or making the view read the token instead of the record's own colour (a behaviour change to a data-driven feature) | Accepted — a data/theme coupling, not a contrast failure | Frontend maintainer |
+| `RISK-192` | **The page-header eyebrow colour is per-entity stored data rendered as an inline `style` attribute, so its contrast is data-dependent and unreachable from CSS.** `div.meta-area` carries `style="color:<record colour>"` and its `span.text` child inherits it, so no stylesheet rule matches the failing element at all. Measured across four pages against the `#F5F5F5` header band: Projects `#9C27B0` **5.78 pass**, Data Sources and Entities `#DC3545` **4.15 fail**, and the "email" entity's own `#8BC34A` **1.93 fail** — the worst ratio measured anywhere in this pass. An `!important` override would force every eyebrow to one colour and destroy the per-entity colour coding, which is a working user-facing feature; constraining the selectable palette is a data and feature change. The honest position is that any product letting operators pick arbitrary foreground colours can be driven below AA by configuration, and the fix belongs in the colour picker, not the stylesheet | Accepted — data-determined, remedy belongs in the colour picker | Frontend maintainer |
+| `RISK-193` | **`.nav-link.disabled` measures 4.49:1, failing by 0.01, and the rule is Bootstrap's not the platform's.** Three elements on the SDK Web API page — "Meta", "Fields", "Records" — take `color: #6c757d` from `bootstrap.css` and sit on the `#FAFAFA` panel. Candidates measured on that background: `#6A7178` → 4.74, `#697077` → 4.81, `#495057` → 7.83. **Declined**, for a reason that is not the margin: `.nav-link.disabled` is the style for a *disabled* nav link, and darkening it globally would make genuinely disabled links look enabled — trading a real affordance for 0.01 of ratio. The actual defect is that the view uses `.nav-link disabled` as a **section-heading** style for items that were never controls, which is why the WCAG 1.4.3 inactive-component exemption that legitimately covers the "Prev" pager is doubtful here. The recommended remedy is a heading element or a dedicated label class in `web-api.cshtml`, which is a presentation change to an SDK developer page that no finding raises | Accepted — remedy is a markup change, not a colour change | Frontend maintainer |
+| `RISK-194` | **Interactive targets are below 44×44 CSS px product-wide, but 44×44 is a Level AAA criterion, and the Level AA criterion is met except where it was fixed.** At 375 px, **37 of 37** interactive elements measure under 44×44 and nothing in the product reaches 44 px in height, because `#nav` is a fixed 40 px and `.btn-sm` is 31 px. 44×44 is **WCAG 2.1 AAA 2.5.5 Target Size** (and Apple's HIG), not AA; the AA criterion is **WCAG 2.2 2.5.8 Target Size (Minimum) at 24×24**, against which exactly **two** of the 37 failed and **both were fixed**: the brand anchor 16 → 24 px tall by inline vertical padding, verified pixel-identical, and `a.sort-link`, which needed no change at all once its **effective** hit area was measured. A blanket raise to 44×44 would mean re-sizing the application chrome on every page of every host and would disturb the responsive nav geometry verified at 16 host×width combinations in the preceding pass — refused under AAP §0.3.2. **Two QA figures are corrected here rather than carried forward.** "Three app-navigation links measure 0×0" is disproven: **ten** elements measure 0×0 and every one collapses because an ancestor is `display:none` — nine `a.dropdown-item` inside the three closed nav dropdowns and one sidebar toggle inside a hidden sidebar. The "absolutely-positioned or zero-size icon child" hypothesis was tested explicitly and is false; clicking "Objects" expands the menu to a fully sized clickable panel. The figure reconciles to the **three** `div.dropdown-menu.level-0` containers, which are `<div>`s rather than links and for which 0×0 is correct while closed. **Zero rendered interactive elements have a zero-size box.** Separately, `focusRuleCount = 0 across all 9 stylesheets` was also wrong — **231** `:focus` rules existed; what did not exist was any rule styling `:focus-visible`, which is what the fix added | Accepted — AA met, AAA declined, two reported figures corrected | Frontend maintainer |
+| `RISK-195` | **The application-bar focus ring cannot be both complete and clear of the brand logo, and completeness was chosen.** The brand anchor's own inline box is 24 px tall but its `span.app-label` child is a 40 px `inline-block`, and Chrome unions an atomic-inline descendant's box into the outline rects — so the painted ring tracks a 143×40 *union*, not the 143×24 anchor. Drawn **outside** at `+1px` that union's top row computes to y = −1, off the viewport, and its bottom cap to y = 43–45, behind the `position: relative` page-header band that paints after it: measured **382 painted pixels with top and bottom edge coverage 0.16 and no bottom edge at all**. Drawn **inside** at `-2px` the ring is provably closed — flood fill cannot reach the interior 4- or 8-connected — and **100.0% complete at 716 of 716 theoretical pixels**, every one of the polygon's eight sides at 1.0000 coverage. The cost is that the anchor's border box and the 15×15 logo `<img>` share the same left edge to the sub-pixel (x = 58.50), so a ring drawn 2 px inward necessarily covers the image's first two columns: **28 of the logo's 200 ink pixels, 14%, are overpainted for as long as the control holds keyboard focus**. The two outcomes are geometrically exclusive at this box structure — every offset that clears the logo also puts the ring outside the union, where it is clipped — so the alternatives are a permanent layout change (`padding-left` on the anchor, or making it `inline-flex`, both of which move the brand block in *every* state on every page of every host) traded against a transient overlap of a **decorative** image whose accessible name comes from the adjacent label text. WCAG 2.4.11 permits an indicator that overlaps its component; no criterion is breached, the logo stays recognisable at 86% of its ink, and the overlap disappears the moment focus moves. Two shape facts are recorded so a future check does not mis-assert: the ring is a closed **stepped polygon**, not a rectangle, so its *bounding-box* edge coverage reads 0.84 / 0.84 / 0.60 / 1.00 while the polygon's own edges are all 1.00; and `4w + 4h − 16` evaluating to 716 for the bounding box is a numerical coincidence, not a proof of shape | Accepted — the stronger indicator chosen over a transient cosmetic overlap, with the geometry proving no third option | Frontend maintainer |
+| `RISK-196` | **The doughnut segment tooltips fit their canvas only because they were tightened, and the longest label has 10.8 px of head-room.** Chart.js v2 paints its tooltip into the **canvas bitmap**, and the widget markup fixes that canvas at 100×100 CSS px, so a tooltip that grows does not overflow into the page — it is cut off. All **7 of 7** measured tooltips fit, satisfying `x ≥ 0`, `y ≥ 0`, `x + width ≤ 100` and `y + height ≤ 100` with the caret overhang inside as well, confirmed on 6× crops with the canvas bounds drawn in. But that outcome is a *consequence of the fix*: `displayColors` was disabled and title and body font dropped to 10 px with 4/3 px padding precisely to buy the room. The widest tooltip, `Non-billable %: 72`, measures **89.157 px — 10.843 px spare**, and **two of the seven are already pinned to `x = 0`** by Chart.js's own left-edge clamp, so their left slack is fully consumed. A longer category label, or a three-digit value (`Non-billable %: 100` ≈ 94 px), would erode the remainder and the right-edge clamp would begin cutting text. Enlarging the canvas is a layout change to a dashboard widget no finding raises; `show-legend="true"` was rejected for a measured reason rather than a stylistic one — Chart.js renders its legend *inside* the 100 px container, which would shrink the doughnut to nothing and duplicate the colour-keyed legend text the card already carries. Recorded also so a future check does not mis-assert a defect: **four** segments across the two dashboards hold the value 0 and therefore have `endAngle − startAngle === 0` exactly, which makes `ArcElement.inRange` unsatisfiable by any pointer position — they are unhoverable **by construction**, and stay identifiable from the card's adjacent label-and-count text | Accepted — documented, with the head-room figure recorded so a future label change is checked against it | Frontend maintainer |
+| `RISK-197` | **Two of the twenty-five rendered user-delete controls still refuse, because authored content is deliberately not cascaded.** The `P6-17` remediation detaches the target's `user_role` rows inside the delete transaction, which took functional controls from **12 of 25 to 23 of 25** measured across the 27 accounts in this installation. **Eight** foreign keys reference `rec_user` and **all eight are `ON DELETE NO ACTION`**: `rec_comment.created_by`, `rec_feed_item.created_by`, `rec_project.owner_id`, `rec_task.created_by`, `rec_task.owner_id`, `rec_timelog.created_by`, `rel_user_nn_task_watchers.origin_id` and `rel_user_role.target_id`. Only the last is detached, and the asymmetry is the point: a role assignment is a pure join row with no meaning once one endpoint is gone, whereas `created_by` and `owner_id` are authorship provenance that a delete handler has no mandate to destroy. The two accounts that still refuse are `regular@webvella.com` (2 tasks, 2 time logs, 1 watcher row) and `qa.owner2@t.local` (1 watcher row and nothing else) — and they now receive a message naming what to reassign instead of the platform's generic *"The entity record was not update. An internal error occurred!"*. The residue worth naming honestly is the second one: it is blocked **only** by a task-watcher join row, which is the same class as a role assignment, so detaching it would be consistent — but `user_nn_task_watchers` is a **Project-plugin** relation, and reaching for it by name from an SDK page would cross a plugin boundary nothing else in this codebase crosses. The general remedy is a platform-level rule in `DbRecordRepository.Delete` that detaches a record's many-to-many rows for *any* entity, which changes core delete semantics for every entity in the product and is refused under AAP §0.3.2 | Accepted — the narrow detach shipped, the general one declined, both measured | Platform team |
+| `RISK-198` | **The new delete confirmation is an inline event handler, so enforcing the content-security policy would silently remove the only guard in front of an irreversible action.** The control `P6-17` added carries `onclick="return confirm('Delete this user? This cannot be undone.')"`, matching the platform's own precedent for a guarded delete. Under the report-only policy that ships today the handler runs and the prompt appears — verified verbatim at runtime, twice. **This is now MEASURED, not predicted.** Under an actually-enforcing policy — exercised on a scratch host whose environment differed from the shipping one by that switch alone — a four-variant probe showed `setAttribute("onclick", …)`, a parser-created `onclick` attribute and a `javascript:` URL all failing to fire while an `addEventListener` **control fired in the same click batch**; and on the live delete button `typeof button.onclick === 'function'` was **`false`**, the attribute present in the DOM and the handler never compiled. Chrome names the missing keyword itself: hashes do not apply to event handlers unless `'unsafe-hashes'` is present. **The failure mode runs in the dangerous direction**: the attribute simply stops executing, `confirm()` never fires, `return false` never happens, and the form — which does carry a valid antiforgery token and a specific `recordId` — submits on the first click with no prompt at all. The full enforcement measurement is in `RISK-022`. This control is **one of seven** inline-confirm sites in the SDK plugin (`user/list.cshtml:L50`, `entity/data.cshtml:L47`, `job/list.cshtml:L15`, `log/list.cshtml:L14`, `page/details.cshtml:L19` and `:L24`, `application/details.cshtml:L12`), **six of which pre-date this engagement** — including the platform precedent this control was deliberately modelled on — and one of which is already inert without any policy change at all (`RISK-199`). Fixing only the one added here would leave six guards in the same condition while creating the impression the class was addressed, which is why the disposition is a single stage-0 item covering all seven rather than a local edit. That is materially different from the other inline handlers the inventory carries, which are decorative or navigational — this one is the last thing standing between a click and a deleted account. It does **not** move any of `RISK-170`'s three counts (109 `Html.Raw` sinks, 59 inline `<script>` elements, 27 inline `style=` attributes), because an event-handler attribute is a fourth class that inventory does not count, and `P6-03`'s sibling change deliberately added **no** inline script — it loads an external file, so the mandated `script-src 'self'` stays satisfiable. Left in place rather than pre-emptively externalised because the enforcement decision belongs to `RISK-022`: whoever sets `SecurityHeaders__ContentSecurityPolicyReportOnly` to `false` must externalise this handler or admit `'unsafe-hashes'` **in the same change**, and this row exists so that obligation is discoverable at that moment rather than discovered afterwards | Open — a precondition on the CSP enforcement decision, not an independent defect | Platform team |
+| `RISK-199` | **The "Delete App" confirmation has never worked, on any host, with or without a content-security policy — its handler is a syntax error.** `WebVella.Erp.Plugins.SDK/Pages/application/details.cshtml:L12` carries `onclick='function(e){if(!confirm("Are you sure?")) {e.preventDefault();e.stopPropagation()}}'`. An inline handler's value is compiled as a *function body*, and `function(e){…}` as a statement is not valid JavaScript — `new Function` on that exact string raises **"Function statements require a function name"**. So the handler never compiles, `confirm()` is never called, and clicking "Delete App" submits the `DeleteRecord` form immediately. Even had it parsed it would still do nothing useful: it would define an anonymous function and discard it without ever invoking it. Found while measuring what a content-security policy would break, and it is **not** a CSP consequence — it fails identically in the shipped report-only configuration. **Proven pre-existing rather than assumed**: `git diff --name-only master...HEAD` for that file returns empty, the line is present verbatim at `master`, and the last commit to touch it is an upstream one. **Documented, not fixed**, under AAP §0.1.3 guideline 8 (document out-of-scope concerns; fix only if Critical) and §0.3.2: it is a missing safety net rather than a vulnerability — the delete is still governed by server-side entity permissions, the control is explicitly labelled, and repairing an unrelated pre-existing page is refactoring beyond the security remit. It belongs to the same stage-0 work as `RISK-198`: replacing all seven inline-confirm guards with delegated listeners fixes this one as a side effect, which is the cheapest correct place to address it | Documented — pre-existing defect, recommended for the stage-0 batch | Frontend maintainer |
+| `RISK-200` | **The Site host's launcher publishes application tiles whose plugin it does not deploy, so those routes answer 500.** The home screen of `WebVella.Erp.Site` advertises Projects, Mail and SDK, because application records live in the **shared database every host reads** — but that host's project file references only `WebVella.Erp.Plugins.SDK`, `WebVella.Erp.Web` and `WebVella.Erp`, so `WebVella.Erp.Plugins.Project.dll` is absent from its publish output. Following the Projects tile to `/projects/dashboard/dashboard/a` therefore raises `InvalidOperationException: A view component named 'PcProjectWidgetTasksChart' could not be found` and answers **HTTP 500**; `/projects/feed/feed/a` fails the same way. **Proven pre-existing rather than assumed**: the host's `ProjectReference` set is byte-for-byte identical at `master` and at this revision, so no change here could have removed a plugin the host never referenced; the twenty Project-plugin files this engagement touched are all `M` with zero renames, moves or deletions; and `PcProjectWidgetTasksChart.cs` is not in the diff at all, its last commit being an upstream one. The same dashboard renders correctly at **HTTP 200** with both doughnuts on `WebVella.Erp.Site.Project`, which is where that plugin is deployed. Security-positive, and the reason this is an availability note rather than a finding: the 500 leaks nothing — the response body carries only *"An unexpected system error occurred."*, a stack-trace probe matched nothing, and all seven mandated headers are present on it, which is `H-13` behaving correctly under `Production`. The remedy is a deployment-boundary decision — either scope the launcher's tiles to the applications a host actually ships, or reference the plugin — and both are architectural changes refused under AAP §0.3.2 | Documented — pre-existing deployment boundary, no disclosure, out of scope | Platform team |
+| `RISK-201` | **Two seeded schedule-plan jobs fail on every tick with `type [null]`, and the table their failures fill is pruned by one of the plans that is failing.** `JobManager.Process` records *"Start job with id[88880000-0000-0000-0000-000000000001] and type [null] failed!"* and the same for `…0002`, **29,975 times each** — 59,950 of the 62,487 rows in `system_log`, or **96%** of the platform's entire log table — accruing at roughly **44 rows per minute** while any host is up. The compounding part is the second-order effect: one of the three enabled plans is *"Clear job and error logs."*, so the mechanism that would bound this table is plausibly among the mechanisms that are broken, which turns a benign misconfiguration into an unbounded-growth path (CWE-770). **Proven pre-existing by date rather than by argument**: the first such record is stamped `2026-08-08 12:42:01`, three days before any file in this engagement was last modified, with 134 records on 08-08 and 218 on 08-09; the steep per-day rise to 48,495 on 08-11 tracks host uptime during verification, not any change made here. The two identifiers follow this installation's QA seed-data pattern. It is invisible at every surface a browser can see — no console error, no `alert-danger`, and no HTTP response at 400 or above — which is precisely why it is recorded: a reader who checks only the browser will conclude the platform is healthy. Not fixed, because diagnosing seeded job records is neither a security remediation nor within the change surface AAP §0.3.2 permits; the operational remedy is to disable or repair the two plans and then let the log-pruning plan drain the backlog | Documented — pre-existing operational defect with a resource-exhaustion tail | Platform team |
 
 ### Identifiers renumbered while consolidating this register
 
@@ -1676,6 +1703,138 @@ directive-stressing screens the pass recorded **298** violation events and **298
 *observed* by this policy and *blocked* by neither. That is the report-only contract working exactly as
 documented, and it is the concrete demonstration of the warning at the top of this entry: report-only closes
 nothing on its own.
+
+#### Enforcement has now been exercised rather than modelled — what actually happens when the switch is flipped
+
+Everything above this subsection was measured in **report-only** mode, which can show what *would* be
+reported but cannot show what *breaks*. This subsection records the first run in which the policy was
+actually enforced.
+
+**Method, stated because attribution depends on it.** A second copy of the already-published SDK host was
+started on a scratch port from the same publish directory, with `ASPNETCORE_ENVIRONMENT=Production` and one
+added environment variable: `SecurityHeaders__ContentSecurityPolicyReportOnly=false`. Its `/proc/<pid>/environ`
+was diffed against the shipping host's, and the **only** key that differed was that switch — same content
+root, same environment, byte-identical connection string, encryption key, token signing key and administrator
+password. Every difference below is therefore attributable to CSP delivery mode and to nothing else. The
+scratch host was stopped afterwards and the shipping host re-checked as still emitting the report-only name.
+
+**The capability question is settled: the switch works, exactly and completely.** With it flipped, the
+response carries `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'` —
+**byte-for-byte the mandated value** — with `Content-Security-Policy-Report-Only` **absent**, on a document,
+on a static asset and on a redirect, and with the other six mandated headers unchanged. Browser-side proof is
+stronger than the header: the same page on the two hosts produced **66 violation events each with identical
+directive attribution**, differing only in `event.disposition` — `enforce` ×66 against `report` ×66. So the
+mandated seven-header set is unmet by a **delivery-mode decision**, not by any missing capability, and the
+promotion in stage 5 above is a one-key configuration change whose mechanism is now verified rather than
+assumed.
+
+**Sign-in survives enforcement.** First attempt, no lockout consumed. The credential path is a
+server-rendered form POST with a server-rendered antiforgery token and no JavaScript dependency, so the one
+inline script on the login page being blocked costs nothing. The login screen is also visually **identical**
+to the report-only baseline. Enforcement does not lock anyone out — which is precisely why the damage it does
+elsewhere is easy to miss.
+
+**Inline event-handler attributes are BLOCKED, and this is the single most consequential fact in the
+subsection.** A four-variant probe settled it beyond argument:
+
+| Probe | How the handler was attached | Fired? |
+| --- | --- | --- |
+| `setAttribute("onclick", …)` | attribute, set from script | **No** |
+| `insertAdjacentHTML('<button onclick="…">')` | attribute, created by the HTML parser | **No** |
+| `addEventListener('click', …)` — **control** | listener API | **Yes** |
+| `<a href="javascript:…">` | navigation URL | **No** |
+
+The control firing in the same click batch proves the dispatch worked and the probe was sound. On both the
+probe element and the live delete button, `typeof element.onclick === 'function'` was **`false`** — the
+attribute was present in the DOM and the handler was never compiled. Chrome names the missing keyword itself:
+hashes do not apply to event handlers, style attributes or `javascript:` navigations unless `'unsafe-hashes'`
+is present. The consequence for destructive controls is carried as `RISK-198`, and a pre-existing guard that
+is inert even without CSP is carried as `RISK-199`.
+
+**Directive census under enforcement — 897 events, every one `disposition: "enforce"`.**
+
+| Directive | Events | Composition |
+| --- | --- | --- |
+| `style-src 'self'` | **806 (90%)** | 512 `style-src-elem` + 294 `style-src-attr` |
+| `script-src 'self'` | **91** | 79 `script-src-elem` + 9 `eval` + 3 from the probe above |
+| blocked *requests* | **1** | a `blob:` URL — see the stage-1 correction below |
+
+**A correction to stage 1 of the plan above, found by measuring rather than reading.** Stage 1 names two
+missing directives, `img-src 'self' data:` and `worker-src blob:`. There is a **third**: a `script-src-elem`
+violation was recorded with `blockedURI: "blob"` for the Stencil web-component runtime's lazy-loaded
+implementation chunk, so **`script-src` must also admit `blob:`**. This was the only request in the entire run
+that was blocked rather than merely reported, and it is the direct cause of the application-sitemap editor
+rendering nothing at all. Stage 1's exit condition should be extended accordingly; without it, stages 2 and 3
+could both be completed and the sitemap editor would still be a blank panel.
+
+**Per-screen outcome.**
+
+| Screen | Own violations (excluding the 64-event global baseline) | Verdict |
+| --- | --- | --- |
+| `/login` | 2 | **Usable** — visually identical to baseline, sign-in works |
+| `/` application launcher | 10 | **Degraded** — all three application icons invisible |
+| `/sdk/objects/page/l` | 25 | **Degraded** — paging, sorting, search drawer and seven column filters dead |
+| `/sdk/access/user/l/list` | 20 | **Degraded, and unsafe** — paging dead; nine delete guards inert |
+| `/sdk/server/job/l/list` | 160 | **Degraded, and unsafe** — 16 JSON editors dead; the bulk-purge guard inert |
+| `/sdk/server/log/l/list` | 143 | **Degraded, and unsafe** — 16 JSON editors dead; the guard on purging 57,278 records inert |
+| `/sdk/objects/application/r/<id>` | 10 | **Degraded** — renders; its delete guard inert |
+| `…/application/r/<id>/sitemap` | 11 | **Unusable** — nothing renders below the tab bar |
+| SDK top navigation, every screen | — | **Unusable** — all three menus unopenable, nine destinations unreachable |
+
+**Zero HTTP responses at status 400 or above, and zero JavaScript exceptions.** Every request on every route
+returned 200, and `window.onerror` never fired once. The reason is worth understanding rather than filing
+away: the functions that become undefined are only *called* from inline scripts and handlers that are
+themselves blocked, so callers die together with callees and nothing throws. **The failure mode is silent
+inertness.** A conventional status-code health check would report this deployment perfectly healthy while its
+navigation is unusable and its delete confirmations have quietly disappeared — which is the strongest single
+argument for not promoting to enforcement on a schedule instead of on the stage exit conditions.
+
+**Why the style backlog cannot be refactored away, stated concretely.** All seven external stylesheets are
+same-origin and applied perfectly — 3,939 rules, zero failures — so every class-driven visual survives
+untouched. What dies is the styling that is *computed per record at render time*, and there are exactly two
+kinds: per-application brand colour and per-column table geometry. Two measured illustrations:
+
+- On the launcher, **all three application icons became invisible.** The stylesheet default for `.app-icon`
+  is white *because* it is designed to sit on the coloured badge the inline style supplies; with both the
+  badge background and the glyph colour blocked, the result is white glyphs on a transparent background over
+  a white card. A user cannot tell the three applications apart.
+- On the user list, the action column rendered **233 px against an intended 87 px** — a 2.7× error that
+  inserts a ~146 px empty gap and pushes every data column to the right, while `white-space: nowrap` being
+  blocked lets long values wrap mid-value.
+
+Neither is fixable by editing a stylesheet, which is why stage 2's exit condition is the hardest one in the
+plan and why `style-src 'self' 'unsafe-inline'` is the likely landing point for that directive.
+
+**One item the four-stage plan above does not contain at all, and should: a stage 0.** Before any promotion,
+the inline `onclick="return confirm(…)"` guards on destructive controls must be moved to delegated listeners
+bound from external files. `addEventListener` is never blocked — the control probe proves it — so this is a
+mechanical change with no policy relaxation attached, and it is worth doing **on its own merits regardless of
+whether enforcement is ever promoted**, because one of those guards is already inert (`RISK-199`). Seven
+inline-confirm sites exist in the SDK plugin: `user/list.cshtml:L50`, `entity/data.cshtml:L47`,
+`job/list.cshtml:L15`, `log/list.cshtml:L14`, `page/details.cshtml:L19` and `:L24`, and
+`application/details.cshtml:L12`. Six pre-date this engagement.
+
+**A cheap 71% reduction in the backlog, which no stage currently claims.** `ckeditor.js` is loaded from the
+global `<head>` of every page and contributes a fixed **62 violations and 104,512 characters of blocked CSS to
+every single request** — including the login page, which hosts no editor. Loading it only on pages that
+actually host an editor removes roughly 71% of the total violation volume at a stroke, and would make
+CKEditor render correctly where it *is* used. This belongs in stage 2 as its first task.
+
+**The realistic landing point, so the plan is not read as promising the literal mandated value.** After stage 0
+through stage 3, the first *enforceable* policy this product can carry is
+`default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'`. That still
+eliminates the inline-`<script>` sink the header was adopted for, but it is **not** the mandated
+`script-src 'self'; style-src 'self'`. Reaching the mandated value literally would require replacing the
+Stencil component runtime and re-architecting how per-record styling is emitted — both well outside this
+engagement, and both properly the owner's decision rather than a documentation footnote. Recorded here so that
+nobody reads stage 5 as a promise that the mandated string becomes enforceable by clearing the backlog alone.
+
+**Coverage limit, stated rather than papered over.** Two of the five deliberate inline-emitting components —
+`PcHtmlBlock/{Display,Design}.cshtml` and `PcJavaScriptBlock/Display.cshtml` — render on user-authored pages
+not served by the SDK host, so they were **not** measured directly. `PcJavaScriptBlock` emits an inline
+`<script>` and will be blocked by the same `script-src-elem` mechanism observed 79 times; `PcHtmlBlock` will
+render its markup but lose any inline `style` or `on*` attribute inside it. Both are inference from a
+measured mechanism, not measurement.
 
 ### RISK-005 — RETIRED: the CSP report endpoint no longer exists
 
@@ -3908,8 +4067,37 @@ Two design properties are recorded because they are what stop the control becomi
 
 | Field | Value |
 | --- | --- |
-| **Status** | Named, not fixed — reasoned decline. |
-| **Related finding** | H-06 / review finding `F15` (CWE-79, OWASP A03:2021) |
+| **Status** | **CLOSED — fixed at the builder. Superseded by the fix described immediately below; the decline recorded further down is retained verbatim, per this register's convention, because it is the reasoning the fix overturned.** |
+| **Related finding** | H-06 / review finding `F15` (CWE-79, OWASP A03:2021); disposition corrected under QA finding `DOC-02` |
+
+**What closed it, and where.** `WebVella.Erp.Web/Models/BaseErpPageModel.cs:L249` carries
+`TryEncodeMenuUrl`, which validates a database-sourced menu URL against a scheme **allow-list** before
+encoding it, and reports failure to the caller rather than emitting the value:
+
+- **Accepted:** an application-local path (`/`, `/path` — but explicitly *not* the protocol-relative
+  `//host` nor its backslash variant `/\host`), the framework's `~/path` form, a same-page fragment
+  (`#` or `#anchor`), and an explicit `http://` or `https://` absolute URL, because a sitemap node of type
+  `Url` legitimately links off-site.
+- **Rejected:** every other scheme — `javascript:`, `data:`, `vbscript:`, `file:` and any future one — and
+  **any** value containing a control character, because browsers ignore TAB, CR and LF inside a scheme and
+  would otherwise treat `java&#9;script:` as active. The value is `Trim()`ed first, since a browser ignores
+  surrounding whitespace and a validator that did not would accept `" javascript:…"`.
+- **Applied at both builder sites**, `:L536` for a dropdown node and `:L563` for a single-node area, so
+  neither path can be forgotten. A rejected — or absent — URL degrades to the inert
+  `href="#" onclick="return false"` anchor the builder *already* emitted for a node carrying no URL, so the
+  menu entry stays visible, clicking it does nothing, and the fallback is an existing rendering rather than
+  an invented one.
+
+**The consequence to be aware of, stated plainly rather than left implicit.** The decline below reserved
+this as an owner decision precisely because an allow-list narrow enough to stop `javascript:` would also
+stop `mailto:` and `tel:`. That decision has now been **taken in the strict direction**: `mailto:` and
+`tel:` sitemap node URLs are rejected along with `javascript:` and render as the inert anchor. An operator
+who has configured such a node will see it stop navigating. Widening the allow-list to admit those two
+schemes explicitly is a one-line change at `:L269` and remains available; it is recorded here so the
+trade-off is visible rather than discovered.
+
+**Why this entry is not simply deleted.** Everything below this point was accurate when written and is the
+reasoning the fix overturned. This register does not overwrite superseded reasoning, so it is retained.
 
 `node.Url` is interpolated into an `href` attribute by the sitemap builder in
 `WebVella.Erp.Web/Models/BaseErpPageModel.cs`. It is now HTML-encoded, which closes the half of the
@@ -4468,10 +4656,24 @@ silently disarms the family fails the gate instead of producing a reassuring sil
 - parses `CA3001`–`CA3012` out of the result, ratchets it against an empty allow-list, publishes
   `taint-scan-web.txt` as evidence, and deletes the path-bearing raw log.
 
-**Measured: about 220 seconds, exit 0, zero `CA3001`–`CA3012` diagnostics, with the capability self-test
+**Measured: about 220 seconds, zero `CA3001`–`CA3012` diagnostics, with the capability self-test
 reporting both control diagnostics in under two seconds.** Coverage is therefore **19 of 19**
 compilations, and the four compensating controls enumerated in the superseded statement below now sit
 behind a scan rather than in place of one.
+
+> **Correction — this paragraph previously said "exit 0", and that was true of the scan but not of the
+> step.** QA finding `WF-01` established that the step ended with
+> `taint_allow_list | … | grep -v '^$' | sort -u`, that the allow-list heredoc is deliberately **empty** on
+> this tree, and that `grep` over empty input exits 1 — which the workflow-level
+> `defaults.run.shell: bash` turns into the step's status, because GitHub then runs every step with
+> `-o pipefail`. Re-measured on this tree: the step exited **1** after its ~211-second rebuild, *after*
+> `taint-pairs.txt` had already been written with zero pairs. So the scan ran, the capability self-test
+> passed and the zero was genuine — and the step could never publish any of it, taking the
+> evidence-binding and release-attestation steps down with it. The guard is now applied
+> (`| { grep -v '^$' || true; } |`, the form this workflow already used at its global-analyzer-config
+> check), the step exits **0**, and the remediation log's section *The continuous gate made to reach its
+> own verdicts* carries the full before-and-after. **An empty allow-list must mean "nothing is excused",
+> never "the gate could not run".**
 
 **What remains accepted, stated precisely.** Depth, not coverage. A one-hop interprocedural bound follows
 a tainted value across a single call; it will not follow one that crosses two or more. The eighteen
@@ -5840,6 +6042,24 @@ demand exactly the mass edit this entry declines.
 
 #### RISK-119 — Two pre-existing defects in the WebAssembly client's HTTP layer
 
+> **DISPOSITION CORRECTED — this entry is CLOSED, not accepted.** QA finding `DOC-02` established that the
+> register still described these two defects as documented-and-declined after both had been fixed. Verified
+> in source at this commit:
+>
+> | Condition as recorded below | Where it is closed now |
+> | --- | --- |
+> | Refresh URL carries `api/` twice, so no route serves it | `Client/Services/TokenManagerService.cs:L88` — the path is composed from the shared `WasmConstants.ApiAuthRoot` constant that `AuthenticationService` also uses, so the two cannot diverge again. The comment there names review finding `C-01`. |
+> | Lower-case `bearer` scheme meets a case-**sensitive** host selector, so bearer calls answer as anonymous | Closed on **both** sides. `Client/ApiService/ApiService.System.cs:L35` emits the canonical `"Bearer"`; and the non-conforming half this entry itself identified as "actually wrong" — the hosts' literal prefix match — is now `StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)` at `WebVella.Erp.Site/Startup.cs:L219` and `WebVella.Erp.Site.Project/Startup.cs:L216`. The comment names review finding `C-02`. |
+> | The credential is set on `DefaultRequestHeaders` of a **shared** client, so calls that should be anonymous carry it | `GetNotAuthorizedHttpClientAsync` sets `DefaultRequestHeaders.Authorization = null`, restoring the distinction the method name promises. The authorized path sets the header on every call, so it can never observe a cleared value. |
+>
+> **The runtime consequence recorded below is therefore also closed.** The client's home page no longer
+> loses its authenticated branch to a redirect loop, so the shipped Logout control is reachable on a stock
+> build and the `M19` verification no longer has to route around it. `M19` remains worded to permit either
+> route, which is still the right wording — it just no longer *needs* the alternative.
+>
+> Everything below this notice is retained verbatim, per this register's convention, because it is the
+> mechanism the fixes address and the reasoning that deferred them.
+
 **How they were found.** Both surfaced while remediating review finding `B3-SEAM-01`, which required reading
 the shipped Blazor WebAssembly client's authentication path end to end. Neither is that finding, neither is
 caused by its fix, and neither is repaired by it. They are recorded here because AAP 0.1.3 guideline 8
@@ -6031,10 +6251,10 @@ actionable fix rather than a generic caution.
 
 | Finding | Measured | Recommended fix |
 | --- | --- | --- |
-| No visible focus indicator | 71 of 90 focusable elements | Add a single `:focus-visible` rule to `button-colors.css` with a 2px outline and offset; one declaration covers the whole product because the buttons are already class-driven |
+| No visible focus indicator | 71 of 90 focusable elements | Add a single `:focus-visible` rule with a 2px outline and offset; one declaration covers the whole product because the buttons are already class-driven. **DONE by the `P6-11` remediation** — placed in `WebVella.Erp.Web/Theme/styles.css` rather than the vendored `button-colors.css`, with a second `outline-offset: -2px` rule for the application bar — for `.menu-nav a`, whose ancestor clips, and for `#brand-logo a`, whose taller `inline-block` child is unioned into the outline (`RISK-195`). Measured 12 of 12 Tab stops indicated, against 1 of 12 before, and 6 of 6 application-bar anchors painting a closed ring afterwards |
 | Interactive elements reach assistive tech unnamed | 41 of 90 tab stops | The product uses `title` as its naming strategy, which surfaces as *description* rather than *name*. Add `aria-label` alongside `title` in the tag helpers that emit icon-only controls |
 | No `h1` and no `<main>` landmark on any screen | every screen | Promote the page-header title element to `h1` inside `WvPageHeader`, and wrap the body region of `_AppMaster.cshtml` in `<main>`. Two edits, both in shared files |
-| Colour contrast below AA, including both primary button labels | 2.78:1 and 3.12:1 | Darken the two primary button backgrounds in `button-colors.css` until the white label reaches 4.5:1 |
+| Colour contrast below AA, including both primary button labels | 2.78:1 and 3.12:1 | Darken the two primary button backgrounds in `button-colors.css` until the white label reaches 4.5:1. **Not done** — that file is vendored, and `P6-11` fixed the text-on-white cases in the platform sheet instead; the solid-button label cases and the rest of the palette remain open as `RISK-190` |
 | Arrow keys inert; Space cannot open the settings menu | 5 confirmations | The nav script binds `click` only. Add a `keydown` handler mapping Enter, Space and the arrow keys onto the existing click path |
 | `label for` targets the wrong element id | `input-{guid}` versus `textarea-{guid}` | Derive the `for` value from the element that is actually rendered, in the field tag helper that emits both shapes |
 | Tab order jumps backwards ~1126px | pager component | The pager's DOM order is float-reversed. Reorder the markup and keep the visual order with `flex-direction: row-reverse` |
@@ -6672,7 +6892,7 @@ above, that is stated plainly and the change itself is recorded in
 
 | ID | Finding | CWE | OWASP | Disposition and recommended fix |
 | --- | --- | --- | --- | --- |
-| `M-01` | No security response headers | CWE-693, CWE-1021 | A05:2021 | **Remediated**, limb (a). All seven mandated headers are emitted by `SecurityHeadersMiddleware` in all seven host pipelines, ahead of response compression and both static-file middlewares. The one residual is the content policy's delivery mode — RISK-022 |
+| `M-01` | No security response headers | CWE-693, CWE-1021 | A05:2021 | **Remediated**, limb (a). All seven mandated headers are emitted by `SecurityHeadersMiddleware` in all **eight** deployable host pipelines — the seven Razor site hosts, ahead of response compression and both static-file middlewares, plus `WebVella.Erp.WebAssembly/Server`, where the middleware is linked by source and registered outermost. **This row said "all seven" for one revision and that undercounted the deployable hosts by one; the eighth shipped bare and was reopened as QA finding `P6-04`.** The one residual is the content policy's delivery mode — RISK-022 |
 | `M-02` | No antiforgery validation on the MVC API surface | CWE-352 | A01:2021 | **Documented only.** Correctly narrowed to `WebApiController`: the Razor Pages login already validates at `WebVella.Erp.Web/Pages/login.cshtml.cs:L64`, so this is not a platform-wide absence. Only the zero-breakage half was applied — the `SameSite=Lax` and `Secure` cookie attributes, which already block cross-site *form* posts of the session cookie for unsafe methods. **Fix:** emit the verification token in the shared layout, attach it from the platform's own AJAX helper so existing JavaScript clients start sending it, confirm by telemetry that no untokened caller remains, then switch on `AutoValidateAntiforgeryToken`. Declined now because today's clients post without a token and enforcement would break working functionality |
 | `M-03` | Sign-in call not awaited | CWE-252, CWE-703 | A07:2021 | **Remediated**, limb (c). The call is awaited, which made the method asynchronous and propagated to its single caller — a compile-mandated ripple, not an opportunistic one |
 | `M-04` | Local time used for token timestamps | CWE-613 | A07:2021 | **Remediated**, limb (c). `DateTime.UtcNow` replaces `DateTime.Now`, so the expiry claim means what it says regardless of host timezone |
@@ -8022,11 +8242,11 @@ heading and the page has no landmark region. A score-only reading misses all of 
 | Finding | Measured | Recommended fix |
 | --- | --- | --- |
 | `Q9` — the code editor is a hard bidirectional keyboard trap (WCAG 2.1.2, Level A) | Tab indents, Shift+Tab outdents, Escape does nothing, Ctrl+M and F6 inert; six escape routes exhausted; only a mouse click escapes. Present on `page/manage-custom`, `data_source/c/create` and fifteen hidden instances each on the log and job lists | Bind Escape to blur in the editor's own command table where it is instantiated (`editor.commands.bindKey`), or enable the library's keyboard-accessibility option where the vendored version supports it. The library itself is third-party and must not be edited — version updates only |
-| `Q10` — the navigation focus ring is clipped to 12 painted pixels (WCAG 2.4.11) | Ring paints exactly 12 px for anchors measured at 34, 73, 71, 65 and 30 px wide, because `div.menu-nav` sets `overflow: hidden` and is sized to its child; the one unclipped element paints 528 px from the same declaration. 12 of 15 navigation stops degraded | One declaration in `WebVella.Erp.Web/Theme/styles.css`: `overflow: visible` on `div.menu-nav`, or move the ring to the wrapper. Re-measure the ring width per anchor afterwards |
-| `Q11` — focus indicators are invisible or actively destructive (WCAG 1.4.11) | `.btn-outline-secondary` focus changes **0** pixels (its ring is `rgba(255,255,255,.5)` on white, 1.00:1). `.btn-white` focus is *subtractive*: 533/1131/1095 pixels change and every one is lighter, because the drop shadow is replaced by a white halo and the button's only boundary vanishes. The stylesheet also deletes rings outright with `.form-control:focus{box-shadow:none}` and `.page-header-toolbar a{box-shadow:none}`, while select2 and `.btn-blue` keep theirs | Add one `:focus-visible` rule with a 2 px outline and offset in `button-colors.css`, and remove the two `box-shadow:none` focus overrides. The buttons are already class-driven, so a single declaration reaches the product |
+| `Q10` — the navigation focus ring is clipped to 12 painted pixels (WCAG 2.4.11). **CLOSED by the `P6-11` remediation, and the fix below was NOT the one used** — see `RISK-194` and the `P6-11` section of the remediation log | Ring paints exactly 12 px for anchors measured at 34, 73, 71, 65 and 30 px wide, because `div.menu-nav` sets `overflow: hidden` and is sized to its child; the one unclipped element paints 528 px from the same declaration. 12 of 15 navigation stops degraded | One declaration in `WebVella.Erp.Web/Theme/styles.css`: `overflow: visible` on `div.menu-nav`, or move the ring to the wrapper. Re-measure the ring width per anchor afterwards. **Correction recorded rather than quietly replaced:** the first of those two suggestions is wrong. `div.menu-nav` pairs `overflow: hidden` with `text-overflow: ellipsis`, `white-space: nowrap` and `max-width: 400px`, and `text-overflow` has no effect unless overflow is clipped — so making it visible would stop long application-menu labels truncating and let them overrun the bar, a functional regression traded for a ring. What `P6-11` shipped instead is `.menu-nav a:focus-visible, #brand-logo a:focus-visible { outline-offset: -2px }`, which draws the ring INSIDE the border box so it stays wholly within the clipping ancestor and paints in full, with the truncation mechanism untouched. Measured after the change: the five `.menu-nav` anchors paint **280 / 436 / 428 / 404 / 264** pixels — a 22× to 36× increase on the 12 this cell reports — each a closed rectangle at 1.0000 coverage on all four edges and within 0.7% of its theoretical band. The second selector is in the same rule for a **different** reason and is carried separately as `RISK-195`: the brand anchor is clipped by nothing, but Chrome unions its 40 px `inline-block` label child into the outline, which pushed an outside-drawn ring's top row off the viewport and its bottom cap behind the page-header band |
+| `Q11` — focus indicators are invisible or actively destructive (WCAG 1.4.11). **The invisible half is CLOSED by the `P6-11` remediation; the destructive `.btn-white` half is not** | `.btn-outline-secondary` focus changes **0** pixels (its ring is `rgba(255,255,255,.5)` on white, 1.00:1). `.btn-white` focus is *subtractive*: 533/1131/1095 pixels change and every one is lighter, because the drop shadow is replaced by a white halo and the button's only boundary vanishes. The stylesheet also deletes rings outright with `.form-control:focus{box-shadow:none}` and `.page-header-toolbar a{box-shadow:none}`, while select2 and `.btn-blue` keep theirs | Add one `:focus-visible` rule with a 2 px outline and offset in `button-colors.css`, and remove the two `box-shadow:none` focus overrides. The buttons are already class-driven, so a single declaration reaches the product. **What `P6-11` actually did, and where it departed from this recommendation.** The rule went into `WebVella.Erp.Web/Theme/styles.css`, not `button-colors.css`: that file is **vendored** (`_content/WebVella.TagHelpers/`) and the delivery contract permits version updates to third-party assets, not edits. The two `box-shadow:none` overrides were **deliberately left in place** — removing them would make a ring appear on every mouse click, whereas scoping the new ring to `:focus-visible` leaves pointer interaction pixel-identical, which is what the preservation requirement needs. Measured after: **12 of 12** Tab stops show a painted 2 px `#007bff` ring at 3.98:1 where **1 of 12** did before, and a mouse click on a link or button still renders **zero** ring pixels. The `.btn-white` subtractive-halo half of this finding is untouched and remains open |
 | `Q12` — zero landmarks, zero skip link and zero `h1` on every page of every host (WCAG 1.3.1, 2.4.1) | A census of all first-party views and components found **0** files containing `main`, `nav`, `header`, `footer`, `aside`, `section`, `role="main"`, `role="navigation"`, `role="banner"` or `skip` as markup. Navigation is `div#nav`, content is `div#content`. `landmark-one-main` fails in all thirty-six Lighthouse runs; `h1` count is 0 on all eighteen page-instances, invisible to automation because heading-order passes. Total first-party ARIA attributes: **2**, both `aria-hidden`. No live region anywhere, including the login failure alert | Promote the page-header title to `h1` inside the page-header tag helper, wrap the body region of `_AppMaster.cshtml` in a `main` element, add a skip link as the first focusable element of that master, and give the login alert `role="alert"`. Four edits, all in shared files |
 | `Q13` — every textarea in the product has an orphaned label (WCAG 1.3.1, 3.3.2) | The label emits `for="input-{guid}"` while the multiline renderer emits `id="textarea-{guid}"` — same identifier, wrong prefix. The browser independently raises both *no label associated with a form field* and *incorrect use of a label `for` attribute*. Root-caused independently three times | Derive the `for` value from the element actually rendered, in the multiline field renderer that emits both shapes. One edit fixes every textarea |
-| `Q14` — approximately 51 colour-contrast failures across six of seven page types (WCAG 1.4.3) | Worst is `#8bc34a` on `#f5f5f5` at **1.92**. Others: `#ffffff` on `#2196f3` 3.12; `#9e9e9e` on white 2.67; `#e83e8c` on white 3.81; `#777777` on white 4.47; `#999999` on white 2.84; `#f44336` on white 3.68; `#4caf50` on white 2.77. One page passes entirely (`#155724` on `#d4edda` = 6.99) | Darken roughly six palette tokens until each reaches 4.5:1 against its actual background; the pass estimated that clears all fifty-one. Treat the accent-as-text uses first, since they are the worst |
+| `Q14` — approximately 51 colour-contrast failures across six of seven page types (WCAG 1.4.3). **Substantially CLOSED by the `P6-11` remediation, and its recommended fix is corrected below** | Worst is `#8bc34a` on `#f5f5f5` at **1.92**. Others: `#ffffff` on `#2196f3` 3.12; `#9e9e9e` on white 2.67; `#e83e8c` on white 3.81; `#777777` on white 4.47; `#999999` on white 2.84; `#f44336` on white 3.68; `#4caf50` on white 2.77. One page passes entirely (`#155724` on `#d4edda` = 6.99) | Darken roughly six palette tokens until each reaches 4.5:1 against its actual background; the pass estimated that clears all fifty-one. Treat the accent-as-text uses first, since they are the worst. **Outcome and correction.** `P6-11` closed six of the eight values this cell lists: `#9e9e9e` 2.67 → **4.61**, `#999999` 2.84 → **4.61**, `#777777` 4.47 → **4.61**, `#e83e8c` 3.81 → **5.52**, `#f44336` 3.68 → **4.98**, and `#2196f3` (the `#ffffff`-on-blue case's sibling as link text) 3.12 → **5.75**. Measured page-level result: the Projects dashboard went **15 failures → 0** of 126 elements examined, the SDK data-source list **32 → 2** of 109, and the application launcher **0** of 15. The estimate that darkening about six tokens clears all fifty-one is **wrong**, and the arithmetic is worth carrying forward: `#4caf50` (2.77) can be fixed at Green 800, but `#ff9800` **cannot be fixed at any step of its ramp** — 700 is 3.05:1 and both 800 and 900 are 3.79:1 — so no per-token pass makes the `.go-*` family compliant. That is now `RISK-190`. And `#8bc34a` on `#f5f5f5` at 1.92 is not a token at all: it is a per-record colour rendered as an inline `style` attribute, unreachable from any stylesheet, now `RISK-192` |
 | `Q15` — icon-only controls reach assistive technology unnamed | 3–11 unnamed interactive elements per authenticated page. Root cause proven: the glyphs are CSS pseudo-elements with no child element, so `alt` is impossible and only `aria-label` can name them. The home icon, hamburger and settings gear are unnamed on every shell page; the three launcher tiles are unnamed because their child is an absolutely-positioned empty element with the visible label outside the anchor; both dashboard canvases have no `aria-label`, no `role` and no fallback content; the navigation logo has **no `alt` attribute at all** on every screen measured | Add `aria-label` alongside the existing `title` in the tag helpers that emit icon-only controls — the logout link already carries `title="Logout"` and passes, so the pattern exists and was simply not applied. Add `alt` to the logo image and an `aria-label` plus fallback text to both canvases |
 | `Q16` — touch targets below 44 × 44 | `target-size` **passes** in Lighthouse because the audit uses a 24 × 24 threshold; against 44 × 44 every page fails. Worst: a sort link at **16 × 14**, the brand link 16 px tall, navigation icons 33.5 × 40 with a **0 px** gap — and one of the abutting targets is Logout. Sizes are byte-identical at 1440 px and 390 px, so there is no responsive adaptation | Increase padding in the shared button and icon-button classes and introduce a minimum gap between adjacent navigation targets. Measure against 44 × 44 rather than against the audit, and re-check the navigation band at 390 px |
 | `Q17` — table and menu semantics are deficient in three distinct ways | Dashboard timesheets carry nine `th` each with **0** bearing `scope`, and their row labels are `td`, so `td-has-header` fails. The tasks-queue tables have **zero** `th`, no `thead` and no `role="presentation"`, so they are announced as data tables with no headers. The three real grids are structurally correct but carry `scope` on **0** of their `th`, no caption, no accessible name, an empty first action `th` and `aria-sort` null. Navigation dropdowns have no `aria-expanded`, `aria-haspopup` or menu role and stay open after focus leaves; Escape is non-functional product-wide except on select2; the filter drawer has no focus containment, `role` null, `aria-modal` null, dumps focus to the body on close, and its close control is unnamed | Add `scope="col"`/`scope="row"` and a caption or accessible name in the grid renderer; mark the layout-only widget tables `role="presentation"`; add `aria-expanded`/`aria-haspopup` and a keydown handler to the navigation script; and give the drawer a dialog role, `aria-modal`, focus containment, focus restoration and a named close control. The grid is first-party here, so these are reachable |
@@ -8281,3 +8501,662 @@ the durable security-state store is reclaimed by expiry.
 
 **QA probe:** run sustained load in rounds, sampling resident set after each, and assert the per-round growth
 decays and the count returns toward its idle level after a settle.
+
+### RISK-188 — Wide data tables still push the page itself past a narrow viewport
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — documented, recommended for a future responsive pass. |
+| **Related finding** | Residual of the `P6-05` / `P6-21` / `P13-01` responsive remediation; raised by no QA finding of its own. |
+| **Owner** | Frontend maintainer |
+
+Three instances of one class of defect were found while remediating horizontal overflow. Two were named by QA
+findings and are fixed: the application bar (`P6-05`, `P6-21`) and the dashboard timesheet widget (`P13-01`).
+The third is a **page**-level instance on list screens and is not fixed.
+
+Measured after the fix, at the widths where it appears:
+
+| Screen | Width | `documentElement` scrollWidth / clientWidth | Overflow | Widest offender |
+| --- | --- | --- | --- | --- |
+| SDK `sdk/objects/page/l` records table | 375 | 667 / 375 | **292px** | `TABLE.table.table-bordered.table-hover`, width 652.1, right 667.1 |
+| CRM `sdk/objects/page/l` records table | 375 | 667 / 375 | **292px** | the same table |
+| Mail `mail/emails/all/l/all_emails` | 375 | 840 / 375 | **465px** | `DIV.pager-info.float-right`, width 110, right 840.4 |
+| Mail `mail/emails/all/l/all_emails` | 768 | 840 / 768 | **72px** | the same pager |
+
+**Attribution is measured, not assumed.** At each of those four combinations every element whose bounding-rect
+right edge exceeds the viewport was enumerated — 136, 136, 66 and 28 elements respectively — and **not one is a
+descendant of `#nav`**. `#nav`'s own overflow is exactly **0** at 16 of 16 host × width combinations, and the
+logout control is on-screen and hit-testable at all 16. So this is a pre-existing content-width defect that the
+bar fix neither caused nor was expected to close.
+
+**Why it is not fixed here, stated as a decision rather than an omission.** The minimal containment would be
+`overflow-x` on the shared `.erp-list` wrapper — and that is precisely the change `P13-01` rejected, for a reason
+that applies with more force on list screens than on the dashboard: `.erp-list` wraps **every** grid in the
+platform, and list-page tables carry a `thead .filter-row` whose cells hold Bootstrap dropdowns and date pickers.
+A clipping ancestor would cut those popups off at the table's edge on every list screen in the product. Applying
+the opt-in `.erp-scroll-x` class to each list view instead would be a change across many views with the same
+popup hazard wherever a filter row exists. No QA finding raises this, and AAP §0.3.2 forbids enhancement beyond
+remediation, so it is documented rather than attempted.
+
+One difference from `P6-21` is worth stating, because it is why the two are not equally urgent: here the content
+remains **reachable** — the page scrolls horizontally, so every column can be read. `P6-21` was about a control
+that sat outside the viewport in a bar that did not scroll, which is a different severity of problem.
+
+**Recommended fix for a future pass.** Give list tables a dedicated scroll wrapper that is applied *outside* the
+filter row, or move the filter controls out of the table header into a toolbar, so the popups no longer share an
+ancestor with the scroller. Either is a layout change, not a security fix.
+
+**QA probe:** at 375 CSS px on a populated list screen, assert `documentElement.scrollWidth === clientWidth`, and
+if it does not hold, enumerate the overflowing elements and assert none is a descendant of `#nav` — that second
+assertion is the one that keeps this risk distinct from a regression of `P6-05`.
+
+### RISK-189 — The P13-01 scroller trades a 2.5px card-border spill for an 11.5px scrollable clip at desktop width
+
+| Field | Value |
+| --- | --- |
+| **Status** | Accepted — nothing is lost; the residual content is scrollable rather than overhanging. |
+| **Related finding** | `P13-01`, at viewport widths above the one the finding measured. |
+| **Owner** | Frontend maintainer |
+
+The Projects dashboard carries **two** timesheet widgets, not one, and they have different intrinsic widths:
+
+| Widget | Table intrinsic width | Behaviour at 375 after the fix | Behaviour at 1280 after the fix |
+| --- | --- | --- | --- |
+| *My Timesheet* | **484.28px** | wrapper 327px, scrollable extent 157px, painted right edge 351 inside the card's 360 | wrapper 592px, table 592px, **overflow 0 — wrapper inert**, all nine columns readable |
+| *All Users' Timesheet* | **603.55px** — the width `P13-01` names | wrapper 327px, scrollable extent 277px, painted right edge 351 inside the card's 360 | wrapper 592px, **11.5px of the ninth column behind the scroller** |
+
+At 1280 the second widget's ninth column loses about 11.5px: its header renders `Tota` and a value `8.02` until
+scrolled. That is a change from the pre-fix state, and it is recorded rather than glossed. What it replaced,
+however, was not a clean render: without the wrapper that same 603.55px table painted **2.55px past its card's
+625px border**. Both states are containment defects; the fix reduces the large one — **276.55px at 375, now 0px
+painted** — and converts the small residual from content overhanging a card border into content behind a
+scroller. Nothing is lost either way: `scrollLeft` reaches the full extent, and `scrollHeight == clientHeight`
+on both wrappers, so there is no vertical clipping.
+
+**The obvious narrowing was considered and rejected.** Scoping `.erp-scroll-x` to `@media (max-width: 991.98px)`,
+as the `#nav` rule is scoped, would leave 1280 byte-identical to before. It was rejected because the dashboard
+becomes **two-column at 992px**, so a card there is narrower than 603.55px and the spill would return — worse
+between roughly 992 and 1300px than the 2.55px it removes at 1280. An unconditional scroller is the only form of
+the rule that contains the table at every width it is too wide for.
+
+**Recommended fix for a future pass.** Let the label column wrap, or drop the avatar from the *All Users'*
+variant, so the table's min-content width falls below its container at desktop width and the scroller goes inert
+there as it already does for *My Timesheet*. Both are content changes rather than security fixes.
+
+**QA probe:** at 1280 assert `overflow-x: auto` on both wrappers, assert `scrollHeight === clientHeight` on both
+(no vertical clipping), and assert the *My Timesheet* wrapper's `scrollWidth === clientWidth` — that last one is
+the regression guard, because it is the widget that must stay inert at desktop width.
+
+## Detailed entries — residuals recorded by the accessibility remediation (`P6-11`)
+
+`P6-11` is not a security finding. It was raised as a MINOR accessibility defect with three named
+symptoms — no focus styling anywhere, four sub-threshold colour contrast sites, and undersized or
+zero-size touch targets — and it is disclosed here, and as a divergence in the remediation log,
+because closing it changes rendered colour and adds a focus indicator, which AAP §0.3.2 otherwise
+forbids. Everything below was measured on running hosts before and after the change. Two of the
+finding's own figures did not survive measurement and are corrected in `RISK-194` rather than
+repeated.
+
+### RISK-190 — The `.go-*` semantic colour palette is a fill palette reused for text
+
+**What the palette is.** `Theme.cs` exposes roughly nineteen Material hues in three tints each
+(`--red_color`, `--red_light_color`, `--red_dark_color`, and so on), and `styles.css` turns each into
+three utilities: `.go-<hue>` sets `color`, `.go-bkg-<hue>` sets `background-color`, and
+`.go-<hue> *` sets `fill`. The base tints are Material **500** values, which are designed as fill
+colours. Used as `color` on the white page they are mostly below the 4.5:1 that WCAG 2.1 AA 1.4.3
+requires for normal-size text.
+
+**What was fixed and why only that.** Two hues were observed failing at runtime on the pages
+`P6-11` covers, and both were raised one step on their own ramp:
+
+| Token | Was | Ratio on white | Now | Ratio on white | Where it was observed |
+| --- | --- | --- | --- | --- | --- |
+| `--gray_color` | `#9E9E9E` (Grey 500) | **2.68:1** | `#757575` (Grey 600) | **4.61:1** | 18 elements — the Projects dashboard and the SDK data-source list |
+| `--red_color` | `#F44336` (Red 500) | **3.68:1** | `#D32F2F` (Red 700) | **4.98:1** | 3 elements — an overdue count and two overdue dates |
+
+**Why the family is not fixed.** `.go-green` measures **2.78:1** on white, observed on the SDK Web
+API page. Green's ramp does reach compliance — Green 800 `#2E7D32` is 4.97:1 — so that one could be
+raised. Orange's does not, at any step:
+
+| Material Orange step | Value | Ratio on white |
+| --- | --- | --- |
+| 500 | `#FF9800` | **2.16:1** |
+| 700 | `#F57C00` | **3.05:1** |
+| 800 | `#EF6C00` | **3.79:1** |
+| 900 | `#E65100` | **3.79:1** |
+
+There is no orange that is both orange and AA-compliant for normal text on white. Darkening the
+family hue by hue therefore produces a palette that is *partly* compliant and permanently
+inconsistent — some counts readable, others not, with no rule a reader could infer. It would also
+repaint every `.go-bkg-*` background, every solid and outline button colour, and every chart series
+in the product, because the same tokens and the same hardcoded Material literals drive all of them:
+`styles.css` alone carries 20 `.btn-<hue>` and 20 `.btn-outline-<hue>` families with those values
+written inline. And in this specific case it would add a second instance of `RISK-191`.
+
+**What the correct remedy is.** Either a text-specific variant set — `--red_text_color` and
+siblings, chosen for contrast rather than for fill — or a rendering rule that picks a tint from the
+measured background. Both are feature additions, which AAP §0.3.2 excludes from this work.
+
+**Why this is not a barrier in practice.** WCAG 1.4.1 Use of Colour is satisfied throughout: every
+coloured value in these widgets is paired with an adjacent monochrome label — "Overdue", "Due
+today", "Upcoming due", "High", "Normal", "Low" — so no information is carried by colour alone. The
+residual is legibility of a numeral that is also stated in text beside it, not loss of meaning.
+
+**QA probe:** assert `.go-gray` computes `rgb(117,117,117)` and `.go-red` computes `rgb(211,47,47)`
+on a light surface. Do **not** assert the whole palette passes 4.5:1; it does not, by decision.
+
+### RISK-191 — The Task-Priority widget's legend reads stored data while its arcs read the theme
+
+**What disagrees.** After `--red_color` moved, a whole-page pixel census of the Projects dashboard
+found **5,653** pixels of the new `rgb(211,47,47)` in the doughnut arcs and `.go-red` glyphs, and
+exactly **128** pixels of the old `rgb(244,67,54)` — two 12×12 icons, one in the Priority card's
+"High" legend row and one in the "My Overdue Tasks" row for the same task.
+
+**Why.** The arcs read the theme token:
+`PcProjectWidgetTasksPriorityChart.cs` sets `BackgroundColor = { theme.RedColor, theme.LightBlueColor,
+theme.GreenColor }`, so they tracked the change. The legend arrow does not: `Display.cshtml` emits
+`<i class="@option.IconClass" style="color: @option.Color">`, reading the persisted
+`SelectOption.Color`, seeded `#F44336` in `WebVella.Erp.Plugins.Next/NextPlugin.20190203.cs`.
+
+**This exposes a coupling rather than creating one.** The two values were only ever coincidentally
+equal, because the seed happened to use the same Material 500 literal the theme token held. Any
+operator who recolours a priority option has always produced the same disagreement. The sibling
+**Tasks** widget does not have the defect at all — its legend values carry `.go-red` and resolve
+through the same token, verified as an exact match at `rgb(211,47,47)`.
+
+**Why it is accepted.** The visible difference is one Material step within the same hue, on a 12px
+icon, adjacent to a 100px arc — found by exact-pixel comparison, not by eye. The alternatives are to
+revert a measured 3.68:1 text failure, to change stored data (excluded), or to make the view ignore
+the record's own colour in favour of the token, which changes a data-driven feature's behaviour.
+
+**QA probe:** if the priority option colours are ever re-seeded, assert the legend icon colour and
+`chart.data.datasets[0].backgroundColor[0]` are equal, and treat inequality as expected-by-design
+rather than as a regression.
+
+### RISK-192 — The page-header eyebrow colour is stored data, so its contrast is configuration
+
+**What fails.** The `pc-page-header` component renders `<div class="meta-area" style="color:<record
+colour>"><span class="text">…</span></div>`. The failing element is the `span`, and **no stylesheet
+rule matches it at all** — the colour is inherited from its parent's inline attribute. Measured
+against the `#F5F5F5` header band:
+
+| Page | Record colour | Ratio | Result |
+| --- | --- | --- | --- |
+| Projects dashboard | `#9C27B0` | **5.78:1** | pass |
+| SDK data sources | `#DC3545` | **4.15:1** | fail |
+| SDK entities | `#DC3545` | **4.15:1** | fail |
+| SDK entity → Web API (the "email" entity) | `#8BC34A` | **1.93:1** | fail — the worst measured anywhere in this pass |
+
+**Why it is not fixed.** The value is a per-record colour an operator chooses, and the colour coding
+it produces is a working feature. An `!important` override would force every eyebrow to one colour
+and destroy it. Constraining the selectable palette is a data and feature change. The general point
+is worth stating plainly: **any product that lets operators pick an arbitrary foreground colour can
+be driven below AA by configuration**, and the durable remedy belongs in the colour picker — reject
+or warn on selections that fail against the surface the colour will be used on — not in a stylesheet
+that cannot see the value.
+
+**QA probe:** treat this element's ratio as record-dependent. Assert the *mechanism* instead: that
+`div.meta-area` carries an inline `color` and that no stylesheet rule matches `span.text`.
+
+### RISK-193 — `.nav-link.disabled` fails by 0.01, from Bootstrap, and is being misused as a heading
+
+**What fails.** Three elements on the SDK Web API page — "Meta", "Fields", "Records" — take
+`color: #6c757d` from `bootstrap.css` and sit on the `#FAFAFA` `.go-bkg-gray-light` panel, measuring
+**4.49:1** against a 4.5 threshold. Measured candidates on that background: `#6A7178` → 4.74,
+`#697077` → 4.81, Bootstrap's own grey-700 `#495057` → 7.83.
+
+**Why it is declined, and the reason is not the margin.** `.nav-link.disabled` is the style for a
+*disabled* navigation link. Darkening it from the platform sheet would apply everywhere the class
+appears and would make genuinely disabled links look enabled — trading a real affordance for 0.01 of
+ratio. The actual defect is upstream of the colour: `web-api.cshtml` writes
+`<a class="nav-link disabled" href="#">Meta</a>` for items that were never controls, purely to get a
+muted style. That is also why the WCAG 1.4.3 exemption for inactive components — which legitimately
+covers the "Prev" pager measured at 2.85:1 — is doubtful for these three: they are headings, not
+disabled controls.
+
+**Recommended remedy.** Replace the three pseudo-links with a heading element or a dedicated label
+class in `web-api.cshtml`, then colour that class for contrast without touching the disabled state.
+It is a markup change to an SDK developer page that no finding raises, so it is recorded rather than
+made.
+
+**QA probe:** assert the ratio is 4.49:1 and that the responsible href is `bootstrap.css` rather
+than the platform sheet — if it ever becomes the platform sheet, someone has overridden the disabled
+state and the affordance question above needs re-answering.
+
+### RISK-194 — Target size: the AA criterion is met, the AAA criterion is not, and two reported figures were wrong
+
+**The measurement.** At 375 CSS px, **37 of 37** interactive elements measure below 44×44, and
+nothing in the product reaches 44 px in height: `#nav` is a fixed 40 px and `.btn-sm` resolves to
+31 px. The 12 smallest by area are the ten zero-size elements discussed below, then `a.sort-link` at
+16×14, then fifteen identical 33.75×31 row-action buttons.
+
+**Which criterion applies.** 44×44 is **WCAG 2.1 Level AAA, 2.5.5 Target Size** (and Apple's Human
+Interface Guidelines). The Level **AA** criterion is **WCAG 2.2 2.5.8 Target Size (Minimum)** at
+**24×24 CSS px**. Against 24×24, exactly **two** of the 37 failed, and both are now resolved:
+
+| Element | Before | After | How |
+| --- | --- | --- | --- |
+| `#brand-logo a` (the app-label anchor) | 143.47 × **16** | 143.47 × **24** | `padding-top/bottom: 4px`. On a non-replaced **inline** element, vertical padding extends the border box `getBoundingClientRect()` reports but does **not** contribute to the line box — so the target grew 50% and **the entire nav row-1 strip is pixel-identical to before**, verified by image diff |
+| `a.sort-link` (the table sort caret) | 16 × 14 | **no change needed** | Its `<em>` child is `position:absolute; inset 0; width/height 100%`, and because the anchor is `position:static` the child's containing block is the `position:relative` `<th>`. The `<em>` measures **153.41 × 24** — the whole header cell — and being a descendant of the anchor, every hit on it belongs to the sort link. 21 of 21 `elementFromPoint` probes across the cell returned it, 2 deliberate out-of-cell controls did not, and a real click at the cell's inner corner, 40 px from the caret, fired the sort. Effective target ≈ **3,682 px²** against the anchor's 224 px² — **16.4×** |
+
+The second row is the more important one: a criterion applied to `getBoundingClientRect()` alone
+would have reported a defect and prompted a CSS change that could only have made the layout worse.
+
+**Why 44×44 is declined.** Reaching it means re-sizing the application chrome on every page of every
+host — `#nav`'s fixed 40 px height is the binding constraint — which would also disturb the
+responsive nav geometry verified at 16 host×width combinations in the preceding pass, for a Level
+AAA criterion no finding cites as AA. Refused under AAP §0.3.2.
+
+**Two figures from the finding are corrected here rather than carried forward.**
+
+*"Three app-navigation links measure 0×0."* **Ten** elements measure 0×0, and not one is a rendered
+defect: every one collapses because an ancestor is `display:none` — nine `a.dropdown-item` inside the
+three closed nav dropdowns (Objects 5, Access 2, Server 2) and one sidebar toggle inside a hidden
+sidebar. The "absolutely-positioned or zero-size icon child" hypothesis was tested explicitly and is
+**false**: every icon child is a normal `display:inline-block; position:static` span and every
+anchor carries a real 5–15 character text node. Clicking "Objects" expands the menu to a fully sized,
+clickable panel. **Zero rendered interactive elements have a zero-size box.** The figure reconciles
+exactly to the **three** `div.dropdown-menu.level-0` containers, which are `<div>`s rather than links
+and for which 0×0 is correct while closed — a scanner counting zero-size nav containers reports
+three.
+
+*"`focusRuleCount = 0` across all 9 stylesheets."* **231** rules mentioning `:focus` existed, 49 of
+them in the platform sheet. What did not exist was any rule *styling* `:focus-visible`: the only
+mention anywhere was Bootstrap's negation `[tabindex="-1"]:focus:not(:focus-visible) { outline: 0
+!important }`. The remediation is therefore an addition to a greenfield state, not a repair of a
+broken rule, and the corrected statement is the one worth carrying forward: a product can have
+hundreds of `:focus` rules and still show a keyboard operator nothing.
+
+**One discovered item recorded but not fixed.** Three icon-only links have no text content, and the
+home link `a.pl-2.pr-2[href="/"]` in `#nav` has **no `title` and no `aria-label`**, so it has no
+accessible name at all — a WCAG 4.1.2 Level A gap, more severe than anything the finding names. The
+sibling logout anchor in the same component is named via `title`, so the in-repo pattern for fixing
+it exists and the change would be one attribute. It is **not** made here because the component,
+`WebVella.Erp.Web/Components/Nav/Nav.Default.cshtml`, is designated **REFERENCE — not modified** in
+AAP §0.7.1 Group 11 as one of the four by-design raw output channels, and the finding does not raise
+accessible names. Recommended for the next pass that is permitted to touch that file.
+
+**QA probe:** assert `#brand-logo a` measures at least 24 px tall and that `#brand-logo` is still
+40 px. For `a.sort-link`, assert the `<em>` child's rect matches the `<th>`'s padding box rather than
+asserting anything about the anchor's own 16×14 box. Do **not** assert 44×44 anywhere.
+
+### RISK-195 — The brand anchor's focus ring cannot be both complete and clear of the logo
+
+**Why this entry exists at all.** It records a trade-off that was *measured into existence* rather
+than reasoned about. The application-bar ring fix went through three states, each verified at the
+pixel: clipped to nothing, complete but incomplete-looking, and finally complete with one cosmetic
+cost. Recording only the final state would hide the fact that the cost is unavoidable.
+
+**The geometry, which is the whole entry.** The anchor inside `div#brand-logo` reports a border box
+of **143.47 × 24** at (58.50, 9). Its `span.app-label` child is **`display: inline-block`** and
+reports **(81.97, 2, 120 × 40)** — taller than the anchor that contains it. Chrome unions the box of
+an atomic-inline descendant into the element's outline rects, so the painted ring tracks a
+**143 × 40 union spanning y 2–42**, not the anchor's own 24 px box. Two consequences follow, and
+neither is a clipping problem: `#brand-logo`, `#nav`, `#body-inner-wrapper`, `body` and `html` are all
+`overflow: visible`, and `firstClippingAncestor` is `null`.
+
+| Offset | Where the ring lands | Painted pixels | Edge coverage | Verdict |
+| --- | --- | --- | --- | --- |
+| `+1px` (the global default) | Band computes to y −1…1 and y 43…45. The top row is **off the viewport**; the bottom cap is behind `div.pc-page-header`, which starts at y 42, is `position: relative` and paints later | **382** of 816 implied | top **0.16**, bottom **0.16**, left 1.00, right 1.00 — **no bottom edge** | Incomplete |
+| `-2px` (shipped) | Band occupies the first 2 px inward from the union edge, wholly inside the 40 px bar, y 2…41 | **716 of 716 — 100.0%** | all **eight** polygon sides **1.0000** | Complete |
+
+The `-2px` ring's closure was not inferred from the count. An exact mask dump gives per-row counts of
+120 (rows 2–3 and 40–41), 27 (rows 9–10 and 31–32) and 4 elsewhere — the signature of a stepped
+outline around the union — and a flood fill launched from outside the ring **cannot reach any interior
+point, 4-connected or 8-connected**, enclosing 4,636 pixels exactly matching the eroded-union area.
+
+**The cost, stated precisely.** The anchor's border box left edge and the logo `<img>`'s left edge are
+the **same sub-pixel value, x = 58.50**. A 2 px ring drawn inward therefore occupies columns 59 and
+60, which are the logo's first two columns: **28 of its 200 ink pixels — 14% — are overpainted while
+the control holds keyboard focus**, and at 12× the two left-hand dots of the four-dot mark read as
+green "C" shapes closed by blue. Nothing else is touched: **0 of the label's 948 glyph ink pixels
+changed**, every rect is bit-identical between states, `scrollWidth == clientWidth == 1280`, and the
+baseline diff contains **zero non-ring pixels** in every focused capture.
+
+**Why there is no third option.** Any offset that clears the logo must place the ring at least 2 px
+*outside* the anchor's left edge, which places it outside the union — and outside the union is exactly
+where the top row leaves the viewport and the bottom cap goes behind the header band. The escapes all
+cost more than the overlap: `padding-left` on the anchor, or `display: inline-flex`, or shortening the
+label's box, each moves or resizes the brand block **in every state on every page of every host**,
+against a preservation boundary the responsive pass verified by pixel diff; and adding padding only
+in `:focus-visible` would make content jump on focus, which is worse than an overlap. A `box-shadow:
+inset` ring reproduces the same overlap through a different mechanism, and `box-shadow` is the
+mechanism this remediation deliberately avoids.
+
+**Why accepting it is correct rather than convenient.** The image is **decorative** — the anchor's
+accessible name comes from the adjacent label text, so no information is lost while it is partly
+covered. **WCAG 2.4.11 Focus Appearance explicitly permits an indicator that overlaps the component
+it indicates**, and the alternative is the weaker indicator that the AA criterion 2.4.7 is about.
+The overlap is transient, ends the moment focus moves, and never occurs for pointer users at all:
+a real mouse click on the same anchor paints **0** ring pixels and leaves the frame byte-identical to
+the unfocused baseline.
+
+**One assertion trap, recorded so a future check does not repeat it.** The ring is a closed *stepped
+polygon*, not a rectangle. Measured against its **bounding box** the edge coverage reads
+0.84 / 0.84 / 0.60 / 1.00, which looks like a defect and is not; measured against the polygon's own
+eight sides every one is 1.0000. And `4w + 4h − 16` evaluates to 716 for the 143 × 40 bounding box,
+numerically equal to the true band area — a coincidence that would let a count-only check pass for
+the wrong reason.
+
+**QA probe:** assert the brand anchor's computed `outline-offset` is `-2px` and that a focused capture
+contains materially more than 382 exact `rgb(0,123,255)` pixels, with a flood-fill closure test rather
+than an edge-coverage assertion against the bounding box. Assert **0** ring pixels after a real mouse
+click. Do **not** assert that the ring is rectangular, and do **not** assert that the logo is
+untouched while the anchor holds focus.
+
+### RISK-196 — The doughnut tooltips fit a 100 px canvas only because the fix shrank them
+
+Canonical entry for `RISK-196`. Raised by the `P6-03` remediation, which populated the previously empty
+`labels[]` on three dashboard doughnut widgets and enabled the tooltips that make those labels reachable.
+
+**Why the constraint exists at all.** Chart.js v2 renders its tooltip by drawing into the **canvas
+bitmap**, not by inserting a DOM node. There is consequently no tooltip element to inspect, and no
+possibility of the box escaping its container: a tooltip wider than the canvas is *clipped*, silently.
+The three widgets set `width="100px" height="100px"` on the `<wv-chart>` element, so every tooltip has
+100 × 100 CSS px to live in, and the doughnut's `cutoutPercentage: 70` means the pointer is always on a
+ring at radius ≈ 41.65 rather than near the centre, which pushes the box outward.
+
+**What was measured.** All **7 of 7** arcs with actual sweep, across both dashboards, produced a tooltip
+at `opacity = 1` — and `_view.opacity = 1`, i.e. genuinely painted rather than merely targeted — whose
+text contains its own label. Every one satisfies all four containment inequalities, and the caret
+overhang (`caretSize = 4`) stays inside as well. Confirmed twice over: arithmetically from
+`tooltip._model`, and visually on 6× crops with the exact canvas bounds drawn in magenta and read
+pixel by pixel.
+
+| Tooltip | width (px) | `x` | right edge | spare to 100 |
+|---|---|---|---|---|
+| `Non-billable %: 72` | 89.157 | **0.000 — pinned by the left-edge clamp** | 89.157 | **10.843** |
+| `Upcoming due: 1` | 83.601 | **0.000 — pinned** | 83.601 | 16.399 |
+| `Billable %: 28` | 68.591 | 7.501 | 76.092 | 23.908 |
+| `Overdue: 2` / `Overdue: 4` | 57.473 | 21.264 / 11.009 | 78.736 / 68.481 | 21.264 / 31.519 |
+| `High: 1` | 39.685 | 45.965 | 85.650 | 14.350 |
+| `Low: 1` | 37.463 | 14.350 | 51.813 | 48.187 |
+
+**Why that is a risk rather than a pass.** The head-room exists *because* the fix bought it:
+`displayColors` was turned off to drop the colour swatch, and title and body font were set to 10 px with
+4 px horizontal and 3 px vertical padding. Two of the seven boxes are already flush against `x = 0`,
+where Chart.js's own left-edge clamp put them, so their left slack is spent. A longer category label, or
+a value reaching three digits — `Non-billable %: 100` measures roughly 94 px — would consume the
+remaining 10.8 px and the right-edge clamp would start cutting characters, with no error and no console
+message to announce it.
+
+**Two alternatives declined, each for a measured reason rather than a stylistic one.** Enlarging the
+canvas would relayout a dashboard widget that no finding raises. And `show-legend="true"` — the obvious
+"just show the labels" answer — was rejected because Chart.js renders its legend *inside* the same 100 px
+container: the doughnut would shrink toward nothing to make room, and the legend would duplicate the
+colour-keyed text the card already prints beside the chart. On the Budget card that adjacent text is a
+true colour key, carrying `#4CAF50` and `#03A9F4` dots that match their arcs exactly.
+
+**Zero-value segments are unhoverable by construction, and that is not this risk.** Four segments across
+the two dashboards hold the value 0 — `Due today` twice, `Upcoming due` once and `Normal` once — and each
+has `endAngle − startAngle === 0` **exactly**. `ArcElement.inRange` requires `angle >= startAngle && angle
+<= endAngle`, which no pointer position can satisfy for a zero-width interval, so no tooltip is reachable
+and none should be expected. Every one remains identifiable from the card's adjacent label and its `0`
+count. A related trap: the Tasks buckets are **clock-relative**, so their values change between runs —
+the original finding measured a 216°/72°/72° split that no longer reproduces, which is why any future
+check must read the live `data` array rather than assert a remembered one.
+
+**QA probe:** for each doughnut, read `chart.data.labels` and assert it is non-empty; assert
+`chart.options.tooltips.enabled === true` while the *server* HTML still contains
+`"tooltips":{"enabled":false}` — that pair is the proof the vendored tag helper was not edited. Hover only
+arcs whose `endAngle − startAngle > 0`, computing the point from `getDatasetMeta(0).data[i]._model` rather
+than guessing, and assert `tooltip._model.opacity > 0` with the label present in `body[].lines`. Assert
+`title` is `[]` — Chart.js v2's doughnut controller returns `''` for `callbacks.title` by design. Then
+assert `_model.x + _model.width <= 100` and record the margin; if it drops below roughly 8 px, the label
+set has outgrown the canvas and this risk has become a defect.
+
+### RISK-197 — Two user rows still refuse deletion, because authorship provenance is not cascaded
+
+Canonical entry for `RISK-197`. Raised by the `P6-17` remediation, which exposed a guarded delete control
+on the user-administration list and then had to make it actually complete.
+
+**What the control did before the second pass.** It rendered, it was hit-testable, it prompted, and then
+it failed — `POST` returned 200 with no redirect and the banner *"The entity record was not update. An
+internal error occurred!"*, with the record still present in both the interface and the database. The
+cause is in the platform, not in the new page: `RecordManager.DeleteRecord` delegates to
+`DbRecordRepository.Delete`, which issues a bare `DELETE` and never detaches the record's many-to-many
+rows, so PostgreSQL refuses it on `rel_user_role`'s `user_role_target` constraint. `DeleteRecord` then
+catches the exception and, because `DevelopmentMode` is off in Production, replaces it with that generic
+string — and writes **no** `system_log` row, so an operator sees an unactionable message and an
+administrator has nothing to diagnose from.
+
+**The measured population, because the severity of a 52% failure rate is not a matter of opinion.** Of the
+27 accounts in this installation, **15 hold at least one role assignment**, so before the fix **13 of the
+25 rendered controls could not work**. Only **3** accounts carry any reference from authored content, and
+one of those is the administrator's own row, which already withholds its control.
+
+| Account | roles | comments | feed | projects | tasks | time logs | watchers | after the fix |
+|---|---|---|---|---|---|---|---|---|
+| `administrator` | 2 | 2 | 3 | 1 | 6 | 3 | 3 | control withheld anyway (self) |
+| `regular@webvella.com` | 1 | 0 | 0 | 0 | 2 | 2 | 1 | **still refuses** |
+| `qa.owner2@t.local` | 1 | 0 | 0 | 0 | 0 | 0 | **1** | **still refuses** |
+| the other 24 | 0 – 1 | 0 | 0 | 0 | 0 | 0 | 0 | deletes cleanly |
+
+**The asymmetry is deliberate.** Eight foreign keys reference `rec_user` and all eight are `ON DELETE NO
+ACTION`: `rec_comment.created_by`, `rec_feed_item.created_by`, `rec_project.owner_id`,
+`rec_task.created_by`, `rec_task.owner_id`, `rec_timelog.created_by`,
+`rel_user_nn_task_watchers.origin_id` and `rel_user_role.target_id`. The remediation detaches **only the
+last**. A role assignment is a pure join row that has no meaning once one of its two endpoints is gone, so
+clearing it is part of removing the user. `created_by` and `owner_id` are authorship provenance attached to
+records that continue to exist, and a delete handler has no mandate to destroy or silently rewrite them.
+Converting those keys to `ON DELETE CASCADE` would make deleting a user delete their tasks and time logs,
+which is data loss dressed as a convenience.
+
+**The residue, stated plainly.** `qa.owner2@t.local` is blocked by a **single task-watcher join row** and
+nothing else. That row is the same class of object as a role assignment, so detaching it would be
+consistent — and it is not detached, because `user_nn_task_watchers` is a **Project-plugin** relation and
+naming it from an SDK page would create a plugin-boundary dependency that nothing else in this codebase
+has. The correct general remedy is a platform-level rule in `DbRecordRepository.Delete` that detaches a
+record's many-to-many rows for any entity, which changes core delete semantics for every entity in the
+product; AAP §0.3.2 forbids that scope, so it is recorded here rather than taken.
+
+**What did improve for those two rows.** They no longer receive the generic internal-error string. They
+receive *"This user could not be deleted because other records still reference it. Reassign or remove the
+tasks, time logs, comments, projects and task subscriptions belonging to this user, then try again."* —
+verified at runtime against `qa.owner2@t.local`, with the old string confirmed absent.
+
+**The transaction is the load-bearing part, and it was verified rather than assumed.** Detach and delete
+run inside one transaction with a `committed` flag driving a `finally` that rolls back on every failure
+path exactly once. Without it, a delete that failed on the second statement would leave a user **stripped
+of every role but still present and able to sign in** — a privilege change produced by a delete that did
+not happen. Proven by exercising the refusal branch and re-reading storage afterwards:
+`qa.owner2@t.local` still present, its role row still present (1 row, origin `f16ec6db`), `rec_user`
+unchanged at 26, **orphan `rel_user_role` rows across the whole table = 0**, and 0 rows logged under
+source `SDK.UserList.Delete`, meaning the rollback itself never faulted. The platform's
+`BeginTransaction` nests as **savepoints**, which is what makes the inner platform calls safe inside an
+outer transaction, and `DbConnection.Close()` throws on a pending transaction, which is why the
+commit-or-rollback is mandatory rather than tidy.
+
+**QA probe:** delete a role-holding account with no authored content and assert the `POST` returns **302**
+to `/sdk/access/user/l/list`, that the pager's whole-list total drops by exactly one — the per-page count
+is useless here, because a row shifts up from the next page and page 1 stays at ten — and that no
+`alert-danger` element exists. Then attempt an account that owns tasks or time logs and assert the
+specific refusal text appears and the **generic** *"was not update"* string does not; immediately re-read
+`rel_user_role` for that account and assert its rows are **intact**, which is the only check that
+distinguishes a clean refusal from a half-completed delete. Assert `rel_user_role` has zero rows whose
+`target_id` is absent from `rec_user`.
+
+### RISK-198 — Enforcing the CSP would remove the confirmation from an irreversible delete
+
+Canonical entry for `RISK-198`. Raised by the `P6-17` remediation as a **precondition on someone else's
+decision** rather than as a defect in its own right; `RISK-022` owns the enforcement decision and
+`RISK-170` owns the channel inventory.
+
+**The mechanism.** The delete control carries its guard as an attribute:
+`onclick="return confirm('Delete this user? This cannot be undone.')"`. Under the policy that ships today —
+`content-security-policy-report-only: default-src 'self'; script-src 'self'; style-src 'self'` — inline
+execution is *reported* and still runs, which is why the prompt was observed verbatim at runtime on two
+separate runs. Under the same policy delivered as `Content-Security-Policy`, an inline event-handler
+attribute is refused unless `'unsafe-hashes'` is added to `script-src`; a hash alone does not cover
+handler attributes.
+
+**Why this one is worth its own row when the product has many inline handlers.** The failure mode runs in
+the dangerous direction. A refused inline handler does not raise a visible error or block the control — the
+attribute simply never executes, so `confirm()` never runs, `return false` never happens, and the form
+submits on the **first** click with no prompt. Every other inline handler the inventory covers is
+decorative or navigational, where losing it degrades polish. Here it is the only thing between a single
+click and a deleted account.
+
+**What it does and does not change in the existing inventory.** It moves **none** of `RISK-170`'s three
+counts — 109 `Html.Raw` sinks, 59 inline `<script>` elements, 27 inline `style=` attributes — because an
+event-handler attribute is a fourth class that inventory does not count, and claiming otherwise would
+corrupt a census other work depends on. The sibling `P6-03` change deliberately added **no** inline script
+at all: it registers its Chart.js plugin from an external file at
+`/_content/WebVella.Erp.Plugins.Project/js/wv-chart-tooltips/wv-chart-tooltips.js`, served with
+`nosniff` from the application's own origin, so the mandated `script-src 'self'` remains satisfiable and
+the enforcement path is no harder than it was.
+
+**Why it was not pre-emptively externalised.** Moving the handler to an external file would introduce a
+second script-delivery mechanism onto a page whose own chart markup still emits inline script from the
+vendored tag helper, so the page would remain enforcement-blocked for a different reason while the guard's
+implementation diverged from the platform's own precedent for a guarded delete. The obligation is instead
+recorded where the enforcement decision is made: whoever sets
+`SecurityHeaders__ContentSecurityPolicyReportOnly` to `false` must externalise this handler **or** admit
+`'unsafe-hashes'`, in the same change.
+
+**QA probe:** with the policy in report-only mode, click the delete control and assert a native dialog
+appears with the exact text `Delete this user? This cannot be undone.`. Then set
+`SecurityHeaders__ContentSecurityPolicyReportOnly=false`, reload, and click again: if a dialog does **not**
+appear, do not record it as a passing "no interruption" — it is this risk realising, and the delete will
+have proceeded unprompted. Verify by checking whether the row was removed.
+
+### RISK-199 — The "Delete App" confirmation is a syntax error and has never run
+
+Canonical entry for `RISK-199`. Found while measuring what enforcing the content-security policy would break
+(`RISK-022`), and reported separately **because it is not a CSP consequence** — it fails identically in the
+shipped report-only configuration, and would fail with no policy at all.
+
+**The defect.** `WebVella.Erp.Plugins.SDK/Pages/application/details.cshtml:L12`:
+
+```html
+<button type="submit" form="DeleteRecord"
+        onclick='function(e){if(!confirm("Are you sure?")) {e.preventDefault();e.stopPropagation()}}'
+        class="btn btn-white btn-sm"><i class="fa fa-trash-alt go-red"></i> Delete App</button>
+```
+
+An inline handler attribute's value is compiled as a **function body**, not as an expression. A bare
+`function(e){…}` in statement position is not valid JavaScript, and `new Function` over that exact string
+raises **`SyntaxError: Function statements require a function name`** — verified directly rather than reasoned
+about. The handler therefore never compiles, `confirm()` is never reached, and clicking "Delete App" submits
+the `DeleteRecord` form immediately. Even if the string had parsed, it would still achieve nothing: it defines
+an anonymous function and discards it, never invoking it, so `preventDefault()` could not run either. There is
+no arrangement of this line that works.
+
+**Why it is being recorded rather than fixed.** Two independent grounds, and both are worth stating because
+"found it, left it" reads badly without them.
+
+*It is pre-existing, and that is proven rather than asserted.* `git diff --name-only master...HEAD` for this
+file returns **empty** — the engagement never touched it. The line is present **verbatim** at `master`, and
+the last commit to modify the file is an upstream one. Nothing in this remediation caused or worsened it.
+
+*It is not Critical, so AAP §0.1.3 guideline 8 applies* — document out-of-scope concerns, fix only if
+Critical. This is a missing **safety net**, not an authorization gap: the delete is still governed by
+server-side entity permissions, the control is explicitly labelled "Delete App", and the action is a
+deliberate click on a destructive button. Repairing an unrelated pre-existing page is refactoring beyond the
+security remit that §0.3.2 excludes.
+
+**Where it should be fixed, and why that is the cheap answer.** It belongs to the same stage-0 batch as
+`RISK-198`: moving all seven of the SDK plugin's inline `onclick="return confirm(…)"` guards onto delegated
+`addEventListener` handlers bound from an external script file repairs this one **as a side effect**, because
+the broken inline attribute stops being the mechanism. Doing it that way also removes the CSP precondition at
+the same time, so one change closes two entries. Fixing this line in isolation — by correcting it to
+`return confirm("Are you sure?")` — would restore the prompt today but leave it dead again the moment
+enforcement is promoted, which is the worse of the two outcomes.
+
+**A note on how it was found, because the method generalises.** It surfaced only because the enforcement
+measurement asked, for every destructive control, whether `typeof element.onclick === 'function'`. This
+control answered `false` for a *different reason* than the others: they were blocked by policy, it was never
+valid. A check that had only asked "does a dialog appear when enforcement is on?" would have lumped it in with
+the CSP casualties and it would have been "fixed" by relaxing the policy — which would not have fixed it at
+all.
+
+**QA probe:** on a host with the policy in **report-only** mode — i.e. where inline handlers do execute —
+click "Delete App" on an application record and assert a native confirmation dialog appears. Today it does
+not, and the form submits. Do not treat the absence of a dialog here as evidence about the content-security
+policy; assert `typeof button.onclick === 'function'` and, if it is `false` while other inline handlers on the
+same page compile successfully, the cause is this syntax error and not the policy.
+
+### RISK-200 — The launcher advertises applications whose plugin the host does not deploy
+
+**Status:** Documented — pre-existing, out of scope.
+**Raised by:** the final cross-cutting regression sweep, on `WebVella.Erp.Site`.
+**Owner:** Platform team.
+
+`WebVella.Erp.Site` serves a launcher that offers three application tiles. Two of the routes those tiles lead
+to answer **HTTP 500**: `/projects/dashboard/dashboard/a` and `/projects/feed/feed/a`. The host's own stderr
+names the cause exactly — `System.InvalidOperationException: A view component named
+'PcProjectWidgetTasksChart' could not be found`, raised out of `PcSection/Display.cshtml`.
+
+The mechanism is a deployment boundary rather than a code defect. Application records live in the **one shared
+database every host reads**, so the launcher offers whatever applications that database defines; but which
+*view components* a host can render is decided by which assemblies it ships. `WebVella.Erp.Site.csproj`
+references `WebVella.Erp.Plugins.SDK`, `WebVella.Erp.Web` and `WebVella.Erp`, and nothing else, so
+`WebVella.Erp.Plugins.Project.dll` is absent from its publish output while present in
+`WebVella.Erp.Site.Project`'s. The discriminator is clean: pages built only from core components render
+normally on this host — the mail record list returns 200 with full chrome — and only pages naming a
+plugin-specific view component fail.
+
+**Why it cannot be attributable to this engagement**, established by evidence rather than by reasoning about
+intent. The host's `ProjectReference` set is byte-for-byte identical between `master` and this revision, so no
+change here added or removed a plugin reference. The twenty Project-plugin files this engagement modified are
+all reported `M` by `git diff --name-status`, with zero renames, moves or deletions. And the specific class the
+exception names, `PcProjectWidgetTasksChart`, is **not in the diff at all**: it still sits at its original path
+and its last commit is an upstream one. A host that never referenced the plugin cannot have lost it.
+
+It is recorded as an availability note and not as a security finding because the failure discloses nothing. The
+error response carries only *"An unexpected system error occurred."*; a stack-trace probe over the body matched
+nothing; and all seven mandated response headers are present on the 500 itself. That is `H-13` and the header
+middleware both behaving correctly on an error path under `Production`, which is the outcome this engagement
+wanted from a 500 it did not cause.
+
+Two remedies exist and both are refused here under AAP §0.3.2: scope the launcher's tiles to the applications a
+host actually deploys, which changes launcher behaviour platform-wide, or add the plugin reference to this host,
+which changes what the host is. Either is an architectural decision for the repository owner.
+
+**QA probe:** do not treat a 500 on `/projects/*` on port 6111 as a regression. Assert instead that the same
+route returns 200 on the Project host, and that the 500's body contains no stack frame and no internal type
+name — which is the property this engagement is responsible for.
+
+### RISK-201 — Two seeded jobs fail on every tick and the log table grows without bound
+
+**Status:** Documented — pre-existing, with a resource-exhaustion tail.
+**Raised by:** the final cross-cutting regression sweep, on `WebVella.Erp.Site.Sdk`.
+**Owner:** Platform team.
+
+`JobManager.Process` writes *"Start job with id[88880000-0000-0000-0000-000000000001] and type [null]
+failed!"*, and the identical record for `…0002`, **29,975 times each**. Together those two messages are
+**59,950 of the 62,487 rows** in `system_log` — 96% of the platform's entire log table — and they accrue at
+approximately **44 rows per minute** for as long as any host is running. Sampling the SDK log list a minute
+apart during verification showed the total rise from 60,592 to 60,636, so the growth is live rather than
+historical.
+
+The `type [null]` wording is the substance of it: the job records name no resolvable type, so every tick
+schedules them, fails to construct them and records the failure. Three schedule plans are enabled — two daily
+and one interval — and the interval plan is demonstrably healthy, having produced 265 finished
+`ProcessSmtpQueueJob` records. **The compounding risk is that one of the two daily plans is *"Clear job and
+error logs."***, which means the mechanism that would bound this table is plausibly among the mechanisms that
+are failing. That is what turns a cosmetic misconfiguration into an unbounded-growth path (CWE-770,
+uncontrolled resource consumption) on a table any account with log access can read. The plan-to-identifier
+mapping was not confirmed, because the controls that would confirm it are destructive-adjacent and the sweep
+was read-only; it is stated here as the leading hypothesis, not as a finding.
+
+**Pre-existing, proven by date rather than by argument.** The earliest such record is stamped
+`2026-08-08 12:42:01`. Grouped by day the counts are 134 on 08-08, 218 on 08-09, 11,772 on 08-10 and 48,495 on
+08-11. Every file this engagement modified was last written on 08-11, three days after the condition began, so
+no change here can be its cause; the steep rise across the later days tracks how long hosts were left running
+during verification, not anything in the diff. Both identifiers follow the QA seed-data pattern this
+installation uses elsewhere.
+
+The reason to record it at all is that it is **invisible from a browser**. It produces no console error, no
+`alert-danger` element and no HTTP response at 400 or above, so a reviewer who validates only through the UI
+will correctly observe a healthy application and never see it. The rows are log *data* in a log viewer, not a
+defect in the viewer.
+
+Not fixed. Diagnosing seeded job records is neither a security remediation nor inside the change surface AAP
+§0.3.2 permits, and the AAP's own guideline 8 directs that an out-of-scope concern be documented rather than
+repaired unless it is Critical. The operational remedy is to disable or repair the two plans, then allow the
+log-pruning plan to drain the backlog.
+
+**QA probe:** measure `select count(*) from system_log` twice, a minute apart, on an otherwise idle
+installation. A delta near 44 means this condition is still live. Do not attribute it to any code change
+without first checking `min(created_on)` for the `type [null]` message, which predates this engagement.

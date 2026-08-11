@@ -302,6 +302,19 @@ remediation**.
 > or not the two non-members' build output is appended, which is what proves they emit no
 > Security-category diagnostic of their own.
 >
+> **The CI gate's own solution build reports a DIFFERENT total, 3,153, and that is not a discrepancy.**
+> Stating it here because a reader who runs the workflow, sees `3153 Warning(s)`, and compares it against
+> the 3,055 above would reasonably conclude this document is stale — which is the exact failure mode QA
+> finding `DOC-01` raised. The two totals measure two build shapes. The 3,055 figure is the ordinary
+> build, reproduced by the command in the table above. The gate additionally passes
+> `-p:ErpDocumentationDiagnostics=true` (review finding `N1`), which turns on documentation generation and
+> so arms four diagnostics the ordinary build never emits. They account for the difference exactly:
+> `CS1573` **69**, `CS1572` **15**, `CS1587` **7** and `CS0419` **7** — 98 warnings, and
+> 3,055 + 98 = **3,153**, over 57 distinct codes rather than 53. All four are documentation-comment
+> defects, none is an analyzer security diagnostic, and the four extra codes are *additions* only: no code
+> present in the ordinary build is absent from the gate's. Cross-check whichever total matches the shape
+> you ran, and never compare one against the other.
+>
 > **Any absolute total elsewhere in this log is dated and is not this one.** Every per-entry figure was
 > taken under the analyzer configuration in force at that entry, and that configuration changed over the
 > life of this document. A comparison's *conclusions* — parity, `added=0`, `removed=0`, zero count
@@ -7318,7 +7331,10 @@ been wrong:
 - **`node.Url` is HTML-encoded, not URL-encoded.** A URL encoder would escape the path separators and
   the colon, and every navigation link in the product would break. The finding is markup breakout, and
   HTML encoding is exactly the control for markup breakout inside an attribute value.
-- **Scheme validation on `node.Url` was declined**, with reasons, as `RISK-037`.
+- **Scheme validation on `node.Url` was declined**, with reasons, as `RISK-037`. *(That decline has
+  since been overturned by a fix: `BaseErpPageModel.TryEncodeMenuUrl` now allow-lists the scheme at both
+  builder sites, and `RISK-037` is closed. Recorded here rather than rewritten, because the decline is
+  what this pass actually decided.)*
 - **The no-owner branch of the task-distribution widget interpolates only compile-time constants**, so
   it cannot carry a payload. It is routed through the encoder anyway, for symmetry, with a comment
   saying exactly that — so a future edit that introduces a database value there is already safe.
@@ -9640,7 +9656,7 @@ request builds its own URL and sets its own correctly-cased header, so it does n
 | Runtime, access control | An unauthenticated call to the new route never reaches the action at all: the host log records `DenyAnonymousAuthorizationRequirement: Requires an authenticated user` followed by a challenge. The class-level `[Authorize]` is the control, exactly as the action's remarks claim |
 | Runtime, no over-revocation | Two sessions held concurrently, both accepted; logging out the first refuses the first and leaves the second accepted. The route ends only the caller's own session, which is what reading the session identifier off `HttpContext.User` should produce |
 | Runtime, client side in a browser | The genuine shipped `AuthenticationService.LogoutAsync` was observed emitting exactly one `POST` to `api/v3/en_US/auth/jwt/token/logout`, preceded by a `204` preflight that negotiated the `authorization` header, carrying the scheme word `Bearer` **capitalised**, answered `200` with `success` true and a `set-cookie` expiring `erp_auth_base`. The ordering that matters was measured, not inferred: the POST was issued 17 ms before, and had completed 4 ms before, the single `removeItem` of the token ran. Revocation precedes the local clear, which is the entire point of the change |
-| Runtime limitation, stated rather than glossed | On a stock build the client's **only** Logout control never renders, so the browser evidence above was obtained by reaching the same shipped `LogoutAsync` without pressing that button. The cause is `RISK-119` - a lower-case `bearer` scheme on the client's shared `HttpClient` meeting a case-sensitive host selector that predates this work by three years - and it is outside this finding's scope. Its full mechanism, its runtime impact and the one-token fix are recorded in the risk register, and `M19` is worded to be executable either way |
+| Runtime limitation, stated rather than glossed | On a stock build the client's **only** Logout control never renders, so the browser evidence above was obtained by reaching the same shipped `LogoutAsync` without pressing that button. The cause is `RISK-119` - a lower-case `bearer` scheme on the client's shared `HttpClient` meeting a case-sensitive host selector that predates this work by three years - and it is outside this finding's scope. Its full mechanism, its runtime impact and the one-token fix are recorded in the risk register, and `M19` is worded to be executable either way. **This limitation no longer applies: `RISK-119` is now closed on both sides - the client emits the canonical `Bearer` and both host selectors compare `OrdinalIgnoreCase` - so the control renders and can be pressed on a stock build. The evidence above is retained as taken, by the route it was taken by** |
 | Regression, cookie sign-out | The untouched cookie flow was re-verified end to end in a browser: login sets `erp_auth_base` (`HttpOnly`, `Secure`, `SameSite=Lax`), `/logout` returns it emptied with a 1970 expiry and the browser evicts it entirely, a later visit is treated as anonymous, and a replay of the pre-logout ticket is refused - measured against a positive control proving the replay technique itself works. Zero console errors and no response outside 200 or 302 across 112 requests |
 | Regression, response headers | All seven mandated headers remain present on both a dynamic document and a static asset, byte-identical across the two, on 24 of 24 responses in a page load - including the gzip-compressed static files, which confirms the headers middleware still precedes both response compression and static-file serving |
 
@@ -10580,7 +10596,14 @@ One commit per vulnerability class, as the engagement requires. Seven classes:
 Stated at the same standard as the rest of this log: what was *executed*, not what was *inspected*.
 
 - **Static, re-measured after every class rather than once at the end.** Full non-incremental solution
-  rebuild: **0 errors, 3,062 analyzer warnings**. The warning-code multiset was diffed against the
+  rebuild: **0 errors, 3,062 analyzer warnings** *(the figure for the tree this pass published; the tree
+  reached **3,055** later, when three subsequent Medium remediations removed seven more — `CA1854` ×2 in
+  `WebVella.Erp.Web/Services/CodeEvalService.cs` under `M-OPEN-04`, `CA2201` ×4 in
+  `WebVella.Erp.Plugins.Mail/Api/EmailServiceManager.cs` under `M-OPEN-06`, and `CA2201` ×1 in
+  `WebVella.Erp.Web/Services/MailService.cs` under `M-OPEN-03`. This line is left reading 3,062 because it
+  states what THIS pass measured; the current-state figure lives in the audit report's
+  state-of-the-remediation table, which QA finding `DOC-01` found one revision behind and which now reads
+  3,055)*. The warning-code multiset was diffed against the
   pre-change build and is **bit-identical** — 53 codes, exact counts — so **zero new warning codes were
   introduced across the entire pass**, and every count movement during it was a *reduction*. The
   WebAssembly Client, Server and Shared projects were built by name as well, at **48**, **48** and **0**
@@ -11546,3 +11569,1047 @@ already exists — and forbidden, since no schema statement may be emitted. **Ov
   rounded up so it can never invite a retry still inside the window.
 - **No header regression.** All seven headers verified present on a dynamic `200` and on a static-file `200`
   after both classes landed, so ordering ahead of static files and compression is unaffected.
+
+## The continuous gate made to reach its own verdicts (`WF-01`, `WF-02`)
+
+Two steps of `.github/workflows/security-scan.yml` could not finish. Both were fail-**closed** in the
+worst way a gate can be: each ran its analysis, produced the right answer, and then aborted on a shell
+detail before it could report that answer — so the job went red for a reason unrelated to the security
+posture it exists to measure, and three further steps that consume its evidence went red behind it. A gate
+that cannot reach a verdict is not a strict gate; it is an absent one, because the only signal it ever
+emits is the same red a genuine finding would emit.
+
+The shared cause is one line of the workflow, and it is deliberate: the workflow-level
+
+```yaml
+defaults:
+  run:
+    shell: bash
+```
+
+means GitHub invokes every `run:` step as `bash --noprofile --norc -eo pipefail {0}`. **`-o pipefail` is
+therefore in force in every step whether or not the step body sets it**, which makes the exit status of
+*any* command in *any* pipeline the exit status of the step. Both defects are instances of that.
+
+### `WF-01` — the taint scan aborted after 211 seconds, at the line after its verdict
+
+The *Gate 1 - terminating taint scan of the excluded compilation* step ended with
+
+```bash
+taint_allow_list | sed 's/^[[:space:]]*//' | grep -v '^$' | sort -u > taint-allowlist.txt
+```
+
+and `taint_allow_list()` is a heredoc that is **deliberately empty** on this tree — there is no reviewed
+taint residual to excuse. `grep -v '^$'` over empty input matches nothing and exits **1**; `pipefail`
+promoted that to the step's status. Measured on this tree, that abort landed *after* the ~211-second
+rebuild and after `taint-pairs.txt` had already been written with zero pairs: the scan, its capability
+self-test and its zero verdict were all real, and none of them could be published.
+
+The mitigation was already established in this same workflow twice over — the global-analyzer-config check
+writes `| { grep -v '^$' || true; }` and the `CS1570`/`CS1571`/`CS1573` documentation loop carries a
+comment naming the exact hazard — so this was an omission of a known guard rather than an unknown risk.
+The fix applies that guard, and applies it to the three sibling sites fed by the **Security** allow-list as
+well, because that list is a ratchet: entries leave it as residuals are fixed, so it can legitimately reach
+zero and would then abort Gate 1 for the same reason on the very day the tree became cleanest.
+
+| Site | Before | After |
+|---|---|---|
+| Taint allow-list, *Gate 1 - terminating taint scan* | `\| grep -v '^$' \|` | `\| { grep -v '^$' \|\| true; } \|` |
+| `allow_pairs()`, *Gate 1 - fail on unreviewed security analyzer diagnostics* | same shape | guarded |
+| Allow-list integrity heredoc, same step | same shape | guarded |
+| `security-allowlist-justified.txt` emission, same step | same shape | guarded |
+
+**Correction this forces on `RISK-051`.** That record states the dedicated taint step measured "about 220
+seconds, exit 0, zero `CA3001`–`CA3012` diagnostics". The scan time and the zero are confirmed; **`exit 0`
+was not true of the step**, which exited 1 on the line above until this fix. The scan's finding was
+correct and its publication was impossible, and the register now says so.
+
+### `WF-02` — the secrets sweep aborted on SIGPIPE, before any assertion ran
+
+The *Sweep for hardcoded credentials* step opened its positive control with
+
+```bash
+kv_probe=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 51)
+```
+
+`tr` reading `/dev/urandom` never terminates of its own accord. `head -c 51` closes the pipe the instant it
+has 51 bytes, `tr` takes `SIGPIPE` and exits **141**, and `pipefail` made 141 the step's status.
+
+**Exactly what that cost, measured by diffing the step's own output before and after.** The step got as far
+as its 53rd line and stopped: the detector self-test (14 required `(layer, fixture)` pairs across 10 file
+formats), the tracked-tree sweep of 1,523 files across layers `L1`, `L1B`, `L2A`, `L2B`, `L2C`, the eight
+audited `Config.json` assertions with `web.config`, the 13-file shape sweep, and the `CryptoUtility` and
+`ERPService` literal assertions had all run and all passed. Everything from the `kv_probe` line onward —
+**65 further lines of assertion** — did not run at all:
+
+- the known-value matcher's own positive control, which is what makes the sweep below it a measurement
+  rather than an assumption;
+- the known-value sweep itself: *"none of the 5 known published secret values appears in any of the 1,522
+  swept files — documentation included, with no evidence-field exemption (540 length-matched candidates
+  fingerprinted)"*;
+- the **entire git-history audit** over 3,655 reachable commits, including its own reachability self-test
+  and the per-layer exposure counts that produce the 314 commit-layer records the register cites
+  (`L1` 131 commits, `L1B` 8, `L2A` 0, `L2B` 22, `L2C` 75, `CFG` 78);
+- *"PASS — the seeded-credential rotation migration is present"*;
+- the step's `Gate 3 passed` verdict line.
+
+The release-attestation step behind it failed in turn. So the half of Gate 3 that looks *outside* the
+current tip — history exposure, published-secret leakage into the documentation, and the presence of the
+rotation migration — has never once been executed by this workflow until now.
+
+The fix bounds the read so no signal is ever delivered:
+
+```bash
+kv_probe=$(LC_ALL=C head -c 8192 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 51)
+```
+
+8,192 random bytes yield on the order of 1,900 alphanumeric characters — far more than the 51 required, and
+far below the 64 KB pipe buffer — so `tr` reaches end of input, exits 0 and the outer `head` truncates a
+stream that has already closed cleanly. What the step produces is unchanged: a 51-character alphanumeric
+probe whose digest is planted in the known-value table for the duration of the control. Verified
+deterministic over ten consecutive runs — `rc=0`, length 51, alphanumeric on every one.
+
+### Verification
+
+Both defects were reproduced and both fixes were verified by executing the workflow's own step bodies
+under GitHub's exact contract, `bash --noprofile --norc -eo pipefail`, in a throwaway clone so nothing was
+written into the working tree. The step scripts are extracted from the workflow itself, and the job-level
+`env:` block is injected, so what runs is what GitHub would run.
+
+| | Before | After |
+|---|---|---|
+| *Gate 1 - terminating taint scan* (`WF-01`) | `rc=1` after 211 s, log ends at the capability self-test | `rc=0` in 222 s, full verdict block published |
+| *Sweep for hardcoded credentials* (`WF-02`) | `rc=141` after 1 s, log ends at line 53 of 118 | `rc=0` in 199 s, all 118 lines emitted |
+| *Gate 5 - AAP verification matrix* | `rc=1` (cascade) | `rc=0` |
+| *Assert the scan evidence is complete* | `rc=1` (cascade) | `rc=0` |
+| *Release gate - mandatory manual scenarios* | `rc=1` (cascade) | `rc=0` |
+| Whole job, 22 `run` steps | **5 failing** | **0 failing** |
+
+Nothing else about the workflow moved. Parsed before and after, the job carries the same 25 steps with the
+same names, the same `if:` conditions, the same `uses:` actions, the same job-level `env:`, the same
+`runs-on` and the same triggers; exactly three step bodies differ, and only in the lines above and the
+comments that name the defect each one addresses.
+
+## The delivery documentation made accurate and its site made searchable (`DOC-01`, `DOC-02`, `DOC-03`)
+
+Three defects in the delivered documentation set, none of them a code weakness and all of them the kind that
+makes a reader distrust the rest of the document.
+
+### `DOC-01` — three current-state build figures stood one revision stale
+
+`security-audit-report.md` reported the solution build at **3,062** warnings in two places and this log
+reported it in one, while the tree measures **3,055**. Corrected, and — because this documentation set's own
+convention is that "every movement is accounted for rather than replaced" — the seven-warning difference is
+attributed rather than absorbed. It was established by building the tree that produced 3,062 and this tree
+and diffing the unique `(rule, file)` sets:
+
+| Rule | File | Then | Now | Removed by |
+|---|---|---|---|---|
+| `CA1854` ×2 | `WebVella.Erp.Web/Services/CodeEvalService.cs` | 2 | 0 | `087ad593`, `M-OPEN-04` (bounding the compiled-script cache) |
+| `CA2201` ×4 | `WebVella.Erp.Plugins.Mail/Api/EmailServiceManager.cs` | 4 | 0 | `53024964`, `M-OPEN-06` (typed exception for a missing SMTP service) |
+| `CA2201` ×1 | `WebVella.Erp.Web/Services/MailService.cs` | 1 | 0 | `4e41a093`, `M-OPEN-03` (persist before notify) |
+
+Every movement is a **reduction**, and the warning-code multiset is still exactly **53 codes** either side of
+it, so no code was retired and none was introduced. The composition that reconciles the new total: **3,028**
+`CA`, **21** `ASPDEPR`, **5** `CS` and one codeless warning — 3,054 coded plus 1 codeless — reducing to
+**3,047** unique `(file, line, column, rule)` sites.
+
+The three lines that were *already* correct were left alone deliberately, and there are fourteen of them
+across the four documents. A blanket search-and-replace of the figure would have rewritten historical
+records into false claims about the past, which is the same defect in the opposite direction.
+
+### `DOC-02` — three already-remediated conditions were still carried as open risks
+
+`RISK-037` and both defects inside `RISK-119` described the tree as it was before they were fixed. Verified in
+source at this commit and both records are now **closed**, with the superseded reasoning retained rather than
+overwritten:
+
+| Record | What it said was open | Where it is closed |
+|---|---|---|
+| `RISK-037` | Sitemap node URLs are encoded but their scheme is not validated, so a stored `javascript:` URL still runs. Declined because filtering would break `mailto:` and `tel:` | `BaseErpPageModel.TryEncodeMenuUrl` (`:L249`) allow-lists the scheme — local paths, `~/`, `#`, `http://`, `https://` only, control characters rejected — applied at both builder sites (`:L536`, `:L563`), with a rejected value degrading to the inert anchor the builder already emitted for a URL-less node |
+| `RISK-119` defect one | The client's token refresh addresses `…/api/api/…`, which no route serves | `Client/Services/TokenManagerService.cs:L88` composes the path from the shared `WasmConstants.ApiAuthRoot` constant |
+| `RISK-119` defect two | A lower-case `bearer` scheme meets a case-**sensitive** host selector, so bearer calls answer as anonymous — and the credential sits on a shared client's `DefaultRequestHeaders` | Closed on **both** sides: `Client/ApiService/ApiService.System.cs:L35` emits the canonical `"Bearer"`, and the non-conforming half that record itself identified is now `StringComparison.OrdinalIgnoreCase` at `WebVella.Erp.Site/Startup.cs:L219` and `WebVella.Erp.Site.Project/Startup.cs:L216`. `GetNotAuthorizedHttpClientAsync` clears the header, so the shared client can no longer carry a credential onto a request that must not have one |
+
+**The consequence `RISK-037`'s closure carries is now stated rather than left implicit.** The decline was
+reserving an owner decision precisely because a scheme allow-list narrow enough to stop `javascript:` also
+stops `mailto:` and `tel:`. That decision has been taken in the strict direction: those two schemes are
+rejected as well, so a sitemap node configured with one stops navigating. Widening the list is a one-line
+change and is recorded as available.
+
+Four downstream cross-references that asserted the open state were corrected in the same pass — two in this
+log, one in the audit report's coverage table and one in the secure-configuration guide — because a closed
+record reached through a stale pointer reads as open.
+
+### `DOC-03` — site search was dead on all 133 pages, and the obvious fix only half-fixed it
+
+The published site's search box returned nothing. The cause is a plugin-and-theme pairing, and it has two
+halves; fixing only the first replaces a noisy failure with a silent one, which is worse.
+
+**Half one — the crashing script.** `techdocs-core` installs a search plugin on the author's behalf and
+chooses MkDocs' **built-in** search unless `use_material_search` is set. That built-in plugin appends
+`search/main.js` to `extra_javascript`, and that script dereferences a global `base_url` which the
+**material** theme `techdocs-core` itself selects never defines. Every page load therefore raised an uncaught
+`ReferenceError`. Setting `use_material_search: true` swaps in mkdocs-material's own search plugin, which
+ships the matching client bundle and injects no stray script.
+
+**Half two — the plugin key the theme gates on.** With that flag alone, measured in a browser: **zero**
+console messages of any level, `search/main.js` gone from all 133 pages — and **no search box at all**.
+`techdocs-core` registers whichever plugin it chose as `config["plugins"]["search"]`, but mkdocs-material's
+`partials/header.html` emits the magnifier button and includes `partials/search.html` only when
+`"material/search" in config.plugins`. The index and the worker were both being built correctly — driving
+that worker directly with the real index returned 4, 10 and 4 result groups for `PBKDF2`,
+`Content-Security-Policy` and `600,000` — yet `md-search` appeared in **0 of 133** built pages, so there was
+nothing to type into. Declaring `material/search` in `mkdocs.yml` supplies the key the template tests. It is
+declared **after** `techdocs-core` deliberately: mkdocs-material's search plugin resolves its language and
+separator defaults out of the *theme's* translations during `on_config`, and `techdocs-core` is what sets the
+theme to material, so running it first would have nothing to read.
+
+Neither line adds a dependency. `use_material_search` is `techdocs-core`'s own option and mkdocs-material is
+already the theme it selects.
+
+**Verified in a browser after the fix**, on the built site served over HTTP: `.md-search`,
+`.md-search__input`, `input[name="query"]` and `[data-md-component="search"]` each present; `md-search` in
+**133 of 133** pages and `search/main.js` in **0**; **zero** console messages at any level across the whole
+session; **zero** responses at status ≥ 400 in 30 requests; and three real queries returning real hits —
+`PBKDF2` → 4 matching documents, `Content-Security-Policy` → 10 (including four pages outside the security
+set, which proves the whole 133-page index is searched), `600000` → 1. Clicking the first result navigated to
+`/security/risk-register/`, rendering an `<h1>` of "Risk Register" over a 737,829-character article. The
+counts were cross-checked against the served `search_index.json` and agree exactly.
+
+## Compiler diagnostics stopped reaching the browser at the page-component render boundary (`P6-01`)
+
+`H-13` was closed at the API surface and at the two anonymous fault endpoints. It was not closed at the
+**render** boundary, and there the disclosure was live on the shipped tree: an authenticated user loading
+`/mail/emails/all/l` was shown **twelve** `alert-danger` blocks reading
+
+```text
+(7,28): error CS0234: The type or namespace name 'Mail' does not exist in the namespace
+'WebVella.Erp.Plugins' (are you missing an assembly reference?)
+(22,56): error CS0246: The type or namespace name 'EmailAddress' could not be found (are you missing a
+using directive or an assembly reference?)
+```
+
+complete with line and column coordinates and internal namespace names, in **Production**, on **six of the
+seven hosts**. The email `details` page showed three more.
+
+### The chain, established link by link rather than inferred
+
+1. **The data.** Five rows of `app_page_body_node` — component `WebVella.Erp.Web.Components.PcFieldText`, on
+   the Mail plugin's `all_emails` and `details` pages — hold an option whose `value` is a
+   `DataSourceVariable` of type `CODE`. Worth recording for anyone auditing this again: the discriminator is
+   serialised as the **string** `"type":"1"`, not the integer `1`, so a census that greps for `"type":1`
+   finds nothing and concludes there are no code variables on the tree.
+2. **The code.** Each snippet opens `using WebVella.Erp.Plugins.Mail.Api;` and deserialises an
+   `EmailAddress`.
+3. **The compile.** `PageDataModel.GetPropertyValueByDataSource` case `CODE` called
+   `CodeEvalService.Evaluate` with no guard whenever `SafeCodeDataVariable` was false — and that flag is set
+   for exactly one render mode, `options`, so the `display` and `design` renders every page actually serves
+   were unguarded. CS-Script compiles the snippet at render time and, on a host that does not deploy the Mail
+   plugin, raises `CSScriptLib.CompilerException` whose `Message` is Roslyn's diagnostic list.
+4. **The sink.** Every page component in this platform ends its `InvokeAsync` with
+   `catch (Exception ex) { ViewBag.Error = new ValidationException { Message = ex.Message }; return
+   View("Error"); }`. There are **60** `Error.cshtml` files and 42 share one checksum; each renders
+   `<wv-validation message="@validation.Message">`, which the tag-helper library emits as an
+   `alert alert-danger` block. So the compiler's output became page content.
+
+### The fix, and why it is narrower than the first attempt
+
+`PageDataModel` gained one private method, `EvaluateGuarded`, applied at the two **unguarded** evaluation
+sites — the `CODE` case and the `.cs` branch of the `SNIPPET` case. It logs the fault server-side and
+re-throws with the generic sentence `An internal error occurred!` outside development, which is byte-identical
+to what `ApiControllerBase.DoBadRequestResponse` and `WebApiController.SafeErrorMessage` already return, so
+one wording covers every fault surface. The component still renders its error block: a misconfigured page
+must still *look* misconfigured rather than silently blank.
+
+Three details in it are load-bearing, and the first was found by measurement rather than by reasoning.
+
+- **Only `CompilerException` is caught.** The first attempt caught `Exception`, and re-verification found it
+  had also replaced legitimate product text: the Mail host's `/mail/emails/all/r/…/details` stopped saying
+  `SmtpService with id = '99990013-0000-0000-0000-000000000013' not found.` and started saying `An internal
+  error occurred!`. That is a user-facing change no finding asked for. CS-Script raises
+  `CSScriptLib.CompilerException` for a compilation failure and nothing else — confirmed against the pinned
+  4.13.1 assembly, where a fault thrown from the script's own body propagates as the author's own type. So
+  the guard now distinguishes *machine detail about the server's assemblies* from *authored product text*,
+  and only redacts the former. After the narrowing, the Mail host's four details pages read their original
+  sentences again, byte for byte.
+- **`LogNotificationStatus.DoNotNotify` is mandatory, not tidy.** The default is `NotNotified`, which makes
+  `LogService` announce the record by e-mail. One render of that list page evaluates twelve failing
+  variables, so the default would send twelve messages per page load — an amplification a signed-in user
+  could aim at the operator mailbox with the refresh key.
+- **`InvalidOperationException`, not `Exception`.** A component option whose code cannot compile in this host
+  *is* an invalid-state condition; the type is not one `CA2201` reserves, so the fix adds no analyzer
+  diagnostic; and every component's fall-through `catch (Exception ex)` still receives it, so the rendering
+  path is the one a `CompilerException` took before the change.
+
+**No diagnostic capability is lost, and that was verified rather than assumed.** The full Roslyn output is
+persisted to `system_log`. Read back from PostgreSQL after re-verification: **294** rows under source
+`PageDataModel:CodeVariable`, all with `notification_status` = `DoNotNotify`, the complete diagnostic in the
+`details` column, and **zero** rows whose `message` column matches `CS[0-9]{4}` — the arrangement review
+finding `M-OPEN-03` established, where `message` stays short and detail lives in `details`.
+
+**The screen that now holds the detail is administrator-gated, and that was proven at runtime rather than
+read off a comment.** `/sdk/server/log/l/list` renders each log record as JSON, so the diagnostic is visible
+there. `BaseErpPageModel.Init` refuses any user holding no role in the app's `Access` list, and the SDK app
+declares `Access = { SystemIds.AdministratorRoleId }`. Measured with a disposable account holding only the
+`regular` role: `GET /sdk/server/log/l/list` → **302 to `/error?401`**, final status **401**, body 294 bytes,
+zero `CS####` tokens. The same request as administrator → **200**. The detail moved from a screen every
+authenticated user reaches to one only an administrator does; it did not merely relocate.
+
+**One operational characteristic, stated rather than left to be discovered.** Because a compilation failure
+is not cached, each render of an affected page writes one log row per failing variable — twelve for that list
+page. On a correctly-deployed host nothing is written at all; on a host missing a referenced plugin the rows
+accumulate with page views, and log retention is an operator concern. `DoNotNotify` bounds the consequence to
+storage: no notification is sent however often it happens. Caching the failure would remove both the
+repeated compile and the repeated row, but that is an optimisation beyond this remediation and is not made
+here.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Solution build | 0 errors, **3,055** warnings — identical to the pre-change baseline; **3,047** unique diagnostic sites, unchanged; per-rule counts unchanged, so **zero** new analyzer diagnostics |
+| HTTP crawl, all 7 hosts, authenticated | `/mail/emails/all/l` — still 12 `alert-danger` blocks, every one reading `An internal error occurred!`, and **zero** `CS####` tokens on any page of any host |
+| Legitimate text preserved | Mail host `/mail/emails/all/r/{id}/details` again reads `SmtpService with id = '…' not found.` on all four records |
+| Browser, `site` host, Production | 12 blocks on the list page and 3 on the details page, all identical to the generic sentence; the caller's regex `\bCS[0-9]{4}\b` and the literals `error CS0234`, `error CS0246`, `WebVella.Erp.Plugins.Mail`, `are you missing an assembly reference` and `EmailServiceManager` each matched **0** times; 19 further diagnostic tells — `CSScript`, `CompilerException`, `does not exist in the namespace`, `Roslyn`, `StackTrace`, `.cs:line`, the `(line,col):` coordinate pattern, any `*Exception` token — also **0** |
+| Redaction is server-side, not cosmetic | The raw HTTP document bodies (24,067 and 34,404 chars), captured before any script ran, contain zero matches. Every alert is served as exactly `<div class="alert alert-danger wv-alert  "><div class="content"><div>An internal error occurred!</div></div></div>` — no remnant in a comment, attribute or hidden node |
+| Console and network | **0** messages at level `error` or `warn` across the session (99 and 85 messages, all CSP report-only `[info]` notices and DevTools issue aggregations); **0** responses at status ≥ 400 |
+| Server-side record | 294 `system_log` rows, all `DoNotNotify`, full diagnostic in `details`, 0 `CS####` in `message` |
+| Authorization on the new detail location | `regular` role → 302 `/error?401` (401, 294 bytes, no `CS####`); administrator → 200 |
+
+**Inspected and found not applicable:** `WebVella.Erp.Site/Pages/EQL.cshtml.cs:L54` also calls
+`CodeEvalService.Evaluate`, but its source is a compile-time `const string` referencing only `System` and
+`WebVella.Erp.Web.Models` — both loaded in that host — with no database or request input reaching it. It is
+not a disclosure path and was left alone.
+
+### The gate's runtime-compilation ratchet moved with it, and was strengthened rather than loosened
+
+This fix broke a gate, and the break is worth recording because the gate was right to break. Gate 1's
+runtime-compilation inventory ratchet pins the number of direct `CodeEvalService.Evaluate` call sites, and it
+was pinned at **five**. Routing the two unguarded evaluations through one helper made two direct calls into
+one, so the arithmetic became **four** and the step failed with `::error::… is 4, not the reviewed 5`. That
+is a ratchet doing its job: any change to the surface that compiles C# at run time has to be looked at
+rather than absorbed.
+
+**It was not simply lowered.** Moving 5 to 4 on its own would have *freed a slot* — a later edit could add a
+new unguarded direct call and still read 4 if it removed a guarded one, which is precisely the trade the
+ratchet exists to prevent. Three assertions were added in the same edit so the surface stays pinned and the
+CWE-209 containment is pinned with it:
+
+| New assertion | What it prevents | Proven load-bearing by |
+|---|---|---|
+| `EvaluateGuarded` is reached from exactly **2** call sites in `PageDataModel` | The swap above. 4 direct − 1 inside the helper + 2 through it = the same **five** logical entry points as before | Reverting one guarded call to a raw `CodeEvalService.Evaluate` — **both** the direct count (5≠4) and the guarded count (1≠2) fire |
+| The catch names **`CompilerException`**, not `Exception` | The regression this fix's own first attempt made: catching `Exception` swallowed the platform's `ValidationException` text and replaced `SmtpService with id = '…' not found.` with the generic sentence | Widening the catch to `Exception` → step fails |
+| The rethrow keeps `ErpSettings.DevelopmentMode ? ex.Message : GENERIC_…` | Both directions of drift: dropping the gate re-exposes the diagnostic outside Development, and dropping the Development branch silently removes the author-facing diagnostic this log says is preserved | Removing the conditional → step fails |
+
+Each was verified by negative control against a shadow checkout — mutate, observe the step fail with the
+intended message, restore, observe it pass again — rather than by reading the assertion and believing it.
+The restored file was diffed byte-for-byte against the original.
+
+## The eighth deployable host stopped shipping bare (`P6-04`)
+
+`M-01` was recorded as remediated across "all seven host pipelines", and every one of those seven was
+verified on the wire. The sentence was true and the count was wrong: this repository publishes **eight**
+deployable ASP.NET Core hosts, not seven. The eighth is `WebVella.Erp.WebAssembly/Server`, and it shipped
+with none of the six non-transport headers. QA finding `P6-04` is that gap, and the reason it survived a
+verification pass that examined every host it knew about is worth stating plainly — *seven Razor site hosts
+pass* was read as *coverage is complete*, and nothing in the gate or the documents contradicted that
+reading, because both counted the same seven.
+
+### What was actually emitted before the fix
+
+Measured at the wire against a published Release build of the unmodified tree, run side by side with the
+fixed one on a second port so the two could be compared rather than remembered:
+
+| Response class | Mandated headers present, unmodified host | Mandated headers present, after the fix |
+|---|---|---|
+| Document (`/`, `index.html`) | **0 of 7** | **7 of 7** |
+| Framework script (`/_framework/blazor.webassembly.js`) | **0 of 7** | **7 of 7** |
+| Runtime module (`/_framework/dotnet.native.<fingerprint>.wasm`) | **0 of 7** | **7 of 7** |
+| Client configuration (`/appsettings.json`) | not probed on the unmodified host | **7 of 7** |
+| `404` (a missing `.css`) | **0 of 7** | **7 of 7** |
+| `405` (`POST` to a `GET`-only path) | not probed on the unmodified host | **7 of 7** |
+| Plaintext `307` from the HTTP listener | **0 of 7** | **7 of 7** |
+| SPA fallback (`/login`) | **0 of 7** | **7 of 7** |
+
+**One nuance inside that column of zeros, because it changes what the finding is rather than merely
+decorating it.** The unmodified host *did* already call `app.UseHsts()`. The zeros were read at
+`Host: localhost`, which `HstsOptions.ExcludedHosts` excludes by default, so the framework's own writer
+never ran and the transport header was genuinely absent as measured. Re-probed at a hostname the framework
+does **not** exclude, the unmodified host answers **1 of 7** — and that one is non-compliant:
+
+```text
+unmodified host, https, Host: erp.example.test   ->  strict-transport-security: max-age=2592000
+fixed host,      https, Host: erp.example.test   ->  strict-transport-security: max-age=31536000; includeSubDomains
+```
+
+Thirty days, no `includeSubDomains`. So the accurate statement is: the eighth host emitted none of the six
+non-transport headers under any hostname, and emitted the transport header only at a real hostname and only
+at a value the mandated set does not permit.
+
+### Why the fix is a linked compile rather than a project reference
+
+The cause was **structural, not an ordering oversight**. That project's only references are the WebAssembly
+Client and Shared projects; it has never referenced `WebVella.Erp.Web`, so `SecurityHeadersMiddleware` was
+not in its compilation at all. No amount of pipeline re-ordering could have reached it, and it does not call
+`AddErp`, so it inherits nothing that extension registers.
+
+Three ways to close that, and the reasons the other two were rejected:
+
+- **A `ProjectReference` to `WebVella.Erp.Web`** would pull the platform's entire dependency closure —
+  Npgsql, CS-Script, AutoMapper, MailKit — into a host that is otherwise a static-asset shell with one
+  package reference. It would also newly subject that host to the platform's analyzer backlog. Rejected as
+  disproportionate to emitting seven headers.
+- **Copying the middleware into the project** would give the mandated values, the Development HSTS
+  suppression and the single-policy-name invariant a second definition to drift from. Rejected: the file's
+  own comments warn about exactly that class of drift.
+- **Linking the file by source**, which is what was done:
+
+```xml
+<Compile Include="..\..\WebVella.Erp.Web\Middleware\SecurityHeadersMiddleware.cs"
+         Link="Middleware\SecurityHeadersMiddleware.cs" />
+```
+
+One definition, no new package closure, and the middleware compiles against nothing beyond
+`Microsoft.AspNetCore.*` and `Microsoft.Extensions.Options`, all of which the web SDK already supplies.
+
+### Two placements that are load-bearing
+
+- **`app.UseSecurityHeaders()` is the host's first middleware**, ahead of `UseHttpsRedirection`,
+  `UseBlazorFrameworkFiles` and `UseStaticFiles`. The last two **terminate** the pipeline for a matched
+  asset, which is precisely why the `.wasm`, the framework scripts and `appsettings.json` — the bulk of what
+  this host serves — would ship bare from any later position. Ahead of the redirection middleware too, so
+  the plaintext `307` carries the set as well. This mirrors the seven Razor hosts, where the same call
+  precedes response compression and both `UseStaticFiles` calls.
+- **`services.AddHsts(...)` is pinned in this host as well.** It does not inherit the pin `AddErp` applies,
+  and `HstsMiddleware` — which `app.UseHsts()` installs — assigns the transport header by indexer and runs
+  *later* than the headers middleware, so on any host it is not excluded from, it decides the value. The
+  pin is what makes both writers emit the identical string, so the overwrite is a no-op in either order.
+  **This was measured rather than reasoned about**, twice: on the real hosts as shown above, and again in a
+  minimal two-writer probe whose only variable was the presence of the pin, which reproduced the same pair
+  of values. Removing the pin silently reinstates the thirty-day header while the middleware still writes
+  the correct one.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Restore and build, both non-member projects | exit 0, **0 errors**. 48 warnings on the Server project's graph and 0 on Shared — **every one of the 48 attributed to the WebAssembly *Client* project**, none to the Server project, to Shared, or to the linked middleware file |
+| The gate's own shape for these two projects | the workflow's dedicated restore, build and advisory steps run green: `PASS` for `CS1570`, `CS1571` and `CS1573` at zero tolerance on both projects under `-p:ErpDocumentationDiagnostics=true`, `PASS` both target `net10.0`, and `Gate 2 passed … no High or Critical advisory` |
+| Solution build unaffected | the Server and Shared projects are **not** solution members, so the solution graph is structurally untouched; the linked file itself is unmodified |
+| Headers at the wire, fixed host | **7 of 7** on all eight response classes in the table above, including the `404`, the `405` and the plaintext `307` |
+| Headers at the wire, unmodified host | **0 of 7** on the document, the framework script, the `.wasm`, the `404` and the `307`; **1 of 7** at a non-excluded hostname, at the non-compliant thirty-day value |
+| HSTS value and duplication | exactly **one** `Strict-Transport-Security` header at a non-excluded hostname, carrying `max-age=31536000; includeSubDomains` |
+| Blazor client still boots — fixed host | `/` renders `Hello, Not Authenticated!` + `Login`, 4 elements in `#app`, 873-character document; `/login` renders the two-field form, 6 elements, 891-character document. All 56 `.wasm` modules and the ICU data downloaded successfully |
+| Blazor client still boots — unmodified host | **byte-identical**: same two strings, same 4 and 6 element counts, same 873 and 891 character lengths. The middleware changed the headers and nothing else |
+| Console, fixed host | **0** at level `error` from the application and **0** at level `warn`. The CSP report-only notice appears **10 times at level `info`** — `Compiling or instantiating a WebAssembly module violates … 'unsafe-eval' is not an allowed source of script … The policy is report-only, so the violation has been logged but no further action has been taken.` It blocked nothing: the module compiled and both routes rendered, which is the report-only mechanism working as designed |
+| Console, unmodified host | **0** `error` from the application, **0** `warn`, and **0** `info` — the 10 `info` notices are the only console difference the change makes, and they are advisory |
+| Network | 64 requests on `/` and 63 on `/login`, on **both** hosts. `0` responses ≥ 400 on `/login`; exactly `1` on `/` on **both** hosts — `GET /favicon.ico` → `404`, Chrome's own implicit probe against a host that ships no icon, already recorded as `RISK-158`. Identical in both builds, so it is not a regression and it is not fixed here: adding an icon is not a security change |
+
+**One consequence for the operator guide, not just for this log.** Because this host is covered by its own
+registration rather than by `AddErp`, a verification pass that probes only the Razor hosts cannot see it —
+which is how `P6-04` arose. The verification checklist in the secure-configuration guide now probes it
+separately and by response *class*, and probes the transport header at a hostname
+`HstsOptions.ExcludedHosts` does not exclude, because a `localhost` probe structurally cannot catch the
+thirty-day default reappearing.
+
+## Horizontal overflow contained where it made a control unreachable (`P6-05`, `P6-21`, `P6-22`, `P13-01`)
+
+Four QA findings, one class of defect: content wider than the box it sits in, in a layout whose every ancestor
+computes `overflow-x: visible`. **None of the four is a security finding**, and this section says so plainly
+because the rest of this log is: they are functional and responsive-layout defects raised by the same QA pass, and
+they are fixed here as strictly additive, non-behaviour-changing edits under AAP §0.6.3's requirement that the
+interface stay unchanged for legitimate content. Each is disclosed as a divergence from AAP §0.3.2's "no feature
+additions" boundary rather than presented as remediation of a vulnerability.
+
+### The measurement that had to come first
+
+The QA figures did not reproduce on the page a login lands on, and finding out why changed what got measured.
+All seven hosts land on an application **launcher** whose `div.app-sitemap` is **empty**, so `#nav` there carries
+three narrow items and overflows nowhere. A first baseline run on the landing page returned `#nav` overflow **0**
+and the logout control **on-screen** at 375, 768, 1280 and 1920 on all four hosts — a clean sheet that would have
+made any later "pass" meaningless.
+
+The defect lives on routes whose sitemap **is** populated. Those were enumerated by walking each host's link graph
+and counting `a` descendants of `div.app-sitemap`, which gave the routes the verification actually used:
+
+| Host | Route | Sitemap anchors |
+| --- | --- | --- |
+| project | `/projects/dashboard/dashboard/a` | 7 |
+| sdk | `/sdk/objects/page/l` | 12 |
+| crm | `/sdk/objects/page/l` | 12 |
+| mail | `/mail/emails/all/l` → `/mail/emails/all/l/all_emails` | 2 |
+
+On the 12-anchor route at 375 the pre-fix state was: `#nav` scrollWidth **457** against clientWidth 375 — an
+**82px** overflow — `documentElement` overflowing by the same 82px, and the logout link's right edge at
+**456.8px**, i.e. 81.8px outside the viewport in a bar that does not itself scroll.
+
+### `P6-05` and `P6-21` — the application bar
+
+One media query in `WebVella.Erp.Web/Theme/styles.css`, scoped below Bootstrap's `lg` breakpoint to complement the
+`@media (min-width: 992px)` blocks the file already had:
+
+```css
+@media (max-width: 991.98px) {
+	#nav { flex-wrap: wrap; height: auto; }
+	#nav > * { min-width: 0; }
+	#nav .app-sitemap { flex-wrap: wrap; }
+}
+```
+
+Three details are load-bearing. `height: auto` must accompany the wrap, or a wrapped second row is drawn outside
+the bar's own box and over the page beneath it. `min-width: 0` is what permits the wrap at all — flex items default
+to `min-width: auto`, which refuses to shrink below intrinsic content width, and that refusal is what produced the
+overflow instead of a wrap. And `#nav .app-sitemap` is written with that specificity deliberately: `.app-sitemap`
+is declared as `flex-flow: row`, a shorthand whose wrap component is `nowrap`, so an ID-qualified selector is what
+overrides it without restating the direction.
+
+**`overflow-x: auto` on `#nav` is the more obvious fix and is deliberately not used.** `#nav` and `.app-sitemap`
+both contain Bootstrap `.dropdown-menu` children, which are absolutely positioned outside their parent's box. Any
+non-visible overflow on an ancestor establishes a clipping container, so that fix would trade an unreachable logout
+control for silently clipped dropdown menus — a worse defect, and one that only appears on interaction rather than
+on load.
+
+### `P13-01` — the dashboard timesheet widget
+
+A `<div class="erp-scroll-x">` wrapper immediately around the widget's grid, in **both**
+`PcProjectWidgetTimesheet/Design.cshtml` and `Display.cshtml` — the files' own comment requires the twins to stay
+identical, and after this edit they are byte-identical (same md5) — plus one rule:
+
+```css
+.erp-scroll-x { overflow-x: auto; }
+```
+
+`overflow-y` is deliberately unnamed so nothing is clipped vertically; measured, `scrollHeight == clientHeight` on
+both wrappers. And **`overflow-x` on the shared `.erp-list` wrapper is deliberately not used**, for the same reason
+in reverse: `.erp-list` wraps every grid in the platform, including list pages whose `thead .filter-row` cells hold
+dropdowns a clipping container would cut off. Verified after the fix that `.erp-list` still computes
+`overflow-x: visible` and the wrapper sits inside it, immediately around the grid.
+
+### `P6-22` — the background-jobs grid
+
+`WebVella.Erp.Plugins.SDK/Pages/job/list.cshtml`, one cell:
+
+```html
+<span class="text-break" title="@record.CompleteClassName">@record.CompleteClassName</span>
+```
+
+A dotted CLR type name such as `WebVella.Erp.Plugins.Mail.Jobs.ProcessSmtpQueueJob` contains no spaces, so at the
+default `overflow-wrap: normal` there is no break opportunity and that one string set a **782.1px** min-content
+floor for the entire table — which clipped the grid at 768 and hid the Status column. `.text-break` is Bootstrap
+4.5.2's own utility, confirmed after the fix to be the **only** matching rule in any loaded stylesheet, so no CSS
+was introduced. Nothing is truncated: the full value still renders, merely allowed to wrap, with the unbroken
+string kept on `title` — the same pattern the Status cell one line below already used.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| Solution build | exit 0, **0 errors**, **3,055** warnings; per-rule counts **identical** to the pre-change baseline ⇒ zero new analyzer diagnostics |
+| Full CI gate | **22 of 22** run steps exit 0; the gate's own solution build unchanged at 3,153 / 0 with identical per-rule counts |
+| Theme token substitution intact | the runtime stylesheet endpoint serves the new rules; 284 `--token` placeholders in source resolve to **5** residual `--` strings in the output, and all five are pre-existing Select2 BEM class names (`select2-selection--single`), present in identical number at the previous revision. No real CSS custom property was introduced, which matters because the theme applies a plain string replacement |
+| `#nav` overflow, 4 hosts × 4 widths | **exactly 0 at 16 of 16** |
+| Logout control | **ON-SCREEN at 16 of 16** (right edges 367 / 760 / 1272 / 1912 against viewports 375 / 768 / 1280 / 1920), and **hit-testable at its own centre at 16 of 16** — `elementFromPoint` returns the anchor's own icon child with `closest('a[href="/logout"]') === logout`, so nothing occludes it |
+| Wide viewports provably unchanged | at 1280 and 1920 on all four hosts: `#nav` computed `flex-wrap` **nowrap**, `height` **40px**, `.app-sitemap` `flex-wrap` **nowrap** — **8 of 8 PASS**. Below 992px the same three values become `wrap` / auto-derived / `wrap`, which is the proof the rule is live rather than absent |
+| Bar rows below 992px | project 4 rows at 375 and 2 at 768; sdk and crm 2 at 375 and 1 at 768; mail 1 at both. A wrapped bar is the intended outcome, not a defect |
+| `P13-01` containment at 375 | wrapper `overflow-x: auto`, clientWidth 327 against scrollWidth 484 and 604 on the two widgets; the table's **effective painted right edge is 351**, inside the card's **360**; the pre-fix **276.55px** spill is **0px painted**; `documentElement.scrollWidth === clientWidth === 375` |
+| `P13-01` content still reachable | `scrollLeft` probe reaches **157** and **277** — exactly the overflow amounts — then restored to 0. Nothing is lost to the clip |
+| `P13-01` overflow propagates nowhere | `.card-body` 343 == 343, `.card` 343 == 343, every outer ancestor 375 == 375 |
+| `P6-22` at 768 | table right edge **753 ≤ 768**; the last header cell (`status`) right edge **752.5 ≤ 768** — the Status column is visible, not clipped; `table.scrollWidth` **738** == its parent's clientWidth 738, against the 782.1px pre-fix floor; **zero** elements exceed the viewport |
+| `P6-22` break actually taken | computed `word-break` and `overflow-wrap` both **break-word** on all 15 spans, and `Range.getClientRects()` returns **2 line boxes** — the break is engaged, mid-token, untruncated, with the full value on `title` |
+| `P6-22` at 1280 | one line box, so the utility is present but inert; all seven columns on one line each; table right 1265 ≤ 1280 |
+| Console and network | **0** messages at level `error` and **0** responses at status ≥ 400 on all four hosts, on every route measured. All console traffic is the expected `info`-level CSP report-only notices |
+
+### Two residuals, measured and documented rather than absorbed
+
+- **Page-level overflow from wide data tables remains** — `RISK-188`. At 375 the SDK and CRM records table drives
+  `documentElement` to 667 against 375, and the mail emails list plus its floated pager to 840 (and to 840 against
+  768). Attribution was measured: of the 136 / 136 / 66 / 28 overflowing elements, **not one is inside `#nav`**. It
+  is the third instance of this defect class, its minimal containment is the change `P13-01` rejected for good
+  reason, and no QA finding raises it.
+- **The scroller costs one widget ~11.5px at desktop width** — `RISK-189`. The dashboard has **two** timesheet
+  widgets; the 603.55px *All Users'* variant now loses about 11.5px of its ninth column to the scroller at 1280,
+  where before it painted 2.55px past its card's border. Scoping the rule below 992px was considered and rejected
+  because the dashboard is two-column from 992px, which would return the spill worse between roughly 992 and
+  1300px. *My Timesheet* is inert at desktop width and unaffected at every width.
+
+## Keyboard focus made visible and text contrast raised to AA where it was measured failing (`P6-11`)
+
+**This is not a security finding, and it is disclosed as a divergence.** `P6-11` was raised as a MINOR
+accessibility defect. AAP §0.3.2 forbids feature additions and refactoring beyond a security fix, and closing this
+finding changes rendered colour on every page and adds a focus indicator that did not exist, so it is recorded here
+and in the *Divergences* section rather than presented as remediation of a vulnerability. It is bounded by one rule:
+**every change is a value substitution or an additive rule in one stylesheet and two theme tokens — no markup, no
+component, no layout property, and no existing `:focus` rule was touched.**
+
+### The finding's own evidence, checked before anything was changed
+
+Two of the three reported symptoms did not survive measurement, and one was reported at the wrong site. Recording
+that first matters, because a fix aimed at the reported symptom would have been aimed at the wrong thing.
+
+| Reported | Measured | Disposition |
+| --- | --- | --- |
+| `focusRuleCount = 0` across all 9 stylesheets | **231** rules mention `:focus` — 113 Bootstrap, **49 the platform sheet**, 43 `button-colors.css`, 24 CKEditor, 1 each Font Awesome and toastr. What is genuinely 0 is rules *styling* `:focus-visible` | The defect is real but its statement was wrong; corrected in `RISK-194` |
+| `lns-header` 2.84:1 | Confirmed at **2.85:1** on 7 card titles — but the cause is **not** the `.lns-header` rule. `.lns-header a, .lns-header span.title { color: #333 }` targets *descendants* and never applies; the failing element is `span.lns-header` itself, **inheriting `#999` from `.card-header`** | Fixed at the real source, `.card-header` |
+| `nav-link` 4.47:1 | Located by value: `#777` on white is **4.48:1**, and the only `.nav-link` rule carrying `#777` is `.app-card .card-footer .nav-link` — the **app-launcher card footer**, which renders on the landing page of every host, not on any page the finding's other symptoms were measured on | Fixed |
+| `go-gray` 2.67:1 | Confirmed at **2.68:1** on 18 elements — the highest-volume and worst-scoring site | Fixed |
+| `td>code` 3.81:1 | Confirmed at **3.82:1** on 15 cells. The failing declaration is **Bootstrap's** `code { color: #e83e8c }`, not a platform rule | Fixed by override, not by editing a vendored sheet |
+| Three app-navigation links measure 0×0 | **Ten** elements measure 0×0, all because an ancestor is `display:none`; **zero rendered** interactive elements have a zero-size box. Reconciles to the three closed `div.dropdown-menu.level-0` containers, which are `<div>`s | Not a defect — `RISK-194` |
+| 19/19 touch targets below 44×44 | **37 of 37** below 44×44 — but 44×44 is WCAG 2.1 **AAA** 2.5.5. Against the AA criterion (WCAG 2.2 2.5.8, **24×24**) exactly **two** failed | Both AA failures fixed; AAA declined — `RISK-194` |
+
+### The focus indicator — what was actually wrong
+
+Before the change, a Tab walk of twelve consecutive stops on `/sdk/objects/entity/l` landed once on a sort caret
+and eleven times on a row-action button. Every one of those eleven reported a `box-shadow`, so a check of the form
+*"is box-shadow not none"* would have called all twelve indicated. The shadow was
+`rgba(255,255,255,0.5) 0 0 0 0.2rem` — **50%-opacity white composited over the white page, which is 1.00:1 and
+renders as literally nothing.** The two pre-fix screenshots taken at different stops are **byte-for-byte identical**,
+0 changed pixels: the page gave a keyboard operator no signal at all.
+
+The cascade that produced it is worth recording, because three of the four layers are not the platform's:
+Bootstrap's `.btn:focus { outline: 0; box-shadow: rgba(0,123,255,.25) … }` removes the outline; Bootstrap's
+`.btn-outline-secondary:focus` sets a **grey** ring that would have been visible; the vendored
+`button-colors.css` overrides that to white; and the platform sheet declares the identical white ring again and,
+being last, wins. **Deleting the platform copy would simply have promoted the vendored one** — which is why the fix
+overrides `outline` instead of touching `box-shadow` at all.
+
+```css
+:focus-visible                    { outline: 2px solid #007bff; outline-offset: 1px; }
+.btn:focus-visible, button:focus-visible, .form-control:focus-visible,
+.custom-select:focus-visible, .custom-range:focus-visible, .page-link:focus-visible,
+.custom-file-input:focus-visible ~ .custom-file-label, a[class*="badge-"]:focus-visible,
+.carousel-control-prev:focus-visible, .carousel-control-next:focus-visible
+                                  { outline: 2px solid #007bff; outline-offset: 1px; }
+```
+
+Four decisions inside those seven lines are load-bearing:
+
+- **`:focus-visible`, not `:focus`.** This is what preserves user-facing behaviour. Chrome reports
+  `:focus-visible` as **false** when a link or button is reached by mouse and true only for keyboard traversal —
+  verified with real mouse clicks, which produced `outline-style: none` and **zero** `rgb(0,123,255)` pixels
+  anywhere in the viewport. The same element by Tab reports `solid 2px rgb(0,123,255)`. Text inputs match
+  `:focus-visible` even on click, which is the specified behaviour and the one place a ring newly appears on a
+  pointer interaction — desirable, since the platform's own `.form-control:focus { box-shadow: none }` had deleted
+  Bootstrap's only visible input ring and left a `#80bdff` border at 1.97:1.
+- **No `!important`.** A bare `:focus-visible` is specificity (0,1,0) and loses to `.btn:focus { outline: 0 }` at
+  (0,2,0), which is why the second rule exists: its selectors are (0,2,0) or (0,2,1), tie with each suppressing
+  Bootstrap rule, and win on source order because this stylesheet is loaded last on every page. That was verified
+  rather than assumed.
+- **`.modal` and `.modal-content` are deliberately excluded.** Bootstrap clears their outline on purpose; a ring
+  drawn around an entire dialog would be a visible regression.
+- **The 49 pre-existing `:focus` rules are untouched**, including the invisible white ring. Repainting
+  `.btn-outline-secondary:focus` would have made a ring appear on every mouse click.
+
+### The application bar needed a third rule, and it was found by re-reading this project's own risk register
+
+The two rules above are correct everywhere the Tab walk went — and the Tab walk never entered the navigation bar.
+This register already carried the reason it should have: `Q10` records that a focus ring in that bar paints
+**12 pixels** because `div.menu-nav` sets `overflow: hidden` while `.menu-nav a` is sized `width: 100%; height: 100%`,
+so the anchor's border box and its clipper coincide to **0.00 px on all four edges** and *any* outward ring is
+clipped away entirely. A ring at `outline-offset: 1px` would have been invisible on 5 of the 6 navigation anchors —
+including the logout control — and nothing in the verification performed so far would have caught it.
+
+`Q10`'s own recommended fix is **wrong, and is corrected rather than quietly replaced**: `overflow: visible` on
+`div.menu-nav` would stop long application-menu labels truncating, because `text-overflow: ellipsis` has no effect
+unless overflow is clipped. That trades a functional regression for a ring. What shipped instead inverts the ring:
+
+```css
+.menu-nav a:focus-visible,
+#brand-logo a:focus-visible     { outline-offset: -2px; }
+```
+
+A negative offset draws the band in the first 2 px *inward* from the border edge, so it lands inside the clipping
+ancestor and survives in full. Measured per anchor, against the 12 pixels `Q10` reports:
+
+| Anchor | Rect | Painted ring px | Theoretical `4w + 4h − 16` | Edge coverage |
+| --- | --- | --- | --- | --- |
+| home `a[href="/"]` | 8, 2, 33.50 × 40 | **280** | 280 | 1.0000 on all four |
+| Objects | 217.97, 2, 73.23 × 40 | **436** | 436 | 1.0000 on all four |
+| Access | 291.20, 2, 70.91 × 40 | **428** | 428 | 1.0000 on all four |
+| Server | 362.11, 2, 64.69 × 40 | **404** | 404 | 1.0000 on all four |
+| logout `a[href="/logout"]` | 1242, 1.50, 30 × 40 | **264** | 264 | 1.0000 on all four |
+
+Every one is an exact match to its predicted band area, a closed rectangle, and identical across two independent
+runs — a **22× to 36×** increase, perimeter ratio 0.027 → 0.943–0.965. Truncation is untouched: all five
+`.menu-nav` remain `overflow: hidden` with `text-overflow: ellipsis`, and the app label still overflows
+`scrollWidth 199` against `clientWidth 120` with its three ellipsis dots byte-identical to the unfocused baseline.
+
+**The second selector is in that rule for a different reason, and it is the one place the ring is imperfect.**
+Nothing clips `#brand-logo a` — every ancestor is `overflow: visible` and `firstClippingAncestor` is `null` — but
+its `span.app-label` child is a **40 px `inline-block`** inside a 24 px inline anchor, and Chrome unions an
+atomic-inline descendant's box into the outline rects. The ring therefore tracks a 143 × 40 union spanning y 2–42,
+so drawn outward its top row computed to **y = −1, off the viewport** and its bottom cap to y 43–45, **behind the
+`position: relative` page-header band that paints after it**: 382 painted pixels, top and bottom coverage 0.16, no
+bottom edge. Moved inward it is **716 of 716 theoretical pixels — 100.0% complete** and provably closed, a flood
+fill from outside reaching no interior point 4- or 8-connected.
+
+Its cost is recorded as `RISK-195` rather than absorbed: the anchor's border box and the 15 × 15 logo `<img>` share
+the same left edge to the sub-pixel (x = 58.50), so an inward ring covers the image's first two columns —
+**28 of its 200 ink pixels, 14%, while the control holds focus**. The two outcomes are geometrically exclusive
+here, every offset that clears the logo puts the ring back outside the union, and the escapes all move the brand
+block in *every* state on every page of every host. The image is decorative, the accessible name comes from the
+adjacent label, WCAG 2.4.11 permits an indicator that overlaps its component, and **0 of the label's 948 glyph ink
+pixels changed**. One trap is worth carrying forward: that ring is a closed *stepped polygon*, not a rectangle, so
+a bounding-box edge-coverage assertion reads 0.84 / 0.84 / 0.60 / 1.00 and looks like a defect while all eight of
+the polygon's own sides are at 1.0000.
+
+### The colour changes
+
+| Site | Was | Now | Ratio before → after | Background it was measured against |
+| --- | --- | --- | --- | --- |
+| `--gray_color` theme token (`.go-gray`, nav caret, dropdown header, bullet glyph, fills) | `#9E9E9E` | `#757575` | 2.68 → **4.61** | white |
+| `--red_color` theme token (`.go-red`, error toast background, chart series) | `#F44336` | `#D32F2F` | 3.68 → **4.98** | white |
+| `a` | `#2196F3` | `#1565C0` | 3.12 → **5.75** | white, and **5.51** on the `#FAFAFA` panel |
+| `.card-header` (inherited by `span.lns-header`) | `#999` | `#757575` | 2.85 → **4.61** | white |
+| `.app-card .card-footer .nav-link` | `#777` | `#757575` | 4.48 → **4.61** | white |
+| `.pc-page-header .meta-label .subtext` | `#777` | `#616161` | 4.11 → **5.68** | `#F5F5F5` |
+| `code` (new rule, overriding Bootstrap) | `#e83e8c` | `#c7254e` | 3.82 → **5.52** | white |
+| `.nav-pills .nav-link.active` | `#007bff` | `#1565C0` | 3.47 → **5.01** | the composited `rgb(231,240,250)` tint |
+| `.go-white .go-red` (new scoped rule) | — | `#E57373` | 3.23 → **5.39** | `#212121` |
+
+**Two of those rows exist because the first attempt was insufficient, and both were only caught by re-measuring.**
+
+- `a` was first set to Material Blue **700** (`#1976D2`), which measures 4.61:1 on white and passes. Re-measurement
+  found ten `a.nav-link` elements on the SDK Web API page sitting on a `.go-bkg-gray-light` panel whose background
+  is `#FAFAFA`, where the same colour scores only **4.41:1** — a fail. 1.4.3 is evaluated against each element's
+  own background, so a colour with no headroom fails as soon as a panel is anything other than pure white. Blue
+  **800** clears every surface the product paints links onto.
+- `.pc-page-header .meta-label .subtext` was first set to Grey 600 on the assumption of a white background. It sits
+  on the `#F5F5F5` header band, where Grey 600 reaches only **4.23:1**. Grey 700 measures 5.68:1 there.
+
+**One row exists because the fix itself caused a regression.** `.go-red` is used both as text on the white page and
+as text inside the `#212121` request blocks the SDK Web API page renders. Darkening the token fixed the light case
+(3.68 → 4.98) and made the dark case **worse**: 4.37 → **3.23**. Both figures fail 4.5, so the dark case was
+already non-compliant, but a fix must not leave anything worse than it found it. One flat colour cannot serve both
+surfaces, so the dark case is scoped rather than compromised: `.go-white` is the class the platform puts on a
+container to switch it to light-on-dark, which makes it the precise and self-documenting condition. Its scope was
+bounded before the rule was written — of the 28 `.go-white` occurrences in the repository, `web-api.cshtml` is the
+**only** file that also contains `.go-red`, and every other use is an icon span inside a coloured button or badge
+with no `.go-red` descendant. Verified after the change by complementary whole-image pixel sweeps: the Web API page
+carries **106** pixels of `rgb(229,115,115)` and **0** of `rgb(211,47,47)`; the dashboard carries **0** and
+**5,653** respectively.
+
+### The two hit-area changes, one of which turned out to be no change at all
+
+`#brand-logo a` measured 143.47 × **16** px. Vertical padding was used rather than
+`display:inline-block; min-height`, because on a non-replaced **inline** element `padding-top`/`padding-bottom`
+extend the border box that `getBoundingClientRect()` reports without contributing to the line box. The anchor now
+reports 143.47 × **24**, `#brand-logo` is still exactly 40 px, and **the entire nav row-1 strip is pixel-identical
+to before** — a 50% larger target for a visual no-op. No horizontal padding was added, because that *would* widen
+the line box and `#brand-logo` is `max-width: 182px` with `text-overflow: ellipsis`.
+
+`a.sort-link` measures 16 × 14 and **needed no change**, which was established by measurement rather than assumed.
+Its `<em>` child is `position:absolute` with `inset` 0 and `width/height: 100%`, and because the anchor is
+`position:static` the child's containing block is the `position:relative` `<th>`. The `<em>` therefore measures
+**153.41 × 24** — the whole header cell — and being a *descendant* of the anchor, every hit on it belongs to the
+sort link. 21 of 21 `elementFromPoint` probes across the cell returned it with `contains()` true, two deliberate
+out-of-cell controls returned a different cell with false, and a real click at the cell's inner corner **40 px from
+the caret** fired the sort. The effective target is ≈ 3,682 px² against the anchor's 224 px² — **16.4×** larger.
+Adding padding to reach a `getBoundingClientRect()` number would have widened the header cell for no gain: this is
+the same lesson the responsive pass recorded, that a layout box is not what the user can hit.
+
+### Verification
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | Tab stops with a visible focus indicator, `/sdk/objects/entity/l` | **12 of 12** (was 1 of 12); every stop `solid / 2px / rgb(0,123,255) / offset 1px`, `:focus-visible` true, **3.98:1** on white |
+| 2 | Ring is painted, not merely computed | Pixel probes at the exact geometry a 2px/1px-offset outline predicts; 156–240 exact ring pixels per focused control against **0** on unfocused neighbours |
+| 3 | Ring moves one control at a time | 394-frame decode of the screencast: **12 distinct positions, 48 px apart, never two at once, never none** |
+| 4 | Pre-fix screenshots differed | before-tab3 vs before-tab7 = **0 changed pixels**; after-tab3 vs after-tab7 = **608**, confined to the two ring locations |
+| 5 | Mouse interaction unchanged on links and buttons | `:focus-visible` **false**, `outline-style: none`, **0** `rgb(0,123,255)` pixels in the whole viewport, on both a nav link and a row-action button — while `:focus` was genuinely true, so the check is not vacuous |
+| 6 | Text inputs do show the ring on click | `:focus-visible` true, 888 exact ring pixels, 3.65:1 on the `#f5f5f5` band |
+| 7 | Contrast failures, Projects dashboard | **15 → 0** of 126 examined |
+| 8 | Contrast failures, SDK data-source list | **32 → 2** of 109 examined |
+| 9 | Contrast failures, SDK entity list | 2 → **2** of 45 examined |
+| 10 | Contrast failures, application launcher | **0** of 15 examined |
+| 11 | Contrast failures, SDK Web API page | **18 → 5** of 52 examined, and all 5 are the documented residuals `RISK-190`, `RISK-192`, `RISK-193` — **no new or unexpected failure** |
+| 12 | Each fixed site confirmed individually | 3 `.go-gray` at 4.61, 3 `.go-red` at 4.98, **7** `span.lns-header` at 4.61, 2 card links at 5.75, **15** `td>code` at 5.52, **6** launcher footer links at 4.61, **10** pill links at 5.51, the active pill at 5.01, 2 dark-block `.go-red` at 5.39, the header subtext at 5.68 |
+| 13 | Bootstrap's `code` rule overridden, not edited | Bootstrap's `#e83e8c` still present in the cascade and losing on source order at equal (0,0,1) specificity; **1,043** exact `#c7254e` pixels and **0** exact `#e83e8c` on screen |
+| 14 | Theme token substitution intact | Served sheet contains exactly **5** residual `--` strings, all pre-existing Select2 BEM fragments; `--primary_color` resolved to `#007bff` with no token text surviving in 108 KB |
+| 15 | Brand anchor target and no layout shift | 16 → **24 px** tall; `#brand-logo` still 40 px; nav row-1 strip **pixel-identical** |
+| 16 | Sort-link effective hit area | **153.41 × 24**, 21/21 probes, confirmed by a real click 40 px from the caret |
+| 17 | Chart legend still agrees with its arcs | Tasks widget **exact match** at `rgb(211,47,47)`; Priority widget disagrees by one Material step on two 12×12 icons — `RISK-191` |
+| 18 | Visual judgement, three screens | Doughnuts still render red/green; card titles still read as muted grey subordinate to body text; `<code>` still reads as crimson, never as body text; the dark-block red is comfortably readable and unambiguously red with `G == B` so no orange bias; the active pill still distinguishable by its tint |
+| 19 | Solution build | **0 errors, 3,055 warnings**, per-rule counts **identical** to the pre-change baseline, **0** warnings attributed to either modified file |
+| 20 | Continuous gate | **22 of 22** run steps `rc=0`; gate build 3,153 warnings / 57 rules, per-rule counts identical to the preceding pass |
+| 21 | Console and network | **0** console errors and **0** responses ≥ 400 on every page measured, across four verification rounds |
+| 22 | Application-bar ring paints, per anchor | **280 / 436 / 428 / 404 / 264** exact `rgb(0,123,255)` pixels against **0** on the unfocused baseline — each an exact match to its `4w + 4h − 16` band, closed, 1.0000 coverage on all four edges, and identical across two independent runs. Was **12** |
+| 23 | Brand anchor ring complete | **716 of 716** theoretical pixels, **100.0%**; closure proven by a flood fill that reaches no interior point 4- or 8-connected, enclosing 4,636 px exactly matching the eroded union. Was 382 with no bottom edge. Cost disclosed as `RISK-195`: 28 of the decorative logo's 200 ink px overpainted while focused, **0** of the label's 948 glyph px |
+| 24 | Truncation survives the negative offset | All **5** `.menu-nav` still `overflow: hidden` + `ellipsis` + `nowrap`; app label still overflows 199 vs 120; the ellipsis window is **`array_equal` byte-identical** to the unfocused baseline, 37 ink px in both |
+| 25 | Navigation still pointer-clean and functional | A real mouse click on a nav anchor: `:focus` true, `:focus-visible` **false**, `outline-style: none`, **0** ring pixels in the whole viewport and a frame **byte-identical** to the baseline — while the dropdown still opens to 5 clickable items and a second real click navigated |
+| 26 | Geometry unmoved by any of it | `#nav` 0, 2, 1280 × 40 and `#brand-logo` 41.5, 2, 176.46875 × 39 **bit-identical** focused vs unfocused; `scrollWidth == clientWidth == 1280`, no horizontal overflow; **0** non-ring differing pixels in every focused capture |
+
+### What remains open, and why
+
+- **`RISK-190`** — the `.go-*` palette is a Material *fill* palette reused for text and cannot be fixed hue by hue:
+  Orange reaches only 3.79:1 at its darkest step, so a per-hue pass produces a permanently inconsistent family.
+  `.go-green` measures 2.78:1. WCAG 1.4.1 is satisfied — every coloured value is paired with a monochrome label.
+- **`RISK-191`** — the Task-Priority legend reads stored `SelectOption.Color` while its arcs read the theme token;
+  128 pixels across two 12×12 icons now differ by one Material step. Exposed, not created, by the token change.
+- **`RISK-192`** — the page-header eyebrow colour is per-record stored data in an inline attribute, measured from
+  5.78:1 down to 1.93:1 depending on the record. The remedy belongs in the colour picker.
+- **`RISK-193`** — `.nav-link.disabled` at 4.49:1, from `bootstrap.css`, and being misused as a section-heading
+  style. Overriding it globally would make genuinely disabled links look enabled.
+- **`RISK-194`** — 44×44 targets are a Level AAA criterion and are declined; the AA criterion is met. Includes one
+  discovered Level A gap not raised by the finding: the home nav link has no accessible name, and the component is
+  designated REFERENCE — not modified in AAP §0.7.1 Group 11.
+- **`RISK-195`** — the brand anchor's ring cannot be both complete and clear of the logo, because the anchor's
+  border box and the logo image share the same left edge to the sub-pixel while a taller `inline-block` child forces
+  the ring outside the visible bar if drawn outward. Completeness was chosen: 716 of 716 pixels and a provably
+  closed loop, at the cost of 28 px of a **decorative** image being overpainted while the control holds keyboard
+  focus. Every alternative moves the brand block permanently, in every state, on every page of every host.
+
+## Chart segments made identifiable, and user deletion given a control that completes (`P6-03`, `P6-17`)
+
+Two findings from the same pass, both **functional** rather than security defects, and both recorded here
+as divergences from AAP §0.3.2's "no feature additions" boundary rather than as remediation of a
+vulnerability. `P6-03` reported that the dashboard doughnut charts carried no labels, no legend and no
+tooltips, so no segment could be identified. `P6-17` reported that the user-administration interface had
+no delete control at all. Neither is in the 53-finding security inventory; both were raised by QA against
+the delivery and are resolved here with their scope consequences stated.
+
+### `P6-03` — the labels were empty, and the tooltips were disabled by a vendored library
+
+**The finding undercounted the widgets, and enumerating rather than assuming mattered.** The report named
+two charts; a search of non-vendored source for `doughnut` found **three** widgets — `PcProjectWidgetTasksChart`,
+`PcProjectWidgetTasksPriorityChart` and `PcProjectWidgetBudgetChart` — each with a `Design` and a `Display`
+twin, so **six** views. The report also named "Tasks and Budget", which appear on the *per-project*
+dashboard, while the *global* dashboard carries Tasks and Priority; both routes had to be covered.
+
+**The vendor wall, established by reflection rather than by inference.** All six views render
+`<wv-chart type="Doughnut" datasets="@datasets" width="100px" height="100px">`, a tag helper from the NuGet
+package `WebVella.TagHelpers 1.8.0`. A reflection probe over the shipped assembly returned its entire
+surface: `Type`, `Datasets`, `Labels`, `ShowLegend`, `Id`, `Width`, `Height`, `isVisible`, `Order`,
+`ViewContext`. **There is no tooltip attribute.** A UTF-16 string scan of the assembly then confirmed
+`cutoutPercentage`, `maintainAspectRatio`, `tooltips` and `new Chart('` as literals inside the helper: it
+composes the Chart.js configuration as a C# anonymous type and writes `"tooltips":{"enabled":false}`
+unconditionally. `cutoutPercentage` appears in **no** repository source file — it is Chart.js's own doughnut
+default. The engagement permits version updates to third-party assets, not edits, so the helper is
+untouchable.
+
+**Why populating `labels[]` alone would have been a no-op.** Chart.js reads `labels` only to render a legend
+or a tooltip. With `legend.display: false` and `tooltips.enabled: false` both emitted by the helper, adding
+labels changes nothing a user can see. The server-side half is necessary but not sufficient, which is why a
+client-side change is unavoidable here rather than gold-plating.
+
+**Why `beforeInit`, read out of the bundle rather than assumed.** Chart.js v2.8.0's own `initialize()` is
+`He.notify(t,"beforeInit"), ut.retinaScale(…), t.bindEvents(), t.options.responsive&&t.resize(!0),
+t.ensureScalesHaveIDs(), t.buildOrUpdateScales(), t.initToolTip(), …` — `beforeInit` fires **four statements
+before** `initToolTip()`, making it the last point at which `options.tooltips` can still be changed. The
+plugin service is public in this build (`ai.plugins=He`, with `register`), so `Chart.plugins.register` is a
+supported entry point rather than a reach into internals.
+
+**Three alternatives declined, each for a measured reason.** `show-legend="true"` was rejected because
+Chart.js renders its legend *inside* the 100 px container, shrinking the doughnut toward nothing and
+duplicating the colour-keyed text the card already prints. An inline `<script>` beside each chart was
+rejected because it would add a new inline-script channel and make the Content-Security-Policy enforcement
+path harder. Appending a `window.load` handler to `site.js` was rejected because it would repaint every
+chart on every page of every host after first paint and depend on the `Chart.instances` internal. Each
+widget's existing `service.js` was also rejected as a delivery vehicle: it is **design-time only**, with
+zero occurrences on a `Display` page.
+
+**What shipped.** Labels are set in the three page-component C# classes rather than the views, following
+this codebase's own `H-06` precedent that a value shared by a `Design`/`Display` pair belongs in the
+component: `["Overdue","Due today","Upcoming due"]`, `["High","Normal","Low"]` and
+`["Billable %","Non-billable %"]`. Each is deliberately the **literal string the view already prints**,
+not a value read from stored data — pairing a chart with a second data source is precisely the coupling
+that produced `RISK-191`. The Budget labels carry a comment recording that those figures are integer
+percentages of *total logged* hours, not of the estimate, which is why the pair always sums to 100. A new
+external file, `WebVella.Erp.Plugins.Project/wwwroot/js/wv-chart-tooltips/wv-chart-tooltips.js`, registers a
+`beforeInit` plugin that returns early unless the chart is a doughnut or pie **and** its `labels` array is
+non-empty, then enables tooltips and tightens them for a 100 px canvas. It is loaded with `<script src>`
+following the Project plugin's own convention, used by four existing components, so **no inline script was
+added**. The six views gained the `labels` attribute and the script tag, placed after `<wv-chart>` so
+`Chart` exists and no chart has yet been constructed.
+
+### `P6-17` — the control had to be exposed, and then it had to actually complete
+
+**The guard design.** `WebVella.Erp.Plugins.SDK/Pages/user/list.cshtml(.cs)` gained an `OnPost` modelled on
+the platform's existing guarded-delete precedent at `Pages/entity/data.cshtml(.cs)`, with three refusals
+each raising a `ValidationException` carrying its own message so the operator learns *why*: the
+`EntityPermission.Delete` check is re-evaluated **server-side** rather than inherited from the rendered
+page; the `system` account is refused with its username **read back from storage** via `EqlCommand` so the
+check cannot be bypassed by what was posted; and self-deletion is refused before the record is even read.
+A missing UI control is not an access control (OWASP A01:2021, CWE-284), which is why all three are
+enforced at the handler and the hidden button is only an affordance.
+
+**The rendering is three-way, not a boolean.** A row shows the edit pencil plus a red trash; the
+signed-in administrator's own row shows the pencil alone with no `<button>` node at all; the `system` row
+shows a single **disabled** padlock.
+
+**Then it failed, and the cause was in the platform.** The first runtime pass found the control rendering,
+hit-testable and prompting correctly — and the delete returning 200 with no redirect and the banner *"The
+entity record was not update. An internal error occurred!"*, the record surviving. `RecordManager.DeleteRecord`
+delegates to `DbRecordRepository.Delete`, which issues a bare `DELETE` and never detaches many-to-many
+rows, so PostgreSQL refuses on `rel_user_role`'s `user_role_target` foreign key. Measured, not estimated:
+15 of the 27 accounts hold a role, so **13 of the 25 rendered controls could not work**. Exposing a control
+that fails for the majority of rows is worse than exposing none, so the finding was not resolved until
+this was fixed.
+
+**The fix, and why it is shaped this way.** The handler now opens **one** transaction, detaches the target's
+role assignments with `RemoveRelationManyToManyRecord(SystemIds.UserRoleRelationId, null, recordId)`, deletes
+the record, and commits; a `committed` flag drives a `finally` that rolls back once on every failure path,
+with a rollback fault logged rather than allowed to replace the exception that caused it. Four facts were
+verified in source before a line was written: `rel_user_role` is origin=**role**, target=**user**, so the
+detach keys on `targetValue`; `DeleteManyToManyRecord` explicitly supports a null origin;
+`DbConnection.BeginTransaction` **nests as savepoints**, which is what makes the inner platform calls safe
+inside an outer transaction; and `DbConnection.Close()` **throws** on a pending transaction, which makes the
+commit-or-rollback mandatory rather than merely tidy. Neither `DeleteRecord` nor `DbRecordRepository.Delete`
+opens a transaction of its own, so no savepoint can leak. `IsProtectedRelationMutationRefused` returns false
+for an administrator caller, so the detach is not wrongly refused while still preventing a non-administrator
+stripping administrator roles. Scope is deliberately **only** `user_role`, the one relation the core owns;
+authored-content references are refused with an actionable message instead of cascaded, and both the residue
+and the declined general remedy are `RISK-197`.
+
+**One compile defect worth recording.** The first build failed with `CS0118: 'Log' is a namespace but is
+used like a type`. This page's namespace has a sibling `Pages.Log` namespace that shadows
+`WebVella.Erp.Diagnostics.Log` by simple name; the in-plugin precedent in `Jobs/` compiles only because
+`Jobs` has no such sibling. The type is now fully qualified with a comment saying why.
+
+### Verification
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Solution build after the final edit | **0 errors, 3,055 warnings, 53 rules — per-rule identical to the preceding baseline**; the only warnings citing the modified files are the pre-existing `CA1805` and `CA2201` |
+| 2 | Full 22-step gate harness on the final code tree | **22 of 22 steps rc=0**, `HARNESS_OVERALL=0`; gate build 3,153 warnings / 0 errors / 57 rules, per-rule identical to the previous pass |
+| 3 | `P6-03` — plugin actually loaded | `window.wvChartSegmentTooltipsRegistered === true`; `Chart.plugins._plugins` ids `["filler","legend","title","wvChartSegmentTooltips"]` on both routes — registered **once** despite two script tags per page |
+| 4 | `P6-03` — the vendored helper was not edited | Server HTML still contains `"tooltips":{"enabled":false}` **twice per route** while the live runtime reads `enabled === true` on both `chart.options` and `chart.config.options` for all four charts |
+| 5 | `P6-03` — labels present | All four charts carry the authored arrays; asset served 200 at 5,114 bytes |
+| 6 | `P6-03` — every visible segment identifiable | **7 of 7** non-zero-sweep arcs show a tooltip at `opacity = 1` whose text contains its own label; 4 zero-value segments are unhoverable by construction and identified by adjacent card text |
+| 7 | `P6-03` — tooltip containment | **7 of 7 fit** the 100×100 canvas on all four inequalities plus caret; margins recorded in `RISK-196` |
+| 8 | `P6-17` — control withheld correctly | All **27** rows audited across **3 pages** (the list is paginated, and `system` is on page 3); 25 render the control, and the only two withholding it are the signed-in administrator's own row and `system` |
+| 9 | `P6-17` — control usable | `BUTTON type=submit`, 33.5×29, `inline-block`/`visible`/`opacity 1`, `elementFromPoint` resolves to its own icon descendant |
+| 10 | `P6-17` — confirmation fires | Native dialog, verbatim `Delete this user? This cannot be undone.` |
+| 11 | `P6-17` — the delete completes | `POST` → **302** to `/sdk/access/user/l/list`; target row absent from pages 1–4 raw HTML; pager whole-list total **27 → 26**; removed-guid set computed with `comm` is **exactly** the one target; zero `alert-danger` |
+| 12 | `P6-17` — storage agrees | `rec_user` 27 → 26; the target's role row gone; **orphan `rel_user_role` rows across the whole table = 0**; administrator and `system` both present |
+| 13 | `P6-17` — guard 1 refuses | Verified by a **reversible** configuration test: the SDK application's access array was temporarily widened to the `regular` role, a non-administrator then loaded the page and saw **zero** delete controls, and a forged POST was refused with *"You are not authorized to delete users."* with the administrator row intact. Access was restored and re-read as byte-identical to its original single-role value |
+| 14 | `P6-17` — guards 2, 3 and the edge cases | `system` refused; self refused; absent record refused; malformed and missing `recordId` → 404; missing antiforgery token → 400 |
+| 15 | `P6-17` — the refusal branch is non-destructive | A content-blocked account returns the **specific** message and the **generic** one is absent; afterwards the account is still present, **its role row is still present**, `rec_user` is unchanged, orphan rows are 0, and 0 rows are logged under `SDK.UserList.Delete`, so the rollback neither lost state nor faulted |
+| 16 | Regression | 0 true console errors on both hosts (all console output is report-only CSP noise), 0 network responses ≥ 400 across 89 and 85 requests, and the navigation dropdown and pager exercised with real clicks after the delete |
+
+**A note on how the guard-1 evidence was obtained, because it involved changing configuration.** Guard 1's
+refusal branch is unreachable by ordinary means: `BaseErpPageModel.Init()` redirects to `/error?401` unless
+the principal's roles intersect the application's own `access` array, and the SDK application grants
+administrator only — so a non-administrator never reaches the handler. The branch was therefore reached by
+temporarily granting the `regular` role through the platform's own application-manage form and then
+revoking it. The scraper used to round-trip that form mis-captured two fields, which corrupted the
+application record's `icon_class`, `description` and `author` columns; the damage was detected by an
+explicit post-condition check rather than assumed away, and repaired by re-posting every field from the
+authoritative literals in `SdkPlugin.20200610.cs`. All eight columns were then re-read from PostgreSQL and
+confirmed **byte-for-byte exact**, and the launcher page re-verified as rendering its six footer links as
+real anchors with zero escaped-markup leakage. No residual change remains.
+
+### Two residuals and one forward risk
+
+- **`RISK-196`** — the tooltips fit a 100 px canvas only because the fix shrank them; the longest label has
+  10.8 px of head-room and two boxes are already pinned to `x = 0` by Chart.js's left-edge clamp. Recorded
+  with the per-tooltip arithmetic so a future label change is checked rather than assumed.
+- **`RISK-197`** — two of the 25 rendered delete controls still refuse, because `created_by` and `owner_id`
+  are authorship provenance and are deliberately not cascaded. One of the two is blocked by a single
+  task-watcher join row, whose detach would cross a plugin boundary from an SDK page; the general remedy
+  changes core delete semantics for every entity and is refused under AAP §0.3.2.
+- **`RISK-198`** — the new confirmation is an inline event handler, so enforcing the Content-Security-Policy
+  would silence it and let a destructive action proceed unprompted. It adds nothing to `RISK-170`'s three
+  counts, and `P6-03` deliberately added no inline script, but whoever flips the enforcement switch must
+  externalise this handler or admit `'unsafe-hashes'` in the same change.
+
+## The content-security policy's delivery mode was verified by enforcing it (`A17`)
+
+`A17` is the acceptance row recording that the mandated seven-header set is not satisfied while the
+Content-Security-Policy ships under its report-only name. It is **not a defect to fix**: AAP §0.1.3, §0.3.2,
+§0.6.5 and §0.8.3 authorise report-only-first explicitly, and the precedence rule that an explicit plan
+exception outranks everything else means force-enforcing it would be the wrong action, not the diligent one.
+What was outstanding was evidence: the divergence had been *declared* but the enforcement path had never been
+*exercised*, and the justification for staging rested on a component inventory rather than on observed
+breakage. This pass supplied both. **No remediation code was written for `A17`.**
+
+### The capability question, settled
+
+A second copy of the already-published SDK host was started on a scratch port with
+`ASPNETCORE_ENVIRONMENT=Production` and one added variable,
+`SecurityHeaders__ContentSecurityPolicyReportOnly=false`. The two processes' `/proc/<pid>/environ` were
+diffed: same content root, same environment, byte-identical connection string, encryption key, token signing
+key and administrator password, and **exactly one differing key** — the switch. Every observed difference is
+therefore attributable to delivery mode alone. The scratch host was stopped afterwards and the shipping host
+re-checked as still emitting the report-only name.
+
+With the switch flipped, the response carries `Content-Security-Policy: default-src 'self'; script-src 'self';
+style-src 'self'` **byte-for-byte**, with `Content-Security-Policy-Report-Only` absent and the other six
+mandated headers unchanged, on a document, a static asset and a redirect. The browser corroborates it more
+strongly than the header does: the same page on the two hosts raised **66 violation events each with
+identical directive attribution**, differing only in `event.disposition` — `enforce` ×66 against `report` ×66.
+
+**So `A17` is unmet by a delivery-mode decision, not by a missing capability.** Promotion is one configuration
+key, and that key is now verified rather than assumed. That is the fact the acceptance row needed and did not
+have.
+
+### The measurement that makes the staging justified rather than merely authorised
+
+897 violations were recorded under enforcement, every one `disposition: "enforce"`: **806 `style-src` (90%)**,
+91 `script-src` including 9 `eval`, and exactly **one blocked request** — a `blob:` URL. Sign-in survives
+(the credential path is a server-rendered POST with no JavaScript dependency), which is precisely why
+enforcement is easy to mis-certify. What does not survive: the top navigation menus cannot be opened,
+paging and sorting are dead on every list, search drawers and column filters are dead, per-row JSON editors
+are dead, the application-sitemap editor renders nothing below its tab bar, every launcher application icon
+becomes invisible, and list columns render up to 2.7× their intended width.
+
+**Zero HTTP responses at status 400 or above, and zero JavaScript exceptions**, because the functions that
+become undefined are only called from inline code that is itself blocked — callers fail with callees, so
+nothing throws. A status-code monitor would report the deployment healthy throughout.
+
+The full inventory, the per-screen verdicts and the rollout consequences are recorded once, in the risk
+register under `RISK-022`, so they cannot drift between documents; the operator-facing version is in the
+[secure configuration guide](secure-configuration.md).
+
+### Three corrections this measurement forced
+
+1. **The middleware's own justification comment said "four components".** It is **five** — `PcHtmlBlock`
+   Display and Design, `Nav.Default`, the SDK plugin's `WvSdkPageSitemap` Form, and `PcJavaScriptBlock`
+   Display, the last of which is the most load-bearing of them since emitting author-supplied script is its
+   entire purpose. `RISK-023` had already corrected the count in the register; the code comment had not
+   caught up. Corrected, with the measured consequences summarised and a pointer to `RISK-022`. **Comment
+   only — no behaviour changed.**
+2. **`RISK-022`'s stage 1 named two missing directives and there are three.** It calls for
+   `img-src 'self' data:` and `worker-src blob:`; measurement found a `script-src-elem` violation with
+   `blockedURI: "blob"` for the web-component runtime's lazy-loaded chunk, so **`script-src` must also admit
+   `blob:`**. Without it, stages 2 and 3 could both complete and the sitemap editor would still be blank.
+3. **The staged plan had no step for the inline confirmation guards, and it needed one first.** Inline
+   handler attributes are blocked under enforcement, so `onclick="return confirm(…)"` neither warns nor
+   cancels and the destructive action proceeds unprompted. A stage 0 is now recorded in both documents:
+   move all seven of the SDK plugin's inline-confirm guards onto delegated `addEventListener` handlers in an
+   external file, which needs no policy relaxation and is worth doing whether or not enforcement is ever
+   promoted.
+
+### One pre-existing defect found, and deliberately not fixed
+
+Asking `typeof element.onclick === 'function'` of every destructive control turned up one that answered
+`false` for a *different reason* than the others. `application/details.cshtml:L12`'s "Delete App" guard is
+`onclick='function(e){…}'`, and an inline handler's value compiles as a function *body*, where a bare
+`function(e){…}` is a **syntax error** — verified directly: `new Function` over that exact string raises
+*"Function statements require a function name"*. The handler has therefore never run, on any host, with or
+without a policy, and clicking "Delete App" submits immediately. Proven pre-existing rather than assumed:
+`git diff --name-only master...HEAD` for that file is **empty**, the line is verbatim at `master`, and the
+last commit touching it is upstream. Recorded as `RISK-199` and **not fixed**, under AAP §0.1.3 guideline 8
+and §0.3.2 — it is a missing safety net rather than an authorization gap, the delete is still governed by
+server-side entity permissions, and the correct place to fix it is the stage-0 batch, where it closes as a
+side effect. Fixing the line in isolation would restore the prompt today and lose it again at promotion,
+which is the worse outcome.
+
+Worth keeping as a method note: a check that had only asked *"does a dialog appear when enforcement is on?"*
+would have filed this with the CSP casualties, and it would then have been "fixed" by relaxing the policy —
+which would not have fixed it at all.
+
+### The three governance escalations, re-confirmed rather than re-litigated
+
+Each was re-read at this checkpoint to confirm it is still recorded accurately and still sitting with its
+owner. None changed, and none should:
+
+| Escalation | Recorded disposition | Owner |
+| --- | --- | --- |
+| AutoMapper's patched line is licensed RPL-1.5 against the product's declared Apache-2.0 (`RISK-001`) | **Open — pending owner ratification, mechanically blocked from shipping meanwhile.** The advisory is closed by the pin with no suppression; `dotnet pack` fails `ERPLIC001` so the unratified claim cannot reach a package feed, while `build`, `publish` and `run` are unaffected | Repository owner / legal |
+| The five `CA5351` residuals the legacy credential-migration path requires (`RISK-171`) | **Accepted — mandatory residual, formally approved, with a stated exit condition.** Raised by `MAJ-01` against bare allow-list pairs that recorded no approver and no exit | Repository owner |
+| The scoped-file deviation `CR-01`, including the additive `HtmlSanitizer.cs` and `PcHtmlBlock.cs` changes | Disclosed in this log's vulnerability-class table and in the register's channel inventory rather than left implicit | Repository owner |
+
+The point of re-reading them was to check that none had drifted into reading as *decided*. None had.
+`RISK-001` in particular still says the licence question "is not decided and cannot be decided here", which
+is the correct posture: an agent recording an owner's decision for them would be the failure mode, and the
+mechanical `dotnet pack` block is what makes the open state safe rather than merely noted.
