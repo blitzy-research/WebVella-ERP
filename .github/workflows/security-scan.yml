@@ -1242,8 +1242,13 @@ jobs:
           # dispositions are stripped here and ONLY here, so the reasoning stays
           # attached to the entry everywhere a human reads it while `comm` still
           # sees the exact 'RULE path' shape the diagnostic parse produces.
+          # DEFECT ADDRESSED - QA finding WF-01, the same latent shape, here and at the two
+          # sites below. allow_list is a RATCHET: entries leave it as residuals are fixed, so
+          # it can legitimately reach zero, and on that day an unguarded `grep -v '^$'` would
+          # exit 1 and pipefail would abort this gate rather than report a clean tree. Guarded
+          # exactly as the global-analyzer-config check and the taint allow-list are.
           allow_pairs() {
-            allow_list | sed 's/^[[:space:]]*//' | grep -v '^$' \
+            allow_list | sed 's/^[[:space:]]*//' | { grep -v '^$' || true; } \
               | sed 's/[[:space:]]*|.*$//' | sed 's/[[:space:]]*$//' | sort -u
           }
 
@@ -1287,7 +1292,7 @@ jobs:
               allow_status=1
             fi
           done 3<<ALLOWENTRIES
-          $(allow_list | sed 's/^[[:space:]]*//' | grep -v '^$')
+          $(allow_list | sed 's/^[[:space:]]*//' | { grep -v '^$' || true; })
           ALLOWENTRIES
           if [ "$allow_status" -ne 0 ]; then
             exit 1
@@ -1595,7 +1600,7 @@ jobs:
           # to have the same line count, which is what stops a disposition being
           # dropped from one and not the other.
           allow_pairs > security-allowlist.txt
-          allow_list | sed 's/^[[:space:]]*//' | grep -v '^$' | sort -u > security-allowlist-justified.txt
+          allow_list | sed 's/^[[:space:]]*//' | { grep -v '^$' || true; } | sort -u > security-allowlist-justified.txt
           if [ "$(wc -l < security-allowlist.txt)" -ne "$(wc -l < security-allowlist-justified.txt)" ]; then
             echo "::error::Gate 1 - the comparison allow-list and the justified allow-list have different line counts, so at least one entry lost or gained a disposition. Two derivations of one list must agree."
             exit 1
@@ -1834,7 +1839,18 @@ jobs:
             cat <<'TAINT'
           TAINT
           }
-          taint_allow_list | sed 's/^[[:space:]]*//' | grep -v '^$' | sort -u > taint-allowlist.txt
+          # DEFECT ADDRESSED - QA finding WF-01, a fail-CLOSED gate that aborted before it
+          # could report. The workflow-level `defaults.run.shell: bash` above makes GitHub
+          # run every step as `bash --noprofile --norc -eo pipefail`, so pipefail is in force
+          # whether or not the step body sets it. The heredoc above is deliberately EMPTY on
+          # this tree, so `grep -v '^$'` matches nothing, exits 1, and pipefail aborted this
+          # step AFTER its ~211 s rebuild - taking the taint verdict, and the evidence-binding
+          # and release-attestation steps that consume its artifacts, down with it. Guarded
+          # exactly as the global-analyzer-config check and the CS documentation loop earlier
+          # in this workflow already guard the identical shape: `|| true` keeps an empty result
+          # an empty result instead of a failure. An empty allow-list must mean "nothing is
+          # excused", never "the gate could not run".
+          taint_allow_list | sed 's/^[[:space:]]*//' | { grep -v '^$' || true; } | sort -u > taint-allowlist.txt
           comm -23 taint-pairs.txt taint-allowlist.txt > taint-unreviewed.txt
 
           {
@@ -2052,19 +2068,79 @@ jobs:
           else
             printf 'PASS runtime script evaluation is reached from exactly the two reviewed files\n'
           fi
+          # THE COUNT WAS MOVED FROM 5 TO 4, DELIBERATELY, AND THE RATCHET WAS MADE
+          # STRONGER RATHER THAN LOOSER IN THE SAME EDIT.
+          #
+          # WHY IT MOVED. QA finding P6-01 - Roslyn diagnostics naming internal
+          # namespaces and assemblies reached the browser in an alert-danger block
+          # whenever a page component's snippet failed to compile (CWE-209, H-13,
+          # remediation class 14). The fix routes the two UNGUARDED evaluations in
+          # PageDataModel through one private helper, EvaluateGuarded, which logs the
+          # diagnostic server-side and rethrows a generic message. Two direct calls
+          # therefore became ONE call inside the helper, so the direct-call arithmetic
+          # is 4 where it was 5. The runtime-compilation SURFACE did not shrink and
+          # this is not a reduction in exposure being claimed: the logical entry points
+          # are still five - two through the helper, the two SafeCodeDataVariable
+          # swallow-to-null branches, and the EQL developer page's compile-time const.
+          #
+          # WHY LOWERING 5 TO 4 ALONE WOULD HAVE BEEN THE WRONG MOVE. It would have
+          # freed one direct call site: a future edit could add a NEW unguarded
+          # CodeEvalService.Evaluate and the count would still read 4 if it also
+          # removed a guarded one. The helper's two call sites are therefore asserted
+          # SEPARATELY below, so the five logical entry points stay pinned as
+          # 4 direct - 1 inside the helper + 2 through it.
           eval_calls=$(git ls-files '*.cs' | xargs grep -n 'CodeEvalService\.Evaluate(' /dev/null \
             | awk -F: '{ rest = $0; sub(/^[^:]*:[0-9]+:[ \t]*/, "", rest); if (rest !~ /^\/\//) print rest }' \
             | grep -c 'CodeEvalService\.Evaluate(' || true)
-          if [ "${eval_calls:-0}" -ne 5 ]; then
-            echo "::error::Gate 1 - the number of CodeEvalService.Evaluate call sites is ${eval_calls}, not the reviewed 5 (four in PageDataModel for CODE and SNIPPET data-source variables, one compile-time constant in the EQL developer page). Review the new site for an authorization guard, then move this count deliberately."
+          if [ "${eval_calls:-0}" -ne 4 ]; then
+            echo "::error::Gate 1 - the number of DIRECT CodeEvalService.Evaluate call sites is ${eval_calls}, not the reviewed 4 (one inside PageDataModel.EvaluateGuarded, two in the PageDataModel SafeCodeDataVariable swallow-to-null branches, one compile-time constant in the EQL developer page). Review the new site for an authorization guard AND for whether it discloses compiler diagnostics to the caller, then move this count deliberately."
             status=1
           else
-            printf 'PASS runtime script evaluation has exactly the 5 reviewed call sites\n'
+            printf 'PASS runtime script evaluation has exactly the 4 reviewed direct call sites\n'
+          fi
+          # The other half of the five: the guarded entry points. Counted in
+          # PageDataModel only, excluding the declaration line, so the total logical
+          # entry-point count stays 5 and neither number can drift alone.
+          pdm='WebVella.Erp.Web/Models/PageDataModel.cs'
+          if [ ! -f "$pdm" ]; then
+            echo "::error::Gate 1 - ${pdm} is absent, so neither the guarded entry points nor the CWE-209 containment can be asserted. Failing closed."
+            status=1
+          else
+            guarded_calls=$(grep -n 'EvaluateGuarded(' "$pdm" \
+              | sed -E 's/^[0-9]+:[[:space:]]*//' \
+              | { grep -v '^//' || true; } \
+              | { grep -v 'private object EvaluateGuarded' || true; } \
+              | grep -c 'EvaluateGuarded(' || true)
+            if [ "${guarded_calls:-0}" -ne 2 ]; then
+              echo "::error::Gate 1 - PageDataModel reaches EvaluateGuarded from ${guarded_calls} call site(s), not the reviewed 2 (the CODE data-source variable and the .cs branch of the SNIPPET variable). Together with the 4 direct sites this is what keeps the runtime-compilation entry-point count at five; a change here must be reviewed and both numbers moved together."
+              status=1
+            else
+              printf 'PASS the two guarded runtime-compilation entry points are intact, so the surface is still the reviewed five\n'
+            fi
+            # CWE-209 CONTAINMENT, asserted at source because it is one keyword wide.
+            # The catch must name CompilerException and nothing broader: catching
+            # Exception here was measured to swallow the product's own ValidationException
+            # text and replace legitimate messages such as "SmtpService with id = '...'
+            # not found." with the generic sentence, which is a functional regression
+            # dressed as a security fix. And the rethrown message must stay gated on
+            # DevelopmentMode, or the diagnostic returns to the browser.
+            if ! grep -qF 'catch (CompilerException ex)' "$pdm"; then
+              echo "::error::Gate 1 - ${pdm} no longer catches CompilerException by name. P6-01's containment is one keyword wide: broadening it to Exception swallows the platform's own ValidationException messages - measured, it replaced \"SmtpService with id = '...' not found.\" with the generic sentence - and narrowing it away lets Roslyn diagnostics naming internal namespaces reach the browser again (CWE-209)."
+              status=1
+            else
+              printf 'PASS the page-component evaluation guard still catches CompilerException by name\n'
+            fi
+            if ! grep -qF 'ErpSettings.DevelopmentMode ? ex.Message : GENERIC_EVALUATION_ERROR_MESSAGE' "$pdm"; then
+              echo "::error::Gate 1 - ${pdm} no longer gates the compiler diagnostic behind ErpSettings.DevelopmentMode. Outside Development the caller must receive the generic message only; the diagnostic belongs in the server log (CWE-209, H-13)."
+              status=1
+            else
+              printf 'PASS the compiler diagnostic is gated behind DevelopmentMode and the caller otherwise receives a generic message\n'
+            fi
           fi
           if [ "$status" -ne 0 ]; then
             exit 1
           fi
-          echo "Gate 1 runtime-compilation control passed - the render route checks the code-authoring privilege before it resolves anything, binds the node to its page and to the named component, renders persisted options for every unauthorized caller, and the runtime-compilation surface is still exactly the reviewed one file, two callers and five call sites."
+          echo "Gate 1 runtime-compilation control passed - the render route checks the code-authoring privilege before it resolves anything, binds the node to its page and to the named component, renders persisted options for every unauthorized caller, the runtime-compilation surface is still exactly the reviewed one file, two callers, four direct call sites and two guarded entry points, and a failing snippet's compiler diagnostic still goes to the server log rather than to the caller."
 
       # Gate 1 substitute, part 3 of 3 - POSITIVE CONTROL. Parts 1 and 2 are green-when-
       # clean, and a green run is indistinguishable from a gate that has stopped working.
@@ -2940,7 +3016,19 @@ jobs:
           # and it is planted in a fixture outside the working tree. No real
           # secret is involved, which is the point: the control proves the
           # mechanism without embedding the thing it detects.
-          kv_probe=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 51)
+          # DEFECT ADDRESSED - QA finding WF-02, a fail-CLOSED gate that aborted before it
+          # could report. `tr` reading the endless /dev/urandom never terminates on its own;
+          # `head -c 51` closes the pipe as soon as it has its 51 bytes, `tr` then takes
+          # SIGPIPE and exits 141, and because the workflow-level `defaults.run.shell: bash`
+          # above runs every step with `-o pipefail`, that 141 became the step's status -
+          # aborting the secrets sweep before the positive control, the real tree sweep and
+          # the git-history and migration assertions below it had run at all. Bounding the
+          # read fixes it without changing what is produced: 8192 random bytes yield roughly
+          # 1,900 alphanumerics, far more than the 51 required and far below the 64 KB pipe
+          # buffer, so `tr` finishes and exits 0 of its own accord and no signal is ever
+          # delivered. Verified deterministic over 10 consecutive runs: rc=0, length 51,
+          # alphanumeric.
+          kv_probe=$(LC_ALL=C head -c 8192 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 51)
           kv_probe_digest=$(printf '%s' "$kv_probe" | sha256sum | cut -d' ' -f1)
           mkdir -p "$scratch/kvfx"
           printf 'the value below is a generated probe, not a secret: `%s`\n' "$kv_probe" > "$scratch/kvfx/evidence-field.md"
