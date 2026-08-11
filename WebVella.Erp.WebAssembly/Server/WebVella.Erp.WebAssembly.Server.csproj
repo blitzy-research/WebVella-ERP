@@ -22,4 +22,22 @@
     <ProjectReference Include="..\Shared\WebVella.Erp.WebAssembly.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- SECURITY M-01 / H-15, QA finding P6-04: this host emitted 0 of the 7 mandated response headers
+         because SecurityHeadersMiddleware was never in its compilation. The file is LINKED rather than
+         reached through a ProjectReference to WebVella.Erp.Web, deliberately and as the least invasive
+         option: that reference would pull Npgsql, CS-Script, AutoMapper, MailKit and the whole ERP object
+         graph into an anonymous, credential-free Blazor shell that needs none of them, materially widening
+         this host's dependency, audit and analyzer surface to obtain one 200-line middleware. The linked
+         file's own using directives are Microsoft.AspNetCore.{Builder,Hosting,Http} and
+         Microsoft.Extensions.Options plus System - every one of them already available here from the Web
+         SDK - so it compiles with no dependency change at all.
+         SINGLE SOURCE OF TRUTH is the point of linking rather than copying: the mandated header names and
+         values, the Development HSTS suppression and the exactly-one-CSP-name invariant exist once, so this
+         host cannot drift from the other seven. Keep this path exact for the same reason as the references
+         above. -->
+    <Compile Include="..\..\WebVella.Erp.Web\Middleware\SecurityHeadersMiddleware.cs"
+             Link="Middleware\SecurityHeadersMiddleware.cs" />
+  </ItemGroup>
+
 </Project>

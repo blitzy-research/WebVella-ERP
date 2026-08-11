@@ -118,10 +118,17 @@ namespace WebVella.Erp.Web.Middleware
 
 			// The mandated policy value is emitted verbatim: exactly the three mandated fetch directives, no fourth
 			// directive of any kind, and no blank-value fallback needed because the const cannot be null, blank, weakened or
-			// replaced. It ships under the REPORT-ONLY header name because four components deliberately emit inline script
-			// or markup - PcHtmlBlock Display and Design, Nav.Default, and the SDK plugin's WvSdkPageSitemap Form - so
-			// enforcing script-src 'self' on the first deployment would break them. An operator flips
-			// ContentSecurityPolicyReportOnly to false once violations have stopped; this application hosts no report
+			// replaced. It ships under the REPORT-ONLY header name because FIVE components deliberately emit inline script
+			// or markup - PcHtmlBlock Display and Design, Nav.Default, the SDK plugin's WvSdkPageSitemap Form, and
+			// PcJavaScriptBlock Display - so enforcing script-src 'self' on the first deployment would break them. The
+			// count was four here until the channel inventory (docs/security/risk-register.md, RISK-023 and RISK-170)
+			// found PcJavaScriptBlock unnamed; it is the most load-bearing of the five, since emitting author-supplied
+			// script is its entire purpose. Enforcement has since been MEASURED rather than predicted, and the breakage
+			// is wider than these five: 897 enforce-disposition violations, of which 806 are style-src - because
+			// per-application brand colour and per-column table geometry are computed per record and can only be emitted
+			// inline - plus blocked inline handlers, a blocked blob: component chunk, and dead paging, sorting and
+			// navigation. See RISK-022 for the full inventory and the staged rollout it implies. An operator flips
+			// ContentSecurityPolicyReportOnly to false once that work is done; this application hosts no report
 			// collector, so in report-only mode a browser logs each violation to its own console.
 			const string contentSecurityPolicy = SecurityHeadersOptions.ContentSecurityPolicy;
 
