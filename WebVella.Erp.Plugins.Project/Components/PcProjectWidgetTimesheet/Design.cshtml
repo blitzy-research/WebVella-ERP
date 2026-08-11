@@ -11,6 +11,14 @@
 	var gridColumns = (List<WvGridColumnMeta>)ViewBag.GridColumns;
 	var records = (List<EntityRecord>)ViewBag.Records;
 }
+@* QA FINDING P13-01 - the nine-column timesheet grid has a 603.55px intrinsic width and was drawn
+   straight through its card's border and off the page inside the 327px card it occupies at 375 CSS px,
+   because all six of its ancestors compute overflow-x:visible. The wrapper below scrolls on the x axis
+   only; the rule is .erp-scroll-x in WebVella.Erp.Web/Theme/styles.css, which is deliberately an opt-in
+   class rather than overflow-x on the shared .erp-list wrapper - that would clip the filter-row dropdowns
+   on every list screen in the platform. As with the encoding note below, the Design and Display twins
+   must stay identical: change both or neither. *@
+<div class="erp-scroll-x">
 <wv-grid small="true" columns="@gridColumns" has-tfoot="false">
 	@foreach (var record in records)
 	{
@@ -56,3 +64,4 @@
 	}
 
 </wv-grid>
+</div>

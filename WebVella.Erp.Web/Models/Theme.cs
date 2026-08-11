@@ -116,8 +116,42 @@ namespace WebVella.Erp.Web.Models
 
 
 		//Red
+		// P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum). THREAT ADDRESSED: this token was Material Red
+		// 500 (#F44336), measured at runtime as 3.68:1 against the white page background - below the
+		// 4.5:1 minimum for normal-size text. Three elements on the Projects dashboard render through
+		// it (`.go-red`: an overdue-task count and two overdue dates). Raised one step on the same
+		// Material ramp to Red 700, which measures 4.98:1.
+		// KNOWN RIPPLES, established by re-measuring at runtime rather than by assumption:
+		//  - `.toast.toast-error` uses this token as a BACKGROUND behind white text, whose ratio
+		//    improves from 3.28:1 to 4.21:1.
+		//  - `.go-red` is ALSO used as text inside the SDK Web API page's #212121 request blocks,
+		//    where darkening made it worse (4.37:1 -> 3.23:1). That is corrected by the scoped
+		//    `.go-white .go-red` rule in Theme/styles.css, which measures 5.39:1 on #212121.
+		//  - The Tasks and Task-Priority doughnut series read one Material step darker. The TASKS
+		//    widget's legend tracks the arcs exactly, because its legend values are `.go-red` and
+		//    resolve through this same token (verified: legend rgb(211,47,47) == arc #D32F2F).
+		//    The TASK-PRIORITY widget's legend does NOT track, and an earlier revision of this
+		//    comment wrongly claimed it did. Its arcs read this token
+		//    (PcProjectWidgetTasksPriorityChart.cs:119-120) but its legend renders
+		//    `style="color: @option.Color"` from the PERSISTED SelectOption.Color, seeded #F44336 in
+		//    WebVella.Erp.Plugins.Next/NextPlugin.20190203.cs. Those two values were only ever
+		//    coincidentally equal - any operator recolouring a priority option has always broken the
+		//    agreement - so this exposes a pre-existing coupling rather than creating one. The
+		//    residue is exactly 128 pixels across two 12x12 icons, one Material step apart in the
+		//    same hue; reverting a measured 3.68:1 text failure to remove that is the wrong trade.
+		//    Recorded in docs/security/risk-register.md.
+		//  - `.go-bkg-red` is referenced by no view in the repository.
+		// NOT EXTENDED TO THE REST OF THE PALETTE - see the "Semantic colour palette" entry in
+		// docs/security/risk-register.md. The `.go-*` family is a Material FILL palette reused for
+		// text. `.go-green` measures 2.78:1 on white and Green's ramp does reach compliance at
+		// Green 800 (4.97:1), but Orange's does NOT at any step (500 = 2.16:1, 700 = 3.05:1,
+		// 800 and 900 = 3.79:1), so a per-hue darkening cannot make the family compliant; it would
+		// also add a second instance of the Task-Priority legend divergence above. The remedy is a
+		// text-specific variant set, which is the feature addition the delivery contract excludes.
+		// WCAG 1.4.1 Use of Colour is met either way: every coloured value in these widgets is
+		// paired with a monochrome label.
 		[JsonProperty("red_color")]
-		public string RedColor { get; set; } = "#F44336";
+		public string RedColor { get; set; } = "#D32F2F";
 
 		[JsonProperty("red_light_color")]
 		public string RedLightColor { get; set; } = "#FFEBEE";
@@ -288,8 +322,18 @@ namespace WebVella.Erp.Web.Models
 		public string BrownDarkColor { get; set; } = "#3E2723";
 
 		//Gray
+		// P6-11 (WCAG 2.1 AA 1.4.3 Contrast Minimum). THREAT ADDRESSED: this token was Material Grey
+		// 500 (#9E9E9E), which measures 2.68:1 against the white page background - far below the
+		// 4.5:1 minimum for normal-size text, and the worst-scoring and highest-volume contrast
+		// failure measured at runtime (18 elements across the Projects dashboard and the SDK data
+		// source list, all rendered through `.go-gray` / `.go-grey`). Raised one step on the same
+		// Material ramp to Grey 600, which measures 4.61:1. The token, not the call sites, is changed
+		// because `--gray_color` is consumed by six declarations in styles.css and every one of them
+		// benefits: three are text (`.go-gray`, `#nav .nav-caret`, `#nav .dropdown-header`), one is an
+		// SVG fill, one is a decorative bullet glyph, and `.go-bkg-gray` is referenced by no view in
+		// the repository. No consumer relies on the lighter value.
 		[JsonProperty("gray_color")]
-		public string GrayColor { get; set; } = "#9E9E9E";
+		public string GrayColor { get; set; } = "#757575";
 
 		[JsonProperty("gray_light_color")]
 		public string GrayLightColor { get; set; } = "#FAFAFA";

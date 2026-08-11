@@ -53,7 +53,16 @@
                 @record.TypeName
             </wv-grid-column>
             <wv-grid-column>
-                @record.CompleteClassName
+                @* QA FINDING P6-22 - this cell renders a fully qualified job type such as
+                   WebVella.Erp.Plugins.Mail.Jobs.ProcessSmtpQueueJob. A dotted CLR type name contains no
+                   spaces, so the default overflow-wrap:normal has no break opportunity and the string
+                   establishes a min-content floor for the whole table - measured at 782.1px, which clips
+                   the grid at 768 CSS px and hides the Status column. .text-break is Bootstrap 4.5.2's
+                   own utility (word-break/overflow-wrap: break-word), so no new CSS is introduced, and
+                   the title attribute keeps the unbroken value available on hover - the same pattern the
+                   Status cell immediately below already uses. Nothing is truncated: the full name is
+                   still rendered, it is merely allowed to wrap. *@
+                <span class="text-break" title="@record.CompleteClassName">@record.CompleteClassName</span>
             </wv-grid-column>
             <wv-grid-column horizontal-align="Center">
                 <span title="@record.Status.ToString()">@record.Status.ToString()</span>
